@@ -1,0 +1,5 @@
+{
+  "name": "composer",
+  "description": "Where prompts are written: the composer, its drafts, the run and force buttons, and the banners and activity over it.",
+  "web": {"script": "web/composer.js", "style": "web/composer.css", "after": ["layout", "session"]}
+}

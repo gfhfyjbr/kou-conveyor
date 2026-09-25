@@ -1,0 +1,2 @@
+{"type":"session","data":{"Version":2,"Session":{"ID":"soft-stop-session","CreatedAt":"2026-09-01T12:00:00Z"}}}
+{"type":"item","data":{"Item":{"Sequence":1,"RecordedAt":"2026-09-01T12:00:01Z","Kind":"input","Data":{"ID":"old-stop","Kind":"control","Payload":{"Mode":"soft","Reason":"user requested stop"}}}}}

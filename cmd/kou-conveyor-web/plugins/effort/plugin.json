@@ -1,0 +1,5 @@
+{
+  "name": "effort",
+  "description": "How hard the agent thinks: the bars in the composer, ⌥↑ ⌥↓ and /effort, shared with the terminal cockpit.",
+  "web": {"script": "web/effort.js", "style": "web/effort.css", "after": ["composer"]}
+}

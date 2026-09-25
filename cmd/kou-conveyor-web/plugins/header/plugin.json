@@ -1,0 +1,5 @@
+{
+  "name": "header",
+  "description": "The bar over the transcript: the workspace and the session's title (click to rename), the run's state and the session's actions.",
+  "web": {"script": "web/header.js", "style": "web/header.css", "after": ["layout", "session"]}
+}

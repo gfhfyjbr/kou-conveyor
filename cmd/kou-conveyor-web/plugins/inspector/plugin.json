@@ -1,0 +1,5 @@
+{
+  "name": "inspector",
+  "description": "The inspector: the run, its tokens and tools, the session, the runner log, and the sections plugins add. I shows or hides it.",
+  "web": {"script": "web/inspector.js", "style": "web/inspector.css", "after": ["layout", "session"]}
+}

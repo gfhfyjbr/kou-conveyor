@@ -1,0 +1,74 @@
+/* session-list: the sessions in the rail. */
+
+.sessions { flex: 1; min-height: 0; overflow-y: auto; padding: 0 8px 12px; }
+.session-group { padding: 10px 8px 4px; font: 700 9.5px/1 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--fg-4); }
+.session-group:first-child { padding-top: 2px; }
+.session-row { position: relative; }
+.session {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  padding: 8px 34px 8px 6px;
+  border-left: 2px solid transparent;
+  color: inherit;
+  text-decoration: none;
+}
+/* A pinned session shows ◆ in place of its number, until a run puts its
+   marker there. */
+.session-row[data-pinned] .session:not([data-running]) .n { color: var(--accent); font-size: 9px; }
+
+.rename {
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  margin: -2px 0;
+  border: 1px solid var(--accent);
+  outline: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 12.5px/20px var(--sans);
+}
+.crumbs .rename { width: min(420px, 100%); height: 26px; font: 600 13.5px/24px var(--sans); }
+.session .n { grid-row: span 2; font: 500 10.5px/18px var(--mono); color: var(--fg-4); }
+.session .t { font-size: 12.5px; line-height: 18px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session .m { font: 10.5px/16px var(--mono); color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session:hover { background: var(--bg-3); }
+.session:hover .t, .session[aria-current="true"] .t { color: var(--fg); }
+.session[aria-current="true"] { background: var(--bg-3); border-left-color: var(--accent); }
+.session[aria-current="true"] .n { color: var(--accent); }
+/* A run puts a blinking block in place of the marker: a square for the
+   number, a diamond for a pinned session's ◆, so the row still says it is
+   pinned. */
+.session[data-running] .n { font-size: 0; }
+.session[data-running] .n::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-top: 5px;
+  background: var(--accent);
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+.session-row[data-pinned] .session[data-running] .n::before { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.session[data-running] .m { color: var(--accent); }
+.sessions-empty { margin: 8px; color: var(--fg-4); font: 11.5px/1.6 var(--mono); }
+
+.session .queued { color: var(--accent); }
+.session .queued[data-paused] { color: var(--warn); }
+
+/* Pinned sessions are dragged into another order: the one dragged fades,
+   and a line shows where it goes. */
+.session-row[data-dragging] { opacity: 0.35; }
+.session-row[data-drop]::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  height: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent);
+  pointer-events: none;
+}
+.session-row[data-drop="before"]::after { top: -1px; }
+.session-row[data-drop="after"]::after { bottom: -1px; }
+.session-row[draggable="true"] .n { cursor: grab; }

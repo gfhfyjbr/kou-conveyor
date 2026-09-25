@@ -1,0 +1,27 @@
+/* The kernel's own few styles: what shows before plugins build the page, or
+   when none can. Everything else is styled by plugins. */
+
+html, body { height: 100%; margin: 0; }
+[hidden] { display: none !important; }
+
+.kernel-boot {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  font: 600 11px/1 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #7f7d76;
+  background: #0c0c0b;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .kernel-boot { background: #f4f3ef; } }
+:root[data-theme="light"] .kernel-boot { background: #f4f3ef; }
+
+.kernel-toasts { position: fixed; top: 14px; right: 14px; z-index: 100; display: grid; gap: 6px; max-width: min(420px, 92vw); }
+.kernel-toast { padding: 9px 12px; background: #22221f; color: #ecebe6; font: 12px/1.45 ui-monospace, Menlo, monospace; box-shadow: 0 12px 32px rgb(0 0 0 / 0.4); }
+.kernel-toast.error { background: #cc1f3d; color: #fff; }
+
+.kernel-rescue { max-width: 640px; margin: 10vh auto; padding: 24px; font: 14px/1.6 system-ui, sans-serif; color: inherit; }
+.kernel-rescue h1 { font-size: 20px; }
+.kernel-rescue li { margin: 6px 0; }
+.kernel-rescue pre { white-space: pre-wrap; font-size: 12px; opacity: 0.8; }

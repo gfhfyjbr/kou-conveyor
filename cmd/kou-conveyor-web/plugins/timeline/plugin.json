@@ -1,0 +1,5 @@
+{
+  "name": "timeline",
+  "description": "The transcript: prompts, answers, thinking and tool calls as they stream, with how a plugin says its tool's calls or any kind of entry should look.",
+  "web": {"script": "web/timeline.js", "style": "web/timeline.css", "after": ["layout", "session", "markdown"]}
+}

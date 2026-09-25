@@ -1,0 +1,29 @@
+{
+  "name": "git-glance",
+  "version": "1.0.0",
+  "description": "Git at a glance: a tool that shows the repository's state, a review command, a commit-message skill and a panel.",
+  "tools": [
+    {
+      "name": "GitGlance",
+      "description": "Show the git branch of the workspace, its changed files and its latest commits, as JSON.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "commits": {"type": "integer", "description": "How many recent commits to list; 5 by default.", "minimum": 0, "maximum": 50}
+        }
+      },
+      "run": ["/bin/sh", "./glance.sh"]
+    }
+  ],
+  "skills": "skills",
+  "prompt": "prompt.md",
+  "commands": [
+    {
+      "name": "review",
+      "args": "[focus]",
+      "description": "Review the uncommitted changes",
+      "prompt": "Review the uncommitted changes of this repository: call GitGlance to see what changed, read the diffs, and report problems, most important first. Focus: {{args}}"
+    }
+  ],
+  "web": {"script": "web/plugin.js", "style": "web/plugin.css"}
+}

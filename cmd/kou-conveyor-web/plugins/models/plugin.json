@@ -1,0 +1,5 @@
+{
+  "name": "models",
+  "description": "The model of every prompt, of any provider the connection reaches: the picker in the composer, M and /model, and the tags that say which model answered.",
+  "web": {"script": "web/models.js", "style": "web/models.css", "after": ["composer"]}
+}

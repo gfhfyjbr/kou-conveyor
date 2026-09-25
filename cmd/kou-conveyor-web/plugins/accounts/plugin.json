@@ -1,0 +1,5 @@
+{
+  "name": "accounts",
+  "description": "The Accounts view: the accounts gateway (CLIProxyAPI) runs go through — its connection, the accounts signed in, the endpoints added with a key, their uptime, errors and limits. A switches to it.",
+  "web": {"script": "web/accounts.js", "style": "web/accounts.css", "after": ["layout", "session", "ui"]}
+}

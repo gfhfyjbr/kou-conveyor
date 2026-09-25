@@ -1,0 +1,19 @@
+/* effort: the bars beside the model. */
+
+.think { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 1px solid var(--line); background: var(--bg); }
+.think-bars { display: flex; align-items: flex-end; gap: 3px; height: 16px; }
+.think-bars button { width: 5px; background: var(--line-2); transition: background 0.12s; }
+.think-bars button:nth-child(1) { height: 5px; }
+.think-bars button:nth-child(2) { height: 8px; }
+.think-bars button:nth-child(3) { height: 11px; }
+.think-bars button:nth-child(4) { height: 14px; }
+.think-bars button:nth-child(5) { height: 17px; }
+.think-bars button[data-on] { background: var(--accent); }
+.think-bars button:hover { background: var(--fg-3); }
+.think-bars button[data-on]:hover { background: color-mix(in srgb, var(--accent) 75%, var(--fg)); }
+/* The box is as wide as the level's name: no room kept for the longest. */
+.think-label { font: 700 10.5px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-2); white-space: nowrap; }
+
+@media (max-width: 480px) {
+  .think .label { display: none; }
+}

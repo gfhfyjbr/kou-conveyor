@@ -1,0 +1,190 @@
+/* images: images in prompts. */
+
+/* Images in prompts (images.js): the strip above the composer's text, the
+   large picture over the transcript, the images of sent prompts and the
+   pictures the agent looked at. Transparent images sit on a checkerboard. */
+
+.attachments, .prompt-image, .image-preview-frame, .attachment-thumb, .tool-image-frame {
+  --check: color-mix(in srgb, var(--fg) 7%, transparent);
+}
+.attachment-thumb, .prompt-image, .image-preview-frame, .tool-image-frame {
+  background-color: var(--bg-3);
+  background-image:
+    linear-gradient(45deg, var(--check) 25%, transparent 25%, transparent 75%, var(--check) 75%),
+    linear-gradient(45deg, var(--check) 25%, transparent 25%, transparent 75%, var(--check) 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 7px 7px;
+}
+
+/* ---------------------------------------------------------------- the strip */
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+.attachment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 250px;
+  margin: 0;
+  padding: 4px 28px 4px 4px;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  animation: rise 0.14s ease-out;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.attachment:hover { border-color: var(--fg-4); }
+.attachment[data-active="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.attachment-thumb {
+  flex: none;
+  display: block;
+  width: 52px;
+  height: 52px;
+  overflow: hidden;
+  cursor: zoom-in;
+}
+.attachment-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.attachment[data-broken] .attachment-thumb img { visibility: hidden; }
+.attachment figcaption { display: grid; gap: 3px; min-width: 0; font: 11px/1.25 var(--mono); color: var(--fg-3); }
+.attachment figcaption b { font-weight: 700; letter-spacing: 0.02em; color: var(--fg); }
+.attachment[data-active="true"] figcaption b { color: var(--accent); }
+.attachment figcaption span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.attachment-drop {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--fg-4);
+}
+.attachment-drop:hover { color: var(--err); background: var(--err-soft); }
+.attachments-hint { flex: 1 1 180px; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+.edit .attachments { margin: 0 0 8px; }
+/* Files dragged over the composer. */
+.composer[data-dropping] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-2)); }
+
+/* ---------------------------------------------------------------- the preview */
+
+/* Over the transcript, never over the composer: typing goes on below it,
+   and the pointer passes through unless it was opened with a click. */
+.image-preview {
+  position: fixed;
+  /* Over drawers, under dialogs, menus and toasts. */
+  z-index: 35;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  container-type: size;
+  pointer-events: none;
+  background: color-mix(in srgb, var(--bg) 58%, transparent);
+  backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 0.12s ease-out;
+}
+.image-preview[data-open] { opacity: 1; }
+.image-preview[data-sticky="true"] { pointer-events: auto; cursor: zoom-out; }
+.image-preview-card {
+  display: grid;
+  margin: 0;
+  max-width: 100%;
+  background: var(--bg-2);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
+  transform: translateY(6px) scale(0.99);
+  transition: transform 0.14s ease-out;
+}
+.image-preview[data-open] .image-preview-card { transform: none; }
+.image-preview-card::before { --tick: var(--accent); inset: -5px; }
+.image-preview-frame { display: grid; place-items: center; padding: 10px; }
+.image-preview-frame img {
+  display: block;
+  max-width: calc(100cqw - 70px);
+  max-height: calc(100cqh - 100px);
+  min-width: 48px;
+  min-height: 48px;
+  object-fit: contain;
+  image-rendering: auto;
+}
+.image-preview figcaption {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  font: 11px/1.4 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.image-preview figcaption b { font-weight: 700; color: var(--accent); }
+.image-preview-hint { margin-left: auto; padding-left: 24px; color: var(--fg-4); }
+
+/* ---------------------------------------------------------------- sent prompts */
+
+.prompt-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.prompt-image {
+  position: relative;
+  display: block;
+  width: 136px;
+  height: 90px;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  cursor: zoom-in;
+  transition: border-color 0.12s;
+}
+.prompt-image:hover, .prompt-image:focus-visible { border-color: var(--accent); outline: 0; }
+.prompt-image img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.prompt-image span {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  padding: 1px 6px;
+  font: 700 10px/1.5 var(--mono);
+  color: var(--fg-2);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+}
+
+/* ---------------------------------------------------------------- what the agent looked at */
+
+/* The picture a ViewImage call read, under the call's card and part of it:
+   the card's bottom edge sets it off from the call's line. */
+.tool-image {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px 12px;
+  padding: 10px 12px 12px 34px;
+  border: 1px solid var(--line);
+  border-top: 0;
+  background: var(--bg-2);
+}
+.tool-image[data-open] { flex-direction: column; align-items: flex-start; }
+.tool-image-frame {
+  display: block;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--line-2);
+  cursor: zoom-in;
+  transition: border-color 0.12s;
+}
+.tool-image-frame:hover, .tool-image-frame:focus-visible { border-color: var(--accent); outline: 0; }
+.tool-image-frame img { display: block; max-width: 100%; height: auto; }
+.tool-image-what { font: 10.5px/1.4 var(--mono); color: var(--fg-4); white-space: nowrap; }
+.tool-image[data-broken] .tool-image-frame { display: none; }
+.tool-image[data-broken] .tool-image-what::before { content: "The picture is not in the session any more · "; }
+
+/* Queued prompts' images, small beside their text. */
+.queue-images { display: inline-flex; gap: 3px; flex: none; }
+.queue-images img { width: 22px; height: 22px; object-fit: cover; border: 1px solid var(--line-2); background: var(--bg-3); }
+.queue-body { display: flex; align-items: center; gap: 8px; min-width: 0; }

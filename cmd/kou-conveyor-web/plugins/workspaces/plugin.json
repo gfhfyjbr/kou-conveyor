@@ -1,0 +1,5 @@
+{
+  "name": "workspaces",
+  "description": "The folders agents work in: the switcher heading the rail, W and /workspace, and adding a folder with completion.",
+  "web": {"script": "web/workspaces.js", "style": "web/workspaces.css", "after": ["session-list", "ui"]}
+}

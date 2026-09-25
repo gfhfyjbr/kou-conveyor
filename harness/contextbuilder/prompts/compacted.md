@@ -1,0 +1,1 @@
+This session is being continued from an earlier conversation that was compacted to free context. The summary below covers the earlier part of the conversation; the tool calls and results it summarizes are no longer shown.

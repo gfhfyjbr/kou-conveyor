@@ -1,0 +1,22 @@
+[project]
+name = "harness-harbor"
+version = "0.1.0"
+description = "Harbor installed-agent integration for kou-conveyor"
+requires-python = ">=3.12"
+dependencies = ["harbor==0.22.0", "certifi"]
+
+[project.optional-dependencies]
+modal = ["harbor[modal]==0.22.0"]
+
+[dependency-groups]
+dev = ["ruff==0.15.6"]
+
+[build-system]
+requires = ["uv_build>=0.8.4,<0.9.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "SIM"]

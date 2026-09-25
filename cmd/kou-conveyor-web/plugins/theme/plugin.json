@@ -1,0 +1,5 @@
+{
+  "name": "theme",
+  "description": "The look: design tokens, light and dark, and the components every plugin shares. T switches the theme.",
+  "web": {"script": "web/theme.js", "style": "web/theme.css"}
+}

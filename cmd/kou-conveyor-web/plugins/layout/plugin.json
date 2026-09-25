@@ -1,0 +1,5 @@
+{
+  "name": "layout",
+  "description": "The frame of the page: the rail with its views, the stage and its bar, the dock and the side panels, which other plugins fill through slots.",
+  "web": {"script": "web/layout.js", "style": "web/layout.css", "after": ["theme"]}
+}

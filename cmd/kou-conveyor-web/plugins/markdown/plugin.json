@@ -1,0 +1,5 @@
+{
+  "name": "markdown",
+  "description": "Renders the Markdown the agent writes, as text nodes only: nothing it writes can run.",
+  "web": {"script": "web/markdown.js", "style": "web/markdown.css"}
+}

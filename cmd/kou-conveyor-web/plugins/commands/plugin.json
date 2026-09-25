@@ -1,0 +1,5 @@
+{
+  "name": "commands",
+  "description": "Slash commands in the composer: / lists them, typing filters, Tab completes their arguments and Enter runs them.",
+  "web": {"script": "web/commands.js", "style": "web/commands.css", "after": ["composer"]}
+}

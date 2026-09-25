@@ -1,0 +1,64 @@
+/* workspaces: the switcher heading the rail, and adding a folder. */
+
+/* The workspace switcher heads the rail: sessions below belong to it. */
+.ws-switch {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  gap: 5px 8px;
+  padding: 9px 8px 9px 12px;
+  text-align: left;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent);
+  transition: border-color 0.12s, background 0.12s;
+}
+.ws-switch .label { grid-column: 1; }
+.ws-switch strong { grid-column: 1; min-width: 0; font-size: 13.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-switch code { grid-column: 1; min-width: 0; font-size: 10.5px; color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ws-chev { grid-column: 2; grid-row: 1 / span 3; align-self: center; display: grid; place-items: center; }
+.ws-chev::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-right: 1.5px solid var(--fg-3);
+  border-bottom: 1.5px solid var(--fg-3);
+  transform: translateY(-2px) rotate(45deg);
+}
+.ws-switch:hover, .ws-switch[aria-expanded="true"] { background: var(--bg-3); border-color: var(--line-2); border-left-color: var(--accent); }
+.ws-switch[data-missing="true"] strong, .ws-switch[data-missing="true"] code { color: var(--err); }
+.ws-switch[data-elsewhere="true"]::after {
+  content: "";
+  position: absolute;
+  top: 9px;
+  right: 9px;
+  width: 6px;
+  height: 6px;
+  background: var(--accent);
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+
+.suggest {
+  list-style: none;
+  margin: -6px 0 0;
+  padding: 4px 0;
+  max-height: 220px;
+  overflow-y: auto;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  border-top: 0;
+}
+.suggest li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 10px;
+  border-left: 2px solid transparent;
+  font: 12px/1.4 var(--mono);
+  color: var(--fg-2);
+  cursor: pointer;
+}
+.suggest b { flex: none; max-width: 60%; font-weight: 600; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Parents shorten from the left, keeping the part next to the name. */
+.suggest small { min-width: 0; font-size: 10.5px; color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
+.suggest li:hover, .suggest li[aria-selected="true"] { background: var(--bg-3); border-left-color: var(--accent); color: var(--fg); }

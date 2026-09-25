@@ -1,0 +1,5 @@
+{
+  "name": "edit",
+  "description": "Edit any prompt in place: the session goes back to before it and the edited prompt runs from there. Esc Esc edits the last one.",
+  "web": {"script": "web/edit.js", "style": "web/edit.css", "after": ["timeline", "composer"]}
+}

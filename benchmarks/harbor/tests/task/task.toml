@@ -1,0 +1,21 @@
+schema_version = "1.4"
+
+[task]
+name = "harness/adapter-smoke"
+version = "1.0.0"
+
+[agent]
+user = "agent"
+timeout_sec = 60
+
+[verifier]
+timeout_sec = 30
+
+[environment]
+build_timeout_sec = 300
+
+[environment.healthcheck]
+command = "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')\""
+interval_sec = 0.1
+timeout_sec = 5
+retries = 1

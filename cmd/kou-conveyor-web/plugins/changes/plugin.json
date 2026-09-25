@@ -1,0 +1,5 @@
+{
+  "name": "changes",
+  "description": "What the prompt in view changed, file by file: a tree and its diffs, live while the agent works. D shows or hides it.",
+  "web": {"script": "web/changes.js", "style": "web/changes.css", "after": ["layout", "timeline"]}
+}

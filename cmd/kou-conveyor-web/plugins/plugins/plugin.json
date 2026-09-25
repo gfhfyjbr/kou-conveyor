@@ -1,0 +1,5 @@
+{
+  "name": "plugins",
+  "description": "The Plugins section of the inspector and /plugins: what each plugin adds, turning plugins on and off, trusting a workspace's, and word of plugins loaded anew as they change.",
+  "web": {"script": "web/plugins.js", "style": "web/plugins.css", "after": ["inspector", "ui"]}
+}

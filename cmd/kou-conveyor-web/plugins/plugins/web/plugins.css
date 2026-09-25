@@ -1,0 +1,31 @@
+/* plugins: the Plugins section of the inspector. */
+
+/* The Plugins section of the inspector. */
+.plugins { display: grid; gap: 10px; }
+.plugins .ins-actions { margin-top: 0; }
+.plugin-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.plugin-row { padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-left: 2px solid var(--accent); }
+.plugin-row[data-active="false"] { border-left-color: var(--line-2); }
+.plugin-row[data-active="false"] .plugin-head b { color: var(--fg-3); }
+.plugin-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-height: 22px; font: 12px var(--mono); }
+.plugin-head b { color: var(--fg); font-weight: 600; white-space: nowrap; }
+.plugin-version { font-size: 10.5px; color: var(--fg-4); }
+.plugin-source { margin-left: auto; padding: 3px 5px; border: 1px solid var(--line-2); font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3); }
+.plugin-source.workspace { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.plugin-head .act { height: 22px; padding: 0 7px; border-color: var(--line-2); font-size: 10px; }
+.plugin-text { margin: 4px 0 0; font-size: 12px; color: var(--fg-2); }
+.plugin-adds, .plugin-reason { margin: 4px 0 0; font: 11px/1.4 var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.plugin-reason { color: var(--warn); }
+.plugin-trust { padding: 8px 10px; background: color-mix(in srgb, var(--warn) 6%, var(--bg-2)); border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-left: 2px solid var(--warn); font-size: 12px; }
+.plugin-trust p { margin: 0 0 8px; color: var(--fg-2); }
+.plugin-errors { margin: 0; padding-left: 16px; font: 11px/1.4 var(--mono); color: var(--err); overflow-wrap: anywhere; }
+.plugin-where { margin: 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); overflow-wrap: anywhere; }
+.plugin-live { padding: 3px 5px; border: 1px solid color-mix(in srgb, var(--ok) 45%, var(--line)); font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--ok); }
+.plugin-loaded { margin: 4px 0 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+.plugin-problem { margin: 4px 0 0; font: 11px/1.4 var(--mono); color: var(--err); overflow-wrap: anywhere; }
+.plugin-safe { margin: 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); color: var(--warn); font: 11px/1.45 var(--mono); }
+.plugin-build { padding: 8px 10px; border: 1px solid var(--line-2); border-left: 2px solid var(--accent); font: 11px/1.45 var(--mono); color: var(--fg-2); }
+.plugin-build[data-state="failed"] { border-left-color: var(--err); color: var(--err); }
+.plugin-build p { margin: 0; }
+.plugin-build pre { max-height: 220px; margin: 6px 0 0; overflow: auto; white-space: pre-wrap; color: var(--fg-2); font: 10.5px/1.45 var(--mono); }
+.plugin-server { margin: 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }

@@ -1,0 +1,5 @@
+{
+  "name": "palette",
+  "description": "The command palette (⌘K): every action, session, workspace, model and command plugins offer, by typing a part of it.",
+  "web": {"script": "web/palette.js", "style": "web/palette.css", "after": ["layout", "ui"]}
+}

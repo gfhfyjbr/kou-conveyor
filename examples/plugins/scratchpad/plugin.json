@@ -1,0 +1,9 @@
+{
+  "name": "scratchpad",
+  "version": "1.0.0",
+  "description": "Notes beside the sessions: a view of its own in the rail, and a note that can go with every prompt.",
+  "commands": [
+    {"name": "notes-review", "description": "Have the agent read the notes pinned to prompts", "prompt": "Read the notes I pinned to this prompt and tell me which are done."}
+  ],
+  "web": {"script": "web/scratchpad.js", "style": "web/scratchpad.css", "after": ["layout", "session"]}
+}

@@ -1,0 +1,182 @@
+/* models: the model of the next prompt, the picker, the tags. */
+
+/* The model the next prompt runs with, beside the effort: any model the
+   connection reaches, of any provider. A dot in the provider's colour. */
+.model-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: min(300px, 38vw);
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  transition: border-color 0.12s, background 0.12s;
+}
+.model-pick:hover, .model-pick[aria-expanded="true"] { border-color: var(--line-2); background: var(--bg-3); }
+.model-pick .label { flex: none; }
+.model-pick b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12px/1 var(--mono); color: var(--fg); }
+.model-pick[data-source="default"] b { color: var(--fg-2); font-weight: 500; }
+.model-pick[data-source="chosen"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.model-pick .chev { flex: none; width: 0; height: 0; margin-left: 2px; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--fg-4); }
+/* Its triangle is its borders: the folds' chevron (theme.css) stays out. */
+.model-pick .chev::before { content: none; }
+.model-pick:hover .chev, .model-pick[aria-expanded="true"] .chev { border-top-color: var(--fg-2); }
+.model-pick[data-warn="true"] b { color: var(--warn); }
+
+.model-picker {
+  position: fixed;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  animation: rise 0.1s ease-out;
+}
+.model-picker[data-placement="below"] { animation-name: drop; }
+.mp-head { display: flex; align-items: baseline; gap: 12px; padding: 10px 14px 0; }
+.mp-note { min-width: 0; font: 11px var(--mono); color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mp-keys { flex: none; margin-left: auto; font: 10.5px var(--mono); color: var(--fg-4); white-space: nowrap; }
+.mp-keys kbd { margin: 0 1px; }
+.mp-search {
+  flex: none;
+  width: 100%;
+  height: 40px;
+  padding: 0 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  outline: 0;
+  background: none;
+  font: 13px var(--mono);
+}
+.mp-search::placeholder { color: var(--fg-4); }
+.mp-list { flex: 1; min-height: 0; list-style: none; margin: 0; padding: 4px 0; overflow-y: auto; }
+.mp-group {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 14px 4px;
+  background: var(--bg-2);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--p, var(--fg-4)) 70%, var(--fg-3));
+}
+.mp-group small { font-weight: 500; letter-spacing: 0; color: var(--fg-4); }
+.mp-row {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 12px 4px 12px;
+  border-left: 2px solid transparent;
+  cursor: pointer;
+}
+.mp-row[aria-selected="true"] { background: var(--bg-3); border-left-color: var(--accent); }
+.mp-name { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.mp-name b { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13px; color: var(--fg); }
+.mp-name code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--fg-3); }
+.mp-row[data-free] .mp-name b { font-weight: 500; font-family: var(--mono); font-size: 12.5px; }
+.mp-row[data-current] .mp-name b { color: var(--accent); }
+.mp-ctx { font: 11px var(--mono); color: var(--fg-3); text-align: right; min-width: 3ch; }
+.mp-flags { display: flex; gap: 4px; }
+.mp-flag { padding: 0 5px; border: 1px solid var(--line-2); font: 10px/16px var(--mono); color: var(--fg-3); text-transform: uppercase; letter-spacing: 0.06em; }
+.mp-flag.current { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line-2)); }
+.mp-flag.cooling { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+.mp-note-row { padding: 10px 14px; font-size: 12.5px; color: var(--fg-3); }
+.mp-note-row[data-kind="error"] { color: var(--err); }
+/* The providers, then a provider's models: the panes slide into each
+   other's place (picker.js animates them) inside the stage. */
+.mp-stage { position: relative; display: flex; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
+.mp-ghost { position: absolute; inset: 0; pointer-events: none; }
+.mp-prov { grid-template-columns: 9px minmax(0, 1fr) auto auto 14px; min-height: 48px; padding-top: 6px; padding-bottom: 6px; }
+.mp-prov .mp-dot, .mp-back .mp-dot { width: 9px; height: 9px; }
+.mp-prov-name { display: grid; gap: 3px; min-width: 0; }
+.mp-prov-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 650 13.5px/1.2 var(--sans); color: var(--fg); }
+.mp-prov-name small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11px/1.3 var(--mono); color: var(--fg-4); }
+.mp-prov[aria-selected="true"] .mp-prov-name b { color: color-mix(in srgb, var(--p, var(--fg)) 72%, var(--fg)); }
+.mp-prov[aria-selected="true"] .mp-prov-name small { color: var(--fg-3); }
+.mp-prov-count { min-width: 2ch; font: 700 12px/1 var(--mono); color: var(--fg-3); text-align: right; }
+.mp-arrow { display: grid; place-items: center; width: 14px; height: 14px; }
+.mp-arrow::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--fg-4);
+  border-bottom: 1.5px solid var(--fg-4);
+  transform: rotate(-45deg);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.2s;
+}
+.mp-prov[aria-selected="true"] .mp-arrow::before { border-color: var(--accent); transform: translateX(3px) rotate(-45deg); }
+.mp-back {
+  position: sticky;
+  top: -4px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: -4px;
+  padding: 8px 14px 8px 8px;
+  background: var(--bg-2);
+  border-bottom: 1px solid var(--line);
+}
+.mp-back button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 9px 0 8px;
+  border: 1px solid var(--line-2);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  transition: color 0.15s, border-color 0.15s;
+}
+.mp-back button::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-left: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.mp-back button:hover { color: var(--fg); border-color: var(--fg-4); }
+.mp-back button:hover::before { transform: translateX(-2px) rotate(45deg); }
+.mp-back b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 650 13.5px/1.2 var(--sans); color: color-mix(in srgb, var(--p, var(--fg)) 72%, var(--fg)); }
+.mp-back small { flex: none; margin-left: auto; font: 11px var(--mono); color: var(--fg-4); }
+.mp-foot { display: flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 8px 0 14px; border-top: 1px solid var(--line); font: 10.5px var(--mono); color: var(--fg-4); }
+.mp-count { min-width: 0; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-foot .act { flex: none; }
+
+/* A prompt's model, in its header: the model that answered it. One that
+   differs from the prompt before is marked. */
+.model-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 34ch;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  font: 500 11px/16px var(--mono);
+  letter-spacing: 0;
+  text-transform: none; /* a model ID keeps its case */
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.model-tag .model-dot { width: 6px; height: 6px; }
+.model-tag[data-switched="true"] { color: var(--fg-2); border-color: color-mix(in srgb, var(--p, var(--accent)) 45%, var(--line-2)); }
+
+@media (max-width: 480px) {
+  .model-pick .label { display: none; }
+}

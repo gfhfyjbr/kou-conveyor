@@ -1,0 +1,20 @@
+/* The scratchpad uses the cockpit's tokens and classes, so it follows the
+   theme and looks like the rest. */
+.scratch-rail { display: flex; flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; }
+.scratch-page { display: grid; grid-template-rows: var(--bar) minmax(0, 1fr); min-width: 0; min-height: 0; }
+.scratch-body { display: grid; min-height: 0; padding: 24px; }
+.scratch-editor {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 16px 18px;
+  resize: none;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  outline: 0;
+  font: 14px/1.6 var(--sans);
+  color: var(--fg);
+}
+.scratch-editor:focus { border-color: var(--accent); }
+.scratch-pin { display: inline-flex; align-items: center; gap: 6px; font: 11px var(--mono); color: var(--fg-3); }
+.scratch-pin input { accent-color: var(--accent); }

@@ -34,6 +34,7 @@ const (
 	hoverPreview               // the large picture of an image
 	hoverModel                 // the model control: a click lists the models
 	hoverPanelEdge             // the changes panel's edge: it drags
+	hoverRun                   // the run button: a click runs, queues, forces in or stops
 )
 
 type hoverTarget struct {
@@ -42,6 +43,10 @@ type hoverTarget struct {
 	id     string // the entry, for hoverEdit and hoverFold; the path or button in the changes panel
 	level  int    // hoverEffort: the bar, or -1 beside the bars
 	folder bool   // hoverChangeRow: a folder
+	// from and to are the columns of what is under the pointer, [from, to),
+	// where that is narrower than the row: a task on the welcome screen, a
+	// control of the composer.
+	from, to int
 }
 
 // hover is what is under the pointer, as the screen is now.
@@ -65,18 +70,18 @@ func (m *uiModel) hover() hoverTarget {
 		return hoverTarget{kind: hoverPanelEdge, row: y, level: -1}
 	case m.inPanel(x, y):
 		return m.changesHover(x, y)
-	case y >= transcriptTop && y < transcriptTop+m.view.Height:
+	case y >= m.top() && y < m.top()+m.view.Height:
 		at := hoverTarget{row: y, level: -1}
-		line := m.view.YOffset + y - transcriptTop
+		line := m.view.YOffset + y - m.top()
 		if m.onScrollbar(x, y) {
 			at.kind = hoverScrollbar
-		} else if _, ok := m.starters[line]; ok && m.input.Value() == "" {
-			at.kind = hoverStarter
+		} else if s, ok := m.starterAt(line, x); ok && m.input.Value() == "" {
+			at.kind, at.from, at.to = hoverStarter, s.left, s.right
 		} else if e := m.promptHeaderAt(line); e != nil && m.runBlocked() == "" {
 			at.kind, at.id = hoverEdit, e.ID
 		} else if e := m.foldAt(line); e != nil {
 			at.kind, at.id = hoverFold, e.ID
-		} else if line < len(m.lines) && x < ansi.StringWidth(m.lines[line]) {
+		} else if line < len(m.lines) && x < ansi.StringWidth(m.lines[line]) && !decoration(m.lines[line]) {
 			at.kind = hoverText
 		}
 		return at
@@ -88,20 +93,17 @@ func (m *uiModel) hover() hoverTarget {
 			return hoverTarget{kind: hoverAttachment, row: y, id: label, level: -1}
 		}
 		return none
-	case y == m.ruleRow():
-		control, meter := m.effortControl()
-		start := m.width - ansi.StringWidth(control)
-		if x < start {
-			if model := m.modelControl(); model != "" && x >= start-ansi.StringWidth(model) {
-				return hoverTarget{kind: hoverModel, row: y, level: -1}
+	case y == m.controlsRow():
+		for _, c := range m.controlAt(x) {
+			at := hoverTarget{kind: c.kind, row: y, level: -1, from: c.from, to: c.to}
+			if c.kind == hoverEffort {
+				if i := x - c.meter; i >= 0 && i < len(cockpit.ThinkingLevels) {
+					at.level = i
+				}
 			}
-			return none
+			return at
 		}
-		at := hoverTarget{kind: hoverEffort, row: y, level: -1}
-		if i := x - start - meter; i >= 0 && i < len(cockpit.ThinkingLevels) {
-			at.level = i
-		}
-		return at
+		return none
 	case y >= m.inputTop() && y < m.inputTop()+m.input.Height():
 		return hoverTarget{kind: hoverComposer, row: y, level: -1}
 	}
@@ -152,6 +154,20 @@ func (m *uiModel) hoverHint(h hoverTarget) string {
 		return "click moves to the next effort level"
 	case hoverModel:
 		return "click lists the models the next prompt can run with, of every provider · ctrl+p"
+	case hoverRun:
+		switch {
+		case m.state == stopping:
+			return "the run is stopping"
+		case m.state != idle && strings.TrimSpace(m.input.Value()) != "":
+			return "click queues the prompt for when the agent finishes · force sends it in after its running tools"
+		case m.state != idle:
+			return "click stops the run · esc esc"
+		case m.edit != nil:
+			return "click runs the edited prompt from here"
+		case strings.TrimSpace(m.input.Value()) == "":
+			return "write a prompt, then run it — enter does too"
+		}
+		return "click runs the prompt · enter"
 	case hoverScrollbar:
 		return "click or drag to scroll"
 	case hoverChangeRow:
@@ -185,29 +201,32 @@ func (m *uiModel) paintHover(h hoverTarget, row int, line string) string {
 		line = m.lightUp(line, 0, m.view.Width)
 		label := ansi.StringWidth("✎ edit")
 		return m.paint(line, m.view.Width-label, m.view.Width, st.hoverAction)
-	case hoverFold, hoverStarter:
+	case hoverFold:
 		return m.lightUp(line, 0, m.view.Width)
+	case hoverStarter:
+		return m.lightUp(line, h.from, h.to)
 	}
 	return line
 }
 
-// paintEffort lights up the effort control, and the bar a click picks, or
-// the model control.
-func (m *uiModel) paintEffort(h hoverTarget, rule string) string {
-	control, meter := m.effortControl()
-	start := m.width - ansi.StringWidth(control)
-	if h.kind == hoverModel {
-		return m.lightUp(rule, start-ansi.StringWidth(m.modelControl()), start)
+// paintControls lights up the control under the pointer on the controls
+// row: the model, the effort and the bar a click picks, or the button.
+func (m *uiModel) paintControls(h hoverTarget, row string) string {
+	switch h.kind {
+	case hoverModel, hoverRun:
+		return m.lightUp(row, h.from, h.to)
+	case hoverEffort:
+		row = m.lightUp(row, h.from, h.to)
+		if h.level >= 0 {
+			for _, c := range m.controlAt(h.from) {
+				if c.kind == hoverEffort {
+					at := c.meter + h.level
+					row = m.paint(row, at, at+1, m.styles.hoverAction)
+				}
+			}
+		}
 	}
-	if h.kind != hoverEffort {
-		return rule
-	}
-	rule = m.lightUp(rule, start, m.width)
-	if h.level >= 0 {
-		at := start + meter + h.level
-		rule = m.paint(rule, at, at+1, m.styles.hoverAction)
-	}
-	return rule
+	return row
 }
 
 // lightUp puts the hover background under columns [from, to) of a rendered
@@ -244,8 +263,8 @@ func (m *uiModel) paint(line string, from, to int, style lipgloss.Style) string 
 // onScrollbar reports whether a cell is on the transcript's scrollbar,
 // which shows when the transcript is longer than its room.
 func (m *uiModel) onScrollbar(x, y int) bool {
-	return x >= m.view.Width && x < m.view.Width+2 && !m.inPanel(x, y) &&
-		y >= transcriptTop && y < transcriptTop+m.view.Height && m.view.TotalLineCount() > m.view.Height
+	return x >= m.view.Width && x < m.view.Width+margin+2 && !m.inPanel(x, y) &&
+		y >= m.top() && y < m.top()+m.view.Height && m.view.TotalLineCount() > m.view.Height
 }
 
 // scrub scrolls the transcript to where the scrollbar was clicked or
@@ -255,7 +274,7 @@ func (m *uiModel) scrub(y int) {
 	if total <= height {
 		return
 	}
-	row := clamp(y-transcriptTop, 0, height-1)
+	row := clamp(y-m.top(), 0, height-1)
 	m.view.SetYOffset((total - height) * row / max(1, height-1))
 	m.userScrolled()
 }

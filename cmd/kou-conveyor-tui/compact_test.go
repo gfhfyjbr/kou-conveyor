@@ -75,9 +75,11 @@ func TestCompactPrintsTheTranscriptAsItSettles(t *testing.T) {
 	if got := scrollback(); !strings.Contains(got, "KOU-CONVEYOR") || !strings.Contains(got, "new session") {
 		t.Fatalf("header = %q", got)
 	}
-	// The screen holds only the status line, the composer and the key hints.
+	// The screen holds only the status line, the composer in its box and the
+	// key hints.
 	lines := viewLines(m)
-	if len(lines) != 5 || lines[0] != "" || !strings.Contains(lines[4], "^F fullscreen") {
+	chrome := 3 + len(m.dock(hoverTarget{level: -1}))
+	if last := lines[len(lines)-1]; len(lines) != chrome || lines[0] != "" || !strings.Contains(last, "^F") || !strings.Contains(last, "fullscreen") {
 		t.Fatalf("view = %q", lines)
 	}
 
@@ -95,7 +97,7 @@ func TestCompactPrintsTheTranscriptAsItSettles(t *testing.T) {
 	if strings.Contains(got, "✎ edit") {
 		t.Fatal("the scrollback offers a click it cannot take")
 	}
-	if lines := viewLines(m); len(lines) != 5 {
+	if lines := viewLines(m); len(lines) != chrome {
 		t.Fatalf("the finished run stayed on screen: %q", lines)
 	}
 

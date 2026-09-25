@@ -158,12 +158,13 @@ func (m *uiModel) sessionHeader(width int) []string {
 	if m.fresh {
 		id += " (new)"
 	}
+	pad := strings.Repeat(" ", margin)
 	lines := []string{
-		fitRight(brand+"  "+where, st.faint.Render(id), width),
-		st.faint.Render(fitRight(m.opt.Workspace, m.runSummary(), width)),
+		pad + fitRight(brand+"  "+where, st.ghost.Render(id), width-margin),
+		pad + st.ghost.Render(fitRight(m.opt.Workspace, m.runSummary(), width-margin)),
 	}
 	if len(m.tr.Entries) == 0 {
-		lines = append(lines, wrapText("Describe the outcome you want — the agent plans, runs commands and reports back as it goes. /help lists the keys; ^F takes a screen of its own.", st.faint, width, "", "")...)
+		lines = append(lines, wrapText("Describe the outcome you want — the agent plans, runs commands and reports back as it goes. /help lists the keys; ^F takes a screen of its own.", st.faint, width, pad, pad)...)
 	}
 	return append(lines, "")
 }
@@ -172,12 +173,13 @@ func (m *uiModel) sessionHeader(width int) []string {
 // left the session: the prompt was edited, here or elsewhere.
 func (m *uiModel) rewindMarker(kept, width int) string {
 	st := m.styles
+	pad := strings.Repeat(" ", margin)
 	if len(m.tr.Entries) == 0 {
-		return st.faint.Render("── the view starts over; the session keeps its history " + strings.Repeat("─", max(0, width-56)))
+		return pad + st.faint.Render("── the view starts over; the session keeps its history "+strings.Repeat("─", max(0, width-margin-56)))
 	}
 	lead := fmt.Sprintf("↶ prompt %02d edited", m.promptIndex(kept-1)+1)
 	rest := " — the session goes on from before it; what followed above is gone "
-	return st.accent.Render(lead) + st.faint.Render(rest+strings.Repeat("─", max(0, width-lipgloss.Width(lead+rest))))
+	return pad + st.accent.Render(lead) + st.faint.Render(rest+strings.Repeat("─", max(0, width-margin-lipgloss.Width(lead+rest))))
 }
 
 // liveLines renders the entries that are not in the scrollback yet: the
@@ -214,14 +216,12 @@ func (m *uiModel) compactView() string {
 	}
 	st := m.styles
 	width := m.width
-	queue := append(m.queueView(hoverTarget{level: -1}), m.stripView(hoverTarget{level: -1})...)
-	below := append(append([]string{fit(m.statusLine(), width) + m.osc52}, queue...),
-		fit(m.composerRule(), width),
-		m.composerView(),
+	dock := m.dock(hoverTarget{level: -1})
+	below := append(append([]string{fit(strings.Repeat(" ", margin)+m.statusLine(), width) + m.osc52}, dock...),
 		fit(m.footer(), width),
 	)
-	used := 4 + len(queue) + m.input.Height()
-	room := max(3, m.height-used-1)
+	used := 2 + len(dock)
+	room := max(1, m.height-used-1)
 	var above []string
 	var box []string
 	if preview := m.previewing(); preview != nil && room >= 5 {

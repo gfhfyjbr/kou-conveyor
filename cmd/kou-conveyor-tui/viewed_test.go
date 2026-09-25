@@ -74,7 +74,7 @@ func TestViewedPicturesShowUnderTheirCalls(t *testing.T) {
 	}
 	for i := s.start + 1; i < s.end; i++ {
 		row := ansi.Strip(m.lines[i])
-		if !strings.HasPrefix(row, "      │ "+strings.Repeat("▀", 24)) {
+		if !strings.HasPrefix(row, strings.Repeat(" ", gutter-2)+"│ "+strings.Repeat("▀", 24)) {
 			t.Fatalf("row %d = %q", i, row)
 		}
 	}
@@ -92,7 +92,7 @@ func TestViewedPicturesShowUnderTheirCalls(t *testing.T) {
 	}
 	// A click on the picture opens the call, which shows it large.
 	m.view.SetYOffset(s.start)
-	m.click(12, transcriptTop+s.end-1-m.view.YOffset)
+	m.click(12, m.top()+s.end-1-m.view.YOffset)
 	if !m.isOpen(call) {
 		t.Fatal("the click did not open the call")
 	}
@@ -102,7 +102,7 @@ func TestViewedPicturesShowUnderTheirCalls(t *testing.T) {
 	}
 	// A click on the large picture folds it again.
 	m.view.SetYOffset(s.end - 3)
-	m.click(12, transcriptTop+s.end-1-m.view.YOffset)
+	m.click(12, m.top()+s.end-1-m.view.YOffset)
 	if m.isOpen(call) || spanOf(t, m, call.ID).pictures != 8 {
 		t.Fatal("the click on the picture did not fold the call")
 	}
@@ -156,7 +156,7 @@ func TestViewedPicturesInKitty(t *testing.T) {
 	// is: the placeholders keep the image's colour.
 	s := spanOf(t, m, call.ID)
 	m.view.SetYOffset(s.start)
-	m.px, m.py = 20, transcriptTop+s.start+2-m.view.YOffset
+	m.px, m.py = 20, m.top()+s.start+2-m.view.YOffset
 	if h := m.hover(); h.kind != hoverFold || h.id != call.ID {
 		t.Fatalf("hover = %+v", h)
 	}

@@ -93,10 +93,12 @@ type uiModel struct {
 	opt    options
 	styles styles
 
-	width, height int
-	ready         bool
-	input         textarea.Model
-	view          viewport.Model
+	// termWidth is the terminal's width; width is the cockpit's, which
+	// keeps a measure on a wide terminal (see fitWidth).
+	termWidth, width, height int
+	ready                    bool
+	input                    textarea.Model
+	view                     viewport.Model
 
 	sessionID string
 	fresh     bool // not persisted by the runner yet
@@ -118,7 +120,7 @@ type uiModel struct {
 	expandAll bool
 	cache     map[string]block
 	spans     []entrySpan
-	starters  map[int]string // welcome-screen line → starter prompt
+	starters  []starterBox // where the welcome screen's tasks are
 	follow    bool
 	unseen    int
 	shown     int // entries rendered at the last refresh
@@ -248,20 +250,16 @@ func newModel(ctx context.Context, o options) *uiModel {
 	// Line breaks are the model's to insert (see newline); the textarea's own
 	// binding would stop at its height.
 	in.KeyMap.InsertNewline.SetEnabled(false)
-	in.SetPromptFunc(2, func(line int) string {
-		if line == 0 {
-			return "❯ "
-		}
-		return "  "
-	})
+	// Each row starts with the box's left edge, after the margin.
+	in.SetPromptFunc(promptWidth, func(int) string { return strings.Repeat(" ", margin) + "│ " })
 	focused, blurred := textarea.DefaultStyles()
 	focused.CursorLine = st.text
 	focused.Text = st.text
-	focused.Placeholder = st.faint
-	focused.Prompt = st.accent
-	focused.EndOfBuffer = st.faint
-	blurred.Prompt = st.faint
-	blurred.Placeholder = st.faint
+	focused.Placeholder = st.ghost
+	focused.Prompt = st.rule2
+	focused.EndOfBuffer = st.ghost
+	blurred.Prompt = st.rule2
+	blurred.Placeholder = st.ghost
 	in.FocusedStyle, in.BlurredStyle = focused, blurred
 	in.Focus()
 
@@ -355,7 +353,7 @@ func (m *uiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height, m.ready = msg.Width, msg.Height, true
+		m.termWidth, m.height, m.ready = msg.Width, msg.Height, true
 		m.graphics.measure(cellPixels())
 		m.layout()
 		m.refresh()
@@ -463,6 +461,8 @@ func (m *uiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.MouseMsg:
+		// The cockpit's columns start where it does on the terminal.
+		msg.X -= m.left()
 		m.px, m.py = msg.X, msg.Y
 		m.debris.mouse = time.Now()
 		if m.form != nil {
@@ -1699,10 +1699,10 @@ func (m *uiModel) click(x, y int) tea.Cmd {
 		return m.changesClick(x, y)
 	}
 	switch {
-	case y >= transcriptTop && y < transcriptTop+m.view.Height:
-		line := m.view.YOffset + y - transcriptTop
-		if prompt, ok := m.starters[line]; ok && m.input.Value() == "" {
-			m.input.SetValue(prompt)
+	case y >= m.top() && y < m.top()+m.view.Height:
+		line := m.view.YOffset + y - m.top()
+		if s, ok := m.starterAt(line, x); ok && m.input.Value() == "" {
+			m.input.SetValue(s.prompt)
 			m.input.CursorEnd()
 			m.resize()
 			return nil
@@ -1720,13 +1720,17 @@ func (m *uiModel) click(x, y int) tea.Cmd {
 		} else if label, ok := m.stripAt(x, y); ok {
 			m.cursorAfter(label)
 		}
-	case y == m.ruleRow():
-		if control, _ := m.effortControl(); x < m.width-ansi.StringWidth(control) {
-			if model := m.modelControl(); model != "" && x >= m.width-ansi.StringWidth(control)-ansi.StringWidth(model) {
+	case y == m.controlsRow():
+		for _, c := range m.controlAt(x) {
+			switch c.kind {
+			case hoverModel:
 				return m.openPicker("models")
+			case hoverEffort:
+				return m.clickEffort(x)
+			case hoverRun:
+				return m.clickRun(x)
 			}
 		}
-		return m.clickEffort(x)
 	case y >= m.inputTop() && y < m.inputTop()+m.input.Height():
 		m.blurQueue()
 		m.placeCursor(x, y)

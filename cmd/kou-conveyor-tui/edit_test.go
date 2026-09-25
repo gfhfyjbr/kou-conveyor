@@ -30,7 +30,7 @@ func headerRow(t *testing.T, m *uiModel, text string) int {
 	for _, s := range m.spans {
 		if e := m.tr.Entry(s.id); e != nil && e.Kind == cockpit.KindUser && e.Text == text {
 			m.view.SetYOffset(s.start)
-			return transcriptTop + s.start - m.view.YOffset
+			return m.top() + s.start - m.view.YOffset
 		}
 	}
 	t.Fatalf("no prompt %q", text)

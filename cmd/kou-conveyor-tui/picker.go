@@ -249,7 +249,24 @@ func (p *picker) view(st styles, width, height int) string {
 	default:
 		b.WriteString(keyHints(st, inner, "↑↓", "move", "enter", "choose", "esc", "close"))
 	}
-	return st.box.Width(inner + 2).Render(b.String())
+	return tickBox(st, strings.Split(b.String(), "\n"), inner, true)
+}
+
+// tickBox frames lines in a hairline box with the web cockpit's ticks at
+// its corners, in the accent when the box has the keys.
+func tickBox(st styles, lines []string, inner int, accent bool) string {
+	corner := st.rule2
+	if accent {
+		corner = st.accent
+	}
+	edge := st.rule2.Render(strings.Repeat("─", inner+2))
+	out := []string{corner.Render("┌") + edge + corner.Render("┐")}
+	for _, line := range lines {
+		line = fit(line, inner)
+		out = append(out, st.rule2.Render("│")+" "+line+strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)))+" "+st.rule2.Render("│"))
+	}
+	out = append(out, corner.Render("└")+edge+corner.Render("┘"))
+	return strings.Join(out, "\n")
 }
 
 func (p *picker) emptyText() string {
@@ -291,20 +308,22 @@ func (p *picker) rowAt(y int) int {
 	return p.offset + i
 }
 
+// keyHints lists keys and what they do, each key as a key cap, as the web
+// cockpit's kbd; what does not fit the width is left out, from the end.
 func keyHints(st styles, width int, pairs ...string) string {
 	var parts []string
 	used := 0
 	for i := 0; i+1 < len(pairs); i += 2 {
 		part := st.key.Render(pairs[i]) + " " + st.keyHint.Render(pairs[i+1])
 		w := lipgloss.Width(part)
-		if used > 0 && used+3+w > width {
+		if used > 0 && used+2+w > width {
 			break
 		}
 		if used > 0 {
-			used += 3
+			used += 2
 		}
 		used += w
 		parts = append(parts, part)
 	}
-	return strings.Join(parts, "   ")
+	return strings.Join(parts, "  ")
 }

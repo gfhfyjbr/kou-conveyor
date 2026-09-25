@@ -46,14 +46,6 @@ type (
 	toastMsg struct{ gen int }
 )
 
-// promptWidth is the width of the "❯ " before each composer row.
-const promptWidth = 2
-
-// Screen rows below the transcript.
-func (m *uiModel) statusRow() int { return transcriptTop + m.view.Height }
-func (m *uiModel) ruleRow() int   { return m.statusRow() + 1 + m.queueRows() + m.stripRows() }
-func (m *uiModel) inputTop() int  { return m.ruleRow() + 1 }
-
 func clamp(v, lo, hi int) int { return max(lo, min(hi, v)) }
 
 // selectionAt starts a selection where the button went down, if that is in
@@ -69,8 +61,8 @@ func (m *uiModel) selectionAt(x, y int) *selection {
 		return &selection{area: inDiff, anchor: at, head: at, gutter: gutter}
 	}
 	switch {
-	case y >= transcriptTop && y < transcriptTop+m.view.Height:
-		at := cell{m.view.YOffset + y - transcriptTop, clamp(x, 0, m.view.Width-1)}
+	case y >= m.top() && y < m.top()+m.view.Height:
+		at := cell{m.view.YOffset + y - m.top(), clamp(x, 0, m.view.Width-1)}
 		return &selection{area: inTranscript, anchor: at, head: at, gutter: gutter}
 	case y >= m.inputTop() && y < m.inputTop()+m.input.Height():
 		at := cell{y - m.inputTop(), clamp(x-promptWidth, 0, m.input.Width()-1)}
@@ -90,7 +82,7 @@ func (m *uiModel) drag(x, y int) {
 	var head cell
 	switch s.area {
 	case inTranscript:
-		row := y - transcriptTop
+		row := y - m.top()
 		switch {
 		case row < 0:
 			m.view.ScrollUp(1)
@@ -194,8 +186,8 @@ func (m *uiModel) selectedText(s *selection) string {
 	}
 	var lines []string
 	for row := start.row; row <= end.row && row < len(source); row++ {
-		if s.area == inTranscript && m.pictureLine(row) {
-			continue // a picture copies as nothing
+		if s.area == inTranscript && (m.pictureLine(row) || decoration(source[row])) {
+			continue // a picture copies as nothing, and so do the cards' edges
 		}
 		from, to, _ := s.columns(row)
 		plain := ansi.Strip(source[row])
@@ -316,6 +308,12 @@ func (m *uiModel) composerRows() (rows []wrappedRow, first int, ok bool) {
 		}
 	}
 	return rows, max(0, found), found >= 0
+}
+
+// decoration reports a rendered row that is only rules and edges: the
+// rail between entries, a card's top or bottom.
+func decoration(line string) bool {
+	return strings.Trim(ansi.Strip(line), " ─│┃┌┐└┘┎┖├┤") == ""
 }
 
 // runeSpan returns the runes of a row that start in columns [from, to).

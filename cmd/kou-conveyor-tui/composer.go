@@ -131,7 +131,7 @@ func (m *uiModel) stepEffort(step int) tea.Cmd {
 	return m.setEffort(levels[next])
 }
 
-// effortControl renders the effort meter that ends the composer rule, and
+// effortControl renders the effort meter of the composer's controls, and
 // the column of its first bar within it.
 func (m *uiModel) effortControl() (string, int) {
 	st := m.styles
@@ -146,31 +146,24 @@ func (m *uiModel) effortControl() (string, int) {
 		case st.noColor:
 			meter += "·"
 		default:
-			meter += st.rule.Render(bar)
+			meter += st.rule2.Render(bar)
 		}
 	}
-	// The rule after the name makes up for shorter names, so the bars stay
-	// where they are whatever the level.
-	name := strings.ToUpper(m.thinking)
-	longest := 0
-	for _, level := range cockpit.ThinkingLevels {
-		longest = max(longest, len(level))
-	}
-	lead := " " + st.label.Render("EFFORT") + " "
-	tail := st.rule.Render(" " + strings.Repeat("─", 2+longest-len(name)))
-	return lead + meter + " " + st.muted.Render(name) + tail, ansi.StringWidth(lead)
+	lead := st.label.Render("EFFORT") + " "
+	return lead + meter + " " + st.muted.Render(strings.ToUpper(m.thinking)), ansi.StringWidth(lead)
 }
 
 // clickEffort picks the level of the bar clicked; a click elsewhere on the
 // control moves to the next level.
 func (m *uiModel) clickEffort(x int) tea.Cmd {
-	control, meter := m.effortControl()
-	start := m.width - ansi.StringWidth(control)
-	if x < start {
-		return nil
+	for _, c := range m.controlAt(x) {
+		if c.kind != hoverEffort {
+			continue
+		}
+		if i := x - c.meter; i >= 0 && i < len(cockpit.ThinkingLevels) {
+			return m.setEffort(cockpit.ThinkingLevels[i])
+		}
+		return m.setEffort(nextLevel(m.thinking))
 	}
-	if i := x - start - meter; i >= 0 && i < len(cockpit.ThinkingLevels) {
-		return m.setEffort(cockpit.ThinkingLevels[i])
-	}
-	return m.setEffort(nextLevel(m.thinking))
+	return nil
 }

@@ -162,8 +162,8 @@ The browser cockpit shows the model of the next prompt beside the effort, in
 the composer; a click, `M` or `/model` lists the models by provider, the
 newest first, with their context windows and the accounts that serve them,
 marks those cooling down on every account, and takes an ID the list does not
-hold. The terminal cockpit shows it in the composer rule, where a click,
-`Ctrl-P` or `/model` lists them.
+hold. The terminal cockpit shows it among the composer's controls, where a
+click, `Ctrl-P` or `/model` lists them.
 
 The model chosen stays with the session. Its next prompts run with it; a
 session without a choice runs with the model its last prompt ran with, and a

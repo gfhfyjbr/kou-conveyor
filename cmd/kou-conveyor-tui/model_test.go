@@ -167,10 +167,10 @@ func TestRunLifecycle(t *testing.T) {
 	m.view.GotoTop()
 	for _, s := range m.spans {
 		if s.id == "tool:call-1" {
-			click(m, 20, transcriptTop+s.start-m.view.YOffset)
+			click(m, 20, m.top()+s.start-m.view.YOffset)
 		}
 	}
-	if !m.expanded["tool:call-1"] || !strings.Contains(m.view.View(), "── output") {
+	if !m.expanded["tool:call-1"] || !strings.Contains(m.view.View(), "OUTPUT ·") {
 		t.Fatalf("tool was not expanded:\n%s", m.view.View())
 	}
 }
@@ -364,7 +364,7 @@ func TestPickerSurvivesResizeAndClipping(t *testing.T) {
 	m.View()
 	sessionBefore := m.sessionID
 	for y := 0; y < 10; y++ {
-		if i := m.picker.rowAt(y); i >= 0 && y >= transcriptTop+m.view.Height {
+		if i := m.picker.rowAt(y); i >= 0 && y >= m.top()+m.view.Height {
 			t.Fatalf("row %d outside the transcript area maps to item %d", y, i)
 		}
 	}

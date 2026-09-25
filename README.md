@@ -255,7 +255,9 @@ Both cockpits show what each prompt changed in the workspace, file by file,
 in a panel at the right of the transcript: `D` or the `±` button in the
 browser, `Ctrl-G` or `/changes` in the terminal. The panel follows the
 transcript: scrolled back to an earlier prompt, it shows that prompt's
-changes. The changed files form a tree above the diff of one of them; the
+changes. A prompt forced in while the agent worked belongs to the run of
+the prompt before it, and the panel stays on that run. The changed files
+form a tree above the diff of one of them; the
 first opens by default, and a click (or the arrow keys) picks another. While
 a run goes on, the panel is live and shows the file the agent changed last,
 until another is picked. Its edge drags, in the terminal too (or `<` and `>`

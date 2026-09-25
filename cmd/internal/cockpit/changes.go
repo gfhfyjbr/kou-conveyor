@@ -649,8 +649,9 @@ func (t *Tracker) end(snapshot bool) {
 func (t *Tracker) loop() {
 	defer close(t.updates)
 	// Long commands write as they go; the pause grows with what a snapshot
-	// of the workspace costs.
-	pause := 5 * time.Second
+	// of the workspace costs, so that snapshots take a tenth of the time at
+	// most.
+	pause := 2 * time.Second
 	timer := time.NewTimer(pause)
 	defer timer.Stop()
 	for {

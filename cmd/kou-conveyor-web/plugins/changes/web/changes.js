@@ -72,12 +72,24 @@ export default function activate(cockpit) {
     });
   }
 
-  // sync shows the changes of the prompt in view.
+  // runPrompt is the prompt whose run a prompt belongs to, under which its
+  // changes are recorded: a prompt forced in while the agent worked is
+  // part of the run of the prompt before it.
+  function runPrompt(v, prompt) {
+    if (!prompt?.forced) return prompt;
+    for (let i = v.order.indexOf(prompt.id) - 1; i >= 0; i--) {
+      const entry = v.entries.get(v.order[i]);
+      if (entry?.kind === 'user' && !entry.forced) return entry;
+    }
+    return prompt;
+  }
+
+  // sync shows the changes of the prompt whose run is in view.
   function sync() {
     if (!open()) return;
     const v = view();
     if (!v) return;
-    const prompt = service('timeline')?.promptInView?.(v) || session.lastPrompt(v);
+    const prompt = runPrompt(v, service('timeline')?.promptInView?.(v) || session.lastPrompt(v));
     const message = prompt ? prompt.id.replace(/^input:/, '') : null;
     if (changes.view === v && changes.message === message) return;
     changes.view = v;

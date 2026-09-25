@@ -321,16 +321,20 @@ func (m *uiModel) userScrolled() {
 
 func promptMessage(e *cockpit.Entry) string { return strings.TrimPrefix(e.ID, "input:") }
 
-// promptInView is the prompt whose part of the transcript is in view: at
-// the bottom, the newest; above it, the last that starts above a third of
-// the way down.
+// startsRun reports a prompt that started a run, whose changes are
+// recorded under it. A prompt forced in while the agent worked belongs to
+// the run of the prompt before it.
+func startsRun(e *cockpit.Entry) bool { return e != nil && e.Kind == cockpit.KindUser && !e.Forced }
+
+// promptInView is the prompt whose run is in view: at the bottom, the
+// newest; above it, the last that starts above a third of the way down.
 func (m *uiModel) promptInView() *cockpit.Entry {
 	var found *cockpit.Entry
 	probe := m.view.YOffset + m.view.Height/3
 	bottom := m.view.AtBottom()
 	for _, s := range m.spans {
 		e := m.tr.Entry(s.id)
-		if e == nil || e.Kind != cockpit.KindUser {
+		if !startsRun(e) {
 			continue
 		}
 		if found != nil && !bottom && s.start > probe {
@@ -381,7 +385,7 @@ func (m *uiModel) stepPrompt(step int) tea.Cmd {
 	var prompts []*cockpit.Entry
 	at := -1
 	for _, e := range m.tr.Entries {
-		if e.Kind != cockpit.KindUser {
+		if !startsRun(e) {
 			continue
 		}
 		if promptMessage(e) == c.message {
@@ -417,10 +421,20 @@ func (m *uiModel) changesLive() bool {
 	case m.state != idle:
 		return c.message == m.runMessage
 	case m.external:
-		last := m.lastPrompt()
+		last := m.lastRunPrompt()
 		return last != nil && promptMessage(last) == c.message
 	}
 	return false
+}
+
+// lastRunPrompt returns the newest prompt that started a run, or nil.
+func (m *uiModel) lastRunPrompt() *cockpit.Entry {
+	for i := len(m.tr.Entries) - 1; i >= 0; i-- {
+		if e := m.tr.Entries[i]; startsRun(e) {
+			return e
+		}
+	}
+	return nil
 }
 
 // liveChanges reloads the changes of a run another window is running,

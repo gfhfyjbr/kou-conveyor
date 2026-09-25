@@ -636,3 +636,43 @@ func TestInlineRunsSumUpTheirChanges(t *testing.T) {
 		t.Fatalf("compact %v, shown %v", m.compact, m.changesShown())
 	}
 }
+
+// A prompt forced in while the agent works belongs to the run of the prompt
+// before it: the panel stays on that run, and goes on showing what it
+// changes. It steps over forced prompts too.
+func TestChangesPanelStaysOnTheRunAfterAForcedPrompt(t *testing.T) {
+	m, d := changesModel(t, 150, 30)
+	d.send(tea.KeyMsg{Type: tea.KeyCtrlG})
+	d.send(tea.KeyMsg{Type: tea.KeyTab})
+	m.input.SetValue("steer touch")
+	d.send(key("enter"))
+	forced := false
+	d.until("the run", func() bool {
+		if running := m.tr.Running(); !forced && len(running) == 1 && running[0].Tool.State == cockpit.ToolRunning {
+			forced = true
+			m.input.SetValue("use pnpm")
+			d.send(ctrlX)
+		}
+		return m.state == idle && m.tracker == nil
+	})
+	if got := kinds(m.tr); got != "user,tool:done,user,tool:done,assistant" {
+		t.Fatalf("transcript = %s", got)
+	}
+	// The run's last snapshot reaches the panel, which stayed on the run.
+	d.until("the changes", func() bool {
+		return panelSettled(m) && m.changes.list != nil && len(m.changes.list.files) == 1
+	})
+	if c := &m.changes; c.message != promptMessage(m.tr.Entries[0]) {
+		t.Fatalf("the panel shows %q", c.message)
+	}
+	mustShow(t, m, "CHANGES · PROMPT 01", "A touched.txt")
+	if !strings.Contains(ansi.Strip(strings.Join(m.lines, "\n")), "⚡ forced in") {
+		t.Fatal("the transcript does not mark the forced prompt")
+	}
+	// [ and ] find no other prompt to step to.
+	d.send(tea.KeyMsg{Type: tea.KeyTab})
+	d.send(runes("]"))
+	if m.changes.message != promptMessage(m.tr.Entries[0]) || !strings.Contains(m.note.text, "last prompt") {
+		t.Fatalf("stepped to %q, note %q", m.changes.message, m.note.text)
+	}
+}

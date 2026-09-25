@@ -46,7 +46,7 @@ func find(t *testing.T, m *uiModel, text string) cell {
 	for i, line := range m.lines {
 		if col := strings.Index(ansi.Strip(line), text); col >= 0 {
 			m.view.SetYOffset(max(0, i-2))
-			return cell{row: transcriptTop + i - m.view.YOffset, col: ansi.StringWidth(ansi.Strip(line)[:col])}
+			return cell{row: m.top() + i - m.view.YOffset, col: ansi.StringWidth(ansi.Strip(line)[:col])}
 		}
 	}
 	t.Fatalf("%q is not in the transcript", text)
@@ -102,7 +102,7 @@ func TestSelectionInTheComposerStaysThere(t *testing.T) {
 
 	// Dragged up into the transcript, the selection stops at the composer's
 	// first row: it copies the text from its start, soft wraps joined.
-	dragAndCopy(t, m, cell{top + 1, promptWidth + 5}, cell{transcriptTop, 10}, cell{top, 40})
+	dragAndCopy(t, m, cell{top + 1, promptWidth + 5}, cell{m.top(), 10}, cell{top, 40})
 	want := string([]rune(words)[:len(rows[0].runes)+6])
 	if len(*copied) != 1 || (*copied)[0] != want {
 		t.Fatalf("copied %q, want %q", *copied, want)

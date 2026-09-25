@@ -298,7 +298,7 @@ func (m *uiModel) relayout() {
 		}
 	}
 	bottom := m.view.AtBottom()
-	m.resize()
+	m.layout()
 	m.refreshKeep()
 	if bottom || m.follow {
 		m.view.GotoBottom()
@@ -852,7 +852,13 @@ func (m *uiModel) panelGeometry() (panelGeometry, bool) {
 	if pw == 0 || m.picker != nil || m.form != nil {
 		return panelGeometry{}, false
 	}
-	g := panelGeometry{left: m.width - pw, width: pw, top: transcriptTop, height: m.view.Height, diffHead: -1}
+	// Beside the transcript the panel runs down to the bottom of the
+	// screen, as the web cockpit's; covering it, it takes the transcript's
+	// rows and leaves the dock.
+	g := panelGeometry{left: m.width - pw, width: pw, top: m.top(), height: m.height - m.top(), diffHead: -1}
+	if g.left == 0 {
+		g.height = m.view.Height
+	}
 	g.content, g.inner = g.left+2, max(1, pw-3)
 	body := g.height - 1
 	c := &m.changes

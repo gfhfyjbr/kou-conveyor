@@ -31,10 +31,20 @@ the run starts.
 Then choose the connection with `/settings` (or set `OPENAI_API_KEY`, or
 `ANTHROPIC_API_KEY` with `-provider anthropic`).
 
-The transcript is a timeline: prompts are numbered, tool calls collapse to one
-line with their state, duration and exit code, and thinking folds away. Click a
-tool call or a thinking line to expand it, or press `Ctrl-O` for all of them.
-A `ViewImage` call shows the picture the agent looked at under its line: small
+The screen is laid out as the browser cockpit's stage, without its rail of
+sessions: a bar with the workspace, the session's title and ID, the token
+counts and the run's state; the transcript; and under it the composer in its
+box, with the model, the effort and the run button in a row of its own (on a
+short terminal, on the box's bottom edge) and the key hints beneath. A new
+session shows a card with tasks to start with; a click on one puts it in the
+composer.
+
+The transcript is a timeline: prompts are numbered and framed, with the
+accent along their edge; tool calls collapse to one line with their state,
+duration and exit code, and open into a card whose sections are their
+input, output and errors; thinking folds away. Click a tool call or a
+thinking line to expand it, or press `Ctrl-O` for all of them. A
+`ViewImage` call shows the picture the agent looked at under its line: small
 while it is folded, large once it is open, and a click on the picture folds or
 unfolds it. Pictures are drawn as described for images below, and in inline
 mode a call goes to the scrollback with its picture.
@@ -139,14 +149,18 @@ Keys:
   prompt history. All three filter as you type and accept the mouse.
 - In the sessions list, `Ctrl-E` renames the selected session, `Ctrl-T` pins
   it to the top, `Ctrl-B` duplicates it and `Ctrl-D` twice deletes it.
-- The effort (the model's thinking level) shows at the end of the composer's
-  rule: `Ctrl-T` or `Shift-Tab` moves to the next level, `Alt-↑/↓` raise and
-  lower it, and a click on one of its bars picks that level. It is shared
+- The composer's controls, under its text, are the model, the effort and
+  the button that says what `Enter` does: run, or while the agent works
+  queue (with force in beside it) or stop. A click on the button does it.
+- The effort (the model's thinking level) shows among the composer's
+  controls: `Ctrl-T` or `Shift-Tab` moves to the next level, `Alt-↑/↓` raise
+  and lower it, and a click on one of its bars picks that level. It is shared
   with the web cockpit: a level chosen in either is the one both use, a
   cockpit that is open takes up the other's choice within seconds, and the
   next start begins with it (`-thinking-level` starts with another).
 - The model of the next prompt shows before the effort, on terminals wide
-  enough for it, and in the status line: any model the connection reaches,
+  enough for it, with its provider's colour, and in the status line: any
+  model the connection reaches,
   of any provider (through the accounts gateway, every model of its accounts
   and endpoints). `Ctrl-P`, `/model` or a click on it lists them, with their
   providers and context windows, marking those cooling down; typing filters
@@ -169,8 +183,8 @@ Keys:
   bottom line says how many characters. A selection started in the
   composer stays in it and copies the text as typed; in the transcript it
   copies what the screen shows, leaving out the column of times and rails
-  when it starts past it. Copies go to the system clipboard, or through
-  OSC 52 over SSH.
+  when it starts past it, and the cards' edges. Copies go to the system
+  clipboard, or through OSC 52 over SSH.
 - `Ctrl-Y` copies the last answer, `Ctrl-N` starts a new session.
 - `PageUp/PageDown`, `Shift-↑/↓` and the wheel scroll; `Home/End` jump when
   the prompt is empty. New output below the fold is counted in the status line.

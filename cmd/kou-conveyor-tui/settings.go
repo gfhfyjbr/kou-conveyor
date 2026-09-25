@@ -406,7 +406,7 @@ func (f *settingsForm) view(st styles, width, height int) string {
 		hints = append([]string{"←→", "API"}, hints...)
 	}
 	b.WriteString(keyHints(st, inner, hints...))
-	box := st.box.Width(inner + 2).Render(b.String())
+	box := tickBox(st, strings.Split(b.String(), "\n"), inner, true)
 	if lines := strings.Split(box, "\n"); len(lines) > height {
 		box = strings.Join(lines[:height], "\n")
 	}

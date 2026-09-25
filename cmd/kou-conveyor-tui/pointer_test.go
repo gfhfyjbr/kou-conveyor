@@ -32,8 +32,9 @@ func TestThePointerShowsWhatAClickDoes(t *testing.T) {
 		hint  string
 	}{
 		{30, header, hoverEdit, "pointer", "click edits this prompt"},
-		{10, header + 1, hoverText, "text", ""},
-		{90, header + 1, hoverNone, "default", ""},
+		{10, header + 2, hoverText, "text", ""},
+		{90, header + 2, hoverNone, "default", ""},
+		{10, header + 1, hoverNone, "default", ""}, // the prompt's card, not its text
 		{30, find(t, m, "BASH").row, hoverFold, "pointer", "click shows it in full"},
 		{5, m.inputTop() + 1, hoverComposer, "text", ""},
 	} {
@@ -48,9 +49,8 @@ func TestThePointerShowsWhatAClickDoes(t *testing.T) {
 	}
 
 	// The effort control names the level each bar picks.
-	control, meter := m.effortControl()
-	start := m.width - ansi.StringWidth(control)
-	move(m, start+meter+4, m.ruleRow())
+	row, meter := m.effortAt()
+	move(m, meter+4, row)
 	if !strings.Contains(status(), "click sets the effort to max") {
 		t.Fatalf("status = %q", status())
 	}
@@ -113,7 +113,7 @@ func TestClicksPlaceTheCursorAndFoldBlocks(t *testing.T) {
 	if !m.expanded["tool:call-1"] {
 		t.Fatal("the tool did not open")
 	}
-	output := find(t, m, "── output")
+	output := find(t, m, "OUTPUT ·")
 	click(m, 20, output.row)
 	if !m.expanded["tool:call-1"] {
 		t.Fatal("a click in the output folded the tool")
@@ -134,15 +134,15 @@ func TestTheScrollbarScrolls(t *testing.T) {
 		t.Fatalf("%d lines fit in %d", total, height)
 	}
 	bar := m.width - 1
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: bar, Y: transcriptTop})
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: bar, Y: m.top()})
 	if m.view.YOffset != 0 || m.pointerShape(m.hover()) != "grabbing" {
 		t.Fatalf("offset %d at the top", m.view.YOffset)
 	}
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: bar - 30, Y: transcriptTop + height})
+	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: bar - 30, Y: m.top() + height})
 	if m.view.YOffset != total-height {
 		t.Fatalf("offset %d at the bottom, want %d", m.view.YOffset, total-height)
 	}
-	_, cmd := m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: bar - 30, Y: transcriptTop + height})
+	_, cmd := m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: bar - 30, Y: m.top() + height})
 	if cmd != nil || m.scrubbing || m.press != nil {
 		t.Fatal("letting go of the scrollbar did more than stop scrolling")
 	}
@@ -189,7 +189,7 @@ func TestEffortIsSharedWithTheWebCockpit(t *testing.T) {
 	if m.thinking != "low" || !strings.Contains(m.note.text, "another window") {
 		t.Fatalf("effort %q, notice %q", m.thinking, m.note.text)
 	}
-	if !strings.Contains(ansi.Strip(m.composerRule()), "LOW") {
-		t.Fatalf("rule = %q", ansi.Strip(m.composerRule()))
+	if controls, _ := m.controls(); !strings.Contains(ansi.Strip(controls), "LOW") {
+		t.Fatalf("controls = %q", ansi.Strip(controls))
 	}
 }

@@ -139,24 +139,26 @@ func contextSize(tokens int64) string {
 	return fmt.Sprintf("%dk", (tokens+500)/1000)
 }
 
-// modelRuleWidth is the narrowest window whose composer rule shows the model.
+// modelRuleWidth is the narrowest window whose composer controls show the
+// model.
 const modelRuleWidth = 96
 
 // modelControl renders the model the next prompt runs with, which the
-// composer rule shows before the effort meter; "" where there is no room.
+// composer's controls show before the effort meter; "" where there is no
+// room.
 func (m *uiModel) modelControl() string {
-	if m.width < modelRuleWidth {
+	if m.stageWidth() < modelRuleWidth {
 		return ""
 	}
 	st := m.styles
-	model, style := m.nextModel(), st.muted
+	model, style := m.nextModel(), st.text
 	if _, chosen := m.chosen[m.sessionID]; chosen {
 		style = st.accent
 	}
 	if model == "" {
-		model, style = orDefault(m.conn.Model, "runner default"), st.faint
+		model, style = orDefault(m.conn.Model, "runner default"), st.ghost
 	}
-	return " " + st.label.Render("MODEL") + " " + style.Render(ansi.Truncate(model, 34, "…")) + st.rule.Render(" ─")
+	return st.label.Render("MODEL") + " " + m.modelDot(model) + style.Render(ansi.Truncate(model, 34, "…")) + " " + st.ghost.Render("▾")
 }
 
 // previousModel is the model of the prompt before the one with the given ID.

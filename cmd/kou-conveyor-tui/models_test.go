@@ -50,7 +50,7 @@ func TestPromptsRunWithTheSessionsModel(t *testing.T) {
 		t.Fatalf("prompts' models = %q", got)
 	}
 	screen := ansi.Strip(m.View())
-	for _, want := range []string{"MODEL grok-4.7", "⇄ grok-4.7", "· claude-opus-5-5"} {
+	for _, want := range []string{"MODEL ■ grok-4.7", "⇄ ■ grok-4.7", "· ■ claude-opus-5-5"} {
 		if !strings.Contains(screen, want) {
 			t.Errorf("the screen lacks %q:\n%s", want, screen)
 		}

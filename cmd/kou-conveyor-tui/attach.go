@@ -492,8 +492,9 @@ type stripHit struct {
 	from, to int
 }
 
-// stripView renders the strip: a rule that says what the images do, and
-// their thumbnails with their labels, or the labels alone on the rule.
+// stripView renders the strip as part of the dock's tray: its first row is
+// the label of an edge, saying what the images do, and the thumbnails with
+// their labels are rows of the box; or the labels alone go on the edge.
 func (m *uiModel) stripView(hover hoverTarget) []string {
 	rows := m.stripRows()
 	m.strip = m.strip[:0]
@@ -509,15 +510,16 @@ func (m *uiModel) stripView(hover hoverTarget) []string {
 		}
 		return st.text.Render(a.image.Label)
 	}
-	lead := st.rule.Render("── ") + st.label.Render(fmt.Sprintf("IMAGES %d", len(shown))) + " "
+	edge := m.edgeInner()
+	lead := st.rule2.Render("─ ") + st.label.Render(fmt.Sprintf("IMAGES %d", len(shown))) + " "
 	hint := "the cursor right after a label shows it · ⌫ there removes it · ^V adds one"
 	if rows == 1 {
-		// The labels go on the rule.
-		line, x := lead, ansi.StringWidth(lead)
+		// The labels go on the edge, which starts after the box's corner.
+		line, x := lead, margin+1+ansi.StringWidth(lead)
 		for i, a := range shown {
 			item := st.accent.Render("▣ ") + label(a) + " " + st.faint.Render(describe(a.info))
 			w := ansi.StringWidth(item)
-			if x+w+3 > m.width {
+			if x+w+3 > margin+1+edge {
 				line += st.faint.Render(fmt.Sprintf("+%d more ", len(shown)-i))
 				break
 			}
@@ -525,20 +527,17 @@ func (m *uiModel) stripView(hover hoverTarget) []string {
 			line += item + "   "
 			x += w + 3
 		}
-		fill := max(0, m.width-ansi.StringWidth(line))
-		return []string{line + st.rule.Render(strings.Repeat("─", fill))}
+		return []string{fit(line, edge)}
 	}
 	thumbs := rows - 1
-	head := lead + st.faint.Render(hint) + " "
-	if ansi.StringWidth(head) > m.width-4 {
+	head := lead + st.ghost.Render("· "+hint) + " "
+	if ansi.StringWidth(head) > edge-4 {
 		head = lead
 	}
-	lines := []string{fit(head+st.rule.Render(strings.Repeat("─", max(0, m.width-ansi.StringWidth(head)))), m.width)}
+	lines := []string{fit(head, edge)}
+	inner := m.dockInner()
 	body := make([]string, thumbs)
-	x := 2
-	for i := range body {
-		body[i] = "  "
-	}
+	x := promptWidth
 	for i, a := range shown {
 		cols, pictureRows := m.graphics.fit(a.info.Width, a.info.Height, thumbCols, thumbs)
 		var picture []string
@@ -562,7 +561,7 @@ func (m *uiModel) stripView(hover hoverTarget) []string {
 			textWidth = max(textWidth, ansi.StringWidth(t))
 		}
 		width := cols + 1 + textWidth
-		if x+width > m.width-1 {
+		if x+width > promptWidth+inner {
 			body[0] += st.faint.Render(fmt.Sprintf("+%d more", len(shown)-i))
 			break
 		}
@@ -585,9 +584,9 @@ func (m *uiModel) stripView(hover hoverTarget) []string {
 		x += width + 3
 	}
 	for i := range body {
-		body[i] = fit(body[i], m.width)
+		lines = append(lines, m.boxRow(fit(body[i], inner)))
 	}
-	return append(lines, body...)
+	return lines
 }
 
 // stripTop is the screen row of the strip's rule.
@@ -644,13 +643,14 @@ func (m *uiModel) previewBox(a *attachment, width, height int) []string {
 	for i, line := range body {
 		body[i] = fit(line, inner)
 	}
-	border := st.accent
-	top := border.Render("╭─") + fit(title, inner) + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(fit(title, inner))))+"╮")
+	// A hairline box with the accent at its corners, as the dock's.
+	border, corner := st.rule2, st.accent
+	top := corner.Render("┌") + border.Render("─") + fit(title, inner) + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(fit(title, inner))))) + corner.Render("┐")
 	bottomHint := hint
 	if ansi.StringWidth(hint) > inner {
 		bottomHint = ""
 	}
-	bottom := border.Render("╰"+strings.Repeat("─", max(0, inner+1-ansi.StringWidth(bottomHint)))) + st.faint.Render(bottomHint) + border.Render("─╯")
+	bottom := corner.Render("└") + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(bottomHint)))) + st.faint.Render(bottomHint) + border.Render("─") + corner.Render("┘")
 	lines := []string{top}
 	for _, line := range body {
 		w := ansi.StringWidth(line)

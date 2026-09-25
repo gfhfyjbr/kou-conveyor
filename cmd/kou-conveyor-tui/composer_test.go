@@ -72,20 +72,19 @@ func TestEffortControls(t *testing.T) {
 			t.Fatalf("after %s: %q, want %q", step.key, m.thinking, step.want)
 		}
 	}
-	if !strings.Contains(ansi.Strip(m.composerRule()), "EFFORT") || !strings.Contains(ansi.Strip(m.composerRule()), "MEDIUM") {
-		t.Fatalf("rule = %q", ansi.Strip(m.composerRule()))
+	if controls, _ := m.controls(); !strings.Contains(ansi.Strip(controls), "EFFORT") || !strings.Contains(ansi.Strip(controls), "MEDIUM") {
+		t.Fatalf("controls = %q", ansi.Strip(controls))
 	}
 	// Each bar of the meter picks its level; the rest of it moves on.
-	control, meter := m.effortControl()
-	start := m.width - ansi.StringWidth(control)
+	row, meter := m.effortAt()
 	for i, want := range []string{"low", "medium", "high", "xhigh", "max"} {
-		click(m, start+meter+i, m.ruleRow())
+		click(m, meter+i, row)
 		if m.thinking != want {
 			t.Fatalf("bar %d: %q, want %q", i, m.thinking, want)
 		}
 	}
-	click(m, m.width-2, m.ruleRow())
-	click(m, 3, m.ruleRow()) // the rule's label is not the control
+	click(m, meter-3, row) // the control's label moves on
+	click(m, 1, row)       // the box's edge is not the control
 	if m.thinking != "low" {
 		t.Fatalf("after clicks beside the bars: %q", m.thinking)
 	}

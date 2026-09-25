@@ -49,7 +49,7 @@ func TestQueuedPromptRunsWhenTheRunEnds(t *testing.T) {
 				t.Errorf("queue %q, composer %q, transcript %s", queueTexts(q), m.input.Value(), kinds(m.tr))
 			}
 			screen := ansi.Strip(m.View())
-			for _, want := range []string{"QUEUE 1", "runs when the agent finishes", "then say hi", "next"} {
+			for _, want := range []string{"QUEUE 1", "runs when the agent finishes", "then say hi", "NEXT"} {
 				if !strings.Contains(screen, want) {
 					t.Errorf("the screen lacks %q:\n%s", want, screen)
 				}

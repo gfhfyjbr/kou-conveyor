@@ -214,7 +214,7 @@ func TestChangesPanelShowsThePromptInView(t *testing.T) {
 	}
 	// The newest prompt, and the file it changed, beside the transcript.
 	mustShow(t, m, "CHANGES · PROMPT 02", "+1 −0 · 1 file", "M touched.txt", "─ touched.txt", "1 + touch two", "1   2   touch one")
-	if pw, covers := m.panelColumns(); covers || m.view.Width != 150-2-pw {
+	if pw, covers := m.panelColumns(); covers || m.view.Width != 150-margin-2-pw {
 		t.Fatalf("transcript width %d beside a panel of %d", m.view.Width, pw)
 	}
 
@@ -238,7 +238,7 @@ func TestChangesPanelShowsThePromptInView(t *testing.T) {
 
 	// ctrl+g closes it, and the transcript takes the room back.
 	d.send(tea.KeyMsg{Type: tea.KeyCtrlG})
-	if m.changesShown() || m.view.Width != 148 || !m.input.Focused() {
+	if m.changesShown() || m.view.Width != m.width-margin-2 || !m.input.Focused() {
 		t.Fatalf("closed: shown %v, width %d, composer focused %v", m.changesShown(), m.view.Width, m.input.Focused())
 	}
 }
@@ -464,7 +464,7 @@ func TestChangesPanelResizes(t *testing.T) {
 	saved := func() int { return cockpit.LoadPreferences(m.opt.preferences).ChangesWidth }
 	width := func() int {
 		pw, covers := m.panelColumns()
-		if covers || m.view.Width != m.width-2-pw {
+		if covers || m.view.Width != m.width-margin-2-pw {
 			t.Fatalf("a panel of %d (covering %v) beside a transcript of %d", pw, covers, m.view.Width)
 		}
 		screen(t, m)

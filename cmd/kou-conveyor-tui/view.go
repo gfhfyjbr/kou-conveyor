@@ -6,26 +6,104 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 )
 
-// Layout, top to bottom: header, rule, transcript, status line, composer
-// rule, composer, key hints. The transcript takes whatever is left.
+// Layout, top to bottom, as the web cockpit's stage without its rail: the
+// bar and its rule, a row of air, the transcript, the status line, the dock
+// (the queue and the images on a tray, the composer in its box with its
+// controls) and the key hints. The transcript takes whatever is left.
 const (
-	gutter        = 8 // "HH:MM ● "
-	chrome        = 5 // rows that are not transcript or composer
-	minInputs     = 3 // composer rows, when the terminal has room for them
-	maxInputs     = 12
-	transcriptTop = 2 // screen row where the transcript starts
+	// margin is the air at the left of the transcript and the dock, and at
+	// the right of the transcript.
+	margin = 2
+	// gutter is the columns before an entry's text: the margin, the time or
+	// the prompt's number, the rail with the entry's node on it, a space.
+	gutter    = margin + 8
+	minInputs = 3 // composer rows, when the terminal has room for them
+	maxInputs = 12
+	// promptWidth is where the composer's text starts: after the margin, the
+	// box's edge and a space.
+	promptWidth = margin + 2
+	// maxMeasure is the widest the cockpit lays itself out, in columns: on a
+	// wider terminal it sits in the middle, as the web cockpit's stage keeps
+	// its measure. Beside the changes panel, and inline, it takes the whole
+	// width.
+	maxMeasure = 132
 )
+
+// fitWidth chooses the width the cockpit lays itself out in.
+func (m *uiModel) fitWidth() {
+	m.width = m.termWidth
+	if !m.compact && !m.changesShown() && m.termWidth > maxMeasure {
+		m.width = maxMeasure
+	}
+}
+
+// stageWidth is the width of the stage: the transcript's column and the
+// dock under it. Beside the changes panel, which runs down the right side
+// of the screen, the stage keeps the columns left of it.
+func (m *uiModel) stageWidth() int {
+	if panel, covers := m.panelColumns(); panel > 0 && !covers {
+		return max(1, m.width-panel)
+	}
+	return m.width
+}
+
+// left is the terminal column the cockpit starts at: the middle of a wide
+// terminal, where it keeps its measure.
+func (m *uiModel) left() int {
+	if m.compact {
+		return 0
+	}
+	return max(0, (m.termWidth-m.width)/2)
+}
+
+// roomy reports a terminal with rows to spare for air: the row under the
+// bar and the composer's bottom edge.
+func (m *uiModel) roomy() bool { return m.height >= 24 }
+
+// top is the screen row the transcript starts on: under the bar, its rule
+// and, where there is room, a row of air.
+func (m *uiModel) top() int {
+	if m.roomy() {
+		return 3
+	}
+	return 2
+}
+
+// chromeRows are the rows that are neither transcript nor composer text:
+// the bar and its rule, the air under them, the status line, the composer's
+// top edge, its controls, its bottom edge and the key hints.
+func (m *uiModel) chromeRows() int {
+	rows := m.top() + 4
+	if m.roomy() {
+		rows++
+	}
+	return rows
+}
+
+// Screen rows below the transcript.
+func (m *uiModel) statusRow() int { return m.top() + m.view.Height }
+func (m *uiModel) ruleRow() int   { return m.statusRow() + 1 + m.queueRows() + m.stripRows() }
+func (m *uiModel) inputTop() int  { return m.ruleRow() + 1 }
+
+// controlsRow is the row of the composer's controls: the model, the effort
+// and the run button, inside the box, or on its bottom edge where the
+// terminal is short.
+func (m *uiModel) controlsRow() int { return m.inputTop() + m.input.Height() }
 
 func (m *uiModel) layout() {
 	if !m.ready {
 		return
 	}
-	m.input.SetWidth(max(8, m.width))
+	m.fitWidth()
+	// The composer's text sits in its box: the margin, an edge and a space on
+	// each side.
+	m.input.SetWidth(max(promptWidth+4, m.stageWidth()-margin-2))
 	m.resize()
 }
 
@@ -35,7 +113,7 @@ func (m *uiModel) resize() {
 	if !m.ready {
 		return
 	}
-	textWidth := max(1, m.width-3)
+	textWidth := max(1, m.input.Width())
 	rows := 0
 	for _, line := range strings.Split(m.input.Value(), "\n") {
 		rows += max(1, (ansi.StringWidth(line)+textWidth)/textWidth)
@@ -48,6 +126,7 @@ func (m *uiModel) resize() {
 	}
 	// The queue and the strip of images sit between the status line and
 	// the composer.
+	chrome := m.chromeRows()
 	queue := m.queueRows() + m.stripRows()
 	highest := clamp(m.height*2/5, 1, max(1, m.height-chrome-queue-1))
 	rows = clamp(rows, min(lowest, highest), min(maxInputs, max(lowest, highest)))
@@ -55,11 +134,9 @@ func (m *uiModel) resize() {
 		m.input.SetHeight(rows)
 	}
 	height := max(1, m.height-chrome-queue-m.input.Height())
-	// The changes panel takes the transcript's right side, when both fit.
-	width := m.width - 2
-	if panel, covers := m.panelColumns(); panel > 0 && !covers {
-		width -= panel
-	}
+	// The transcript keeps air and the scrollbar at its right; the changes
+	// panel takes the screen's right side, when both fit.
+	width := m.stageWidth() - margin - 2
 	if height != m.view.Height || m.view.Width != max(1, width) {
 		atBottom := m.view.AtBottom()
 		m.view.Width, m.view.Height = max(1, width), height
@@ -107,7 +184,7 @@ func (m *uiModel) render(follow bool) {
 		previous = e
 	}
 	m.notePictures()
-	clear(m.starters)
+	m.starters = m.starters[:0]
 	if len(m.tr.Entries) == 0 {
 		lines = m.welcome(width)
 	}
@@ -137,11 +214,15 @@ func dense(e *cockpit.Entry) bool {
 	return e.Kind == cockpit.KindTool || e.Kind == cockpit.KindReasoning
 }
 
+// timeline is the row of air between two entries: the rail runs through
+// it, as the web cockpit's line runs down the transcript.
 func (m *uiModel) timeline(next *cockpit.Entry) string {
-	if next.Kind == cockpit.KindUser {
-		return ""
-	}
 	return strings.Repeat(" ", gutter-2) + m.styles.rule.Render("│")
+}
+
+// rail is the line an entry's body hangs from.
+func (m *uiModel) rail() string {
+	return strings.Repeat(" ", gutter-2) + m.styles.rule.Render("│") + " "
 }
 
 func expandable(e *cockpit.Entry) bool {
@@ -178,7 +259,7 @@ func (m *uiModel) block(e *cockpit.Entry, width, index int, faded bool) []string
 	lines := m.renderEntry(e, width, index, open, live, editing)
 	if faded {
 		for i, line := range lines {
-			lines[i] = m.styles.faint.Render(ansi.Strip(line))
+			lines[i] = m.styles.ghost.Render(ansi.Strip(line))
 		}
 	}
 	// The picture a call read ends its block (viewed.go), as it is.
@@ -189,22 +270,57 @@ func (m *uiModel) block(e *cockpit.Entry, width, index int, faded bool) []string
 	return lines
 }
 
+// ---------------------------------------------------------------- cards
+
+// card frames lines from the rail's column to width, as the web cockpit
+// frames a prompt, a tool call or an error: a hairline above and below, the
+// left edge in the style given. The right stays open: what is copied from
+// it stays clean, and a line whose width the terminal measures otherwise
+// breaks nothing. title goes into the top edge; joints are rows of the
+// body that become edges of their own, with titles, between sections.
+func (m *uiModel) card(lines []string, edge lipgloss.Style, title string, joints map[int]string, width int) []string {
+	st := m.styles
+	pad := strings.Repeat(" ", gutter-2)
+	span := max(1, width-(gutter-2))
+	top, side, bottom := "┌", "│", "└"
+	if edge.GetForeground() != st.rule.GetForeground() && !st.noColor {
+		// A coloured edge is a heavier one, as the web cockpit's 2px border.
+		top, side, bottom = "┎", "┃", "┖"
+	}
+	rule := func(lead, title string) string {
+		line := edge.Render(lead)
+		if title != "" {
+			line += st.rule.Render("─ ") + st.label.Render(title) + " "
+		}
+		return line + st.rule.Render(strings.Repeat("─", max(0, span-ansi.StringWidth(line))))
+	}
+	out := []string{pad + rule(top, title)}
+	for i, line := range lines {
+		if joint, ok := joints[i]; ok {
+			out = append(out, pad+rule("├", joint))
+			continue
+		}
+		out = append(out, pad+edge.Render(side)+" "+line)
+	}
+	return append(out, pad+rule(bottom, ""))
+}
+
 func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, editing bool) []string {
 	st := m.styles
 	body := width - gutter
-	stamp := st.faint.Render(fmt.Sprintf("%5s", localTime(e.At)))
-	rail := strings.Repeat(" ", gutter-2) + st.rule.Render("│") + " "
+	stamp := st.ghost.Render(fmt.Sprintf("%*s", gutter-3, localTime(e.At)))
+	rail := m.rail()
 	head := func(glyph string) string { return stamp + " " + glyph + " " }
 
 	switch e.Kind {
 	case cockpit.KindUser:
-		bar := st.accent.Render("▌")
-		label := st.accentLabel.Render("YOU") + "  " + st.faint.Render(clockTime(e.At))
+		node, edge := st.accent.Render("■"), st.accent
+		label := st.accentLabel.Render("YOU") + "  " + st.ghost.Render(clockTime(e.At))
 		switch e.State {
 		case cockpit.Pending:
 			label += st.faint.Render("  · sending")
 		case cockpit.Undelivered:
-			bar = st.err.Render("▌")
+			node, edge = st.err.Render("■"), st.err
 			label += st.errLabel.Render("  · NOT DELIVERED")
 		}
 		if e.Forced {
@@ -214,17 +330,17 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 		// The model that answered it; one that differs from the prompt
 		// before stands out.
 		if e.Model != "" {
-			style := st.faint
+			style := st.ghost
 			if before := m.previousModel(e.ID); before != "" && before != e.Model {
 				style = st.muted
 				label += st.accent.Render("  ⇄")
 			} else {
-				label += st.faint.Render("  ·")
+				label += st.ghost.Render("  ·")
 			}
-			label += " " + style.Render(ansi.Truncate(e.Model, 40, "…"))
+			label += " " + m.modelDot(e.Model) + style.Render(ansi.Truncate(e.Model, 40, "…"))
 		}
-		number := st.accentLabel.Render(fmt.Sprintf("%5s", fmt.Sprintf("%02d", index)))
-		header := number + " " + bar + " " + label
+		number := st.accentLabel.Render(fmt.Sprintf("%*s", gutter-3, fmt.Sprintf("%02d", index)))
+		header := number + " " + node + " " + label
 		// Between runs a click on a prompt's header edits it.
 		switch {
 		case editing:
@@ -232,9 +348,7 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 		case !live && e.State != cockpit.Pending && !m.compact:
 			header = fitRight(header, st.faint.Render("✎ edit"), width)
 		}
-		lines := []string{header}
-		prefix := strings.Repeat(" ", gutter-2) + bar + " "
-		lines = append(lines, wrapText(e.Text, st.text, width, prefix, prefix)...)
+		text := wrapText(e.Text, st.text, body, "", "")
 		// The images it brought, which its text names.
 		if len(e.Images) != 0 {
 			var spans []span
@@ -244,17 +358,17 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 				}
 				spans = append(spans, span{"▣ ", st.accent}, span{img.Label, st.muted}, span{" " + describe(img), st.faint})
 			}
-			lines = append(lines, wrapSpans(spans, width, prefix, prefix)...)
+			text = append(text, wrapSpans(spans, body, "", "")...)
 		}
-		return lines
+		return append([]string{header}, m.card(text, edge, "", nil, width)...)
 
 	case cockpit.KindAssistant:
-		glyph, label := st.text.Render("●"), st.label.Render("AGENT")
+		glyph, label := st.text.Render("■"), st.label.Render("AGENT")
 		base := st.text
 		if e.Phase == "commentary" {
-			glyph, label, base = st.faint.Render("○"), st.label.Render("AGENT · NOTE"), st.muted
+			glyph, label, base = st.ghost.Render("□"), st.label.Render("AGENT · NOTE"), st.muted
 		}
-		lines := []string{head(glyph) + label}
+		lines := []string{head(glyph) + label + "  " + st.ghost.Render(clockTime(e.At))}
 		for _, line := range renderMarkdown(st, e.Text, body, base) {
 			lines = append(lines, rail+line)
 		}
@@ -266,8 +380,8 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 			chevron = "▾"
 		}
 		gist := strings.ReplaceAll(firstLine(e.Text), "**", "")
-		lead := head(st.faint.Render("◇")) + st.label.Render("thinking") + "  "
-		lines := []string{fitRight(lead+st.muted.Italic(true).Render(gist), st.faint.Render(chevron), width)}
+		lead := head(st.ghost.Render("◇")) + st.label.Render("THINKING") + "  "
+		lines := []string{fitRight(lead+st.faint.Italic(true).Render(gist), st.ghost.Render(chevron), width)}
 		// A one-line summary is already shown in full.
 		if open && strings.TrimSpace(strings.ReplaceAll(e.Text, "**", "")) != gist {
 			for _, line := range renderMarkdown(st, e.Text, body, st.muted) {
@@ -281,17 +395,17 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 
 	case cockpit.KindNotice:
 		text := st.label.Render(strings.ToUpper(e.Text))
-		lead := head(st.faint.Render("─")) + text + " "
-		fill := max(0, width-ansi.StringWidth(lead)-2)
-		line := lead + st.rule.Render(strings.Repeat("─", fill))
+		lead := head(st.ghost.Render("─")) + text + " "
+		right := st.ghost.Render(clockTime(e.At))
 		if e.Detail != "" {
 			chevron := "▸"
 			if open {
 				chevron = "▾"
 			}
-			line = lead + st.rule.Render(strings.Repeat("─", max(0, fill-2))) + " " + st.faint.Render(chevron)
+			right += "  " + st.ghost.Render(chevron)
 		}
-		lines := []string{line}
+		fill := max(0, width-ansi.StringWidth(lead)-ansi.StringWidth(right)-1)
+		lines := []string{lead + st.rule.Render(strings.Repeat("─", fill)) + " " + right}
 		if open && e.Detail != "" {
 			for _, l := range renderMarkdown(st, e.Detail, body, st.muted) {
 				lines = append(lines, rail+l)
@@ -300,10 +414,28 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 		return lines
 
 	case cockpit.KindError:
-		lines := []string{head(st.err.Render("✗")) + st.errLabel.Render("ERROR")}
-		return append(lines, wrapText(e.Text, st.err, width, rail, rail)...)
+		lines := []string{head(st.err.Render("■")) + st.errLabel.Render("ERROR") + "  " + st.ghost.Render(clockTime(e.At))}
+		return append(lines, m.card(wrapText(e.Text, st.err, body, "", ""), st.err, "", nil, width)...)
 	}
 	return wrapText(e.Text, st.text, width, rail, rail)
+}
+
+// modelDot is the dot before a model's name, in its provider's colour when
+// the connection says which that is.
+func (m *uiModel) modelDot(model string) string {
+	provider := ""
+	if c := m.catalog; c != nil {
+		if info, ok := c.Find(model); ok {
+			provider = info.Provider
+		}
+	}
+	if provider == "" {
+		provider = m.conn.Provider
+	}
+	if m.styles.noColor {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(providerColor(provider)).Render("■") + " "
 }
 
 func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []string {
@@ -316,7 +448,7 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	glyph := map[string]string{
 		cockpit.ToolQueued: st.accent.Render("□"), cockpit.ToolRunning: st.accent.Render("■"),
 		cockpit.ToolDone: st.ok.Render("✓"), cockpit.ToolFailed: st.err.Render("✗"),
-		cockpit.ToolCanceled: st.faint.Render("⊘"), "interrupted": st.faint.Render("◌"),
+		cockpit.ToolCanceled: st.ghost.Render("⊘"), "interrupted": st.ghost.Render("◌"),
 	}[state]
 	nonzero := tool.ExitCode != nil && *tool.ExitCode != 0
 	if state == cockpit.ToolDone && nonzero {
@@ -335,30 +467,29 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	}
 	switch state {
 	case cockpit.ToolFailed:
-		meta = append(meta, st.err.Render("failed"))
+		meta = append(meta, st.errLabel.Render("FAILED"))
 	case cockpit.ToolCanceled:
-		meta = append(meta, st.faint.Render("stopped"))
+		meta = append(meta, st.label.Render("STOPPED"))
 	case "interrupted":
-		meta = append(meta, st.faint.Render("interrupted"))
+		meta = append(meta, st.label.Render("INTERRUPTED"))
 	}
 	chevron := "▸"
 	if open {
 		chevron = "▾"
 	}
-	right := strings.Join(meta, st.faint.Render(" · ")) + "  " + st.faint.Render(chevron)
+	right := strings.Join(meta, st.ghost.Render(" · ")) + "  " + st.ghost.Render(chevron)
 
 	name := strings.ToUpper(orDefault(tool.Name, "tool"))
 	input := firstLine(tool.Input)
 	if strings.EqualFold(tool.Name, "bash") && input != "" {
-		input = st.faint.Render("$ ") + st.text.Render(input)
+		input = st.ghost.Render("$ ") + st.text.Render(input)
 	} else {
 		input = st.text.Render(input)
 	}
-	stamp := st.faint.Render(fmt.Sprintf("%5s", localTime(e.At)))
+	stamp := st.ghost.Render(fmt.Sprintf("%*s", gutter-3, localTime(e.At)))
 	lead := stamp + " " + glyph + " " + st.label.Render(name) + "  "
 	lines := []string{fitRight(lead+input, right, width)}
 
-	rail := strings.Repeat(" ", gutter-2) + st.rule.Render("│") + " "
 	body := max(10, width-gutter)
 	if !open {
 		if state == cockpit.ToolFailed && tool.Error != "" {
@@ -366,20 +497,31 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 		}
 		return lines
 	}
-	section := func(title string, style lipgloss.Style, text string) {
-		count := strings.Count(strings.TrimRight(text, "\n"), "\n") + 1
-		unit := "lines"
+	// Open, the call is a card: each stream a section with its own edge,
+	// as the web cockpit's tool body.
+	var text []string
+	joints := map[int]string{}
+	first := ""
+	section := func(title string, style lipgloss.Style, content string) {
+		count := strings.Count(strings.TrimRight(content, "\n"), "\n") + 1
+		unit := "LINES"
 		if count == 1 {
-			unit = "line"
+			unit = "LINE"
 		}
-		lines = append(lines, rail+st.faint.Render(fmt.Sprintf("── %s · %d %s", title, count, unit)))
-		for _, line := range clipLines(strings.Split(strings.TrimRight(strings.ReplaceAll(text, "\t", "    "), "\n"), "\n"), 150, 150) {
+		heading := fmt.Sprintf("%s · %d %s", strings.ToUpper(title), count, unit)
+		if first == "" {
+			first = heading
+		} else {
+			joints[len(text)] = heading
+			text = append(text, "")
+		}
+		for _, line := range clipLines(strings.Split(strings.TrimRight(strings.ReplaceAll(content, "\t", "    "), "\n"), "\n"), 150, 150) {
 			if line == "\x00" {
-				lines = append(lines, rail+st.faint.Render("   ⋯"))
+				text = append(text, st.ghost.Render("   ⋯"))
 				continue
 			}
 			for _, part := range strings.Split(ansi.Hardwrap(line, body, true), "\n") {
-				lines = append(lines, rail+style.Render(part))
+				text = append(text, style.Render(part))
 			}
 		}
 	}
@@ -400,9 +542,13 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 		if state == cockpit.ToolRunning || state == cockpit.ToolQueued {
 			waiting = "waiting for output…"
 		}
-		lines = append(lines, rail+st.faint.Render(waiting))
+		text = append(text, st.ghost.Render(waiting))
 	}
-	return lines
+	edge := st.rule
+	if state == cockpit.ToolFailed {
+		edge = st.err
+	}
+	return append(lines, m.card(text, edge, first, joints, width)...)
 }
 
 // clipLines keeps the head and tail of long output around a marker line.
@@ -415,34 +561,134 @@ func clipLines(lines []string, head, tail int) []string {
 	return append(out, lines[len(lines)-tail:]...)
 }
 
+// ---------------------------------------------------------------- welcome
+
 var starters = []struct{ number, name, gist, prompt string }{
-	{"01", "SURVEY", "map the architecture, entry points and how to build and test",
+	{"01", "SURVEY", "Map the architecture, entry points and how to build and test.",
 		"Map this repository: its architecture, entry points, and how to build and test it."},
-	{"02", "VERIFY", "run the tests and fix the first real failure",
+	{"02", "VERIFY", "Run the tests and fix the first real failure.",
 		"Run the test suite. If anything fails, find the root cause and fix it."},
-	{"03", "REVIEW", "audit uncommitted changes for bugs and risky edits",
+	{"03", "REVIEW", "Audit uncommitted changes for bugs and risky edits.",
 		"Review the uncommitted changes for bugs, races and risky edits. Report findings by severity."},
+	{"04", "PROFILE", "Find the slowest step and propose a concrete fix.",
+		"Find the slowest part of the build or test run and propose a concrete fix."},
 }
 
+// starterBox is where a task shows on the welcome screen: transcript lines
+// [top, bottom) and columns [left, right).
+type starterBox struct {
+	top, bottom, left, right int
+	prompt                   string
+}
+
+// starterAt is the task drawn under a transcript line and column.
+func (m *uiModel) starterAt(line, x int) (starterBox, bool) {
+	for _, s := range m.starters {
+		if line >= s.top && line < s.bottom && x >= s.left && x < s.right {
+			return s, true
+		}
+	}
+	return starterBox{}, false
+}
+
+// wordmark is READY in block letters, four rows tall, as the web cockpit's
+// heading; the caret after it is the accent.
+var wordmark = [4]string{
+	"█▀▀▀▄ █▀▀▀▀ ▄▀▀▀▄ █▀▀▀▄ █   █",
+	"█▄▄▄▀ █▄▄▄  █▄▄▄█ █   █ ▀▄ ▄▀",
+	"█  ▀▄ █     █   █ █   █   █  ",
+	"▀   ▀ ▀▀▀▀▀ ▀   ▀ ▀▀▀▀    ▀  ",
+}
+
+// welcome is the empty session: a card with the workspace, what the agent
+// does and tasks to start with, as the web cockpit shows it.
 func (m *uiModel) welcome(width int) []string {
 	st := m.styles
-	pad := strings.Repeat(" ", gutter-2)
-	lines := []string{
-		"",
-		pad + st.accent.Render("■ ") + st.bold.Render("READY"),
-		"",
+	pad := strings.Repeat(" ", margin)
+	outer := max(20, width-margin)
+	inner := outer - 4
+	var body []string
+	blank := func() { body = append(body, "") }
+	body = append(body, fitRight(st.label.Render("SESSION · NEW"), st.ghost.Render(ansi.Truncate(m.opt.Workspace, max(8, inner-16), "…")), inner))
+	blank()
+	if inner >= ansi.StringWidth(wordmark[0])+4 {
+		for i, row := range wordmark {
+			caret := "  "
+			if i > 0 {
+				caret = st.accent.Render("██")
+			}
+			body = append(body, st.text.Render(row)+" "+caret)
+		}
+	} else {
+		body = append(body, st.bold.Render("READY")+st.accent.Render("▮"))
 	}
-	lines = append(lines, wrapText("The agent works in this workspace with a shell. Describe the outcome you want — it plans, runs commands and reports back as it goes.", st.muted, width, pad, pad)...)
-	lines = append(lines, pad+st.faint.Render(ansi.Truncate(m.opt.Workspace, max(10, width-gutter), "…")), "")
-	if m.starters == nil {
-		m.starters = make(map[int]string)
+	blank()
+	body = append(body, wrapText("The agent works in this workspace with a shell. Describe the outcome you want — it plans, runs commands and reports back as it goes.", st.muted, min(inner, 72), "", "")...)
+	blank()
+	// The tasks, two to a row where they fit; a click puts one in the
+	// composer. Their places are noted for the pointer, in the transcript's
+	// lines and columns: the card's rows start at line 1, its text at
+	// column margin+2.
+	columns := 1
+	if inner >= 64 {
+		columns = 2
 	}
-	for _, s := range starters {
-		m.starters[len(lines)] = s.prompt
-		lines = append(lines, pad+st.accentLabel.Render(s.number)+"  "+st.label.Render(s.name)+"  "+
-			st.faint.Render(ansi.Truncate(s.gist, max(10, width-gutter-14), "…")))
+	boxWidth := (inner - (columns-1)*2) / columns
+	textWidth := boxWidth - 4
+	for i := 0; i < len(starters); i += columns {
+		row := starters[i:min(i+columns, len(starters))]
+		// Each task's text, wrapped; the boxes of a row are as tall as the
+		// tallest.
+		gists := make([][]string, len(row))
+		height := 0
+		for c, s := range row {
+			gists[c] = wrapText(s.gist, st.faint, textWidth, "", "")
+			height = max(height, len(gists[c]))
+		}
+		var boxes [][]string
+		for c, s := range row {
+			lines := []string{st.rule.Render("┌─ ") + st.accentLabel.Render(s.number) + " " + st.bold.Render(s.name) + " " +
+				st.rule.Render(strings.Repeat("─", max(0, boxWidth-ansi.StringWidth(s.number+s.name)-6))+"┐")}
+			for r := range height {
+				g := ""
+				if r < len(gists[c]) {
+					g = gists[c][r]
+				}
+				lines = append(lines, st.rule.Render("│")+" "+g+strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(g)))+" "+st.rule.Render("│"))
+			}
+			lines = append(lines, st.rule.Render("└"+strings.Repeat("─", boxWidth-2)+"┘"))
+			boxes = append(boxes, lines)
+		}
+		for r := range height + 2 {
+			line := ""
+			for c, box := range boxes {
+				if c > 0 {
+					line += "  "
+				}
+				line += box[r]
+			}
+			body = append(body, line)
+		}
+		for c, s := range row {
+			left := margin + 2 + c*(boxWidth+2)
+			// The card's top edge is line 0 of the transcript; its body
+			// starts at line 1.
+			m.starters = append(m.starters, starterBox{top: 1 + len(body) - (height + 2), bottom: 1 + len(body), left: left, right: left + boxWidth, prompt: s.prompt})
+		}
+		if i+columns < len(starters) {
+			blank()
+		}
 	}
-	lines = append(lines, "", pad+keyHints(st, width-gutter, "click", "use a task", "ctrl+k", "commands", "ctrl+s", "sessions", "/help", "keys"))
+	blank()
+	body = append(body, keyHints(st, inner, "click", "use a task", "^K", "commands", "^S", "sessions", "/help", "keys"))
+
+	// The card: a hairline with the ghost's ticks at its corners.
+	tick := st.ghost
+	lines := []string{pad + tick.Render("┌") + st.rule.Render(strings.Repeat("─", outer-2)) + tick.Render("┐")}
+	for _, line := range body {
+		lines = append(lines, pad+st.rule.Render("│")+" "+line+strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)))+" "+st.rule.Render("│"))
+	}
+	lines = append(lines, pad+tick.Render("└")+st.rule.Render(strings.Repeat("─", outer-2))+tick.Render("┘"))
 	return lines
 }
 
@@ -457,41 +703,63 @@ func (m *uiModel) View() string {
 	}
 	st := m.styles
 	width := m.width
-	rule := st.rule.Render(strings.Repeat("─", width))
-	var b strings.Builder
 	hover := m.hover()
 	if m.form != nil || m.picker != nil {
 		m.previewArea = area{}
 	}
-	b.WriteString(fit(m.header(), width) + "\n" + rule + "\n")
+	lines := []string{fit(m.header(), width)}
+	if m.roomy() {
+		lines = append(lines, "")
+	}
 	switch {
 	case m.form != nil:
-		b.WriteString(m.formOverlay())
+		lines = append(lines, strings.Split(m.formOverlay(), "\n")...)
 	case m.picker != nil:
-		b.WriteString(m.overlay())
+		lines = append(lines, strings.Split(m.overlay(), "\n")...)
 	default:
 		// The image the cursor is on shows large over the transcript.
-		b.WriteString(strings.Join(m.withPreview(strings.Split(m.transcriptView(hover), "\n"), transcriptTop), "\n"))
+		lines = append(lines, m.withPreview(strings.Split(m.transcriptView(hover), "\n"), m.top())...)
 	}
 	status := m.statusLine()
 	if hint := m.hoverHint(hover); hint != "" && m.note.text == "" {
-		status = st.faint.Render("› ") + st.muted.Render(hint)
+		status = st.ghost.Render("› ") + st.muted.Render(hint)
 	}
 	// Terminals that do not know how to set the pointer ignore the request.
 	pointer := ""
-	if m.px >= 0 {
+	if m.py >= 0 {
 		pointer = ansi.SetPointerShape(m.pointerShape(hover))
 	}
-	b.WriteString("\n" + fit(status, width) + m.osc52 + pointer)
-	for _, line := range m.queueView(hover) {
-		b.WriteString("\n" + line)
+	lines = append(lines, fit(strings.Repeat(" ", margin)+status, m.stageWidth())+m.osc52+pointer)
+	lines = append(lines, m.dock(hover)...)
+	lines = append(lines, fit(m.footer(), m.stageWidth()))
+	// The changes panel runs down the right side, from the transcript's top
+	// to the bottom of the screen, beside the stage.
+	if g, ok := m.panelGeometry(); ok && g.left > 0 && m.form == nil && m.picker == nil {
+		side := m.changesView(g, hover)
+		for i, part := range side {
+			// Screen row r is lines[r-1]: the rule under the bar is not in lines.
+			at := g.top + i - 1
+			if at < 1 || at >= len(lines) {
+				continue
+			}
+			row := lines[at]
+			row = fit(row, g.left) + strings.Repeat(" ", max(0, g.left-ansi.StringWidth(row)))
+			lines[at] = row + part
+		}
 	}
-	for _, line := range m.stripView(hover) {
-		b.WriteString("\n" + line)
+	// On a wide terminal the cockpit sits in the middle; the bar's rule
+	// runs across the whole width, as the web cockpit's does.
+	pad := strings.Repeat(" ", m.left())
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		if i == 1 {
+			b.WriteString(st.rule.Render(strings.Repeat("─", m.termWidth)) + "\n")
+		}
+		b.WriteString(pad + line)
 	}
-	b.WriteString("\n" + m.paintEffort(hover, fit(m.composerRule(), width)))
-	b.WriteString("\n" + m.composerView())
-	b.WriteString("\n" + fit(m.footer(), width))
 	return b.String()
 }
 
@@ -506,6 +774,7 @@ func (m *uiModel) transcriptView(hover hoverTarget) string {
 	total, height := m.view.TotalLineCount(), m.view.Height
 	thumbStart, thumbEnd := scrollThumb(total, height, m.view.YOffset)
 	out := make([]string, height)
+	air := strings.Repeat(" ", margin+1)
 	for i := range height {
 		line := ""
 		if i < len(lines) {
@@ -513,36 +782,121 @@ func (m *uiModel) transcriptView(hover hoverTarget) string {
 		}
 		bar := " "
 		if total > height {
-			bar = st.rule.Render("│")
+			bar = st.rule2.Render("│")
 			if i >= thumbStart && i < thumbEnd {
-				bar = st.muted.Render("┃")
+				bar = st.faint.Render("┃")
 			}
 		}
 		gap := max(0, m.view.Width-ansi.StringWidth(line))
-		line = m.paintHover(hover, transcriptTop+i, line+strings.Repeat(" ", gap))
+		line = m.paintHover(hover, m.top()+i, line+strings.Repeat(" ", gap))
 		line = m.selected(inTranscript, m.view.YOffset+i, line, 0)
 		if hover.kind == hoverScrollbar && total > height {
 			bar = st.accent.Render("┃")
 		}
-		out[i] = line + " " + bar
-	}
-	if panel {
-		for i, side := range m.changesView(g, hover) {
-			out[i] += side
-		}
+		out[i] = line + air + bar
 	}
 	return strings.Join(out, "\n")
 }
 
-// composerView is the textarea with the selection shown on it.
-func (m *uiModel) composerView() string {
-	view := m.input.View()
-	if m.sel == nil || m.sel.area != inComposer {
-		return view
+// ---------------------------------------------------------------- the dock
+
+// dockInner is the width of a row of the dock's box, between its edges
+// and their spaces; edgeInner that of an edge between its corners.
+func (m *uiModel) dockInner() int { return max(1, m.stageWidth()-2*margin-4) }
+func (m *uiModel) edgeInner() int { return max(1, m.stageWidth()-2*margin-2) }
+
+// dock is what sits under the status line: the queue and the images on a
+// tray, and the composer in its box with its controls. The tray and the box
+// share their edges, as the web cockpit's do.
+func (m *uiModel) dock(hover hoverTarget) []string {
+	first := true
+	var lines []string
+	for _, part := range [][]string{m.queueView(hover), m.stripView(hover)} {
+		if len(part) == 0 {
+			continue
+		}
+		// Each part's first row is its edge, with its label.
+		part[0] = m.edgeRow(part[0], edgeKind(first), false)
+		lines = append(lines, part...)
+		first = false
 	}
+	focused := m.composerFocused()
+	lines = append(lines, m.edgeRow(m.composerRule(), edgeKind(first), focused))
+	lines = append(lines, strings.Split(m.composerView(), "\n")...)
+	controls, _ := m.controls()
+	if m.roomy() {
+		lines = append(lines, m.paintControls(hover, m.boxRow(controls)))
+		lines = append(lines, m.edgeRow("", edgeBottom, focused))
+	} else {
+		// Short of rows, the controls go onto the bottom edge.
+		lines = append(lines, m.paintControls(hover, m.edgeRow(controls, edgeBottom, focused)))
+	}
+	return lines
+}
+
+// edgeKind is the first box's top edge, or the joint under a tray.
+func edgeKind(first bool) string {
+	if first {
+		return edgeTop
+	}
+	return edgeJoint
+}
+
+const (
+	edgeTop    = "top"
+	edgeJoint  = "joint"
+	edgeBottom = "bottom"
+)
+
+// composerFocused reports the composer with the keys: the ticks at its
+// corners turn accent, as the web cockpit's do on focus.
+func (m *uiModel) composerFocused() bool {
+	return m.picker == nil && m.form == nil && m.queueFocus < 0 && !(m.changes.focused && m.changesShown())
+}
+
+// edgeRow draws a labelled row as a box's edge: the first box's top, the
+// joint between a tray and the box under it, or the bottom. The row's text
+// has its own rules; the corners go around it, in the accent when the box
+// has the keys, as the web cockpit's ticks.
+func (m *uiModel) edgeRow(row, kind string, focused bool) string {
+	st := m.styles
+	left, right := "├", "┤"
+	switch kind {
+	case edgeTop:
+		left, right = "┌", "┐"
+	case edgeBottom:
+		left, right = "└", "┘"
+	}
+	corner := st.rule2
+	if focused {
+		corner = st.accent
+	}
+	inner := m.edgeInner()
+	row = fit(row, inner)
+	row += st.rule2.Render(strings.Repeat("─", max(0, inner-ansi.StringWidth(row))))
+	return strings.Repeat(" ", margin) + corner.Render(left) + row + corner.Render(right)
+}
+
+// boxRow puts a row of the dock between the box's edges.
+func (m *uiModel) boxRow(row string) string {
+	st := m.styles
+	inner := m.dockInner()
+	row = fit(row, inner)
+	return strings.Repeat(" ", margin) + st.rule2.Render("│") + " " + row + strings.Repeat(" ", max(0, inner-ansi.StringWidth(row))) + " " + st.rule2.Render("│")
+}
+
+// composerView is the textarea with the selection shown on it, in the box.
+func (m *uiModel) composerView() string {
+	st := m.styles
+	view := m.input.View()
 	rows := strings.Split(view, "\n")
+	inner := m.stageWidth() - margin - 2
 	for i, row := range rows {
-		rows[i] = m.selected(inComposer, i, row, promptWidth)
+		if m.sel != nil && m.sel.area == inComposer {
+			row = m.selected(inComposer, i, row, promptWidth)
+		}
+		row += strings.Repeat(" ", max(0, inner-ansi.StringWidth(row)))
+		rows[i] = fit(row, inner) + " " + st.rule2.Render("│")
 	}
 	return strings.Join(rows, "\n")
 }
@@ -557,11 +911,11 @@ func (m *uiModel) overlay() string {
 		top = 1
 	}
 	// Only rows drawn inside the transcript area are clickable.
-	m.picker.listTop = transcriptTop + top + 4
+	m.picker.listTop = m.top() + top + 4
 	if m.picker.fixed {
 		m.picker.listTop--
 	}
-	m.picker.listEnd = transcriptTop + min(height, top+len(boxLines)-3)
+	m.picker.listEnd = m.top() + min(height, top+len(boxLines)-3)
 	out := make([]string, height)
 	for i := range out {
 		if j := i - top; j >= 0 && j < len(boxLines) {
@@ -571,13 +925,23 @@ func (m *uiModel) overlay() string {
 	return strings.Join(out, "\n")
 }
 
+// ---------------------------------------------------------------- the bar
+
 func (m *uiModel) header() string {
 	st := m.styles
 	brand := st.accent.Render("■") + " " + st.bold.Render("KOU") + st.accent.Render("-") + st.bold.Render("CONVEYOR")
-	where := st.faint.Render(filepath.Base(m.opt.Workspace)) + st.faint.Render(" / ")
-	title := orDefault(m.sessionTitle(), "new session")
+	where := st.faint.Render(filepath.Base(m.opt.Workspace)) + st.ghost.Render(" / ")
+	title := orDefault(m.sessionTitle(), "New session")
 	if m.loading {
 		title = "loading…"
+	}
+	id := ""
+	switch {
+	case m.loading:
+	case m.fresh:
+		id = "unsaved"
+	default:
+		id = shortID(m.sessionID)
 	}
 	if m.meta.Pinned && !m.loading {
 		where += st.accent.Render("◆ ")
@@ -596,29 +960,57 @@ func (m *uiModel) header() string {
 	case m.last.kind != "" && time.Since(m.last.at) < 5*time.Second:
 		phase = m.last.kind
 	}
-	badge := strings.ToUpper(phase)
+	// The run's state, a chip with its dot: the dot blinks while it runs.
+	dot := "■"
+	if (phase == "running" || phase == "stopping") && m.frame/4%2 == 1 {
+		dot = "□"
+	}
+	chip := dot + " " + strings.ToUpper(phase)
 	if m.state != idle {
-		badge += " " + clock(time.Since(m.started))
+		chip += " " + clock(time.Since(m.started))
 	}
-	right := st.badge[phase].Render(badge)
+	right := st.state[phase].Render(chip)
 	if u := m.tr.Usage; u.Turns > 0 && m.width >= 90 {
-		right = st.faint.Render("ctx ") + st.muted.Render(tokens(u.Context)) + "  " +
-			st.faint.Render("↑") + st.muted.Render(tokens(u.Input)) + " " +
-			st.faint.Render("↓") + st.muted.Render(tokens(u.Output)) + "  " + right
+		right = st.ghost.Render("ctx ") + st.faint.Render(tokens(u.Context)) + "  " +
+			st.ghost.Render("↑") + st.faint.Render(tokens(u.Input)) + " " +
+			st.ghost.Render("↓") + st.faint.Render(tokens(u.Output)) + "   " + right
 	}
-	room := m.width - ansi.StringWidth(brand) - ansi.StringWidth(right) - 4 - ansi.StringWidth(where)
-	left := brand + "  "
+	room := m.width - margin - ansi.StringWidth(brand) - ansi.StringWidth(right) - 6 - ansi.StringWidth(where) - ansi.StringWidth(id) - 2
+	left := strings.Repeat(" ", margin) + brand + "  "
 	if room >= 8 {
 		left += where + st.text.Render(ansi.Truncate(title, room, "…"))
+		if id != "" {
+			left += "  " + st.ghost.Render(id)
+		}
 	}
-	return fitRight(left, right, m.width)
+	return fitRight(left, right+" ", m.width)
+}
+
+// meter is the web cockpit's activity meter: a row of segments with the
+// accent running along them.
+func (m *uiModel) meter() string {
+	st := m.styles
+	if st.noColor {
+		return spinner[m.frame%len(spinner)]
+	}
+	var b strings.Builder
+	at := m.frame % 8
+	for i := range 6 {
+		switch {
+		case i == at || i == at-1:
+			b.WriteString(st.accent.Render("▪"))
+		default:
+			b.WriteString(st.rule2.Render("▪"))
+		}
+	}
+	return b.String()
 }
 
 var spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 func (m *uiModel) statusLine() string {
 	st := m.styles
-	width := m.width
+	width := m.stageWidth() - margin
 	if value := m.input.Value(); strings.HasPrefix(value, "/") && !strings.Contains(value, " ") && m.picker == nil {
 		var parts []string
 		for _, c := range commands {
@@ -675,14 +1067,14 @@ func (m *uiModel) statusLine() string {
 		if m.state == stopping {
 			activity = "Stopping"
 		}
-		left := st.accent.Render(spinner[m.frame%len(spinner)]) + " " + st.text.Render(activity)
+		left := m.meter() + " " + st.text.Render(activity)
 		if running := m.tr.Running(); len(running) > 0 && running[0].Tool.Input != "" {
-			left += st.faint.Render(" · ") + st.muted.Render(firstLine(running[0].Tool.Input))
+			left += st.ghost.Render(" · ") + st.muted.Render(firstLine(running[0].Tool.Input))
 		}
 		if m.diag != "" {
-			left += st.faint.Render(" · " + m.diag)
+			left += st.ghost.Render(" · " + m.diag)
 		}
-		right := st.faint.Render(clock(time.Since(m.started)) + "  esc esc stops")
+		right := st.ghost.Render(clock(time.Since(m.started))) + "  " + keyHints(st, 40, "esc esc", "stop") + " "
 		return fitRight(left, right, width)
 	}
 	if m.unseen > 0 && !m.compact {
@@ -709,13 +1101,15 @@ func (m *uiModel) statusLine() string {
 	if m.diag != "" && m.last.kind == "failed" {
 		parts = append(parts, m.diag)
 	}
-	line := st.faint.Render(strings.Join(parts, " · "))
+	line := st.ghost.Render(strings.Join(parts, " · "))
 	if m.tr.Interrupted() {
 		line = st.warn.Render("◌ interrupted") + st.faint.Render(" — /continue picks it up, esc esc edits the prompt · ") + line
 	}
 	return line
 }
 
+// composerRule is the label of the composer's top edge: what the composer
+// does now, and what enter does with its text.
 func (m *uiModel) composerRule() string {
 	st := m.styles
 	label, style := "PROMPT", st.label
@@ -732,28 +1126,145 @@ func (m *uiModel) composerRule() string {
 		// While the agent works, what is written waits for it.
 		hint = "enter queues · ^X forces in"
 	}
-	left := st.rule.Render("── ") + style.Render(label) + " "
+	left := st.rule2.Render("─ ") + style.Render(label) + " "
 	if hint != "" {
-		left += st.faint.Render(hint) + " "
+		left += st.ghost.Render(hint) + " "
 	}
 	if lines := m.input.LineCount(); lines > 1 {
-		left += st.faint.Render(fmt.Sprintf("line %d/%d ", m.input.Line()+1, lines))
+		left += st.ghost.Render(fmt.Sprintf("line %d/%d ", m.input.Line()+1, lines))
 	}
-	effort, _ := m.effortControl()
-	right := m.modelControl() + effort
-	// The label's hints give way to the controls where the rule is short.
-	if ansi.StringWidth(left)+ansi.StringWidth(right) > m.width {
-		left = ansi.Truncate(left, max(0, m.width-ansi.StringWidth(right)-1), "") + " "
+	return left
+}
+
+// control is a part of the controls row the pointer can act on, at
+// columns [from, to) of the screen.
+type control struct {
+	kind     hoverKind
+	from, to int
+	// meter is the column of the effort meter's first bar.
+	meter int
+}
+
+// controls renders the composer's controls: the model and the effort at
+// the left, the run button at the right, and says where each is. Inside
+// the box they sit on a row of their own; on a short terminal they go onto
+// its bottom edge, among its rules.
+func (m *uiModel) controls() (string, []control) {
+	st := m.styles
+	onEdge := !m.roomy()
+	x := promptWidth
+	var hits []control
+	row := ""
+	put := func(text string) {
+		row += text
+		x += ansi.StringWidth(text)
 	}
-	fill := max(0, m.width-ansi.StringWidth(left)-ansi.StringWidth(right))
-	return left + st.rule.Render(strings.Repeat("─", fill)) + right
+	add := func(kind hoverKind, text string, meter int) {
+		hits = append(hits, control{kind: kind, from: x, to: x + ansi.StringWidth(text), meter: x + meter})
+		put(text)
+	}
+	gap, inner := "   ", m.dockInner()
+	if onEdge {
+		x = margin + 1 // after the corner
+		put(st.rule2.Render("─ "))
+		gap, inner = " "+st.rule2.Render("─")+" ", m.edgeInner()
+	}
+	if model := m.modelControl(); model != "" {
+		add(hoverModel, model, 0)
+		put(gap)
+	}
+	effort, meter := m.effortControl()
+	add(hoverEffort, effort, meter)
+	// The button, at the right.
+	button := m.runButton()
+	tail := ""
+	if onEdge {
+		tail = st.rule2.Render("─")
+		button += " "
+	}
+	fill := max(2, inner-ansi.StringWidth(row)-ansi.StringWidth(button)-ansi.StringWidth(tail))
+	if onEdge {
+		put(" " + st.rule2.Render(strings.Repeat("─", fill-2)) + " ")
+	} else {
+		put(strings.Repeat(" ", fill))
+	}
+	add(hoverRun, button, 0)
+	put(tail)
+	return row, hits
+}
+
+// runButton is what enter does, as a button: run, queue or stop, and
+// beside queue, force in.
+func (m *uiModel) runButton() string {
+	st := m.styles
+	typed := strings.TrimSpace(m.input.Value()) != ""
+	key := func(k string) string { return st.ghost.Render(" " + k) }
+	switch {
+	case m.queueEdit != nil:
+		return st.button.Render("PUT IT BACK ↵")
+	case m.edit != nil:
+		return st.button.Render("RUN FROM HERE ↵")
+	case m.state == stopping:
+		return st.buttonOff.Render("STOPPING…")
+	case m.state != idle && typed:
+		return st.chipAccent.Render("⚡ FORCE ^X") + " " + st.button.Render("QUEUE ↵")
+	case m.state != idle:
+		return st.chip.Foreground(colorErr).Render("■ STOP") + key("esc esc")
+	case typed && m.runBlocked() == "":
+		return st.button.Render("RUN ↵")
+	}
+	return st.buttonOff.Render("RUN ↵")
+}
+
+// clickRun does what the run button says.
+func (m *uiModel) clickRun(x int) tea.Cmd {
+	switch {
+	case m.state == stopping:
+		return nil
+	case m.state != idle && strings.TrimSpace(m.input.Value()) != "":
+		// The force chip comes before the queue button.
+		for _, c := range m.controlAt(x) {
+			if c.kind == hoverRun && x < c.from+ansi.StringWidth(m.styles.chipAccent.Render("⚡ FORCE ^X")) {
+				return m.forceComposer()
+			}
+		}
+		return m.submit()
+	case m.state != idle:
+		return m.stop()
+	case strings.TrimSpace(m.input.Value()) == "":
+		return nil
+	}
+	return m.submit()
+}
+
+// controlAt is the controls under a column of the controls row.
+func (m *uiModel) controlAt(x int) []control {
+	_, hits := m.controls()
+	var at []control
+	for _, c := range hits {
+		if x >= c.from && x < c.to {
+			at = append(at, c)
+		}
+	}
+	return at
+}
+
+// effortAt is the screen row and column of the effort meter's first bar.
+func (m *uiModel) effortAt() (row, col int) {
+	_, hits := m.controls()
+	for _, c := range hits {
+		if c.kind == hoverEffort {
+			return m.controlsRow(), c.meter
+		}
+	}
+	return m.controlsRow(), 0
 }
 
 func (m *uiModel) footer() string {
 	st := m.styles
 	if m.toast != "" {
 		toast := st.toast.Render("✓ " + m.toast)
-		return strings.Repeat(" ", max(0, (m.width-ansi.StringWidth(toast))/2)) + toast
+		return strings.Repeat(" ", max(0, (m.stageWidth()-ansi.StringWidth(toast))/2)) + toast
 	}
 	// In compact mode the terminal selects and copies, and ^F leads back.
 	copyHint, layout := []string{"drag", "copy"}, []string{"^F", "inline"}
@@ -762,6 +1273,8 @@ func (m *uiModel) footer() string {
 	}
 	var hints []string
 	changes := []string{"^G", "changes"}
+	width := m.stageWidth() - margin
+	pad := strings.Repeat(" ", margin)
 	switch {
 	case m.changes.focused && m.changesShown():
 		hints = []string{"↑↓", "file", "←→", "fold", "pgup pgdn", "diff", "[ ]", "prompt"}
@@ -772,9 +1285,9 @@ func (m *uiModel) footer() string {
 		if _, covers := m.panelColumns(); !covers {
 			hints = append(hints, "< >", "width") // the first to go where there is no room
 		}
-		return keyHints(st, m.width, hints...)
+		return pad + keyHints(st, width, hints...)
 	case m.queueFocus >= 0:
-		return keyHints(st, m.width, "↑↓", "select", "enter", "edit", "^X", "force in", "⌫", "drop", "⇧↑↓", "move", "esc", "back to the prompt")
+		return pad + keyHints(st, width, "↑↓", "select", "enter", "edit", "^X", "force in", "⌫", "drop", "⇧↑↓", "move", "esc", "back to the prompt")
 	case m.queueEdit != nil:
 		hints = []string{"enter", "put it back", "^X", "force it in", "esc", "keep as it was", "^J", "new line"}
 	case m.edit != nil:
@@ -800,7 +1313,7 @@ func (m *uiModel) footer() string {
 		hints = append(append(append(append(hints, "^T", "effort", "^K", "commands"), changes...), layout...), "^S", "sessions", "^R", "history", "^O", "details")
 		hints = append(append(hints, copyHint...), "^C", "quit")
 	}
-	return keyHints(st, m.width, hints...)
+	return pad + keyHints(st, width, hints...)
 }
 
 // ---------------------------------------------------------------- text helpers

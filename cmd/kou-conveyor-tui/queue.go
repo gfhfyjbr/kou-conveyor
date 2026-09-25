@@ -483,14 +483,15 @@ func (m *uiModel) queueWindow(rows []queueRow) (int, int) {
 	return start, start + room
 }
 
-// queueView renders the queue: a rule that says what it waits for, then its
-// prompts, forced ones first.
+// queueView renders the queue as the dock's tray: its first row is the
+// label of the tray's edge, saying what the queue waits for; then its
+// prompts, forced ones first, as rows of the box.
 func (m *uiModel) queueView(hover hoverTarget) []string {
 	if m.queueRows() == 0 {
 		return nil
 	}
 	st := m.styles
-	width := m.width
+	edge := m.edgeInner()
 	q := m.queues[m.sessionID]
 	if q == nil {
 		q = &cockpit.Queue{}
@@ -499,8 +500,8 @@ func (m *uiModel) queueView(hover hoverTarget) []string {
 	start, end := m.queueWindow(rows)
 	waiting := q.Paused || m.state == idle && m.queueEdit == nil
 
-	// The rule.
-	left := st.rule.Render("── ") + st.label.Render(fmt.Sprintf("QUEUE %d", len(rows))) + " "
+	// The edge.
+	left := st.rule2.Render("─ ") + st.label.Render(fmt.Sprintf("QUEUE %d", len(rows))) + " "
 	var detail string
 	switch {
 	case waiting:
@@ -515,28 +516,31 @@ func (m *uiModel) queueView(hover hoverTarget) []string {
 	default:
 		detail = "runs when the agent finishes"
 	}
-	left += st.faint.Render(detail) + " "
+	left += st.ghost.Render("· "+detail) + " "
 	var right string
 	switch {
 	case m.queueFocus >= 0:
-		right = st.accentLabel.Render(" esc ") + st.faint.Render("back ")
+		right = st.accentLabel.Render(" esc ") + st.ghost.Render("back ")
 	case end-start < len(rows):
-		right = st.faint.Render(fmt.Sprintf(" +%d more · ↑ ", len(rows)-(end-start)))
+		right = st.ghost.Render(fmt.Sprintf(" +%d more · ↑ ", len(rows)-(end-start)))
 	case m.input.Value() == "" && m.queueEdit == nil:
-		right = st.faint.Render(" ↑ edits ")
+		right = st.ghost.Render(" ↑ edits ")
 	}
-	fill := max(0, width-ansi.StringWidth(left)-ansi.StringWidth(right)-2)
-	lines := []string{fit(left+st.rule.Render(strings.Repeat("─", fill))+right+st.rule.Render("──"), width)}
+	if right != "" {
+		right += st.rule2.Render("─")
+	}
+	fill := max(0, edge-ansi.StringWidth(left)-ansi.StringWidth(right))
+	lines := []string{fit(left+st.rule2.Render(strings.Repeat("─", fill))+right, edge)}
 
 	for i := start; i < end; i++ {
-		lines = append(lines, m.queueLine(rows[i], i, q, waiting, hover))
+		lines = append(lines, m.boxRow(m.queueLine(rows[i], i, q, waiting, hover)))
 	}
 	return lines
 }
 
 func (m *uiModel) queueLine(row queueRow, at int, q *cockpit.Queue, waiting bool, hover hoverTarget) string {
 	st := m.styles
-	width := m.width
+	width := m.dockInner()
 	selected := m.queueFocus >= 0 && row.index == m.queueFocus
 	bar := " "
 	if selected {
@@ -556,17 +560,17 @@ func (m *uiModel) queueLine(row queueRow, at int, q *cockpit.Queue, waiting bool
 		}
 		right = st.accent.Render(motion) + " " + st.faint.Render(m.forcedWhen())
 	default:
-		mark = st.faint.Render(fmt.Sprintf("%3d", row.number))
+		mark = st.ghost.Render(fmt.Sprintf("%3d", row.number))
 		text = st.text.Render(firstLine(row.item.Text))
 		switch {
 		case selected:
 			right = keyHints(st, 60, "enter", "edit", "^X", "force", "⌫", "drop", "⇧↑↓", "move")
 		case row.number == 1 && !waiting:
-			right = st.faint.Render("next")
+			right = st.label.Render("NEXT")
 		}
 		// A prompt queued with another model than the session's next says so.
 		if model := row.item.Model; model != "" && model != m.nextModel() && !selected {
-			right = strings.TrimSpace(st.faint.Render(ansi.Truncate(model, 24, "…")) + " " + right)
+			right = strings.TrimSpace(st.ghost.Render(ansi.Truncate(model, 24, "…")) + " " + right)
 		}
 	}
 	if selected && row.item.Forced {
@@ -574,7 +578,7 @@ func (m *uiModel) queueLine(row queueRow, at int, q *cockpit.Queue, waiting bool
 	}
 	line := bar + mark + "  " + text
 	if right != "" {
-		line = fitRight(line, right+" ", width)
+		line = fitRight(line, right, width)
 	} else {
 		line = fit(line, width)
 	}

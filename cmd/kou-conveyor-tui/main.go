@@ -220,17 +220,20 @@ func runCLI(args []string) int {
 		lipgloss.SetColorProfile(termenv.Ascii)
 	}
 	m := newModel(ctx, o)
+	// The screen and the pictures share the terminal, one writer at a time
+	// (output.go).
+	out := newTerminalOutput(os.Stdout)
 	// Pictures of pasted images: the kitty graphics protocol where the
 	// terminal speaks it, half blocks or descriptions elsewhere.
 	mode, tmux := detectGraphics(os.Getenv, o.noColor)
-	m.graphics = newGraphics(mode, tmux, os.Stdout)
+	m.graphics = newGraphics(mode, tmux, out)
 	if mode == graphicsKitty {
 		m.graphics.start()
 	}
 	if mode == graphicsBlocks && !lipgloss.HasDarkBackground() {
 		blockBackground = 0xf0f0
 	}
-	programOptions := []tea.ProgramOption{tea.WithReportFocus(), tea.WithContext(ctx)}
+	programOptions := []tea.ProgramOption{tea.WithReportFocus(), tea.WithContext(ctx), tea.WithOutput(out)}
 	if !o.compact {
 		// All motion, not only drags: the pointer's place decides what lights up.
 		programOptions = append(programOptions, tea.WithAltScreen(), tea.WithMouseAllMotion())
@@ -239,10 +242,10 @@ func runCLI(args []string) int {
 	_, err = program.Run()
 	m.releasePictures()
 	// The pointer shape outlives the program in the terminals that set it.
-	fmt.Fprint(os.Stdout, ansi.SetPointerShape("default"))
+	fmt.Fprint(out, ansi.SetPointerShape("default"))
 	if m.compact && !m.fresh && err == nil {
 		// The transcript stays in the scrollback; say how to come back to it.
-		fmt.Fprintf(os.Stdout, "%s\n", m.styles.faint.Render("kou-conveyor-tui -session "+m.sessionID+" resumes this session"))
+		fmt.Fprintf(out, "%s\n", m.styles.faint.Render("kou-conveyor-tui -session "+m.sessionID+" resumes this session"))
 	}
 	// Never leave a runner behind, including on SIGTERM, EOF or a render failure.
 	m.shutdown()

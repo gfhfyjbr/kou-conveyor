@@ -73,7 +73,7 @@ func TestCtrlVPastesAnImage(t *testing.T) {
 	// The cursor is right after the label: the image shows large, over the
 	// transcript, and small above the composer.
 	shown := frame(t, m)
-	if m.previewing() != a || !strings.Contains(shown, "╭─ [Image 1] 64×48 PNG") || !strings.Contains(shown, "⌫ removes it") {
+	if m.previewing() != a || !strings.Contains(shown, "┌─ [Image 1] 64×48 PNG") || !strings.Contains(shown, "⌫ removes it") {
 		t.Fatalf("no preview:\n%s", shown)
 	}
 	if m.stripRows() != 1 || !strings.Contains(shown, "IMAGES 1 ▣ [Image 1] 64×48 PNG") {
@@ -351,7 +351,7 @@ func TestInlineShowsThePreviewAboveTheComposer(t *testing.T) {
 	m, _ := compactModel(t)
 	pasteImage(t, m, testPNG(t, 20, 10))
 	view := ansi.Strip(m.View())
-	if !strings.Contains(view, "╭─ [Image 1] 20×10 PNG") || !strings.Contains(view, "IMAGES 1") {
+	if !strings.Contains(view, "┌─ [Image 1] 20×10 PNG") || !strings.Contains(view, "IMAGES 1") {
 		t.Fatalf("inline:\n%s", view)
 	}
 	if n := len(strings.Split(m.View(), "\n")); n > m.height {

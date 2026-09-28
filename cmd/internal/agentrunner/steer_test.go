@@ -171,11 +171,11 @@ func TestSteeringInputIsValidated(t *testing.T) {
 		`{"content":"hi","extra":true}`,
 		`"hi"`,
 	} {
-		if _, err := steeringInput(jsontext.Value(line)); err == nil {
+		if _, err := steeringInput(jsontext.Value(line), t.TempDir()); err == nil {
 			t.Errorf("%s was accepted", line)
 		}
 	}
-	input, err := steeringInput(jsontext.Value(`{"content":"hi","role":"user"}`))
+	input, err := steeringInput(jsontext.Value(`{"content":"hi","role":"user"}`), t.TempDir())
 	if err != nil || input.Delivery != inbox.DeliverAfterTools || input.Kind != inbox.InputExternal || input.ID == "" {
 		t.Fatalf("input = %+v, %v", input, err)
 	}

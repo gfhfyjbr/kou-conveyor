@@ -239,7 +239,15 @@ func (m *uiModel) compactView() string {
 			above = append(above, pad+line)
 		}
 	default:
-		above = m.liveLines(room)
+		// What a $ reference completes to shows above the status line.
+		var links []string
+		if m.linksShown() {
+			links = m.linksBox(width-2*margin, room)
+		}
+		above = m.liveLines(max(1, room-len(links)))
+		for _, line := range links {
+			above = append(above, strings.Repeat(" ", margin)+line)
+		}
 	}
 	// A list or form taller than the room keeps its top, as in fullscreen.
 	above = above[:min(len(above), room)]

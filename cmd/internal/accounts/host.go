@@ -1,6 +1,7 @@
 package accounts
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -48,6 +49,9 @@ type Host struct {
 	port       int
 	password   string // the management API's, for this process only
 	history    *History
+	ledger     *Ledger
+	prices     *PriceBook
+	market     *OpenRouter
 	quotas     *quotas
 	configPath string
 	// callbacks has redirect sign-ins listen for the provider's redirect.
@@ -83,9 +87,13 @@ func New(opt Options) (*Host, error) {
 		return nil, err
 	}
 	opt.Dir = dir
+	market := NewOpenRouter(filepath.Join(dir, "openrouter-prices.json"))
+	prices := NewPriceBook(filepath.Join(dir, "prices.json"))
+	prices.market = market
 	return &Host{
 		opt: opt, host: host, port: port, password: rand.Text() + rand.Text(),
 		history: NewHistory(filepath.Join(dir, "history.json")), quotas: newQuotas(),
+		ledger: NewLedger(filepath.Join(dir, "usage.json")), prices: prices, market: market,
 		configPath: filepath.Join(dir, "config.yaml"), callbacks: true, clients: newClientWatch(),
 		state: GatewayStarting, logins: map[string]time.Time{}, ready: make(chan struct{}), done: make(chan struct{}),
 	}, nil
@@ -145,6 +153,7 @@ func (h *Host) run(ctx context.Context) error {
 	listener.Close()
 
 	usage.RegisterNamedPlugin("kou-conveyor-history", h.history)
+	usage.RegisterNamedPlugin("kou-conveyor-usage", h.ledger)
 	// The registry says which accounts and keys serve models as they
 	// register them, before the service takes up the first.
 	cliproxy.SetGlobalModelRegistryHook(h.clients)
@@ -153,10 +162,18 @@ func (h *Host) run(ctx context.Context) error {
 		return err
 	}
 	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
+	// The history and the ledger are saved as the gateway stops, before
+	// Run returns: nothing writes to the folder after.
+	var keepers sync.WaitGroup
+	defer func() {
+		cancel()
+		keepers.Wait()
+	}()
 	stopped := make(chan error, 1)
 	go func() { stopped <- service.Run(runCtx) }()
-	go h.history.keep(runCtx, 30*time.Second)
+	keepers.Go(func() { h.history.keep(runCtx, 30*time.Second) })
+	keepers.Go(func() { h.ledger.keep(runCtx, time.Minute) })
+	keepers.Go(func() { h.market.keep(runCtx) })
 
 	client := newClient("http://"+loopback(h.host, h.port), h.password)
 	deadline := time.Now().Add(30 * time.Second)
@@ -184,7 +201,6 @@ func (h *Host) run(ctx context.Context) error {
 	close(h.ready)
 
 	err = <-stopped
-	_ = h.history.Save()
 	if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 		return nil
 	}
@@ -327,6 +343,13 @@ func (h *Host) Overview(ctx context.Context, span string) (Overview, error) {
 	}
 	now := time.Now()
 	reg := cliproxy.GlobalModelRegistry()
+	// What each account's and key's requests of the span come to at API
+	// prices, and of the last day for the summary.
+	spent := h.ledger.spendByAuth(now.Add(-window.span), now, h.prices.Resolve)
+	daySpent := spent
+	if span != "24h" {
+		daySpent = h.ledger.spendByAuth(now.Add(-24*time.Hour), now, h.prices.Resolve)
+	}
 	list := make([]Account, 0, len(records))
 	for _, r := range records {
 		a := accountOf(r, now)
@@ -334,6 +357,8 @@ func (h *Host) Overview(ctx context.Context, span string) (Overview, error) {
 		// the account up; until then the account serves none.
 		a.Models = accountModels(reg, a.ID)
 		h.clients.add(a.ID)
+		a.Spend = spent.of([]string{a.ID}, []string{a.Index})
+		h.ledger.learn(a.ID, a.Index, ledgerAuth{Label: a.Label, Name: a.ProviderName, Kind: "account"})
 		a.Uptime = h.history.Uptime(a.ID, a.Index, window.span, window.slots)
 		a.Errors = h.history.Errors(a.ID, a.Index, 5)
 		if quota, ok := h.quotas.cached(a.Name); ok && quota.Error == "" {
@@ -355,6 +380,10 @@ func (h *Host) Overview(ctx context.Context, span string) (Overview, error) {
 		e := &endpoints[i]
 		e.Uptime = h.history.UptimeOf(e.indexes, window.span, window.slots)
 		e.Errors = h.history.ErrorsOf(e.indexes, 5)
+		e.Spend = spent.of(nil, e.indexes)
+		for _, index := range e.indexes {
+			h.ledger.learn("", index, ledgerAuth{Label: cmp.Or(e.Name, e.Host), Name: e.KindName, Kind: "endpoint"})
+		}
 		if e.State == StateReady && e.Uptime.Failed > 0 && e.Uptime.LastFailure.After(e.Uptime.LastOK) {
 			e.State = StateError
 		}
@@ -377,11 +406,15 @@ func (h *Host) Overview(ctx context.Context, span string) (Overview, error) {
 		}
 		a.Errors = h.history.Errors(k.id, k.index, 5)
 		a.Models = accountModels(reg, a.ID)
+		a.Spend = spent.of([]string{a.ID}, []string{a.Index})
+		h.ledger.learn(a.ID, a.Index, ledgerAuth{Label: a.Label, Name: a.ProviderName, Kind: "key"})
 		list = append(list, a)
 	}
 	sortAccounts(list)
 	o := Overview{Accounts: list, Endpoints: endpoints}
 	o.Summary = h.summarize(o, span)
+	day := daySpent.total()
+	o.Summary.Cost, o.Summary.Unpriced = day.Cost, day.Unpriced
 	h.mu.Lock()
 	h.summary = o.Summary
 	h.mu.Unlock()

@@ -1,0 +1,52 @@
+# kou-conveyor terminal: zsh's startup files.
+#
+# The terminal starts zsh with ZDOTDIR pointing at this directory, so zsh
+# reads its startup files from here; the user's own are never changed. Each
+# file here sources the user's file of its name, with ZDOTDIR as the user
+# has it — so they run as in any other terminal — and returns to this
+# directory for the next. After the user's .zshrc, kou.zsh sets the
+# kou-conveyor prompt; after the last file ZDOTDIR is the user's again, for
+# the shells started from this one. Turning the theme off in the cockpit's
+# settings starts zsh without any of this.
+
+typeset -g _kou_dir=${${(%):-%x}:A:h}
+# The user's ZDOTDIR, if they have one: the terminal passes it on.
+if [[ -n ${KOU_CONVEYOR_USER_ZDOTDIR+x} ]]; then
+  typeset -g _kou_user_zdotdir=$KOU_CONVEYOR_USER_ZDOTDIR _kou_user_zdotdir_set=1
+else
+  typeset -g _kou_user_zdotdir= _kou_user_zdotdir_set=
+fi
+
+# _kou_to_user makes ZDOTDIR the user's, to read one of their files.
+function _kou_to_user {
+  if [[ -n $_kou_user_zdotdir_set ]]; then
+    builtin export ZDOTDIR=$_kou_user_zdotdir
+  else
+    builtin unset ZDOTDIR
+  fi
+}
+
+# _kou_to_kou notes what the user's file left ZDOTDIR as, and points it here
+# again, for zsh to read the next file from here. Shells started meanwhile
+# do not see it.
+function _kou_to_kou {
+  typeset -g _kou_user_zdotdir=${ZDOTDIR-} _kou_user_zdotdir_set=${ZDOTDIR+1}
+  builtin typeset -g +x ZDOTDIR=$_kou_dir
+}
+
+# _kou_done puts ZDOTDIR back for good.
+function _kou_done {
+  _kou_to_user
+  builtin unset KOU_CONVEYOR_USER_ZDOTDIR
+  builtin unfunction _kou_to_user _kou_to_kou _kou_done 2>/dev/null
+}
+
+_kou_to_user
+# Powerlevel10k's instant prompt would draw its prompt first.
+typeset -g POWERLEVEL9K_INSTANT_PROMPT=off __p9k_instant_prompt_disabled=1
+if [[ -r ${ZDOTDIR:-$HOME}/.zshenv ]]; then
+  builtin source -- ${ZDOTDIR:-$HOME}/.zshenv
+fi
+_kou_to_kou
+# A shell that reads no .zshrc is left as the user has it.
+[[ -o interactive ]] || _kou_done

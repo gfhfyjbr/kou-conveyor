@@ -11,11 +11,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
+	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 )
 
 // The browser cockpit loads the web part of every active plugin of the
@@ -77,6 +79,81 @@ func (s *server) pluginSources(ws *workspace) []string {
 	return sources
 }
 
+// listingFingerprint summarizes what a workspace's listing is made from:
+// its plugins' files, and its skill directories (the plugins' skills are
+// among the plugins' files).
+func (s *server) listingFingerprint(ws *workspace) string {
+	return plugin.Fingerprint(s.pluginSources(ws)...) + skill.Fingerprint(cockpit.SkillOptions(s.opt.SettingsFile, ws.Path))
+}
+
+// skillView is a skill of the listing. File is the SKILL.md's path in the
+// workspace, for a skill that is in it, which the Files tab can show; Root
+// is the directory it comes from, and Directory that directory's label.
+type skillView struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Path        string      `json:"path"`
+	File        string      `json:"file,omitzero"`
+	Scope       skill.Scope `json:"scope"`
+	Root        string      `json:"root"`
+	Directory   string      `json:"directory"`
+	Plugin      string      `json:"plugin,omitzero"`
+	Active      bool        `json:"active"`
+	Reason      string      `json:"reason,omitzero"`
+	Manual      bool        `json:"manual,omitzero"`
+}
+
+// skillDirectoryView is a place the listing's skills come from, with the
+// skills there that could not be read.
+type skillDirectoryView struct {
+	Path   string      `json:"path"`
+	Label  string      `json:"label"`
+	Scope  skill.Scope `json:"scope"`
+	Kind   string      `json:"kind"`
+	Plugin string      `json:"plugin,omitzero"`
+	Exists bool        `json:"exists"`
+	Errors []string    `json:"errors,omitzero"`
+}
+
+// skillsOf lists the skills a run in the workspace has, those a skill of
+// the same name replaces, and where they come from, the project's first.
+// Its errors are those that are no directory's.
+func (s *server) skillsOf(ws *workspace, plugins plugin.Found) map[string]any {
+	found := cockpit.Skills(s.opt.SettingsFile, ws.Path, plugins)
+	directories := make([]skillDirectoryView, 0, len(found.Directories))
+	for _, directory := range found.Directories {
+		info, err := os.Stat(directory.Path)
+		view := skillDirectoryView{
+			Path: directory.Path, Label: directory.Label, Scope: directory.Scope, Kind: directory.Kind, Plugin: directory.Plugin,
+			Exists: err == nil && info.IsDir(),
+		}
+		for _, problem := range found.Problems {
+			if problem.Directory.Path == directory.Path {
+				view.Errors = append(view.Errors, problem.Err.Error())
+			}
+		}
+		directories = append(directories, view)
+	}
+	skills := make([]skillView, 0, len(found.Skills))
+	for _, current := range found.Skills {
+		view := skillView{
+			Name: current.Name, Description: current.Description, Path: current.Path, Scope: current.Directory.Scope, Root: current.Directory.Path,
+			Directory: current.Directory.Label, Plugin: current.Directory.Plugin, Active: current.Active, Reason: current.Reason, Manual: current.Manual,
+		}
+		if relative, err := filepath.Rel(ws.Path, current.Path); err == nil && filepath.IsLocal(relative) {
+			view.File = filepath.ToSlash(relative)
+		}
+		skills = append(skills, view)
+	}
+	errs := make([]string, 0, len(found.Errors))
+	for _, err := range found.Errors {
+		if !slices.ContainsFunc(found.Problems, func(problem skill.Problem) bool { return problem.Err == err }) {
+			errs = append(errs, err.Error())
+		}
+	}
+	return map[string]any{"directories": directories, "skills": skills, "errors": errs}
+}
+
 func (s *server) pluginsOf(ws *workspace) map[string]any {
 	found := s.plugins(ws)
 	views := make([]pluginView, 0, len(found.Plugins))
@@ -119,6 +196,9 @@ func (s *server) pluginsOf(ws *workspace) map[string]any {
 		// sees another after reconnecting knows it restarted.
 		"server": map[string]any{"instance": s.instance, "rebuild": s.rebuild != nil, "started_at": s.started, "build": buildLabel()},
 	}
+	// The skills a run in the workspace has change with the plugins, and
+	// with the skill directories.
+	listing["skills"] = s.skillsOf(ws, found)
 	if dir := s.assets.pluginDirectory(); dir != "" {
 		listing["builtin_directory"] = dir
 	}
@@ -195,8 +275,8 @@ func (s *server) handleEnablePlugin(w http.ResponseWriter, r *http.Request) {
 var pluginFileTypes = map[string]string{
 	".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
 	".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-	".gif": "image/gif", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2", ".txt": "text/plain; charset=utf-8",
-	".html": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8",
+	".gif": "image/gif", ".webp": "image/webp", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf",
+	".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8", ".html": "text/plain; charset=utf-8", ".md": "text/plain; charset=utf-8",
 }
 
 // handlePluginFile serves a file of an active plugin: one of the kinds

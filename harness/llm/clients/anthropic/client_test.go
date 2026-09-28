@@ -361,7 +361,9 @@ func TestRetriesTransientFailuresThenRecoversThinking(t *testing.T) {
 		item(llm.ItemMessage, llm.Message{Role: llm.RoleAssistant, Text: "Earlier answer."}),
 		item(llm.ItemMessage, llm.Message{Role: llm.RoleUser, Text: "And now?"}),
 	)
-	response, err := client.Respond(t.Context(), request, llm.RequestOptions{})
+	var retries []llm.Retry
+	ctx := llm.WithRetryReporter(t.Context(), func(r llm.Retry) { retries = append(retries, r) })
+	response, err := client.Respond(ctx, request, llm.RequestOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -370,6 +372,12 @@ func TestRetriesTransientFailuresThenRecoversThinking(t *testing.T) {
 	}
 	if s.count() != 4 {
 		t.Fatalf("requests = %d", s.count())
+	}
+	// The failures that were tried again were told as they came; the
+	// rejected thinking is not a failure of the model, and says nothing.
+	if len(retries) != 2 || retries[0].Attempt != 1 || retries[1].Attempt != 2 || retries[0].MaxAttempts != DefaultMaxAttempts ||
+		!strings.Contains(retries[0].Err.Error(), "overloaded") || !strings.Contains(retries[1].Err.Error(), "Internal") {
+		t.Fatalf("retries = %+v", retries)
 	}
 	if messages := encode(t, s.request(2).body["messages"]); !strings.Contains(messages, "sig-old") {
 		t.Fatalf("thinking was dropped before the API rejected it: %s", messages)

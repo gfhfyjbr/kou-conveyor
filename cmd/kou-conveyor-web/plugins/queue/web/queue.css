@@ -110,3 +110,21 @@
   font: 13.5px/1.45 var(--sans);
   color: var(--fg);
 }
+
+/* Narrow — on a phone — a message keeps a line of its own, two at most, and
+   its model and buttons go under it rather than take its room. */
+.queue { container: queue / inline-size; }
+@container queue (max-width: 520px) {
+  .queue-item { grid-template-columns: 30px minmax(0, 1fr) auto; row-gap: 2px; padding: 6px 6px 6px 0; }
+  .queue-item > :nth-child(1) { grid-row: 1 / span 2; align-self: start; margin-top: 5px; }
+  .queue-item > :nth-child(2) { grid-column: 2 / -1; }
+  .queue-item > :nth-child(3) { grid-row: 2; grid-column: 2; min-width: 0; }
+  .queue-item > :nth-child(4) { grid-row: 2; grid-column: 3; }
+  .queue-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; }
+}
+/* A touch screen: buttons a finger hits. */
+@media (hover: none) and (pointer: coarse) {
+  .queue-actions .act, .queue-tools .act { height: 32px; line-height: 30px; }
+  .queue-actions .icon.small { width: 32px; height: 32px; }
+  .queue-editor { font-size: 16px; }
+}

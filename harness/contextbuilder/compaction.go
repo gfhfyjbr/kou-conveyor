@@ -166,7 +166,7 @@ func (current *builder) Compact(response llm.Response) bool {
 	current.compacted = len(current.committedPrefix) - 1 - len(current.unanswered)
 	prefix := make([]llm.Item, 0, 2+len(current.unanswered))
 	prefix = append(prefix, current.committedPrefix[0], message)
-	current.committedPrefix = append(prefix, current.unanswered...)
+	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
 	current.usage, current.usageMark = 0, 0
 	return true

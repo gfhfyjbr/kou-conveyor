@@ -155,7 +155,7 @@ func TestBuiltinPluginsBuildThePage(t *testing.T) {
 		names[value.(map[string]any)["name"].(string)] = true
 	}
 	for _, name := range []string{"theme", "layout", "ui", "session", "timeline", "composer", "commands", "models", "effort", "queue", "edit",
-		"images", "session-list", "workspaces", "header", "inspector", "changes", "palette", "help", "connection", "accounts", "markdown", "plugins"} {
+		"images", "files", "session-list", "workspaces", "header", "inspector", "sidebar", "terminal", "explorer", "changes", "palette", "help", "connection", "accounts", "markdown", "plugins"} {
 		p := pluginNamed(t, listing, name)
 		if p["source"] != "builtin" || p["active"] != true || p["live"] != nil || p["code_version"] == nil {
 			t.Errorf("%s = %v", name, p)

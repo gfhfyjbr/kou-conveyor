@@ -30,6 +30,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore/localfile"
+	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/bash"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/viewimage"
@@ -111,6 +112,9 @@ type RequestMessage struct {
 	// Images go with the message: the model sees each beside the text,
 	// after its label.
 	Images []RequestImage `json:"images"`
+	// Files are files and folders the message links to: the model reads
+	// what the runner reads of each after the text, under its label.
+	Files []RequestFile `json:"files"`
 }
 
 // RequestImage is a picture for the model: the image's bytes (base64 in
@@ -174,13 +178,20 @@ func messageImages(images []RequestImage) ([]llm.Image, error) {
 	return references, nil
 }
 
-// messagePayload is the payload of the input a message becomes.
-func messagePayload(message RequestMessage) (jsontext.Value, error) {
+// messagePayload is the payload of the input a message becomes: its text,
+// its images, and what the model sees of the files it links, read from the
+// workspace now.
+func messagePayload(message RequestMessage, workspace string) (jsontext.Value, error) {
 	images, err := messageImages(message.Images)
 	if err != nil {
 		return nil, err
 	}
-	return contextbuilder.ExternalPayload(message.Content, images)
+	if err := validateFiles(message.Files); err != nil {
+		return nil, err
+	}
+	return contextbuilder.EncodeMessage(contextbuilder.Message{
+		Text: message.Content, Images: images, Files: linkFiles(workspace, message.Files),
+	})
 }
 
 type environmentChange struct {
@@ -276,6 +287,7 @@ func Run(
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
 	listProviders := flags.Bool("providers", false, "print the providers this runner supports, one per line, and exit")
 	listPluginsFlag := flags.Bool("list-plugins", false, "print the plugins a run in the workspace would find, one JSON object per line, and exit")
+	listSkillsFlag := flags.Bool("list-skills", false, "print the skills a run in the workspace would find, the project's and the system-wide ones, one JSON object per line, and exit")
 	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
 	if err := flags.Parse(args); err != nil {
@@ -315,6 +327,16 @@ func Run(
 			return fmt.Errorf("resolve workspace: %w", err)
 		}
 		return listPlugins(output, discoverPlugins(config, getenv, workspace))
+	}
+	if *listSkillsFlag {
+		workspace, err := filepath.Abs(strings.TrimSpace(*workspaceDirectory))
+		if err != nil {
+			return fmt.Errorf("resolve workspace: %w", err)
+		}
+		options, problems := pluginOptions(config, getenv, workspace)
+		found := discoverSkills(skillOptions(options, getenv), plugin.Discover(options))
+		found.Errors = append(problems, found.Errors...)
+		return listSkills(output, found)
 	}
 
 	// With -steer, messages for the running agent follow on stdin: after the
@@ -475,10 +497,15 @@ func Run(
 	pluginFingerprint := plugin.Fingerprint(plugin.Sources(options)...)
 	plugins := plugin.Discover(options)
 	plugins.Errors = append(optionProblems, plugins.Errors...)
-	skills, skillErrors := tool.DiscoverSkills(filepath.Join(workspace, ".harness", "skills"))
+	// Skills are followed the same way: the project's, in the workspace's
+	// .harness/skills and .agents/skills, and the system-wide ones, in
+	// ~/.agents/skills and kou-conveyor's configuration directory, besides
+	// the plugins'.
+	skills := skillOptions(options, getenv)
+	skillFingerprint := skill.Fingerprint(skills)
 	// The core plugin brings the built-in tools. SkillUse is there for
-	// skills that come with a plugin later; the model is offered it only
-	// while there are skills.
+	// skills that come later; the model is offered it only while there are
+	// skills.
 	var names []string
 	if activePlugin(plugins, plugin.CoreName) {
 		names = []string{tool.BashName, tool.ViewImageName, tool.SkillUseName}
@@ -506,18 +533,6 @@ func Run(
 	}()
 	registry := configuredTools.Registry
 	_, skillUse := registry.Resolve(tool.SkillUseName)
-	if skillUse {
-		for _, skill := range skills {
-			if _, err := registry.RegisterSkill(skill); err != nil {
-				return fmt.Errorf("register skill %q: %w", skill.Path, err)
-			}
-		}
-	}
-	for _, skillErr := range skillErrors {
-		if _, err := fmt.Fprintf(flagOutput, "skill error> %s\n", skillErr); err != nil {
-			return fmt.Errorf("write skill error: %w", err)
-		}
-	}
 	var staticTools []llm.Tool
 	for _, definition := range registry.StaticDefinitions() {
 		staticTools = append(staticTools, definition.Tool)
@@ -556,7 +571,7 @@ func Run(
 		}
 	}
 	for index, message := range messages {
-		payload, err := messagePayload(message)
+		payload, err := messagePayload(message, workspace)
 		if err != nil {
 			return fmt.Errorf("encode message %d: %w", index, err)
 		}
@@ -586,10 +601,10 @@ func Run(
 		// Reading stdin may outlast the run; what it reports then is dropped.
 		report := &lockedWriter{w: flagOutput}
 		defer report.Close()
-		go steerRun(runContext, steering, inputs, report)
+		go steerRun(runContext, steering, inputs, report, workspace)
 	}
 
-	builder := contextbuilder.NewBuilder(registry.Skills()...)
+	builder := contextbuilder.NewBuilder()
 	builder.SetModel(llm.Model{
 		ID:              model,
 		ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
@@ -600,15 +615,21 @@ func Run(
 	}
 	// A compaction points the model to the whole conversation.
 	builder.SetTranscript(store.Path(sessionID))
-	// The plugins give the run tools, instructions and skills, now and as
-	// they change.
+	// The plugins and the skill directories give the run tools,
+	// instructions and skills, now and as they change.
 	live := &livePlugins{
-		options: options, parsed: parsed, sessionID: sessionID, workspace: workspace, operations: operationDirectory,
+		options: options, skillOptions: skills, parsed: parsed, sessionID: sessionID, workspace: workspace, operations: operationDirectory,
 		registry: registry, builder: builder, output: flagOutput,
 		systemPrompt: systemPrompt, static: staticTools, skillUse: skillUse,
-		fingerprint: pluginFingerprint, tools: map[string]*liveTool{}, skills: map[string]tool.RegistrationID{},
+		fingerprint: pluginFingerprint, skillFingerprint: skillFingerprint, tools: map[string]*liveTool{},
 	}
-	for _, pluginErr := range live.apply(plugins) {
+	pluginErrors, skillErrors := live.apply(plugins)
+	for _, skillErr := range skillErrors {
+		if _, err := fmt.Fprintf(flagOutput, "skill error> %s\n", skillErr); err != nil {
+			return fmt.Errorf("write skill error: %w", err)
+		}
+	}
+	for _, pluginErr := range pluginErrors {
 		if _, err := fmt.Fprintf(flagOutput, "plugin error> %s\n", pluginErr); err != nil {
 			return fmt.Errorf("write plugin error: %w", err)
 		}
@@ -641,7 +662,14 @@ func Run(
 		Tools:                 registry,
 		Operations:            operations,
 	})
-	coordinatorErr := current.Run(runContext)
+	// A model request that fails and is tried again says so at once, on the
+	// diagnostic output: its tries can take minutes, which would otherwise
+	// look like the model thinking.
+	retries := &lockedWriter{w: flagOutput}
+	coordinatorErr := current.Run(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
+		fmt.Fprintln(retries, RetryLine(retry))
+	}))
+	retries.Close()
 	// Tools run in their own process groups. Canceling the run makes the
 	// operation manager terminate them (TERM, then KILL after a grace period)
 	// and close Updates once every process is gone; waiting for that keeps an
@@ -862,6 +890,9 @@ func validateRequest(parsed Request) ([]RequestMessage, error) {
 		if _, err := messageImages(message.Images); err != nil {
 			return nil, fmt.Errorf("messages[%d].images: %w", index, err)
 		}
+		if err := validateFiles(message.Files); err != nil {
+			return nil, fmt.Errorf("messages[%d].files: %w", index, err)
+		}
 	}
 	return parsed.Messages, nil
 }
@@ -1009,7 +1040,7 @@ func parseTokens(value string) (int64, bool) {
 // agent reads each after the tool calls it is making: a message never cuts a
 // response short, and follows the results it waited for. One the run ends
 // before is not recorded; its sender learns so from the session.
-func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writer, report io.Writer) {
+func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writer, report io.Writer, workspace string) {
 	for {
 		value, err := messages.ReadValue()
 		if err != nil {
@@ -1018,7 +1049,7 @@ func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writ
 			}
 			return
 		}
-		input, err := steeringInput(value)
+		input, err := steeringInput(value, workspace)
 		if err != nil {
 			fmt.Fprintf(report, "steering message rejected: %v\n", err)
 			continue
@@ -1029,8 +1060,9 @@ func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writ
 	}
 }
 
-// steeringInput is the input for a message sent while the agent runs.
-func steeringInput(value jsontext.Value) (inbox.Input, error) {
+// steeringInput is the input for a message sent while the agent runs. The
+// files it links are read as it arrives.
+func steeringInput(value jsontext.Value, workspace string) (inbox.Input, error) {
 	var message RequestMessage
 	if err := json.Unmarshal(value, &message, json.RejectUnknownMembers(true)); err != nil {
 		return inbox.Input{}, fmt.Errorf("invalid JSON: %w", err)
@@ -1038,7 +1070,7 @@ func steeringInput(value jsontext.Value) (inbox.Input, error) {
 	if message.Role != "" && message.Role != "user" {
 		return inbox.Input{}, errors.New("role must be user")
 	}
-	if strings.TrimSpace(message.Content) == "" && len(message.Images) == 0 {
+	if strings.TrimSpace(message.Content) == "" && len(message.Images) == 0 && len(message.Files) == 0 {
 		return inbox.Input{}, errors.New("content is empty")
 	}
 	id := uuid.New().String()
@@ -1048,11 +1080,22 @@ func steeringInput(value jsontext.Value) (inbox.Input, error) {
 			return inbox.Input{}, errors.New("message_id must be a UUID")
 		}
 	}
-	payload, err := messagePayload(message)
+	payload, err := messagePayload(message, workspace)
 	if err != nil {
-		return inbox.Input{}, fmt.Errorf("images: %w", err)
+		return inbox.Input{}, fmt.Errorf("images or files: %w", err)
 	}
 	return inbox.Input{ID: inbox.ID(id), Kind: inbox.InputExternal, Payload: payload, Delivery: inbox.DeliverAfterTools}, nil
+}
+
+// RetryLine is the diagnostic line that says that a model request failed
+// and is tried again. The cockpits read it (cockpit.ParseRetry).
+func RetryLine(retry llm.Retry) string {
+	reason := "unknown error"
+	if retry.Err != nil {
+		reason = strings.Join(strings.Fields(retry.Err.Error()), " ")
+	}
+	return fmt.Sprintf("retry> attempt %d of %d failed, trying again in %s: %s",
+		retry.Attempt, retry.MaxAttempts, retry.Delay.Round(100*time.Millisecond), reason)
 }
 
 // lockedWriter serializes the writes of a goroutine that may outlive its

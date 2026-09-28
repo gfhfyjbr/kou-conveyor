@@ -480,8 +480,11 @@ export default function activate(cockpit) {
     if (event.size) v.size = event.size;
     if (event.usage) v.usage = event.usage;
     const kind = event.stopped ? 'stopped' : event.error ? 'failed' : 'done';
-    // A compaction runs no prompt: whether the last one finished stays as it was.
-    if (!compact) v.interrupted = kind !== 'done';
+    // A compaction runs no prompt: whether the last one finished stays as it
+    // was. Otherwise the server says, as it would when the session is read
+    // again: a run can end without an error before the agent finished, when
+    // the model stops short of an answer.
+    if (!compact) v.interrupted = typeof event.interrupted === 'boolean' ? event.interrupted : kind !== 'done';
     if (compact && kind === 'done') compacted(v);
     cockpit.emit('finish', { kind, compact, view: summary(v) });
     v.resumeDismissed = false;

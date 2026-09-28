@@ -86,6 +86,30 @@ printf '{"messages":[{"content":"What is off on [Image 1]?","images":[{"media_ty
   "$(base64 < shot.png | tr -d '\n')" | kou-conveyor-runner
 ```
 
+### Files
+
+A message can link files and folders, which the runner reads as it takes
+the message: `files` lists `{"path": "cmd/main.go"}`, relative to the
+workspace, absolute or in `~/`, with `"start_line"` and `"end_line"` for
+lines of a file (both, or either), and a `"label"`, how the message's text
+refers to it (`$` and the path by default). After the message's text, under
+each label, the model reads the lines asked for, or else the beginning of
+the file (the whole of one of up to 600 lines and 20 KB, otherwise its
+first 100 lines within 8 KB), or a folder's first 200 entries, numbered, and
+which lines were left out with a command that reads them: it reads the rest
+itself. Lines are cut at 2,000 bytes, binary files show nothing, and the
+files of a message show 160 KB together at most; a message links up to 20.
+The session records what the model saw. Messages sent with `-steer` take
+`files` too.
+
+```sh
+kou-conveyor-runner '{"messages":[{"content":"Why does $cmd/main.go:40-60 panic?",
+  "files":[{"path":"cmd/main.go","start_line":40,"end_line":60,"label":"$cmd/main.go:40-60"}]}]}'
+```
+
+The cockpits send the files a prompt's `$` references name (see the
+repository's [README](../../README.md#files)).
+
 ### Anthropic Messages API
 
 ```sh
@@ -190,6 +214,19 @@ instructions or skills, or a plugin turned on or off reach the agent in its
 next request (`plugin>` on stderr says so). Calls already made bring their
 results back. `KOU_CONVEYOR_WATCH_PLUGINS=0` keeps the plugins a run
 started with.
+
+### Skills
+
+The run's skills are the project's — `.harness/skills` and `.agents/skills`
+in the workspace, and its plugins' — and the system-wide ones — `skills/`
+in the configuration directory, `~/.agents/skills` (`HOME`), and the user's
+plugins'. A project's skill replaces a system-wide one of the same name; a
+skill with `disable-model-invocation: true` in its frontmatter is named
+apart, for the model to load only when asked. The run looks at the skill
+directories before every turn too, a stat per skill, and a skill added,
+edited or removed reaches the agent in its next request (`skill>` on
+stderr); `skill error>` reports a `SKILL.md` it cannot read. `-list-skills`
+prints what a run would find, the skills another replaces among them.
 
 Run `kou-conveyor-runner -h` for options and the JSON request fields.
 

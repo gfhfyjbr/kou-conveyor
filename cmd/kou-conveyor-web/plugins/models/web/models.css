@@ -8,7 +8,7 @@
   gap: 8px;
   min-width: 0;
   max-width: min(300px, 38vw);
-  height: 32px;
+  height: var(--control, 32px);
   padding: 0 10px;
   border: 1px solid var(--line);
   background: var(--bg);
@@ -179,4 +179,23 @@
 
 @media (max-width: 480px) {
   .model-pick .label { display: none; }
+}
+
+/* Narrow — on a phone — the model takes the room the row leaves, its
+   triangle at its end, as a field's. */
+@container composer-row (max-width: 440px) {
+  .model-pick { flex: 1 1 0; min-width: 88px; max-width: none; }
+  .model-pick .chev { margin-left: auto; }
+}
+
+/* A touch screen: no keys to hint at, rows a finger hits, and a search field
+   of 16px, under which a phone zooms the page in to type. */
+@media (hover: none) and (pointer: coarse) {
+  .mp-keys { display: none; }
+  .mp-search { height: 48px; font-size: 16px; }
+  .mp-row { min-height: 44px; }
+  .mp-prov { min-height: 52px; }
+  .mp-back button { height: 32px; }
+  .mp-foot { min-height: 44px; }
+  .mp-foot .act { height: 32px; }
 }

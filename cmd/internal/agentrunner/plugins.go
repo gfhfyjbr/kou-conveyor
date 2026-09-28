@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
-	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
+	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 )
 
 // discoverPlugins finds the plugins of a run: the built-in ones, the user's
@@ -49,23 +49,68 @@ func activePlugin(found plugin.Found, name string) bool {
 	return slices.ContainsFunc(found.Active(), func(current plugin.Plugin) bool { return current.Name == name })
 }
 
-// pluginSkills lists the skills the active plugins bring.
-func pluginSkills(found plugin.Found) ([]tool.Skill, []error) {
-	var skills []tool.Skill
-	var problems []error
-	for _, current := range found.Active() {
-		if current.Skills == "" {
-			continue
+// skillOptions says where a run finds its skills, besides its plugins: the
+// workspace's .harness/skills and .agents/skills, ~/.agents/skills, and
+// skills/ in the configuration directory the user's plugins live in.
+func skillOptions(options plugin.Options, getenv func(string) string) skill.Options {
+	return skill.Options{Workspace: options.Workspace, Home: homeDirectory(getenv), ConfigDirectory: options.ConfigDirectory}
+}
+
+// discoverSkills finds the skills of a run: those of the directories
+// options name, and those of the active plugins found.
+func discoverSkills(options skill.Options, found plugin.Found) skill.Found {
+	options.Plugins = found.Active()
+	return skill.Discover(options)
+}
+
+// homeDirectory is the user's home directory, as the environment says.
+func homeDirectory(getenv func(string) string) string {
+	for _, name := range []string{"HOME", "USERPROFILE"} {
+		if home := strings.TrimSpace(getenv(name)); home != "" {
+			return home
 		}
-		directory, err := current.Resolve(current.Skills)
-		if err != nil {
-			problems = append(problems, fmt.Errorf("plugin %q: %w", current.Name, err))
-			continue
-		}
-		found, errors := tool.DiscoverSkills(directory)
-		skills, problems = append(skills, found...), append(problems, errors...)
 	}
-	return skills, problems
+	return ""
+}
+
+// listedSkill is a line of -list-skills.
+type listedSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Path        string `json:"path"`
+	Scope       string `json:"scope"`
+	Directory   string `json:"directory"`
+	Plugin      string `json:"plugin,omitzero"`
+	Active      bool   `json:"active"`
+	Reason      string `json:"reason,omitzero"`
+	Manual      bool   `json:"manual,omitzero"`
+}
+
+// listSkills prints the skills a run in the workspace would find, one JSON
+// object per line — the project's first, and those a skill of the same name
+// replaces too — and then those that could not be read.
+func listSkills(output io.Writer, found skill.Found) error {
+	for _, current := range found.Skills {
+		line := listedSkill{
+			Name: current.Name, Description: current.Description, Path: current.Path, Scope: string(current.Directory.Scope),
+			Directory: current.Directory.Label, Plugin: current.Directory.Plugin, Active: current.Active, Reason: current.Reason, Manual: current.Manual,
+		}
+		if err := json.MarshalWrite(output, line); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(output); err != nil {
+			return err
+		}
+	}
+	for _, problem := range found.Errors {
+		if err := json.MarshalWrite(output, map[string]string{"error": problem.Error()}); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(output); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // pluginInstructions is what the active plugins add to the system prompt.

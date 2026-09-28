@@ -2,8 +2,9 @@
 
 .resume {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 10px;
+  gap: 6px 10px;
   margin-bottom: 8px;
   padding: 6px 6px 6px 12px;
   border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line));
@@ -12,11 +13,19 @@
   font: 12px/1.4 var(--mono);
   color: var(--fg-2);
   animation: rise 0.14s ease-out;
+  container: resume / inline-size;
 }
 .resume-mark { flex: none; width: 7px; height: 7px; border: 1px solid var(--warn); }
 .resume[data-kind="gone"], .resume[data-kind="missing"] { border-color: color-mix(in srgb, var(--err) 40%, var(--line)); border-left-color: var(--err); background: var(--err-soft); }
 .resume[data-kind="gone"] .resume-mark, .resume[data-kind="missing"] .resume-mark { border-color: var(--err); background: var(--err); }
-.resume-text { flex: 1; min-width: 0; }
+.resume-text { flex: 1 1 0; min-width: 0; }
+/* Narrow, the text keeps its line and the buttons go under it, at the right,
+   rather than squeeze it into a column. */
+@container resume (max-width: 460px) {
+  .resume-text { flex-basis: calc(100% - 17px); }
+  .resume-text + .act:not([hidden]),
+  .resume-text + .act[hidden] + .act { margin-left: auto; }
+}
 .activity {
   display: flex;
   align-items: center;
@@ -31,10 +40,14 @@
 .activity-hint kbd:last-of-type { margin-right: 6px; }
 
 .composer {
+  /* The height of the row's controls — the model, the effort, the buttons
+     that send — which a touch screen makes a finger's. */
+  --control: 32px;
   padding: 12px 10px 10px 14px;
   background: var(--bg-2);
   border: 1px solid var(--line-2);
   transition: border-color 0.15s;
+  touch-action: manipulation; /* a quick second tap is not a zoom */
 }
 .composer:focus-within { border-color: var(--fg-4); }
 .composer:focus-within::before { --tick: var(--accent); }
@@ -63,53 +76,43 @@
   .label { display: none; }
 }
 
-.run {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  height: 32px;
-  margin-left: auto;
-  padding: 0 10px 0 16px;
+/* ---------------------------------------------------------------- sending */
+
+/* The buttons that send the prompt end the row, squares with an icon as tall
+   as its controls: Run, Stop while the agent works, and once something is
+   written while it works, Force and Queue. */
+.composer-send { flex: none; display: flex; gap: 8px; margin-left: auto; }
+.send {
+  display: grid;
+  place-items: center;
+  width: var(--control);
+  height: var(--control);
   background: var(--accent);
   color: var(--accent-ink);
   border: 1px solid var(--accent);
-  font: 700 11px/1 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  transition: opacity 0.12s, background 0.12s;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+  -webkit-tap-highlight-color: transparent;
 }
-.run kbd { border-color: color-mix(in srgb, var(--accent-ink) 35%, transparent); color: inherit; opacity: 0.75; }
-.run:disabled { background: transparent; color: var(--fg-4); border-color: var(--line-2); }
-.run:disabled kbd { color: var(--fg-4); border-color: var(--line-2); }
-.run:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 85%, var(--fg)); }
-.run[data-mode="stop"] { background: transparent; color: var(--err); border-color: color-mix(in srgb, var(--err) 60%, var(--line)); }
-.run[data-mode="stop"] kbd { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
-.run[data-mode="stop"]:not(:disabled):hover { background: var(--err-soft); }
-.run[data-mode="stop"]::before { content: ""; width: 7px; height: 7px; background: currentColor; }
-.run[data-mode="queue"]::before { content: "+"; font-size: 13px; line-height: 1; margin-right: -2px; }
+.send svg { width: 16px; height: 16px; }
+/* Nothing to run yet: a control like its neighbours. */
+.send:disabled { background: var(--bg); color: var(--fg-4); border-color: var(--line); }
+.send:not(:disabled):hover { background: color-mix(in srgb, var(--accent) 85%, var(--fg)); }
+.send:not(:disabled):active { transform: translateY(1px); }
+.send[data-mode="stop"] { background: var(--bg); color: var(--err); border-color: color-mix(in srgb, var(--err) 60%, var(--line)); }
+.send[data-mode="stop"]:not(:disabled):hover { background: var(--err-soft); }
+/* Stopping: the square waits, dimmed. */
+.send[data-mode="stop"]:disabled svg { animation: pulse 1s ease-in-out infinite; }
+/* Force: the message goes in after the tool calls the agent is making
+   instead of waiting for the run to end. */
+.send[data-mode="force"] { background: var(--bg); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); animation: fade 0.12s ease-out; }
+.send[data-mode="force"]:hover { background: var(--accent-soft); }
 
-/* Force, beside Queue while the agent works: the prompt goes in after the
-   tool calls the agent is making instead of waiting for the run to end. */
-.force {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  margin-left: auto;
-  padding: 0 8px 0 12px;
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line-2));
-  color: var(--accent);
-  font: 700 11px/1 var(--mono);
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  transition: background 0.12s;
-  animation: fade 0.12s ease-out;
+/* ---------------------------------------------------------------- touch */
+
+@media (hover: none) and (pointer: coarse) {
+  .composer { --control: 40px; }
+  .composer textarea { font-size: 16px; line-height: 1.5; }
 }
-.force:hover { background: var(--accent-soft); }
-.force kbd { color: inherit; border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); opacity: 0.8; }
-.force kbd + kbd { margin-left: -6px; }
-.force-bolt { font-size: 13px; letter-spacing: 0; }
-.force:not([hidden]) + .run { margin-left: 0; }
 
 @media (max-width: 820px) {
   .activity-hint { display: none; }

@@ -3,7 +3,6 @@ package agentrunner
 import (
 	"fmt"
 	"io"
-	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -13,13 +12,15 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
+	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/command"
 )
 
-// A run follows its plugins while it goes on. Before every turn the runner
-// looks at where plugins come from — a stat per file — and when something
-// changed it reads them again: a tool added, changed or removed, other
+// A run follows its plugins and its skills while it goes on. Before every
+// turn the runner looks at where plugins come from — a stat per file — and
+// at the skill directories — a stat per skill — and when something changed
+// it reads them again: a tool added, changed or removed, other
 // instructions, other skills, a plugin turned on or off reach the agent in
 // the very next request, and the run goes on. Calls already made keep
 // running as they were, and their results come back even when their tool
@@ -68,31 +69,39 @@ func (live *liveTool) TranslateResult(callID string, status tool.CallStatus, ope
 	return translator.TranslateResult(callID, status, operations)
 }
 
-// livePlugins is what a run took from plugins, to change as they change.
+// livePlugins is what a run took from plugins and skill directories, to
+// change as they change.
 type livePlugins struct {
-	options    plugin.Options
-	parsed     Request
-	sessionID  session.ID
-	workspace  string
-	operations string
-	registry   tool.Registry
-	builder    contextbuilder.Builder
-	output     io.Writer
+	options      plugin.Options
+	skillOptions skill.Options // where skills come from, besides the plugins
+	parsed       Request
+	sessionID    session.ID
+	workspace    string
+	operations   string
+	registry     tool.Registry
+	builder      contextbuilder.Builder
+	output       io.Writer
 
 	systemPrompt string     // the system prompt without the plugins' instructions
 	static       []llm.Tool // the built-in tools the run enabled, when core is on
 	skillUse     bool       // SkillUse resolves: skills can be registered
 
-	fingerprint string
-	tools       map[string]*liveTool
-	skills      map[string]tool.RegistrationID // plugin skills registered, by path
-	shown       string                         // what the plugins added, as last said
+	fingerprint      string       // of the plugins' files
+	skillFingerprint string       // of the skill directories
+	found            plugin.Found // the plugins as last read
+	tools            map[string]*liveTool
+	skills           []tool.Skill          // the skills registered, in order
+	skillIDs         []tool.RegistrationID // their registrations
+	shown            string                // what the plugins added, as last said
 }
 
-// apply makes the run's tools, instructions and skills those of found.
-func (live *livePlugins) apply(found plugin.Found) []error {
+// apply makes the run's tools, instructions and skills those of found and
+// of the skill directories. It returns what went wrong with the plugins,
+// and with the skills.
+func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblems []error) {
+	live.found = found
+	skillProblems = live.applySkills(found)
 	problems := slices.Clone(found.Errors)
-	problems = append(problems, live.applySkills(found)...)
 	var tools []llm.Tool
 	if activePlugin(found, plugin.CoreName) {
 		for _, definition := range live.static {
@@ -141,42 +150,65 @@ func (live *livePlugins) apply(found plugin.Found) []error {
 		systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + instructions
 	}
 	live.builder.SetSystemPrompt(systemPrompt)
-	return problems
+	return problems, skillProblems
 }
 
-// applySkills registers the skills of the active plugins, and forgets
-// those of plugins that went.
+// applySkills registers the skills the agent has now — the project's and
+// the system-wide ones, the active plugins' among them — in place of those
+// registered before.
 func (live *livePlugins) applySkills(found plugin.Found) []error {
 	if !live.skillUse {
 		return nil
 	}
-	skills, problems := pluginSkills(found)
-	wanted := map[string]tool.Skill{}
-	for _, skill := range skills {
-		wanted[skill.Path] = skill
+	discovered := discoverSkills(live.skillOptions, found)
+	problems := discovered.Errors
+	wanted := discovered.Active()
+	if slices.Equal(wanted, live.skills) {
+		return problems
 	}
-	for path, id := range live.skills {
-		if _, keep := wanted[path]; !keep {
-			live.registry.UnregisterSkill(id)
-			delete(live.skills, path)
-		}
+	for _, id := range live.skillIDs {
+		live.registry.UnregisterSkill(id)
 	}
-	for _, path := range slices.Sorted(maps.Keys(wanted)) {
-		skill := wanted[path]
-		if _, registered := live.skills[path]; registered {
-			// A skill that changed its name or description is registered anew.
-			live.registry.UnregisterSkill(live.skills[path])
-			delete(live.skills, path)
-		}
-		id, err := live.registry.RegisterSkill(skill)
+	live.skills, live.skillIDs = nil, nil
+	for _, current := range wanted {
+		id, err := live.registry.RegisterSkill(current)
 		if err != nil {
-			problems = append(problems, fmt.Errorf("register skill %q: %w", skill.Path, err))
+			problems = append(problems, fmt.Errorf("register skill %q: %w", current.Path, err))
 			continue
 		}
-		live.skills[path] = id
+		live.skills, live.skillIDs = append(live.skills, current), append(live.skillIDs, id)
 	}
 	live.builder.SetSkills(live.registry.Skills())
 	return problems
+}
+
+// skillChanges says which skills came (+), went (-) or changed (~), or
+// nothing when none did.
+func skillChanges(before, after []tool.Skill) string {
+	was := make(map[string]tool.Skill, len(before))
+	for _, current := range before {
+		was[current.Name] = current
+	}
+	is := make(map[string]bool, len(after))
+	var changes []string
+	for _, current := range after {
+		is[current.Name] = true
+		switch previous, known := was[current.Name]; {
+		case !known:
+			changes = append(changes, "+"+current.Name)
+		case previous != current:
+			changes = append(changes, "~"+current.Name)
+		}
+	}
+	for _, current := range before {
+		if !is[current.Name] {
+			changes = append(changes, "-"+current.Name)
+		}
+	}
+	if len(changes) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("the skills changed; the agent has %d from its next turn: %s", len(after), strings.Join(changes, " "))
 }
 
 // describe says what the plugins add to the run: a line to compare, and
@@ -206,22 +238,36 @@ func (live *livePlugins) describe(found plugin.Found) string {
 	return strings.Join(parts, "; ")
 }
 
-// beforeTurn reads the plugins again if their files changed since the
-// last turn, and has the next request carry what they add now.
+// beforeTurn reads the plugins and the skills again if their files changed
+// since the last turn, and has the next request carry what they add now.
 func (live *livePlugins) beforeTurn() {
-	now := plugin.Fingerprint(plugin.Sources(live.options)...)
-	if now == live.fingerprint {
+	plugins := plugin.Fingerprint(plugin.Sources(live.options)...)
+	skills := skill.Fingerprint(live.skillOptions)
+	if plugins == live.fingerprint && skills == live.skillFingerprint {
 		return
 	}
-	live.fingerprint = now
-	found := plugin.Discover(live.options)
-	problems := live.apply(found)
+	pluginsChanged := plugins != live.fingerprint
+	live.fingerprint, live.skillFingerprint = plugins, skills
+	found := live.found
+	if pluginsChanged {
+		found = plugin.Discover(live.options)
+	}
+	before := live.skills
+	pluginProblems, skillProblems := live.apply(found)
 	if shown := live.describe(found); shown != live.shown {
 		live.shown = shown
 		fmt.Fprintf(live.output, "plugin> the plugins changed; the agent works with them from its next turn: %s\n", shown)
 	}
-	for _, problem := range problems {
-		fmt.Fprintf(live.output, "plugin error> %s\n", problem)
+	if pluginsChanged {
+		for _, problem := range pluginProblems {
+			fmt.Fprintf(live.output, "plugin error> %s\n", problem)
+		}
+	}
+	if changes := skillChanges(before, live.skills); changes != "" {
+		fmt.Fprintf(live.output, "skill> %s\n", changes)
+	}
+	for _, problem := range skillProblems {
+		fmt.Fprintf(live.output, "skill error> %s\n", problem)
 	}
 }
 

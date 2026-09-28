@@ -7,7 +7,7 @@ import (
 
 const requestHelp = `
 Request schema (JSON object; unknown fields are rejected):
-  messages: array of {role: "user", content: string, message_id?: UUID string, images?: array}
+  messages: array of {role: "user", content: string, message_id?: UUID string, images?: array, files?: array}
     Non-empty array of user messages delivered in order. role defaults to "user";
     message_id defaults to a generated UUID.
     images: up to 20 of {label?: string, media_type: string, data: base64 string}
@@ -15,6 +15,14 @@ Request schema (JSON object; unknown fields are rejected):
     content, each after its label ("[Image n]" by default), which is how the
     content refers to it. media_type is image/png, image/jpeg, image/gif or
     image/webp, and data at most 20 MiB.
+    files: array of {path: string, start_line?: integer, end_line?: integer, label?: string}
+    Up to 20 files and folders the message links to, the path relative to the
+    workspace, absolute or in ~/. The runner reads them as it takes the
+    message, and the model sees after the content, under each label ("$path"
+    by default), the lines asked for (start_line to end_line, or from
+    start_line on), or else the file's beginning (a small file whole), or a
+    folder's entries, with the lines left out and how to read them. The
+    session records what the model saw.
   prompt: string
     Shorthand for one user message; used when messages is absent.
     Supply messages or prompt. messages takes precedence when both are present.
@@ -57,7 +65,7 @@ Reads one JSON request from stdin unless a positional request or -p is supplied.
 Place options before the positional request. -p and a positional request are mutually exclusive.
 With -steer, stdin stays open after the request (or is only messages, with -p
 or a positional request): each further JSON object, one per line,
-{"content": string, "message_id"?: UUID, "images"?: array}, reaches the running agent once the
+{"content": string, "message_id"?: UUID, "images"?: array, "files"?: array}, reaches the running agent once the
 tool calls it is making finish (or -steer-wait passes), and never cuts a
 response short.
 

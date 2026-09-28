@@ -223,11 +223,18 @@ func byteSize(n int) string {
 
 // payloadMessage reads the payload of a prompt: its text and its images.
 func payloadMessage(payload jsontext.Value) (string, []llm.Image) {
-	text, images, err := contextbuilder.ExternalMessage(payload)
+	message := decodePayload(payload)
+	return message.Text, message.Images
+}
+
+// decodePayload reads the payload of a prompt: its text, its images and the
+// files it linked. A payload no reader knows is its text.
+func decodePayload(payload jsontext.Value) contextbuilder.Message {
+	message, err := contextbuilder.DecodeMessage(payload)
 	if err != nil {
-		return string(payload), nil
+		return contextbuilder.Message{Text: string(payload)}
 	}
-	return text, images
+	return message
 }
 
 // imageInfo describes an image a prompt recorded, by its reference: a data
@@ -285,6 +292,16 @@ func promptImages(payload jsontext.Value) []Image {
 // brought to a session, as the session file keeps them. A prompt without
 // images has none; a prompt the session does not hold is fs.ErrNotExist.
 func PromptImages(dir, id, messageID string) ([]Image, error) {
+	payload, err := promptPayload(dir, id, messageID)
+	if err != nil {
+		return nil, err
+	}
+	return promptImages(payload), nil
+}
+
+// promptPayload returns the payload of the prompt with the given message ID
+// as the session file keeps it, or fs.ErrNotExist.
+func promptPayload(dir, id, messageID string) (jsontext.Value, error) {
 	if !ValidSessionID(id) {
 		return nil, fmt.Errorf("invalid session ID %q", id)
 	}
@@ -311,7 +328,7 @@ func PromptImages(dir, id, messageID string) ([]Image, error) {
 			input := &record.Data.Item.Data
 			if json.Unmarshal(line, &record) == nil && record.Type == "item" && record.Data.Item.Kind == "input" &&
 				input.Kind == inbox.InputExternal && string(input.ID) == messageID {
-				return promptImages(input.Payload), nil
+				return input.Payload, nil
 			}
 		}
 		if errors.Is(err, io.EOF) {
@@ -353,15 +370,15 @@ func (item QueueItem) MarshalJSON() ([]byte, error) {
 	}{plain(item), ImageInfos(item.Images)})
 }
 
-// payloadEntry reads a prompt's payload for the transcript: its text, and
-// what its images are.
-func payloadEntry(payload jsontext.Value) (string, []ImageInfo) {
-	text, recorded := payloadMessage(payload)
+// payloadEntry reads a prompt's payload for the transcript: its text, what
+// its images are, and what the model saw of the files it linked.
+func payloadEntry(payload jsontext.Value) (string, []ImageInfo, []LinkedFileInfo) {
+	message := decodePayload(payload)
 	var infos []ImageInfo
-	for _, image := range recorded {
+	for _, image := range message.Images {
 		infos = append(infos, imageInfo(image))
 	}
-	return Clean(text), infos
+	return Clean(message.Text), infos, linkedFileInfos(message.Files)
 }
 
 // WithImages describes the images a prompt submitted with Submit brings.

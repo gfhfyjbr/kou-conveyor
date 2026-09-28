@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -604,6 +605,222 @@ func TestChangesPanelResizes(t *testing.T) {
 	d.send(runes("<"))
 	if pw, covers := m.panelColumns(); !covers || pw != 100 || !strings.Contains(m.note.text, "cover the transcript") {
 		t.Fatalf("covering: %d %v, note %q", pw, covers, m.note.text)
+	}
+}
+
+// A transcript slow to draw anew does not hold the panel's edge back: at
+// each column the edge, the composer and what is on screen of the
+// transcript and of the diff are drawn for where the pointer is, and the
+// rest of the transcript once the edge rests or is let go, without moving
+// anything on screen. A terminal resized column by column is followed the
+// same way, and so are the keys that move the edge.
+func TestChangesPanelEdgeOutrunsASlowTranscript(t *testing.T) {
+	m, d := changesModel(t, 150, 30)
+	for _, prompt := range []string{"touch one", "tool two", "tool three", "tool four", "tool five"} {
+		d.prompt(prompt + strings.Repeat(" and then some more words that wrap", 5))
+	}
+	// A diff long enough to scroll, of lines that wrap.
+	d.promptChanging("a long file", func() {
+		var b strings.Builder
+		for i := range 60 {
+			b.WriteString("line " + strconv.Itoa(i) + " of a file whose lines wrap in the panel " + strings.Repeat("x", i) + "\n")
+		}
+		writeFile(t, m.opt.Workspace, "long.txt", b.String())
+	})
+	d.send(tea.KeyMsg{Type: tea.KeyCtrlG})
+	d.until("the changes", func() bool { return panelSettled(m) })
+	edge := func() cell {
+		g, _ := m.panelGeometry()
+		return cell{row: g.top + 4, col: g.left}
+	}
+	mouse := func(action tea.MouseAction, x, y int) {
+		d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: action, X: x, Y: y})
+	}
+	// What the transcript and the panel show; the transcript's scrollbar
+	// is where the lines drawn so far put it.
+	stage := func() (transcript, panel []string) {
+		lines := screen(t, m)
+		g, _ := m.panelGeometry()
+		for _, line := range lines[m.top() : m.top()+m.view.Height] {
+			transcript = append(transcript, ansi.Cut(line, 0, m.transcriptColumns()))
+		}
+		for _, line := range lines[g.top : g.top+g.height] {
+			panel = append(panel, ansi.Cut(line, g.left, m.width))
+		}
+		return transcript, panel
+	}
+	caughtUp := func() bool {
+		screen(t, m) // the diff is drawn with the frame
+		g, _ := m.panelGeometry()
+		lines, _, _ := m.diffView(g.inner)
+		return !m.reflow.pending && m.view.Width == m.width-margin-2-(m.width-g.left) && (lines == nil || m.changes.drawn.width == g.inner)
+	}
+	if !caughtUp() {
+		t.Fatal("the panel opened behind")
+	}
+	// The diff is scrolled into, to see that it stays where it is.
+	m.changes.scroll = 7
+	topEntry := func() string {
+		for _, s := range m.spans {
+			if s.end > m.view.YOffset {
+				return s.id
+			}
+		}
+		return ""
+	}
+	// What the rest brings is what was on screen.
+	unmoved := func(transcript, panel []string) {
+		t.Helper()
+		now, side := stage()
+		if !slices.Equal(now, transcript) {
+			t.Fatalf("the transcript moved as the rest was drawn:\n%s\n---\n%s", strings.Join(transcript, "\n"), strings.Join(now, "\n"))
+		}
+		if !slices.Equal(side, panel) {
+			t.Fatalf("the panel moved as the rest was drawn:\n%s\n---\n%s", strings.Join(panel, "\n"), strings.Join(side, "\n"))
+		}
+	}
+	// Drawing the transcript anew takes a second, as a long one's would.
+	slow := func() { m.reflow.cost = time.Second }
+
+	for _, scrolled := range []bool{false, true} {
+		if scrolled {
+			// Up the transcript, the entry at the top of the view stays at
+			// the top.
+			for range 4 {
+				d.send(tea.MouseMsg{Button: tea.MouseButtonWheelUp, Action: tea.MouseActionPress, X: 5, Y: m.top() + 2})
+			}
+			if m.view.AtBottom() || m.follow {
+				t.Fatal("the wheel did not scroll the transcript up")
+			}
+			d.until("the changes of the prompt in view", func() bool { return panelSettled(m) })
+		}
+		slow()
+		top, drawn := topEntry(), m.view.Width
+		var transcript, panel []string
+		at := edge()
+		mouse(tea.MouseActionPress, at.col, at.row)
+		for x := at.col - 1; x >= at.col-12; x-- {
+			mouse(tea.MouseActionMotion, x, at.row)
+			lines := screen(t, m)
+			g, _ := m.panelGeometry()
+			if pw, _ := m.panelColumns(); pw != m.width-x || g.left != x {
+				t.Fatalf("pointer at %d: the panel takes %d columns from %d", x, pw, g.left)
+			}
+			if row := []rune(lines[g.top+4]); string(row[x]) != "┃" {
+				t.Fatalf("pointer at %d: no edge under it: %q", x, lines[g.top+4])
+			}
+			// The composer's box ends where the panel starts.
+			if row := []rune(lines[m.ruleRow()]); string(row[x-margin-1:x+1]) != "┐"+strings.Repeat(" ", margin)+"┃" {
+				t.Fatalf("pointer at %d: the composer's box does not end at the panel: %q", x, lines[m.ruleRow()])
+			}
+			// Only what is on screen is drawn for the width.
+			if !m.reflow.pending || m.view.Width != drawn || len(m.reflow.next) == 0 || len(m.reflow.next) >= len(m.tr.Entries) {
+				t.Fatalf("pointer at %d: pending %v, transcript drawn for %d (was %d), %d of %d entries drawn for %d",
+					x, m.reflow.pending, m.view.Width, drawn, len(m.reflow.next), len(m.tr.Entries), m.transcriptColumns())
+			}
+			transcript, panel = stage()
+		}
+		// Once the edge rests, the rest is drawn, and nothing moves.
+		d.until("the rest of the transcript", caughtUp)
+		unmoved(transcript, panel)
+		if got := topEntry(); got != top {
+			t.Fatalf("scrolled %v: %s at the top, was %s", scrolled, got, top)
+		}
+		mouse(tea.MouseActionRelease, at.col-12, at.row)
+	}
+
+	// Let go, the edge does not wait to rest: the rest is drawn at once.
+	slow()
+	at := edge()
+	mouse(tea.MouseActionPress, at.col, at.row)
+	mouse(tea.MouseActionMotion, at.col+6, at.row)
+	if !m.reflow.pending {
+		t.Fatal("drawn anew at once")
+	}
+	transcript, panel := stage()
+	gen := m.reflow.gen
+	mouse(tea.MouseActionRelease, at.col+6, at.row)
+	if m.reflow.gen == gen {
+		t.Fatal("letting go did not start the rest")
+	}
+	d.until("the rest after letting go", caughtUp)
+	unmoved(transcript, panel)
+
+	// The wheel, a click or a key acts on the transcript as it is laid out:
+	// what is left is drawn first.
+	at = edge()
+	mouse(tea.MouseActionPress, at.col, at.row)
+	mouse(tea.MouseActionMotion, at.col-5, at.row)
+	mouse(tea.MouseActionRelease, at.col-5, at.row)
+	if !m.reflow.pending {
+		t.Fatal("drawn anew at once")
+	}
+	d.send(tea.MouseMsg{Button: tea.MouseButtonWheelDown, Action: tea.MouseActionPress, X: 5, Y: m.top() + 2})
+	if !caughtUp() {
+		t.Fatal("the wheel went first")
+	}
+
+	// The keys that move the edge move it the same way.
+	slow()
+	m.focusChanges()
+	d.send(runes("<"))
+	d.send(runes("<"))
+	if !m.reflow.pending {
+		t.Fatal("the keys drew the transcript anew")
+	}
+	transcript, panel = stage()
+	d.until("the rest after the keys", caughtUp)
+	unmoved(transcript, panel)
+
+	// Quick to draw anew, the transcript is drawn for every column.
+	m.reflow.cost, m.changes.drawn.cost = 0, 0
+	at = edge()
+	mouse(tea.MouseActionPress, at.col, at.row)
+	mouse(tea.MouseActionMotion, at.col-3, at.row)
+	if !caughtUp() {
+		t.Fatalf("a quick transcript waits: pending %v", m.reflow.pending)
+	}
+	mouse(tea.MouseActionRelease, at.col-3, at.row)
+
+	// So is a terminal resized a column at a time.
+	slow()
+	drawn := m.view.Width
+	for _, width := range []int{151, 152, 153} {
+		d.send(tea.WindowSizeMsg{Width: width, Height: 30})
+		if !m.reflow.pending || m.view.Width != drawn {
+			t.Fatalf("%d columns: pending %v, transcript %d (was %d)", width, m.reflow.pending, m.view.Width, drawn)
+		}
+		transcript, panel = stage()
+	}
+	d.until("the transcript to catch up once the size rests", caughtUp)
+	unmoved(transcript, panel)
+}
+
+// window shows the rows of blocks from a row of one of them, or the last
+// rows where the blocks end first.
+func TestWindow(t *testing.T) {
+	blocks := [][]string{{"a0", "a1", "a2"}, {"b0"}, {"c0", "c1"}, {"d0", "d1", "d2"}}
+	drawn := 0
+	draw := func(i int) []string { drawn++; return blocks[i] }
+	for _, c := range []struct {
+		first, into, height int
+		want                string
+	}{
+		{0, 0, 3, "a0 a1 a2"},
+		{0, 2, 3, "a2 b0 c0"},
+		{1, 0, 2, "b0 c0"},
+		{2, 5, 2, "c1 d0"},        // into past the block: its last row
+		{3, 1, 3, "d0 d1 d2"},     // the blocks end first: the last rows
+		{-1, 0, 4, "c1 d0 d1 d2"}, // from the bottom
+		{-1, 0, 20, "a0 a1 a2 b0 c0 c1 d0 d1 d2"},
+	} {
+		drawn = 0
+		if got := strings.Join(window(len(blocks), c.first, c.into, c.height, draw), " "); got != c.want {
+			t.Errorf("window(%d, %d, %d) = %q, want %q", c.first, c.into, c.height, got, c.want)
+		}
+		if c.first == 1 && drawn != 2 {
+			t.Errorf("drew %d blocks for 2 rows", drawn)
+		}
 	}
 }
 

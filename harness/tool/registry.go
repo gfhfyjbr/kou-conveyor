@@ -1,15 +1,16 @@
 package tool
 
 import (
-	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"uuid"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -191,10 +192,23 @@ func (current *registry) resolveSkill(name string) (Skill, bool) {
 	return Skill{}, false
 }
 
+// DiscoverSkills reads the skills of a directory: its subdirectories, or
+// links to directories, with a SKILL.md. A directory that is not there
+// holds none.
 func DiscoverSkills(directory string) ([]Skill, []error) {
-	paths, err := filepath.Glob(filepath.Join(directory, "*", "SKILL.md"))
+	entries, err := os.ReadDir(directory)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, []error{fmt.Errorf("find skills: %w", err)}
+	}
+	var paths []string
+	for _, entry := range entries {
+		path := filepath.Join(directory, entry.Name(), "SKILL.md")
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			paths = append(paths, path)
+		}
 	}
 
 	var skills []Skill
@@ -215,6 +229,7 @@ func DiscoverSkills(directory string) ([]Skill, []error) {
 			Name:        strings.TrimSpace(frontmatter.Name),
 			Description: strings.TrimSpace(frontmatter.Description),
 			Path:        path,
+			Manual:      frontmatter.Manual,
 		}
 		if err := validateSkill(skill); err != nil {
 			skillErrors = append(skillErrors, fmt.Errorf("validate skill %q: %w", path, err))
@@ -233,35 +248,77 @@ func DiscoverSkills(directory string) ([]Skill, []error) {
 type skillFrontmatter struct {
 	Name        string
 	Description string
+	Manual      bool
 }
 
+// parseSkillFrontmatter reads the metadata of a SKILL.md: the YAML between
+// its first line, ---, and the next ---. Skills are written for many agents
+// and by hand, so frontmatter that is not valid YAML — a description with an
+// unquoted colon is common — is read a line at a time instead.
 func parseSkillFrontmatter(contents []byte) (skillFrontmatter, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(contents))
-	if !scanner.Scan() || strings.TrimSpace(scanner.Text()) != "---" {
-		return skillFrontmatter{}, errors.New("missing opening YAML frontmatter delimiter")
+	block, err := frontmatterBlock(string(contents))
+	if err != nil {
+		return skillFrontmatter{}, err
 	}
+	var metadata struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+		// DisableModelInvocation keeps the model from loading the skill on
+		// its own, as other agents take it: it loads when the user asks.
+		DisableModelInvocation bool `yaml:"disable-model-invocation"`
+	}
+	if err := yaml.Unmarshal([]byte(block), &metadata); err == nil {
+		return skillFrontmatter{Name: metadata.Name, Description: metadata.Description, Manual: metadata.DisableModelInvocation}, nil
+	}
+	return lineFrontmatter(block), nil
+}
 
-	var metadata skillFrontmatter
-	for scanner.Scan() {
-		line := scanner.Text()
+// frontmatterBlock returns the text between the frontmatter's delimiters.
+func frontmatterBlock(contents string) (string, error) {
+	contents = strings.TrimPrefix(contents, "\uFEFF")
+	first, rest, _ := strings.Cut(contents, "\n")
+	if strings.TrimSpace(first) != "---" {
+		return "", errors.New("missing opening YAML frontmatter delimiter")
+	}
+	var lines []string
+	for rest != "" {
+		var line string
+		line, rest, _ = strings.Cut(rest, "\n")
 		if strings.TrimSpace(line) == "---" {
-			return metadata, nil
+			return strings.Join(lines, "\n"), nil
 		}
+		lines = append(lines, strings.TrimSuffix(line, "\r"))
+	}
+	return "", errors.New("missing closing YAML frontmatter delimiter")
+}
+
+// lineFrontmatter reads frontmatter that is not valid YAML as lines of
+// key: value, a value in matching quotes taken without them.
+func lineFrontmatter(block string) skillFrontmatter {
+	var metadata skillFrontmatter
+	for line := range strings.SplitSeq(block, "\n") {
 		key, value, found := strings.Cut(line, ":")
 		if !found {
 			continue
 		}
+		value = unquote(strings.TrimSpace(value))
 		switch key {
 		case "name":
-			metadata.Name = strings.TrimSpace(value)
+			metadata.Name = value
 		case "description":
-			metadata.Description = strings.TrimSpace(value)
+			metadata.Description = value
+		case "disable-model-invocation":
+			metadata.Manual = strings.EqualFold(value, "true")
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return skillFrontmatter{}, fmt.Errorf("read YAML frontmatter: %w", err)
+	return metadata
+}
+
+func unquote(value string) string {
+	if len(value) >= 2 && (value[0] == '"' || value[0] == '\'') && value[len(value)-1] == value[0] {
+		return value[1 : len(value)-1]
 	}
-	return skillFrontmatter{}, errors.New("missing closing YAML frontmatter delimiter")
+	return value
 }
 
 func removeRegistrationID(ids []RegistrationID, target RegistrationID) []RegistrationID {

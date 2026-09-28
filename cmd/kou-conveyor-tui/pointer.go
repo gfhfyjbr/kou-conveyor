@@ -35,6 +35,7 @@ const (
 	hoverModel                 // the model control: a click lists the models
 	hoverPanelEdge             // the changes panel's edge: it drags
 	hoverRun                   // the run button: a click runs, queues, forces in or stops
+	hoverLink                  // what a $ reference completes to: a click puts it in
 )
 
 type hoverTarget struct {
@@ -64,12 +65,19 @@ func (m *uiModel) hover() hoverTarget {
 			return hoverTarget{kind: hoverPicker, row: y, level: -1}
 		}
 		return none
+	case m.linksArea.contains(x, y):
+		return hoverTarget{kind: hoverLink, row: y, level: -1}
 	case m.inPreview(x, y):
 		return hoverTarget{kind: hoverPreview, row: y, level: -1}
 	case m.onPanelEdge(x, y):
 		return hoverTarget{kind: hoverPanelEdge, row: y, level: -1}
 	case m.inPanel(x, y):
 		return m.changesHover(x, y)
+	case m.reflow.pending && y >= m.top() && y < m.top()+m.view.Height:
+		// The rows are the entries on screen drawn for the stage's width
+		// ahead of the view's lines: what is under the pointer is known
+		// again once the rest is drawn.
+		return none
 	case y >= m.top() && y < m.top()+m.view.Height:
 		at := hoverTarget{row: y, level: -1}
 		line := m.view.YOffset + y - m.top()
@@ -145,6 +153,8 @@ func (m *uiModel) hoverHint(h hoverTarget) string {
 		return "click selects it — enter edits it, ctrl+x forces it in, backspace drops it"
 	case hoverAttachment:
 		return "click shows " + h.id + " large — the cursor goes right after its label, where ⌫ removes it"
+	case hoverLink:
+		return "click puts it in the prompt: the model reads what it links as the prompt runs"
 	case hoverPreview:
 		return "the image goes to the model with the prompt — moving the cursor off its label closes this"
 	case hoverEffort:
@@ -198,11 +208,12 @@ func (m *uiModel) paintHover(h hoverTarget, row int, line string) string {
 	st := m.styles
 	switch h.kind {
 	case hoverEdit:
-		line = m.lightUp(line, 0, m.view.Width)
+		columns := m.transcriptColumns()
+		line = m.lightUp(line, 0, columns)
 		label := ansi.StringWidth("✎ edit")
-		return m.paint(line, m.view.Width-label, m.view.Width, st.hoverAction)
+		return m.paint(line, columns-label, columns, st.hoverAction)
 	case hoverFold:
-		return m.lightUp(line, 0, m.view.Width)
+		return m.lightUp(line, 0, m.transcriptColumns())
 	case hoverStarter:
 		return m.lightUp(line, h.from, h.to)
 	}
@@ -263,7 +274,8 @@ func (m *uiModel) paint(line string, from, to int, style lipgloss.Style) string 
 // onScrollbar reports whether a cell is on the transcript's scrollbar,
 // which shows when the transcript is longer than its room.
 func (m *uiModel) onScrollbar(x, y int) bool {
-	return x >= m.view.Width && x < m.view.Width+margin+2 && !m.inPanel(x, y) &&
+	columns := m.transcriptColumns()
+	return x >= columns && x < columns+margin+2 && !m.inPanel(x, y) &&
 		y >= m.top() && y < m.top()+m.view.Height && m.view.TotalLineCount() > m.view.Height
 }
 

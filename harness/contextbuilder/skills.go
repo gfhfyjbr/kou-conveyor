@@ -24,22 +24,36 @@ type promptSkill struct {
 	Location    string `xml:"location"`
 }
 
+// formatSkillsForPrompt lists the skills for the system prompt. A skill the
+// model is not to load on its own is named apart, for when the user asks
+// for it.
 func formatSkillsForPrompt(skills []tool.Skill) string {
-	if len(skills) == 0 {
-		return ""
-	}
-
-	promptSkills := make([]promptSkill, len(skills))
-	for index, skill := range skills {
-		promptSkills[index] = promptSkill{
+	var promptSkills []promptSkill
+	var manual []string
+	for _, skill := range skills {
+		if skill.Manual {
+			manual = append(manual, skill.Name)
+			continue
+		}
+		promptSkills = append(promptSkills, promptSkill{
 			Name:        skill.Name,
 			Description: skill.Description,
 			Location:    skill.Path,
+		})
+	}
+	if len(promptSkills) == 0 && len(manual) == 0 {
+		return ""
+	}
+	parts := []string{skillPreamble}
+	if len(promptSkills) > 0 {
+		encoded, err := xml.Marshal(availableSkills{Skills: promptSkills})
+		if err != nil {
+			panic(err)
 		}
+		parts = append(parts, string(encoded))
 	}
-	encoded, err := xml.Marshal(availableSkills{Skills: promptSkills})
-	if err != nil {
-		panic(err)
+	if len(manual) > 0 {
+		parts = append(parts, "Load these skills with SkillUse only when the user asks for one of them by name: "+strings.Join(manual, ", ")+".")
 	}
-	return skillPreamble + "\n\n" + string(encoded)
+	return strings.Join(parts, "\n\n")
 }

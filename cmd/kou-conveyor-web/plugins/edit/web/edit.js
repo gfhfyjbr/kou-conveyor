@@ -59,6 +59,9 @@ export default function activate(cockpit) {
       edit.node.insertBefore(edit.images.strip, input);
       edit.images.load(entry.images, (i) => pictures.imageURL(view(), entry, i));
     }
+    // A $ completes to the workspace's files, as in the composer; its keys
+    // come before the editor's own.
+    edit.files = service('files')?.attach?.({ input, container: edit.node }) || null;
     input.addEventListener('input', () => {
       size(input);
       const v = holder();
@@ -110,6 +113,7 @@ export default function activate(cockpit) {
     if (!edit) return;
     v.edit = null;
     edit.images?.destroy?.();
+    edit.files?.destroy?.();
     if (v !== view()) return;
     session.touch(v, edit.id);
     if (focusComposer) service('composer')?.input?.focus({ preventScroll: true });
@@ -123,6 +127,7 @@ export default function activate(cockpit) {
     if (!edit) return;
     v.edit = null;
     edit.images?.destroy?.();
+    edit.files?.destroy?.();
     if (v === view()) session.touch(v, edit.id);
     const text = edit.input.value.trim();
     const composer = service('composer');

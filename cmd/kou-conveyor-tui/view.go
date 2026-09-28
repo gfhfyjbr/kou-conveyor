@@ -88,14 +88,19 @@ func (m *uiModel) chromeRows() int {
 
 // Screen rows below the transcript.
 func (m *uiModel) statusRow() int { return m.top() + m.view.Height }
-func (m *uiModel) ruleRow() int   { return m.statusRow() + 1 + m.queueRows() + m.stripRows() }
+func (m *uiModel) ruleRow() int   { return m.statusRow() + 1 + m.trayRows() }
 func (m *uiModel) inputTop() int  { return m.ruleRow() + 1 }
+
+// trayRows are the rows between the status line and the composer: the
+// queue, the strip of images and the tray of links.
+func (m *uiModel) trayRows() int { return m.queueRows() + m.stripRows() + m.linksRows() }
 
 // controlsRow is the row of the composer's controls: the model, the effort
 // and the run button, inside the box, or on its bottom edge where the
 // terminal is short.
 func (m *uiModel) controlsRow() int { return m.inputTop() + m.input.Height() }
 
+// layout fits the composer and the transcript to the stage.
 func (m *uiModel) layout() {
 	if !m.ready {
 		return
@@ -106,6 +111,10 @@ func (m *uiModel) layout() {
 	m.input.SetWidth(max(promptWidth+4, m.stageWidth()-margin-2))
 	m.resize()
 }
+
+// transcriptColumns is how many columns the transcript shows: the view's
+// width, except while the view keeps lines drawn for another (reflow.go).
+func (m *uiModel) transcriptColumns() int { return max(1, m.stageWidth()-margin-2) }
 
 // resize fits the composer to its content and gives the rest to the
 // transcript.
@@ -124,10 +133,10 @@ func (m *uiModel) resize() {
 	if m.height < 20 || m.compact {
 		lowest = 1
 	}
-	// The queue and the strip of images sit between the status line and
-	// the composer.
+	// The queue, the strip of images and the tray of links sit between the
+	// status line and the composer.
 	chrome := m.chromeRows()
-	queue := m.queueRows() + m.stripRows()
+	queue := m.trayRows()
 	highest := clamp(m.height*2/5, 1, max(1, m.height-chrome-queue-1))
 	rows = clamp(rows, min(lowest, highest), min(maxInputs, max(lowest, highest)))
 	if rows != m.input.Height() {
@@ -135,8 +144,13 @@ func (m *uiModel) resize() {
 	}
 	height := max(1, m.height-chrome-queue-m.input.Height())
 	// The transcript keeps air and the scrollbar at its right; the changes
-	// panel takes the screen's right side, when both fit.
-	width := m.stageWidth() - margin - 2
+	// panel takes the screen's right side, when both fit. While the
+	// transcript is drawn anew for another width, the view keeps the width
+	// its lines were drawn for (reflow.go).
+	width := m.transcriptColumns()
+	if m.reflow.pending {
+		width = m.view.Width
+	}
 	if height != m.view.Height || m.view.Width != max(1, width) {
 		atBottom := m.view.AtBottom()
 		m.view.Width, m.view.Height = max(1, width), height
@@ -161,9 +175,11 @@ func (m *uiModel) render(follow bool) {
 	if !m.ready {
 		return
 	}
+	start := time.Now()
 	width := max(20, m.view.Width)
 	var lines []string
 	m.spans = m.spans[:0]
+	m.redrawn = 0
 	var previous *cockpit.Entry
 	index := 0
 	// What running an edit replaces fades.
@@ -179,7 +195,7 @@ func (m *uiModel) render(follow bool) {
 		if m.edit != nil && m.edit.id == e.ID {
 			fading = true
 		}
-		m.spans = append(m.spans, entrySpan{id: e.ID, start: len(lines), end: len(lines) + len(body), pictures: m.cache[e.ID].pictures})
+		m.spans = append(m.spans, entrySpan{id: e.ID, start: len(lines), end: len(lines) + len(body), pictures: m.cache[e.ID].pictures, files: m.cache[e.ID].files})
 		lines = append(lines, body...)
 		previous = e
 	}
@@ -191,7 +207,14 @@ func (m *uiModel) render(follow bool) {
 	wasBottom := m.view.AtBottom() || m.view.TotalLineCount() == 0
 	offset := m.view.YOffset
 	m.lines = lines
-	m.view.SetContent(strings.Join(lines, "\n"))
+	m.view.SetLines(lines)
+	// Most entries drawn anew tell what another width would cost (reflow.go).
+	switch n := len(m.tr.Entries); {
+	case n == 0:
+		m.reflow.cost = 0
+	case m.redrawn*2 >= n:
+		m.reflow.cost = time.Since(start) * time.Duration(n) / time.Duration(m.redrawn)
+	}
 	grew := len(m.tr.Entries) - m.shown
 	m.shown = len(m.tr.Entries)
 	switch {
@@ -229,6 +252,9 @@ func expandable(e *cockpit.Entry) bool {
 	switch e.Kind {
 	case cockpit.KindTool, cockpit.KindReasoning:
 		return true
+	case cockpit.KindUser:
+		// Open, a prompt shows what the model saw of the files it linked.
+		return len(e.Files) != 0
 	case cockpit.KindNotice:
 		return e.Detail != ""
 	}
@@ -248,15 +274,35 @@ func (m *uiModel) isOpen(e *cockpit.Entry) bool {
 // block renders one entry, reusing the previous rendering when nothing that
 // affects it changed.
 func (m *uiModel) block(e *cockpit.Entry, width, index int, faded bool) []string {
+	return m.drawBlock(m.cache, e, width, index, faded)
+}
+
+// cachedBlock is an entry's rendering in a cache, if nothing that affects it
+// changed since.
+func (m *uiModel) cachedBlock(cache map[string]block, e *cockpit.Entry, width int, faded bool) ([]string, bool) {
+	open := expandable(e) && m.isOpen(e)
+	live := m.state != idle || m.external
+	editing := m.edit != nil && m.edit.id == e.ID
+	cached, ok := cache[e.ID]
+	if ok && cached.rev == e.Rev && cached.width == width && cached.open == open && cached.live == live &&
+		cached.faded == faded && cached.editing == editing && cached.tall == m.viewedLimit(e, open) {
+		return cached.lines, true
+	}
+	return nil, false
+}
+
+// drawBlock renders one entry into a cache: the transcript's, or the one
+// its entries are drawn into for another width (reflow.go).
+func (m *uiModel) drawBlock(cache map[string]block, e *cockpit.Entry, width, index int, faded bool) []string {
+	if lines, ok := m.cachedBlock(cache, e, width, faded); ok {
+		return lines
+	}
 	open := expandable(e) && m.isOpen(e)
 	live := m.state != idle || m.external
 	editing := m.edit != nil && m.edit.id == e.ID
 	tall := m.viewedLimit(e, open)
-	if cached, ok := m.cache[e.ID]; ok && cached.rev == e.Rev && cached.width == width && cached.open == open &&
-		cached.live == live && cached.faded == faded && cached.editing == editing && cached.tall == tall {
-		return cached.lines
-	}
-	lines := m.renderEntry(e, width, index, open, live, editing)
+	m.redrawn++
+	lines, files := m.renderEntry(e, width, index, open, live, editing)
 	if faded {
 		for i, line := range lines {
 			lines[i] = m.styles.ghost.Render(ansi.Strip(line))
@@ -265,8 +311,8 @@ func (m *uiModel) block(e *cockpit.Entry, width, index int, faded bool) []string
 	// The picture a call read ends its block (viewed.go), as it is.
 	pictures := m.viewedRowsOf(e, width, open)
 	lines = append(lines, pictures...)
-	m.cache[e.ID] = block{rev: e.Rev, width: width, open: open, live: live, faded: faded, editing: editing, lines: lines,
-		tall: tall, pictures: len(pictures)}
+	cache[e.ID] = block{rev: e.Rev, width: width, open: open, live: live, faded: faded, editing: editing, lines: lines,
+		tall: tall, pictures: len(pictures), files: files}
 	return lines
 }
 
@@ -305,7 +351,9 @@ func (m *uiModel) card(lines []string, edge lipgloss.Style, title string, joints
 	return append(out, pad+rule(bottom, ""))
 }
 
-func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, editing bool) []string {
+// renderEntry draws an entry, and for a prompt that linked files, says the
+// row of the block where they are, which a click opens or folds.
+func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, editing bool) ([]string, int) {
 	st := m.styles
 	body := width - gutter
 	stamp := st.ghost.Render(fmt.Sprintf("%*s", gutter-3, localTime(e.At)))
@@ -360,7 +408,14 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 			}
 			text = append(text, wrapSpans(spans, body, "", "")...)
 		}
-		return append([]string{header}, m.card(text, edge, "", nil, width)...)
+		// The files it linked, and open, what the model saw of them: the
+		// card's rows start under the header and the card's top edge.
+		files := 0
+		if len(e.Files) != 0 {
+			files = 2 + len(text)
+			text = append(text, m.linkedLines(e, body, open)...)
+		}
+		return append([]string{header}, m.card(text, edge, "", nil, width)...), files
 
 	case cockpit.KindAssistant:
 		glyph, label := st.text.Render("■"), st.label.Render("AGENT")
@@ -372,7 +427,7 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 		for _, line := range renderMarkdown(st, e.Text, body, base) {
 			lines = append(lines, rail+line)
 		}
-		return lines
+		return lines, 0
 
 	case cockpit.KindReasoning:
 		chevron := "▸"
@@ -388,10 +443,10 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 				lines = append(lines, rail+line)
 			}
 		}
-		return lines
+		return lines, 0
 
 	case cockpit.KindTool:
-		return m.renderTool(e, width, open, live)
+		return m.renderTool(e, width, open, live), 0
 
 	case cockpit.KindNotice:
 		text := st.label.Render(strings.ToUpper(e.Text))
@@ -411,13 +466,13 @@ func (m *uiModel) renderEntry(e *cockpit.Entry, width, index int, open, live, ed
 				lines = append(lines, rail+l)
 			}
 		}
-		return lines
+		return lines, 0
 
 	case cockpit.KindError:
 		lines := []string{head(st.err.Render("■")) + st.errLabel.Render("ERROR") + "  " + st.ghost.Render(clockTime(e.At))}
-		return append(lines, m.card(wrapText(e.Text, st.err, body, "", ""), st.err, "", nil, width)...)
+		return append(lines, m.card(wrapText(e.Text, st.err, body, "", ""), st.err, "", nil, width)...), 0
 	}
-	return wrapText(e.Text, st.text, width, rail, rail)
+	return wrapText(e.Text, st.text, width, rail, rail), 0
 }
 
 // modelDot is the dot before a model's name, in its provider's colour when
@@ -717,12 +772,13 @@ func (m *uiModel) View() string {
 	case m.picker != nil:
 		lines = append(lines, strings.Split(m.overlay(), "\n")...)
 	default:
-		// The image the cursor is on shows large over the transcript.
-		lines = append(lines, m.withPreview(strings.Split(m.transcriptView(hover), "\n"), m.top())...)
+		// The image the cursor is on shows large over the transcript, and
+		// what a $ reference completes to over its foot.
+		lines = append(lines, m.withLinks(m.withPreview(strings.Split(m.transcriptView(hover), "\n"), m.top()), m.top())...)
 	}
 	status := m.statusLine()
 	if hint := m.hoverHint(hover); hint != "" && m.note.text == "" {
-		status = st.ghost.Render("› ") + st.muted.Render(hint)
+		status = m.unfinishedMark(st.ghost.Render("› ") + st.muted.Render(hint))
 	}
 	// Terminals that do not know how to set the pointer ignore the request.
 	pointer := ""
@@ -770,15 +826,28 @@ func (m *uiModel) transcriptView(hover hoverTarget) string {
 		// Too narrow for both: the panel covers the transcript.
 		return strings.Join(m.changesView(g, hover), "\n")
 	}
-	lines := strings.Split(m.view.View(), "\n")
+	// While the stage's width moves, the rows are the entries on screen
+	// drawn for it; the view keeps the lines drawn for the width before.
+	pending := m.reflow.pending
+	var lines []string
+	if pending {
+		lines = m.preview()
+	} else {
+		lines = m.view.Visible()
+	}
 	total, height := m.view.TotalLineCount(), m.view.Height
 	thumbStart, thumbEnd := scrollThumb(total, height, m.view.YOffset)
 	out := make([]string, height)
 	air := strings.Repeat(" ", margin+1)
+	columns := m.transcriptColumns()
 	for i := range height {
 		line := ""
 		if i < len(lines) {
 			line = lines[i]
+		}
+		width := ansi.StringWidth(line)
+		if width > columns {
+			line, width = ansi.Truncate(line, columns, ""), columns
 		}
 		bar := " "
 		if total > height {
@@ -787,9 +856,11 @@ func (m *uiModel) transcriptView(hover hoverTarget) string {
 				bar = st.faint.Render("┃")
 			}
 		}
-		gap := max(0, m.view.Width-ansi.StringWidth(line))
-		line = m.paintHover(hover, m.top()+i, line+strings.Repeat(" ", gap))
-		line = m.selected(inTranscript, m.view.YOffset+i, line, 0)
+		line += strings.Repeat(" ", max(0, columns-width))
+		if !pending {
+			line = m.paintHover(hover, m.top()+i, line)
+			line = m.selected(inTranscript, m.view.YOffset+i, line, 0)
+		}
 		if hover.kind == hoverScrollbar && total > height {
 			bar = st.accent.Render("┃")
 		}
@@ -805,13 +876,13 @@ func (m *uiModel) transcriptView(hover hoverTarget) string {
 func (m *uiModel) dockInner() int { return max(1, m.stageWidth()-2*margin-4) }
 func (m *uiModel) edgeInner() int { return max(1, m.stageWidth()-2*margin-2) }
 
-// dock is what sits under the status line: the queue and the images on a
-// tray, and the composer in its box with its controls. The tray and the box
+// dock is what sits under the status line: the queue, the images and the
+// links on a tray, and the composer in its box with its controls. The tray and the box
 // share their edges, as the web cockpit's do.
 func (m *uiModel) dock(hover hoverTarget) []string {
 	first := true
 	var lines []string
-	for _, part := range [][]string{m.queueView(hover), m.stripView(hover)} {
+	for _, part := range [][]string{m.queueView(hover), m.stripView(hover), m.linksView()} {
 		if len(part) == 0 {
 			continue
 		}
@@ -1078,7 +1149,7 @@ func (m *uiModel) statusLine() string {
 		return fitRight(left, right, width)
 	}
 	if m.unseen > 0 && !m.compact {
-		return st.accent.Render(fmt.Sprintf("↓ %d new below", m.unseen)) + st.faint.Render(" · pgdn or end")
+		return m.unfinishedMark(st.accent.Render(fmt.Sprintf("↓ %d new below", m.unseen)) + st.faint.Render(" · pgdn or end"))
 	}
 	if m.loading {
 		return st.faint.Render("loading session…")
@@ -1106,6 +1177,16 @@ func (m *uiModel) statusLine() string {
 		line = st.warn.Render("◌ interrupted") + st.faint.Render(" — /continue picks it up, esc esc edits the prompt · ") + line
 	}
 	return line
+}
+
+// unfinishedMark keeps a session whose last run did not finish marked in the
+// status line while it says something else: what is under the pointer, or
+// what arrived below.
+func (m *uiModel) unfinishedMark(line string) string {
+	if m.state != idle || m.loading || m.external || !m.tr.Interrupted() {
+		return line
+	}
+	return m.styles.warn.Render("◌ interrupted") + m.styles.ghost.Render(" · ") + line
 }
 
 // composerRule is the label of the composer's top edge: what the composer

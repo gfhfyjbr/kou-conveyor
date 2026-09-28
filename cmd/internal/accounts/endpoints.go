@@ -91,6 +91,7 @@ type Endpoint struct {
 	Disabled bool            `json:"disabled,omitzero"`
 	State    string          `json:"state"`
 	Uptime   Uptime          `json:"uptime"`
+	Spend    Spend           `json:"spend"`
 	Errors   []ErrorSample   `json:"errors,omitzero"` // newest first
 
 	indexes  []string // the gateway's auth indexes of its keys

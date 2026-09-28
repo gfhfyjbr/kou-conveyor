@@ -8,12 +8,12 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 )
@@ -75,6 +75,11 @@ type fileDiff struct {
 	patch     string
 	truncated bool
 	err       error
+	// rows are the patch's lines as the panel draws them, read from it
+	// once; digits is how wide the widest line number is.
+	rows   []diffRow
+	digits int
+	parsed bool
 }
 
 // drawnDiff is the diff shown, as drawn for a width.
@@ -82,7 +87,9 @@ type drawnDiff struct {
 	key    string
 	width  int
 	lines  []string
-	gutter int // the columns of line numbers before the text
+	starts []int         // the line each of the patch's rows starts on
+	gutter int           // the columns of line numbers before the text
+	cost   time.Duration // what drawing it took
 }
 
 // changeRow is a row of the tree: a folder, or a file.
@@ -298,6 +305,9 @@ func (m *uiModel) relayout() {
 		}
 	}
 	bottom := m.view.AtBottom()
+	// What was drawn anew for the width so far is kept.
+	m.fitWidth()
+	m.settleReflow()
 	m.layout()
 	m.refreshKeep()
 	if bottom || m.follow {
@@ -769,13 +779,30 @@ func (m *uiModel) onPanelEdge(x, y int) bool {
 }
 
 // setPanelWidth gives the panel a width, within what leaves the transcript
-// its room, and fits the transcript to what is left.
-func (m *uiModel) setPanelWidth(columns int) {
+// its room, and fits the stage to what is left: the edge goes where it is
+// sent at once, the composer with it, and the transcript and the diff are
+// drawn anew for their widths at once where that is quick, what is on
+// screen first where it is not (reflow.go).
+func (m *uiModel) setPanelWidth(columns int) tea.Cmd {
 	before, _ := m.panelColumns()
 	m.changes.width = clamp(columns, panelMinColumns, max(panelMinColumns, m.width-transcriptMinColumns))
-	if after, _ := m.panelColumns(); after != before {
-		m.relayout()
+	if after, _ := m.panelColumns(); after == before {
+		return nil
 	}
+	if m.reflow.pending || !m.reflowCheap() {
+		return m.reflowLater()
+	}
+	m.relayout()
+	return nil
+}
+
+// panelStepKey reports the keys that move the panel's edge.
+func panelStepKey(key string) bool {
+	switch key {
+	case "<", "shift+left", ">", "shift+right":
+		return true
+	}
+	return false
 }
 
 // stepPanel moves the panel's edge by columns, to the left for more; the
@@ -789,10 +816,10 @@ func (m *uiModel) stepPanel(columns int) tea.Cmd {
 	if covers {
 		return m.notify(fmt.Sprintf("the changes cover the transcript below %d columns; there is no edge to move", sideBySide), "info")
 	}
-	m.setPanelWidth(pw + columns)
+	moved := m.setPanelWidth(pw + columns)
 	m.changes.saveGen++
 	gen := m.changes.saveGen
-	return tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg { return panelWidthMsg{gen} })
+	return tea.Batch(moved, tea.Tick(400*time.Millisecond, func(time.Time) tea.Msg { return panelWidthMsg{gen} }))
 }
 
 // panelWidthSettled saves the width the keys left the panel.
@@ -821,23 +848,27 @@ func (m *uiModel) pressEdge() {
 }
 
 // edgeReleased ends a drag of the panel's edge: a width that changed is
-// kept, and a double click gives the panel its default width back.
-func (m *uiModel) edgeReleased() {
+// kept, and a double click gives the panel its default width back. What is
+// left to draw for the width is drawn at once, without waiting for it to
+// rest.
+func (m *uiModel) edgeReleased() tea.Cmd {
 	c := &m.changes
+	rest := m.reflowNow()
 	if pw, _ := m.panelColumns(); pw != c.dragFrom.shown {
 		c.edgeClick = time.Time{}
 		c.saveGen++
 		m.saveChangesWidth()
-		return
+		return rest
 	}
 	// Back where it started, the edge was clicked: a default stays one.
 	c.width = c.dragFrom.chosen
 	if time.Since(c.edgeClick) < doubleClick {
 		c.edgeClick = time.Time{}
 		m.restorePanelWidth()
-		return
+		return nil
 	}
 	c.edgeClick = time.Now()
+	return rest
 }
 
 // saveChangesWidth makes the next start give the panel the width it has.
@@ -967,10 +998,21 @@ func (m *uiModel) changesView(g panelGeometry, hover hoverTarget) []string {
 	} else {
 		c.scroll = clamp(c.scroll, 0, max(0, len(lines)-g.diffRows))
 		thumbStart, thumbEnd := scrollThumb(len(lines), g.diffRows, c.scroll)
+		// While the stage's width moves, the lines in view are drawn for it.
+		var shown []string
+		stale := c.drawn.width != g.inner
+		if stale {
+			shown = m.diffWindow(g.inner, g.diffRows)
+		}
 		for i := range g.diffRows {
 			at := c.scroll + i
 			line, bar := "", " "
-			if at < len(lines) {
+			switch {
+			case stale:
+				if i < len(shown) {
+					line = shown[i]
+				}
+			case at < len(lines):
 				line = m.selected(inDiff, at, lines[at], 0)
 			}
 			if len(lines) > g.diffRows {
@@ -1152,12 +1194,21 @@ func (m *uiModel) diffView(width int) (lines []string, gutter int, note string) 
 	case d.err != nil:
 		return nil, 0, cockpit.Sentence("cannot show the diff: " + d.err.Error())
 	}
-	if c.drawn.key != key || c.drawn.width != width {
-		lines, gutter := diffLines(m.styles, d.patch, width)
+	// While the stage's width moves, the diff keeps the lines it has, and
+	// the panel draws those in view for its width (diffWindow).
+	if c.drawn.key != key || c.drawn.width != width && !m.reflow.pending {
+		start := time.Now()
+		rows, digits := d.read()
+		lines, starts := drawDiff(m.styles, rows, digits, width)
 		if d.truncated {
-			lines = append(lines, "", m.styles.faint.Render("The diff goes on; the rest is not shown."))
+			lines = append(lines, diffGoesOn(m.styles)...)
 		}
-		c.drawn = drawnDiff{key: key, width: width, lines: lines, gutter: gutter}
+		if c.drawn.key == key {
+			// The line at the top of the view stays there.
+			row, into := c.drawn.rowAt(c.scroll)
+			c.scroll = rowLine(starts, len(lines), row, into)
+		}
+		c.drawn = drawnDiff{key: key, width: width, lines: lines, starts: starts, gutter: 2*digits + 4, cost: time.Since(start)}
 	}
 	if len(c.drawn.lines) == 0 {
 		if f.Status == "renamed" {
@@ -1170,75 +1221,170 @@ func (m *uiModel) diffView(width int) (lines []string, gutter int, note string) 
 
 var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$`)
 
-// diffLines draws a unified diff with each line's numbers, old and new, in
-// a gutter before it; long lines wrap below it. The patch's own headers are
+// diffRow is a line of a patch as the panel draws it: a hunk's band, a line
+// with its numbers, old and new (0 where it has none), or a note.
+type diffRow struct {
+	kind     byte // '@' a hunk's band, '+', '-', ' ', or '\\' a note
+	old, new int
+	text     string
+}
+
+// read reads the patch into the rows the panel draws, once.
+func (d *fileDiff) read() ([]diffRow, int) {
+	if !d.parsed {
+		d.rows, d.digits = parseDiff(d.patch)
+		d.parsed = true
+	}
+	return d.rows, d.digits
+}
+
+// parseDiff reads a unified diff into the rows the panel draws, and says
+// how many digits the widest line number takes. The patch's own headers are
 // left out: the panel names the file.
-func diffLines(st styles, patch string, width int) ([]string, int) {
-	patchLines := strings.Split(strings.TrimSuffix(patch, "\n"), "\n")
+func parseDiff(patch string) ([]diffRow, int) {
+	var rows []diffRow
 	widest := 1
-	for _, line := range patchLines {
-		if h := hunkHeader.FindStringSubmatch(line); h != nil {
-			for _, at := range [][2]string{{h[1], h[2]}, {h[3], h[4]}} {
-				start, _ := strconv.Atoi(at[0])
-				count := 1
-				if at[1] != "" {
-					count, _ = strconv.Atoi(at[1])
-				}
-				widest = max(widest, len(strconv.Itoa(start+count)))
-			}
-		}
-	}
-	digits := max(3, widest)
-	gutter := 2*digits + 4 // "old new ± "
-	room := max(8, width-gutter)
-	number := func(n int) string {
-		if n <= 0 {
-			return strings.Repeat(" ", digits)
-		}
-		return fmt.Sprintf("%*d", digits, n)
-	}
-	var out []string
-	add := func(old, new int, sign string, signStyle, textStyle lipgloss.Style, text string) {
-		text = strings.ReplaceAll(text, "\t", "    ")
-		for i, part := range strings.Split(ansi.Hardwrap(text, room, true), "\n") {
-			lead := st.faint.Render(number(old)+" "+number(new)+" ") + signStyle.Render(sign) + " "
-			if i > 0 {
-				lead = strings.Repeat(" ", gutter)
-			}
-			// The line's colour runs to the edge, like a highlighted row.
-			out = append(out, lead+textStyle.Render(part+strings.Repeat(" ", max(0, room-ansi.StringWidth(part)))))
-		}
-	}
 	old, new, inHunk := 0, 0, false
-	for _, line := range patchLines {
-		if h := hunkHeader.FindStringSubmatch(line); h != nil {
-			old, _ = strconv.Atoi(h[1])
-			new, _ = strconv.Atoi(h[3])
-			inHunk = true
-			// A band, as in the web cockpit, where each part of the file starts.
-			head := fit(line, width)
-			out = append(out, st.diffHunk.Render(head+strings.Repeat(" ", max(0, width-ansi.StringWidth(head)))))
-			continue
+	for _, line := range strings.Split(strings.TrimSuffix(patch, "\n"), "\n") {
+		if strings.HasPrefix(line, "@@") {
+			if h := hunkHeader.FindStringSubmatch(line); h != nil {
+				for _, at := range [][2]string{{h[1], h[2]}, {h[3], h[4]}} {
+					start, _ := strconv.Atoi(at[0])
+					count := 1
+					if at[1] != "" {
+						count, _ = strconv.Atoi(at[1])
+					}
+					widest = max(widest, len(strconv.Itoa(start+count)))
+				}
+				old, _ = strconv.Atoi(h[1])
+				new, _ = strconv.Atoi(h[3])
+				inHunk = true
+				rows = append(rows, diffRow{kind: '@', text: line})
+				continue
+			}
 		}
 		switch {
 		case strings.HasPrefix(line, "diff --git "):
 			inHunk = false // another file's headers follow
 		case !inHunk:
 		case strings.HasPrefix(line, "+"):
-			add(0, new, "+", st.ok, st.diffAdd, line[1:])
+			rows = append(rows, diffRow{kind: '+', new: new, text: line[1:]})
 			new++
 		case strings.HasPrefix(line, "-"):
-			add(old, 0, "−", st.err, st.diffDel, line[1:])
+			rows = append(rows, diffRow{kind: '-', old: old, text: line[1:]})
 			old++
 		case strings.HasPrefix(line, " ") || line == "":
-			add(old, new, " ", st.faint, st.muted, strings.TrimPrefix(line, " "))
+			rows = append(rows, diffRow{kind: ' ', old: old, new: new, text: strings.TrimPrefix(line, " ")})
 			old++
 			new++
 		case strings.HasPrefix(line, `\`):
-			out = append(out, strings.Repeat(" ", gutter)+st.faint.Italic(true).Render(strings.TrimSpace(strings.TrimPrefix(line, `\`))))
+			rows = append(rows, diffRow{kind: '\\', text: strings.TrimSpace(strings.TrimPrefix(line, `\`))})
 		}
 	}
-	return out, gutter
+	return rows, max(3, widest)
+}
+
+// drawDiff draws a diff's rows for a width, and says on which line each of
+// them starts.
+func drawDiff(st styles, rows []diffRow, digits, width int) (lines []string, starts []int) {
+	starts = make([]int, len(rows))
+	for i, r := range rows {
+		starts[i] = len(lines)
+		lines = append(lines, drawDiffRow(st, r, digits, width)...)
+	}
+	return lines, starts
+}
+
+// drawDiffRow draws a row of a diff for a width: its line's numbers in a
+// gutter before it, and its text, which wraps below it.
+func drawDiffRow(st styles, r diffRow, digits, width int) []string {
+	gutter := 2*digits + 4 // "old new ± "
+	switch r.kind {
+	case '@':
+		// A band, as in the web cockpit, where each part of the file starts.
+		head := fit(r.text, width)
+		return []string{st.diffHunk.Render(head + strings.Repeat(" ", max(0, width-ansi.StringWidth(head))))}
+	case '\\':
+		return []string{strings.Repeat(" ", gutter) + st.faint.Italic(true).Render(r.text)}
+	}
+	sign, signStyle, textStyle := " ", st.faint, st.muted
+	switch r.kind {
+	case '+':
+		sign, signStyle, textStyle = "+", st.ok, st.diffAdd
+	case '-':
+		sign, signStyle, textStyle = "−", st.err, st.diffDel
+	}
+	number := func(n int) string {
+		if n <= 0 {
+			return strings.Repeat(" ", digits)
+		}
+		return fmt.Sprintf("%*d", digits, n)
+	}
+	room := max(8, width-gutter)
+	parts := strings.Split(ansi.Hardwrap(strings.ReplaceAll(r.text, "\t", "    "), room, true), "\n")
+	lines := make([]string, len(parts))
+	for i, part := range parts {
+		lead := strings.Repeat(" ", gutter)
+		if i == 0 {
+			lead = st.faint.Render(number(r.old)+" "+number(r.new)+" ") + signStyle.Render(sign) + " "
+		}
+		// The line's colour runs to the edge, like a highlighted row.
+		lines[i] = lead + textStyle.Render(part+strings.Repeat(" ", max(0, room-ansi.StringWidth(part))))
+	}
+	return lines
+}
+
+// diffGoesOn ends a diff that was cut short.
+func diffGoesOn(st styles) []string {
+	return []string{"", st.faint.Render("The diff goes on; the rest is not shown.")}
+}
+
+// rowAt is the row of the patch a line of the diff as drawn belongs to, and
+// how far into the row's lines it is; the lines after the last row count as
+// its.
+func (d drawnDiff) rowAt(line int) (row, into int) {
+	if len(d.starts) == 0 {
+		return 0, 0
+	}
+	row = max(0, sort.Search(len(d.starts), func(i int) bool { return d.starts[i] > line })-1)
+	return row, max(0, line-d.starts[row])
+}
+
+// rowLine is the line into lines into a row of a diff drawn with starts,
+// of lines lines in all, or the row's last.
+func rowLine(starts []int, lines, row, into int) int {
+	if row >= len(starts) {
+		return 0
+	}
+	end := lines
+	if row+1 < len(starts) {
+		end = starts[row+1]
+	}
+	return starts[row] + clamp(into, 0, max(0, end-starts[row]-1))
+}
+
+// diffWindow is the diff's lines in view drawn for a width, while the diff
+// keeps those drawn for another: from the line at the top of the view, as
+// they will be once it is drawn for it.
+func (m *uiModel) diffWindow(width, height int) []string {
+	c := &m.changes
+	d := c.diffs[c.drawn.key]
+	if d == nil {
+		return nil
+	}
+	rows, digits := d.read()
+	blocks := len(rows)
+	if d.truncated {
+		blocks++
+	}
+	draw := func(i int) []string {
+		if i == len(rows) {
+			return diffGoesOn(m.styles)
+		}
+		return drawDiffRow(m.styles, rows[i], digits, width)
+	}
+	row, into := c.drawn.rowAt(c.scroll)
+	return window(blocks, row, into, height, draw)
 }
 
 // scrollDiff scrolls the diff by n lines.

@@ -5,6 +5,7 @@
 // state and cooldowns, its requests and errors over time, and what is left
 // of an account's limits. Tokens and keys stay on the server.
 import { fmt, h as element } from '/kernel/dom.js';
+import { money } from './format.js';
 
 const POLL = 5000;
 const QUOTA_STALE = 3 * 60 * 1000;
@@ -28,7 +29,7 @@ const RANGES = { '24h': 'Last 24 hours', '7d': 'Last 7 days' };
 
 // h is view.js's, with event handlers a render can hand over to the node it
 // keeps: a node listens once per event type, calling the handler it holds now.
-function h(tag, attrs, ...children) {
+export function h(tag, attrs, ...children) {
   const plain = {};
   const handlers = [];
   for (const [key, value] of Object.entries(attrs || {})) {
@@ -49,7 +50,7 @@ function listen(el, type, fn) {
 // morph makes old look like fresh and returns the node that stays: old,
 // patched where the two differ, or fresh in its place where they are
 // different kinds of node.
-function morph(old, fresh) {
+export function morph(old, fresh) {
   if (old === fresh) return old;
   if (old.nodeType !== fresh.nodeType || old.nodeName !== fresh.nodeName) {
     old.replaceWith(fresh);
@@ -63,8 +64,9 @@ function morph(old, fresh) {
     if (!fresh.hasAttribute(name)) old.removeAttribute(name);
   }
   for (const { name, value } of [...fresh.attributes]) {
-    if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+    if (name !== 'style' && old.getAttribute(name) !== value) old.setAttribute(name, value);
   }
+  if (fresh.hasAttribute('style')) copyStyle(old, fresh);
   const types = new Set([...Object.keys(old._on || {}), ...Object.keys(fresh._on || {})]);
   for (const type of types) {
     if (fresh._on?.[type]) listen(old, type, fresh._on[type]);
@@ -85,11 +87,23 @@ function morph(old, fresh) {
   return old;
 }
 
+// copyStyle gives old the inline style of fresh property by property: the
+// page's content security policy refuses a style attribute set whole, but
+// not the properties of one.
+function copyStyle(old, fresh) {
+  const want = fresh.style;
+  for (const prop of [...old.style]) if (!want.getPropertyValue(prop)) old.style.removeProperty(prop);
+  for (const prop of want) {
+    const value = want.getPropertyValue(prop);
+    if (old.style.getPropertyValue(prop) !== value) old.style.setProperty(prop, value, want.getPropertyPriority(prop));
+  }
+}
+
 // sync makes box's children the nodes of a new render. Each pairs up with a
 // child box holds, by its data-row or else by its position, and the child
 // stays, patched to match; only new nodes enter the page, and only nodes
 // that are gone leave it.
-function sync(box, nodes) {
+export function sync(box, nodes) {
   nodes = nodes.filter(Boolean);
   const old = [...box.childNodes];
   const byRow = new Map();
@@ -172,7 +186,9 @@ export function createAccounts(ctx) {
     if (!ui.conn?.dirty) ui.conn = null;
     for (const name of [...ui.expanded]) if (!data.accounts.some((a) => a.name === name)) ui.expanded.delete(name);
     render();
-    ctx.onSummary(summary());
+    // The bar says how the gateway stands on the view's other tab too.
+    if (!ui.open) renderHeader();
+    ctx.onSummary(summary(), data.unit);
     if (ui.open) wantQuotas();
     // The composer's list follows the gateway's models.
     const sig = JSON.stringify((data.models || []).map((m) => [m.id, !!m.cooling]));
@@ -624,7 +640,26 @@ export function createAccounts(ctx) {
         stat(s.endpoints || 0, 'Endpoints'),
         stat(s.ready || 0, 'Ready', 'ok'), stat(s.cooling || 0, 'Cooling', 'warn'), stat(failing, 'Failing', 'bad'),
         stat(total ? fmt.tokens(total) : '0', 'Requests · 24h'),
-        stat(total ? percent(s.ok, total) : '—', 'Success · 24h', total && s.failed ? (s.failed / total > 0.1 ? 'bad' : 'warn') : total ? 'ok' : null)));
+        stat(total ? percent(s.ok, total) : '—', 'Success · 24h', total && s.failed ? (s.failed / total > 0.1 ? 'bad' : 'warn') : total ? 'ok' : null),
+        costStat(s)));
+  }
+
+  // costStat is what the last day's requests would have cost at API
+  // prices; it leads to the Usage tab.
+  function costStat(s) {
+    const cost = s.cost || 0;
+    const partial = s.unpriced_tokens ? ` · ${fmt.tokens(s.unpriced_tokens)} tokens of models without a price left out` : '';
+    return h('button', {
+      type: 'button', class: 'gw-cost', data: { level: cost ? 'cost' : null, zero: cost ? null : 'true' },
+      title: `What the last day's requests would cost as API credits, at the providers' list prices${partial}: the Usage tab (U)`,
+      onclick: () => ctx.showUsage?.('24h'),
+    }, h('b', { text: money(cost, ui.data?.unit) }), h('span', { text: 'API cost · 24h' }));
+  }
+
+  // spent says what requests of the span would have cost at API prices.
+  function spent(spend) {
+    if (!spend?.cost) return null;
+    return `≈ ${money(spend.cost, ui.data?.unit)} at API prices`;
   }
 
   function gatewayNote(title, text, path) {
@@ -707,7 +742,7 @@ export function createAccounts(ctx) {
           h('p', { class: 'acc-stats' }, total
             ? [`${u.ok || 0} ok`, u.failed ? `${u.failed} failed` : null,
               `${fmt.tokens(u.input_tokens || 0)} in · ${fmt.tokens(u.output_tokens || 0)} out`,
-              u.avg_latency_ms ? `avg ${latency(u.avg_latency_ms)}` : null].filter(Boolean).join(' · ')
+              u.avg_latency_ms ? `avg ${latency(u.avg_latency_ms)}` : null, spent(a.spend)].filter(Boolean).join(' · ')
             : u.last_ok ? `No requests in this span · last one ${fmt.ago(u.last_ok)} ago` : 'No requests yet'),
           a.message && a.state !== 'ready' && !configured ? h('p', { class: 'acc-note', data: { state: a.state }, text: a.message }) : null,
           cooling.length ? h('p', { class: 'acc-note', data: { state: 'cooling' } },
@@ -829,6 +864,7 @@ export function createAccounts(ctx) {
         kv('Succeeded', String(u.ok || 0)),
         kv('Failed', String(u.failed || 0), u.failed ? 'bad' : null),
         kv('Tokens in / out', `${fmt.tokens(u.input_tokens || 0)} / ${fmt.tokens(u.output_tokens || 0)}`),
+        spendRows(a.spend),
         kv('Average latency', u.avg_latency_ms ? latency(u.avg_latency_ms) : '—'),
         kv('Last success', u.last_ok ? `${fmt.ago(u.last_ok)} ago` : '—'),
         kv('Last failure', u.last_failure ? `${fmt.ago(u.last_failure)} ago` : '—', u.last_failure ? 'bad' : null)),
@@ -985,7 +1021,7 @@ export function createAccounts(ctx) {
           uptimeBar(u),
           h('p', { class: 'acc-stats' }, total
             ? [`${u.ok || 0} ok`, u.failed ? `${u.failed} failed` : null, `${fmt.tokens(u.input_tokens || 0)} in · ${fmt.tokens(u.output_tokens || 0)} out`,
-              u.avg_latency_ms ? `avg ${latency(u.avg_latency_ms)}` : null].filter(Boolean).join(' · ')
+              u.avg_latency_ms ? `avg ${latency(u.avg_latency_ms)}` : null, spent(e.spend)].filter(Boolean).join(' · ')
             : 'No requests in this span'),
           lastError ? h('p', { class: 'acc-error', title: lastError.message || '' },
             h('span', { class: 'err-code', text: lastError.status ? String(lastError.status) : 'ERR' }),
@@ -1016,6 +1052,7 @@ export function createAccounts(ctx) {
         kv('Succeeded', String(u.ok || 0)),
         kv('Failed', String(u.failed || 0), u.failed ? 'bad' : null),
         kv('Tokens in / out', `${fmt.tokens(u.input_tokens || 0)} / ${fmt.tokens(u.output_tokens || 0)}`),
+        spendRows(e.spend),
         kv('Average latency', u.avg_latency_ms ? latency(u.avg_latency_ms) : '—'),
         kv('Last success', u.last_ok ? `${fmt.ago(u.last_ok)} ago` : '—')),
       (e.models || []).length ? h('section', { class: 'wide' },
@@ -1529,6 +1566,18 @@ export function createAccounts(ctx) {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  // spendRows are what the requests of the span read from and wrote to
+  // caches, and what they would have cost at API prices.
+  function spendRows(spend) {
+    const t = spend?.tokens;
+    if (!t || !(t.cache_read || t.cache_write || spend.cost)) return null;
+    return [
+      t.cache_read || t.cache_write ? kv('Cache read / written', `${fmt.tokens(t.cache_read || 0)} / ${fmt.tokens(t.cache_write || 0)}`) : null,
+      kv('At API prices', spend.cost ? money(spend.cost, ui.data?.unit) : '—', null,
+        h('button', { class: 'act', type: 'button', title: 'What each model used, and its price: the Usage tab (U)', onclick: () => ctx.showUsage?.() }, 'Usage')),
+    ];
+  }
 
   function kv(k, value, level, action) {
     return h('div', { class: `kv${level ? ` lv-${level}` : ''}` },

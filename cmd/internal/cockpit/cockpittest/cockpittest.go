@@ -38,6 +38,10 @@ const enable = "COCKPITTEST_FAKE_RUNNER"
 // messages while they ran.
 const NoSteer = "COCKPITTEST_NO_STEER"
 
+// NoLinks, set to 1, makes the fake runner one built before messages linked
+// files: it turns a request with files away, as the runner does.
+const NoLinks = "COCKPITTEST_NO_LINKS"
+
 // Main turns the test binary into a fake runner when a test launched it
 // through Runner. Call it first in TestMain.
 func Main() {
@@ -64,8 +68,16 @@ func Main() {
 //     "steered: <message>";
 //   - "gate": block until a file named gate exists in the workspace, or
 //     until interrupted;
+//   - "retry": report, once the turn started, that the request to the model
+//     failed and is tried again (retry> on stderr), as the runner does;
+//   - "unfinished": the model stops short of an answer, its thinking cut off
+//     at the output token limit, and the run ends without an error, as the
+//     runner's does;
 //   - "look": run one ViewImage call, which reads Picture (480×320 PNG);
 //   - anything else: answer "echo: <prompt>".
+//
+// The files a message links are recorded with it, each showing its whole
+// content, as the runner records what the model saw of them.
 //
 // With "slow" in the prompt, items are paced so streaming can be watched.
 //
@@ -94,6 +106,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if os.Getenv(NoSteer) != "1" {
 		steer = flags.Bool("steer", false, "keep reading stdin for messages")
 	}
+	// The usage says what the runner takes, as the runner's does.
+	flags.Usage = func() {
+		flags.PrintDefaults()
+		if os.Getenv(NoLinks) != "1" {
+			fmt.Fprintln(stderr, "  messages: … files: array of {path: string, start_line?: integer, end_line?: integer, label?: string}")
+		}
+	}
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -106,6 +125,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			Content   string         `json:"content"`
 			MessageID string         `json:"message_id"`
 			Images    []requestImage `json:"images"`
+			Files     []requestFile  `json:"files"`
 		} `json:"messages"`
 		SessionID    string `json:"session_id"`
 		Model        string `json:"model"`
@@ -148,12 +168,33 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if strings.Contains(prompt, "slow") {
 		s.pace = 700 * time.Millisecond
 	}
+	if len(request.Messages[0].Files) != 0 && os.Getenv(NoLinks) == "1" {
+		fmt.Fprintln(stdout, `{"type":"error","message":"invalid JSON: unknown member files"}`)
+		return 1
+	}
 	images := request.Messages[0].Images
-	payload := promptPayload(prompt, images)
+	payload := promptPayload(prompt, images, linkFiles(*workspace, request.Messages[0].Files))
 	s.emit(sessionstore.ItemInput, inbox.Input{
 		ID: inbox.ID(request.Messages[0].MessageID), Kind: inbox.InputExternal, Payload: payload,
 	})
 	turn := s.turn()
+	if strings.Contains(prompt, "retry") {
+		// The turn reaches the front-end first, as it does when a request
+		// takes a moment to fail.
+		time.Sleep(100 * time.Millisecond)
+		fmt.Fprintln(stderr, "retry> attempt 1 of 5 failed, trying again in 2s: Messages API request failed: "+
+			`Post "http://127.0.0.1:8318/v1/messages": dial tcp 127.0.0.1:8318: connect: connection refused`)
+	}
+	if strings.Contains(prompt, "unfinished") {
+		s.emit(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn, Response: llm.Response{
+			Stop: llm.StopMaxOutputTokens,
+			Output: []llm.Item{{Type: llm.ItemReasoning, Data: llm.Reasoning{
+				Summary: []string{"Thinking it through, at length."},
+			}}},
+			Usage: llm.Usage{InputTokens: 100, OutputTokens: 64000, ReasoningTokens: 64000},
+		}})
+		return 0
+	}
 	if strings.Contains(prompt, "wait") {
 		interrupted := make(chan os.Signal, 1)
 		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
@@ -201,7 +242,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			Operations: shell(operation.StatusCompleted, &operation.ShellResult{Out: "ok\n", OutSize: 3}),
 		})
 		if received {
-			payload := promptPayload(message.Content, message.Images)
+			payload := promptPayload(message.Content, message.Images, linkFiles(*workspace, message.Files))
 			s.emit(sessionstore.ItemInput, inbox.Input{
 				ID: inbox.ID(message.MessageID), Kind: inbox.InputExternal, Payload: payload, Delivery: inbox.DeliverAfterTools,
 			})
@@ -447,6 +488,57 @@ type steeringMessage struct {
 	Content   string         `json:"content"`
 	MessageID string         `json:"message_id"`
 	Images    []requestImage `json:"images"`
+	Files     []requestFile  `json:"files"`
+}
+
+// requestFile is a file a prompt links, as the runner takes it.
+type requestFile struct {
+	Label     string `json:"label"`
+	Path      string `json:"path"`
+	StartLine int    `json:"start_line"`
+	EndLine   int    `json:"end_line"`
+}
+
+// linkFiles reads the files a prompt links whole: the lines asked for, or
+// all of them.
+func linkFiles(workspace string, files []requestFile) []contextbuilder.LinkedFile {
+	var linked []contextbuilder.LinkedFile
+	for _, file := range files {
+		one := contextbuilder.LinkedFile{Label: file.Label, Path: file.Path}
+		path := file.Path
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workspace, path)
+		}
+		info, err := os.Stat(path)
+		switch {
+		case err != nil:
+			one.Error = "no such file or directory"
+		case info.IsDir():
+			one.Directory = true
+			entries, _ := os.ReadDir(path)
+			var names []string
+			for _, entry := range entries {
+				names = append(names, entry.Name())
+			}
+			one.Lines = len(names)
+			if len(names) > 0 {
+				one.From, one.To, one.Content = 1, len(names), strings.Join(names, "\n")
+			}
+		default:
+			data, _ := os.ReadFile(path)
+			lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+			one.Size, one.Lines = info.Size(), len(lines)
+			from, to := max(1, file.StartLine), len(lines)
+			if file.EndLine > 0 {
+				to = min(to, file.EndLine)
+			}
+			if len(data) > 0 && from <= to {
+				one.From, one.To, one.Content = from, to, strings.Join(lines[from-1:to], "\n")
+			}
+		}
+		linked = append(linked, one)
+	}
+	return linked
 }
 
 // requestImage is an image of a prompt, as the runner takes it.
@@ -456,15 +548,16 @@ type requestImage struct {
 	Data      []byte `json:"data"`
 }
 
-// promptPayload records a prompt and its images as the runner does.
-func promptPayload(text string, images []requestImage) jsontext.Value {
+// promptPayload records a prompt, its images and its files as the runner
+// does.
+func promptPayload(text string, images []requestImage, files []contextbuilder.LinkedFile) jsontext.Value {
 	var recorded []llm.Image
 	for _, image := range images {
 		recorded = append(recorded, llm.Image{
 			Label: image.Label, URL: "data:" + image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(image.Data),
 		})
 	}
-	payload, err := contextbuilder.ExternalPayload(text, recorded)
+	payload, err := contextbuilder.EncodeMessage(contextbuilder.Message{Text: text, Images: recorded, Files: files})
 	if err != nil {
 		panic(err)
 	}

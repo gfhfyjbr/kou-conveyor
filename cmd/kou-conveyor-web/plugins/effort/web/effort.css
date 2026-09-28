@@ -1,6 +1,6 @@
 /* effort: the bars beside the model. */
 
-.think { display: flex; align-items: center; gap: 10px; height: 32px; padding: 0 10px; border: 1px solid var(--line); background: var(--bg); }
+.think { position: relative; display: flex; align-items: center; gap: 10px; height: var(--control, 32px); padding: 0 10px; border: 1px solid var(--line); background: var(--bg); }
 .think-bars { display: flex; align-items: flex-end; gap: 3px; height: 16px; }
 .think-bars button { width: 5px; background: var(--line-2); transition: background 0.12s; }
 .think-bars button:nth-child(1) { height: 5px; }
@@ -16,4 +16,18 @@
 
 @media (max-width: 480px) {
   .think .label { display: none; }
+}
+
+/* On the narrowest phones the level's name goes before the row breaks: the
+   bars say it. */
+@container composer-row (max-width: 300px) {
+  .think-label { display: none; }
+}
+
+/* On a touch screen the bars are too narrow to hit: a select over the whole
+   control opens the system's own list of the levels. It is 16px, or a phone
+   zooms the page in. */
+.think-select { display: none; }
+@media (hover: none) and (pointer: coarse) {
+  .think-select { display: block; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; font-size: 16px; cursor: pointer; }
 }

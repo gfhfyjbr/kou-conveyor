@@ -78,7 +78,7 @@ func TestValidateRequestChecksImages(t *testing.T) {
 }
 
 func TestSteeringMessagesTakeImages(t *testing.T) {
-	input, err := steeringInput(jsontext.Value(`{"content":"","images":[{"media_type":"image/webp","data":"UklGRg=="}]}`))
+	input, err := steeringInput(jsontext.Value(`{"content":"","images":[{"media_type":"image/webp","data":"UklGRg=="}]}`), t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestSteeringMessagesTakeImages(t *testing.T) {
 	if err != nil || text != "" || !reflect.DeepEqual(images, []llm.Image{{Label: "[Image 1]", URL: "data:image/webp;base64,UklGRg=="}}) {
 		t.Fatalf("steered %q %#v, %v", text, images, err)
 	}
-	if _, err := steeringInput(jsontext.Value(`{"content":"x","images":[{"media_type":"text/html","data":"PGI+"}]}`)); err == nil {
+	if _, err := steeringInput(jsontext.Value(`{"content":"x","images":[{"media_type":"text/html","data":"PGI+"}]}`), t.TempDir()); err == nil {
 		t.Fatal("an image of an unknown type was accepted")
 	}
 }

@@ -38,6 +38,9 @@ func TestAccountsGatewayOff(t *testing.T) {
 	if res, _ := h.do("GET", "/api/accounts?range=1y", ""); res.StatusCode != http.StatusBadRequest {
 		t.Errorf("an unknown range = %d", res.StatusCode)
 	}
+	if res, body := h.do("GET", "/api/usage", ""); res.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body["error"].(string), "-accounts") {
+		t.Errorf("usage without a gateway = %d %v", res.StatusCode, body)
+	}
 	_, config := h.do("GET", "/api/config", "")
 	if accounts, _ := config["accounts"].(map[string]any); accounts["state"] != "off" {
 		t.Errorf("config = %v", config["accounts"])
@@ -271,6 +274,105 @@ func TestAccountsGateway(t *testing.T) {
 		}
 		if res, _ := h.do("DELETE", "/api/endpoints/"+id, ""); res.StatusCode != http.StatusNotFound {
 			t.Errorf("remove again = %d", res.StatusCode)
+		}
+	})
+
+	t.Run("usage", func(t *testing.T) {
+		// An endpoint whose model reads most of the prompt from its cache.
+		llm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			w.Header().Set("Content-Type", "application/json")
+			if strings.HasSuffix(r.URL.Path, "/models") {
+				_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"cached-model"}]}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"id":"c1","object":"chat.completion","created":1,"model":"cached-model",
+				"choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":1000,"completion_tokens":50,"total_tokens":1050,"prompt_tokens_details":{"cached_tokens":800}}}`)
+		}))
+		defer llm.Close()
+		res, body := h.do("POST", "/api/endpoints", `{"kind":"openai-compatible","name":"cache","base_url":`+quote(llm.URL+"/v1")+
+			`,"api_key":"sk-cache-0003","models":[{"name":"cached-model"}]}`)
+		if res.StatusCode != http.StatusOK {
+			t.Fatalf("add = %d %v", res.StatusCode, body)
+		}
+		id := body["id"].(string)
+		defer h.do("DELETE", "/api/endpoints/"+id, "")
+		send := func() int {
+			req, _ := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://"+address+"/v1/chat/completions",
+				strings.NewReader(`{"model":"cached-model","messages":[{"role":"user","content":"hello"}]}`))
+			req.Header.Set("Authorization", "Bearer "+key)
+			req.Header.Set("Content-Type", "application/json")
+			res, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.Copy(io.Discard, res.Body)
+			res.Body.Close()
+			return res.StatusCode
+		}
+		code := 0
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if code = send(); code == http.StatusOK {
+				break // once the gateway has taken the endpoint up
+			}
+		}
+		if code != http.StatusOK {
+			t.Fatalf("request = %d", code)
+		}
+		var usage map[string]any
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			_, usage = h.do("GET", "/api/usage?range=24h&tz=Europe/Moscow&model=cached-model", "")
+			if totals, _ := usage["totals"].(map[string]any); totals["requests"].(float64)-totals["failed"].(float64) >= 1 {
+				break
+			}
+		}
+		totals, _ := usage["totals"].(map[string]any)
+		tokens, _ := totals["tokens"].(map[string]any)
+		if tokens["input"] != 200.0 || tokens["cache_read"] != 800.0 || tokens["output"] != 50.0 || totals["unpriced_tokens"] != 1050.0 {
+			t.Fatalf("usage = %v", usage)
+		}
+		if starts, _ := usage["starts"].([]any); len(starts) != 24 || usage["zone"] != "Europe/Moscow" {
+			t.Errorf("slots = %d in %v", len(starts), usage["zone"])
+		}
+		if accounts, _ := usage["accounts"].([]any); len(accounts) != 1 || accounts[0].(map[string]any)["label"] != "cache" {
+			t.Errorf("accounts = %v", usage["accounts"])
+		}
+		// Priced, the tokens come to what the endpoint's API would charge.
+		if res, _ := h.do("POST", "/api/usage/prices", `{"match":"cached-*","input":-1}`); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("a negative price = %d", res.StatusCode)
+		}
+		res, prices := h.do("POST", "/api/usage/prices", `{"match":"cached-*","input":2,"cache_read":0.5,"output":8}`)
+		if rules, _ := prices["rules"].([]any); res.StatusCode != http.StatusOK || len(rules) != 1 {
+			t.Fatalf("set a price = %d %v", res.StatusCode, prices)
+		}
+		_, usage = h.do("GET", "/api/usage?range=7d&model=cached-model", "")
+		totals, _ = usage["totals"].(map[string]any)
+		cost, _ := totals["cost"].(map[string]any)
+		if cost["input"] != 200*2/1e6 || cost["cache_read"] != 800*0.5/1e6 || cost["output"] != 50*8/1e6 {
+			t.Errorf("cost = %v", cost)
+		}
+		if res, prices := h.do("PUT", "/api/usage/unit", `{"name":"credits","usd":0.01}`); res.StatusCode != http.StatusOK || prices["unit"].(map[string]any)["name"] != "credits" {
+			t.Errorf("unit = %d %v", res.StatusCode, prices)
+		}
+		if _, usage := h.do("GET", "/api/usage?range=30d", ""); usage["unit"].(map[string]any)["usd"] != 0.01 {
+			t.Errorf("the report's unit = %v", usage["unit"])
+		}
+		_, accounts := h.do("GET", "/api/accounts", "")
+		if gateway, _ := accounts["gateway"].(map[string]any); gateway["summary"].(map[string]any)["cost"] == nil {
+			t.Errorf("summary = %v", gateway["summary"])
+		}
+		if res, _ := h.do("DELETE", "/api/usage/prices?match=cached-*", ""); res.StatusCode != http.StatusOK {
+			t.Errorf("remove a price = %d", res.StatusCode)
+		}
+		if res, _ := h.do("DELETE", "/api/usage/prices?match=cached-*", ""); res.StatusCode != http.StatusNotFound {
+			t.Errorf("remove it again = %d", res.StatusCode)
+		}
+		if res, _ := h.do("GET", "/api/usage?range=1y", ""); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("an unknown range = %d", res.StatusCode)
+		}
+		if res, _ := h.do("PUT", "/api/usage/unit", `{"name":"USD"}`); res.StatusCode != http.StatusOK {
+			t.Errorf("back to dollars = %d", res.StatusCode)
 		}
 	})
 

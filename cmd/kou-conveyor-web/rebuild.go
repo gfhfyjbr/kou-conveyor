@@ -310,7 +310,17 @@ func (s *server) takeUp(ctx context.Context, listener net.Listener, fingerprint 
 	}
 	s.setBuild(buildStatus{State: "restarting", Message: "restarting with the new build"})
 	time.Sleep(250 * time.Millisecond) // the pages hear it
-	if err := execSelf(r.exe, listener); err != nil {
+	// The terminals' shells go on in the new build.
+	var env []string
+	handover, err := s.terminals.Handover()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "kou-conveyor-web: the terminals are not handed over:", err)
+	}
+	if handover != "" {
+		env = append(env, terminalsEnvironment+"="+handover)
+	}
+	if err := execSelf(r.exe, listener, env...); err != nil {
+		s.terminals.Resume(handover)
 		s.setBuild(buildStatus{State: "failed", Message: "built, but the server cannot restart itself (" + err.Error() + "); restart it to take the new build up"})
 	}
 }

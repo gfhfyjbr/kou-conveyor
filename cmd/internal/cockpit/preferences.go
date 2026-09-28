@@ -24,7 +24,18 @@ type Preferences struct {
 	// ChangesWidth is how many columns the terminal cockpit's changes panel
 	// takes once its edge was dragged; 0 leaves the panel its default.
 	ChangesWidth int `json:"tui_changes_width,omitzero"`
+	// TerminalTheme is how the browser cockpit's terminals start shells:
+	// TerminalThemeKou (the default) with kou-conveyor's prompt and
+	// integration, or TerminalThemeShell as the user's shell starts
+	// anywhere, with nothing of kou-conveyor's.
+	TerminalTheme string `json:"terminal_theme,omitzero"`
 }
+
+// Terminal themes.
+const (
+	TerminalThemeKou   = "kou"
+	TerminalThemeShell = "shell"
+)
 
 // Terminal cockpit layouts.
 const (
@@ -60,6 +71,9 @@ func LoadPreferences(path string) Preferences {
 	}
 	if p.ChangesWidth < 0 || p.ChangesWidth > maxPanelColumns {
 		p.ChangesWidth = 0
+	}
+	if p.TerminalTheme != TerminalThemeKou && p.TerminalTheme != TerminalThemeShell {
+		p.TerminalTheme = ""
 	}
 	return p
 }
@@ -98,6 +112,15 @@ func SaveChangesWidth(path string, columns int) error {
 		return fmt.Errorf("a panel %d columns wide", columns)
 	}
 	return savePreferences(path, func(p *Preferences) { p.ChangesWidth = columns })
+}
+
+// SaveTerminalTheme records how the browser cockpit's terminals start
+// shells, keeping the other preferences.
+func SaveTerminalTheme(path, theme string) error {
+	if theme != TerminalThemeKou && theme != TerminalThemeShell {
+		return fmt.Errorf("unknown terminal theme %q", theme)
+	}
+	return savePreferences(path, func(p *Preferences) { p.TerminalTheme = theme })
 }
 
 // savePreferences changes the preferences. The file is replaced whole, so a

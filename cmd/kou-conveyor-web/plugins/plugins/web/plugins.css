@@ -1,8 +1,15 @@
 /* plugins: the Plugins section of the inspector. */
 
-/* The Plugins section of the inspector. */
+/* The Plugins section of the inspector: notices, a bar for the project's
+   plugins and one for the system-wide ones, and what goes for them all. */
 .plugins { display: grid; gap: 10px; }
 .plugins .ins-actions { margin-top: 0; }
+.plugin-notices, .plugin-foot { display: grid; gap: 10px; }
+.plugin-notices:empty { display: none; }
+.plugins .ins-fold-inner { display: grid; gap: 8px; }
+.plugins .ins-fold .plugin-row { background: var(--bg-2); }
+.plugin-empty { margin: 2px 0 0; }
+.plugin-group { margin: 6px 0; font: 600 10px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-3); }
 .plugin-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .plugin-row { padding: 8px 10px; background: var(--bg); border: 1px solid var(--line); border-left: 2px solid var(--accent); }
 .plugin-row[data-active="false"] { border-left-color: var(--line-2); }

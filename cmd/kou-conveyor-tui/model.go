@@ -16,7 +16,6 @@ import (
 
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
@@ -98,7 +97,7 @@ type uiModel struct {
 	termWidth, width, height int
 	ready                    bool
 	input                    textarea.Model
-	view                     viewport.Model
+	view                     lineView
 
 	sessionID string
 	fresh     bool // not persisted by the runner yet
@@ -124,6 +123,23 @@ type uiModel struct {
 	follow    bool
 	unseen    int
 	shown     int // entries rendered at the last refresh
+
+	// links is what a $ reference being typed completes to (links.go), and
+	// linksArea where the list is on screen; fileIndex lists the
+	// workspace's files, linkCache holds the composer's links as last read,
+	// and linked what the model saw of the files prompts linked, by session
+	// and message.
+	links     linkList
+	linksArea area
+	fileIndex *cockpit.FileIndex
+	linkCache struct {
+		text  string
+		at    time.Time
+		links []cockpit.FileLink
+	}
+	linked map[string][]cockpit.LinkedFile
+	// linking are the prompts whose files are being read, by the same key.
+	linking map[string]bool
 
 	picker     *picker
 	pickerGen  int
@@ -177,8 +193,13 @@ type uiModel struct {
 	sel       *selection // what a drag selects
 	scrubbing bool       // the button went down on the scrollbar
 	resizing  bool       // the button went down on the changes panel's edge
+	redrawn   int        // entries the render going on drew anew
 	toast     string     // shown at the bottom of the screen for a moment
 	toastGen  int
+
+	// reflow is the transcript being drawn anew for the stage's width, what
+	// is on screen first (reflow.go).
+	reflow reflowState
 
 	// changes is the panel of what the prompt in view changed; records
 	// records it, and tracker the run going on. See changes.go.
@@ -229,12 +250,15 @@ type block struct {
 	// tall is how many rows a call's picture may take, and pictures how
 	// many it takes at the end of the block (viewed.go).
 	tall, pictures int
+	// files is the row where a prompt's linked files are, 0 for none.
+	files int
 }
 
 type entrySpan struct {
 	id         string
 	start, end int
 	pictures   int // the last rows are a picture's (viewed.go)
+	files      int // the row of a prompt's linked files, from start; 0 for none
 }
 
 func newModel(ctx context.Context, o options) *uiModel {
@@ -263,14 +287,9 @@ func newModel(ctx context.Context, o options) *uiModel {
 	in.FocusedStyle, in.BlurredStyle = focused, blurred
 	in.Focus()
 
-	vp := viewport.New(80, 20)
-	vp.MouseWheelEnabled = true
-	vp.MouseWheelDelta = 3
-	vp.KeyMap = viewport.KeyMap{}
-
 	history, _ := loadHistory(o.historyFile)
 	m := &uiModel{
-		ctx: ctx, opt: o, styles: st, input: in, view: vp,
+		ctx: ctx, opt: o, styles: st, input: in, view: lineView{Width: 80, Height: 20},
 		sessionID: o.session, tr: cockpit.NewTranscript(),
 		expanded: make(map[string]bool), cache: make(map[string]block),
 		follow: true, history: history, historyPos: -1, thinking: o.thinking,
@@ -323,7 +342,16 @@ func (m *uiModel) Init() tea.Cmd {
 }
 
 func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// A click, a key or the wheel acts on the transcript as it is laid out
+	// for the stage's width: what is left to draw for it is drawn first.
+	if m.reflow.pending && m.needsLayout(msg) {
+		m.relayout()
+	}
 	_, cmd := m.update(msg)
+	// What the model saw of the files of prompts shown open is read.
+	if load := m.loadLinked(m.openedPrompts()...); load != nil {
+		cmd = tea.Batch(cmd, load)
+	}
 	// The pictures the agent looked at that are about to show are made.
 	if pictures := m.viewedUpdate(msg); pictures != nil {
 		cmd = tea.Batch(cmd, pictures)
@@ -355,6 +383,12 @@ func (m *uiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.termWidth, m.height, m.ready = msg.Width, msg.Height, true
 		m.graphics.measure(cellPixels())
+		// A terminal dragged wider or narrower sends a size per column: a
+		// transcript slow to draw anew is drawn what is on screen first, as
+		// for the panel's edge.
+		if !m.compact && (m.reflow.pending || !m.reflowCheap()) {
+			return m, m.reflowLater()
+		}
 		m.layout()
 		m.refresh()
 		return m, nil
@@ -368,6 +402,12 @@ func (m *uiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.runnerOutput(msg)
 	case imagesMsg:
 		return m, m.imagesPasted(msg)
+	case linkMatchesMsg:
+		m.linkMatched(msg)
+		return m, nil
+	case linkedMsg:
+		m.linkedLoaded(msg)
+		return m, nil
 	case picturesMsg:
 		m.pictured(msg)
 		return m, nil
@@ -428,6 +468,8 @@ func (m *uiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case changesSummaryMsg:
 		return m, m.changesSummary(msg)
+	case reflowMsg:
+		return m, m.reflowed(msg)
 	case panelWidthMsg:
 		m.panelWidthSettled(msg)
 		return m, nil
@@ -626,7 +668,7 @@ func (m *uiModel) start(text string, o startOptions) tea.Cmd {
 
 // Placeholders say what enter does with the composer's text.
 const (
-	idlePlaceholder    = "Describe the task — enter runs it; shift+enter, ctrl+j or \\ then enter adds a line; / for commands"
+	idlePlaceholder    = "Describe the task — enter runs it; shift+enter, ctrl+j or \\ then enter adds a line; / for commands, $ links a file"
 	runningPlaceholder = "Message the agent — enter queues it for when it finishes; ctrl+x forces it in after its tools"
 )
 
@@ -676,7 +718,14 @@ func (m *uiModel) runnerOutput(msg linesMsg) tea.Cmd {
 	}
 	for _, line := range msg.lines {
 		if line.Stderr {
-			if text := strings.TrimSpace(cockpit.Clean(line.Text)); text != "" {
+			text := strings.TrimSpace(cockpit.Clean(line.Text))
+			// A failed request to the model that is tried again is what
+			// the run is doing, not a stray diagnostic.
+			if retry, ok := cockpit.ParseRetry(text); ok {
+				m.tr.Retrying(retry)
+				continue
+			}
+			if text != "" {
 				m.diag = text
 			}
 			continue
@@ -712,6 +761,7 @@ func (m *uiModel) runnerOutput(msg linesMsg) tea.Cmd {
 		m.fresh = false
 	}
 	var cmds []tea.Cmd
+	said := false // what the run left is told already
 	// A prompt the runner never received goes back to the composer.
 	for i := len(m.tr.Entries) - 1; i >= 0; i-- {
 		e := m.tr.Entries[i]
@@ -721,6 +771,7 @@ func (m *uiModel) runnerOutput(msg linesMsg) tea.Cmd {
 				cmds = append(cmds, m.setImages(m.promptImages(e)))
 				m.resize()
 				cmds = append(cmds, m.notify("the prompt was not delivered; it is back in the composer", "warn"))
+				said = true
 			}
 			break
 		}
@@ -729,7 +780,13 @@ func (m *uiModel) runnerOutput(msg linesMsg) tea.Cmd {
 		if kind == "done" {
 			cmds = append(cmds, m.compacted(*m.compaction))
 		}
-		m.compaction = nil
+		m.compaction, said = nil, true
+	}
+	// A run that leaves its prompt unfinished says so as it ends, as an
+	// opened session does, whatever ended it; the status line goes on
+	// saying it.
+	if !said && !m.editAfterStop && m.tr.Interrupted() {
+		cmds = append(cmds, m.notify(unfinished[kind], "warn"))
 	}
 	m.refresh()
 	cmds = append(cmds, m.title(), tea.Tick(5*time.Second, func(time.Time) tea.Msg { return tickMsg{-1} }))
@@ -740,6 +797,21 @@ func (m *uiModel) runnerOutput(msg linesMsg) tea.Cmd {
 	// What was written meanwhile runs next, or waits for the user.
 	cmds = append(cmds, delivered, m.settleQueue(kind))
 	return tea.Batch(cmds...)
+}
+
+// unfinished says, by how a run ended, that it left its prompt unfinished.
+var unfinished = map[string]string{
+	"done":    "the model stopped before it finished — /continue picks it up, esc esc edits the prompt",
+	"failed":  "the run failed before it finished — /continue picks it up, esc esc edits the prompt",
+	"stopped": "the run was stopped before it finished — /continue picks it up, esc esc edits the prompt",
+}
+
+// otherRunEnded says how the run another process ran in the session ended.
+func (m *uiModel) otherRunEnded() tea.Cmd {
+	if m.tr.Interrupted() {
+		return m.notify("the other run did not finish — /continue picks it up, esc esc edits the prompt", "warn")
+	}
+	return m.notify("the other run has finished", "info")
 }
 
 func (m *uiModel) stop() tea.Cmd {
@@ -816,7 +888,7 @@ func (m *uiModel) watched(msg watchMsg) tea.Cmd {
 	case !msg.busy:
 		m.external = false
 		m.refreshKeep()
-		return tea.Batch(m.notify("the other run has finished", "info"), m.liveChanges())
+		return tea.Batch(m.otherRunEnded(), m.liveChanges())
 	}
 	return tea.Batch(m.watch(2*time.Second), m.liveChanges())
 }
@@ -848,7 +920,7 @@ func (m *uiModel) loaded(msg loadedMsg) tea.Cmd {
 		if m.external {
 			return m.watch(2 * time.Second)
 		}
-		return m.notify("the other run has finished", "info")
+		return m.otherRunEnded()
 	}
 	m.loading = false
 	if msg.err != nil {
@@ -888,6 +960,8 @@ func (m *uiModel) reset(tr *cockpit.Transcript) {
 		m.endQueueEdit(m.queueEdit.item.Text)
 	}
 	m.blurQueue()
+	// Another transcript is drawn from the start, for the stage's width.
+	m.dropReflow()
 	m.tr = tr
 	m.cache = make(map[string]block)
 	m.expanded = make(map[string]bool)
@@ -1029,7 +1103,8 @@ var shortcuts = [][2]string{
 	{"ctrl+t · shift+tab", "next effort level, shared with the web cockpit"},
 	{"ctrl+p · /model", "the model of the next prompts: any the connection reaches, of any provider"},
 	{"alt+↑ alt+↓", "raise / lower the effort; click its bars to pick one"},
-	{"ctrl+o", "expand / collapse tool output and thinking"},
+	{"ctrl+o", "expand / collapse tool output and thinking, and what the model saw of linked files"},
+	{"$", "link a file or folder of the workspace: typing lists them, ↑↓ choose, tab completes; $path:10-40 links those lines, and the model reads the rest itself"},
 	{"click", "a block's first line folds or unfolds it; in the composer, places the cursor"},
 	{"drag", "select text; letting go copies it"},
 	{"scrollbar", "click or drag to scroll"},
@@ -1056,6 +1131,7 @@ var commands = []struct{ name, args, help string }{
 	{"/queue", "[resume|pause|clear]", "what waits for the agent: select it (↑), run it, hold it or drop it"},
 	{"/compact", "[focus]", "summarize the conversation to free context; the session goes on from the summary"},
 	{"/plugins", "[trust|untrust|reload]", "the workspace's plugins, and trusting the workspace with them"},
+	{"/skills", "", "the skills the agent has here: the project's and the system-wide ones"},
 	{"/edit", "[n]", "edit prompt n, by default the last, and run it again from there"},
 	{"/rename", "<title>", "title the session (- restores the first prompt)"},
 	{"/pin", "", "pin or unpin the session"},
@@ -1139,6 +1215,7 @@ func (m *uiModel) paletteItems() []pickerItem {
 		pickerItem{title: "Copy the last answer", detail: "ctrl+y", action: run("/copy")},
 		pickerItem{title: "Copy the session ID", search: m.sessionID, action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.copy(m.sessionID, "session ID") }},
 		pickerItem{title: "Plugins…", detail: "/plugins", search: "extensions tools trust", action: run("/plugins")},
+		pickerItem{title: "Skills…", detail: "/skills", search: "skills agents harness", action: run("/skills")},
 		pickerItem{title: "Expand tool output and thinking", detail: "ctrl+o", action: run("/expand")},
 		pickerItem{title: "Collapse tool output and thinking", detail: "ctrl+o", action: run("/collapse")},
 		pickerItem{title: "Clear the view", detail: "ctrl+l", action: run("/clear")},
@@ -1212,6 +1289,8 @@ func (m *uiModel) command(text string) tea.Cmd {
 		return m.compactContext(arg)
 	case "/plugins":
 		return m.plugins(arg)
+	case "/skills":
+		return m.openSkills()
 	case "/edit":
 		return m.editPrompt(arg)
 	case "/rename":
@@ -1333,6 +1412,10 @@ func (m *uiModel) key(msg tea.KeyMsg) tea.Cmd {
 	if msg.Paste {
 		return m.pasteKey(string(msg.Runes))
 	}
+	// The list of what a $ reference completes to takes its keys first.
+	if cmd, handled := m.linkKey(msg.String()); handled {
+		return cmd
+	}
 	key := msg.String()
 	if key != "ctrl+c" && key != "ctrl+d" {
 		m.quitArmed = time.Time{}
@@ -1396,14 +1479,16 @@ func (m *uiModel) key(msg tea.KeyMsg) tea.Cmd {
 		m.expandAll = !m.expandAll
 		clear(m.expanded)
 		m.refresh()
+		// What the model saw of the files prompts linked shows too.
+		load := m.loadLinked(m.openedPrompts()...)
 		if m.compact {
 			// What is printed stays as it was.
 			if m.expandAll {
-				return m.notify("tool output and thinking show in full from here on · ^F shows all of it", "info")
+				return tea.Batch(load, m.notify("tool output and thinking show in full from here on · ^F shows all of it", "info"))
 			}
 			return m.notify("tool output and thinking fold from here on", "info")
 		}
-		return nil
+		return load
 	case "ctrl+t", "shift+tab":
 		return m.setEffort(nextLevel(m.thinking))
 	case "alt+up":
@@ -1503,9 +1588,11 @@ func (m *uiModel) key(msg tea.KeyMsg) tea.Cmd {
 		}
 	}
 	var cmd tea.Cmd
+	before := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
 	m.resize()
-	return cmd
+	// A $ reference typed lists what it completes to.
+	return tea.Batch(cmd, m.followLinks(m.input.Value() != before))
 }
 
 func (m *uiModel) pickerKey(msg tea.KeyMsg) tea.Cmd {
@@ -1648,7 +1735,7 @@ func (m *uiModel) mouse(msg tea.MouseMsg) tea.Cmd {
 		switch {
 		case m.resizing:
 			// The panel takes the columns right of the pointer.
-			m.setPanelWidth(m.width - msg.X)
+			return m.setPanelWidth(m.width - msg.X)
 		case m.scrubbing:
 			m.scrub(msg.Y)
 		default:
@@ -1660,8 +1747,7 @@ func (m *uiModel) mouse(msg tea.MouseMsg) tea.Cmd {
 		m.press, m.sel = nil, nil
 		if m.resizing {
 			m.resizing = false
-			m.edgeReleased()
-			return nil
+			return m.edgeReleased()
 		}
 		if m.scrubbing {
 			m.scrubbing = false
@@ -1692,6 +1778,14 @@ func (m *uiModel) mouse(msg tea.MouseMsg) tea.Cmd {
 // click acts on what is under the pointer: a task on the welcome screen, a
 // prompt's header, a block that folds, or the effort meter.
 func (m *uiModel) click(x, y int) tea.Cmd {
+	if n, ok := m.linkAt(x, y); ok {
+		// What a $ reference completes to, over the transcript.
+		m.links.cursor = n
+		return m.acceptLink(n)
+	}
+	if m.linksArea.contains(x, y) {
+		return nil
+	}
 	if m.inPreview(x, y) {
 		return nil // the picture covers what is under it
 	}
@@ -1713,7 +1807,7 @@ func (m *uiModel) click(x, y int) tea.Cmd {
 			}
 			return nil
 		}
-		m.toggleAt(line)
+		return m.toggleAt(line)
 	case y > m.statusRow() && y < m.ruleRow():
 		if _, index, ok := m.queueRowAt(y); ok {
 			m.focusQueue(index)
@@ -1734,6 +1828,8 @@ func (m *uiModel) click(x, y int) tea.Cmd {
 	case y >= m.inputTop() && y < m.inputTop()+m.input.Height():
 		m.blurQueue()
 		m.placeCursor(x, y)
+		// The list of a $ reference follows the cursor, or closes.
+		return m.followLinks(false)
 	}
 	return nil
 }
@@ -1751,11 +1847,18 @@ func (m *uiModel) promptHeaderAt(line int) *cockpit.Entry {
 	return nil
 }
 
-func (m *uiModel) toggleAt(line int) {
-	if e := m.foldAt(line); e != nil {
-		m.expanded[e.ID] = !m.isOpen(e)
-		m.refreshKeep()
+func (m *uiModel) toggleAt(line int) tea.Cmd {
+	e := m.foldAt(line)
+	if e == nil {
+		return nil
 	}
+	m.expanded[e.ID] = !m.isOpen(e)
+	m.refreshKeep()
+	if e.Kind == cockpit.KindUser && m.isOpen(e) {
+		// What the model saw of the prompt's files, read from the session.
+		return m.loadLinked(e)
+	}
+	return nil
 }
 
 // foldAt returns the block a click on a transcript line folds or unfolds:
@@ -1767,6 +1870,14 @@ func (m *uiModel) foldAt(line int) *cockpit.Entry {
 			continue
 		}
 		e := m.tr.Entry(s.id)
+		// A prompt's header edits it and its text is to select: the files
+		// it linked, and what the model saw of them, fold and unfold it.
+		if e != nil && e.Kind == cockpit.KindUser {
+			if expandable(e) && s.files > 0 && line >= s.start+s.files {
+				return e
+			}
+			return nil
+		}
 		// An open call's picture folds it too.
 		if e == nil || !expandable(e) || line != s.start && m.isOpen(e) && line < s.end-s.pictures {
 			return nil

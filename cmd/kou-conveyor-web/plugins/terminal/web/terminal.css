@@ -1,0 +1,224 @@
+/* terminal: the terminal tabs of the sidebar, and restty's panes. */
+
+/* ---------------------------------------------------------------- the tab */
+
+.term {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+.term-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 30px;
+  padding: 0 4px 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  font: 11.5px/1 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.term-mark { width: 6px; height: 6px; flex: none; background: var(--accent); }
+.term-where { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
+.term-running { flex: none; font: 700 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.term-fill { flex: 1; }
+.term-bar .icon.small { width: 26px; height: 26px; }
+.term-bar .icon svg { width: 14px; height: 14px; }
+.term-surface { position: relative; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.term-status {
+  position: absolute;
+  left: 50%;
+  top: 44px;
+  z-index: 5;
+  transform: translateX(-50%);
+  max-width: calc(100% - 32px);
+  padding: 7px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--line-2);
+  font: 600 11px/1.4 var(--mono);
+  color: var(--fg-2);
+  pointer-events: none;
+}
+.term-status[data-kind="error"] { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--line)); pointer-events: auto; }
+.term-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: none;
+  padding: 8px 10px 8px 12px;
+  background: var(--err-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--err) 40%, var(--line));
+  font: 12px/1.45 var(--sans);
+  color: var(--fg);
+}
+.term-banner > span { flex: 1; min-width: 180px; }
+/* Where a right click opens the menu. */
+.term-anchor { position: absolute; left: var(--x, 0); top: var(--y, 0); width: 1px; height: 1px; pointer-events: none; }
+
+/* ---------------------------------------------------------------- restty's panes
+   restty puts these in <style> elements of its own, which the page's policy
+   refuses; they are here instead, in the cockpit's colours. */
+
+.restty-pane-root { display: flex; width: 100%; height: 100%; min-width: 0; min-height: 0; }
+.restty-pane-root .pane-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  gap: 0;
+  padding: 0;
+  background: var(--restty-pane-split-background, var(--line));
+}
+.restty-pane-root .pane-split.is-vertical { flex-direction: row; }
+.restty-pane-root .pane-split.is-horizontal { flex-direction: column; }
+.restty-pane-root .pane {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 0;
+  background: var(--restty-pane-background, var(--bg));
+  opacity: var(--restty-pane-inactive-opacity, 0.66);
+  transition: opacity var(--restty-pane-opacity-transition, 120ms) ease-out;
+}
+.restty-pane-root .pane.is-active, .restty-pane-root .pane:only-child { opacity: var(--restty-pane-active-opacity, 1); }
+.restty-pane-root .pane-divider {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 var(--restty-pane-divider-thickness, 1px);
+  background: var(--restty-pane-divider-color, var(--line));
+  touch-action: none;
+}
+/* The divider takes the pointer a little beyond the line it draws. */
+.restty-pane-root .pane-divider::after { content: ""; position: absolute; inset: -3px; }
+.restty-pane-root .pane-divider.is-vertical { cursor: col-resize; }
+.restty-pane-root .pane-divider.is-horizontal { cursor: row-resize; }
+.restty-pane-root .pane-divider:hover,
+.restty-pane-root .pane-divider.is-dragging { background: var(--accent); }
+body.is-resizing-split { user-select: none; -webkit-user-select: none; }
+.restty-pane-root .pane-canvas { display: block; width: 100%; height: 100%; outline: none; }
+.restty-pane-root .pane-ime-input {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 1em;
+  height: 1em;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: transparent;
+  caret-color: transparent;
+  overflow: hidden;
+  resize: none;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The scrollbar restty draws over a pane. */
+.restty-native-scroll-host {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: none;
+  scrollbar-width: none;
+}
+.restty-native-scroll-host::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.restty-native-scroll-root { position: relative; width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; }
+.restty-native-scroll-canvas { position: sticky; top: 0; left: 0; display: block; flex: none; width: 100%; height: 100%; z-index: 0; will-change: transform; }
+.restty-native-scroll-spacer { width: 1px; min-width: 1px; pointer-events: none; }
+.restty-native-scroll-chrome { position: absolute; inset: 0; z-index: 3; overflow: hidden; pointer-events: none; }
+.restty-native-scroll-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border: 0;
+  background: color-mix(in srgb, var(--fg-3) 70%, transparent);
+  opacity: 0;
+  transition: opacity 520ms ease;
+  pointer-events: auto;
+  cursor: default;
+}
+
+/* Find in a pane (⌘F). */
+.restty-search-ui-root .restty-pane-search {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 8;
+  display: none;
+  align-items: center;
+  width: min(340px, calc(100% - 16px));
+  min-width: 220px;
+  padding: 5px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  color: var(--fg);
+}
+.restty-search-ui-root .restty-pane-search[data-open="1"] { display: flex; }
+.restty-search-ui-root .restty-pane-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto auto auto;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+}
+.restty-search-ui-root .restty-pane-search-input,
+.restty-search-ui-root .restty-pane-search-button {
+  min-width: 0;
+  height: 26px;
+  border: 1px solid transparent;
+  font: 11.5px var(--mono);
+}
+.restty-search-ui-root .restty-pane-search-input { padding: 0 8px; background: var(--bg); border-color: var(--line-2); color: var(--fg); outline: none; }
+.restty-search-ui-root .restty-pane-search-input::placeholder { color: var(--fg-4); }
+.restty-search-ui-root .restty-pane-search-input:focus { border-color: var(--accent); }
+.restty-search-ui-root .restty-pane-search-button {
+  padding: 0 7px;
+  background: transparent;
+  color: var(--fg-3);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.restty-search-ui-root .restty-pane-search-button:hover:not(:disabled) { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
+.restty-search-ui-root .restty-pane-search-button:disabled { opacity: 0.4; cursor: default; }
+.restty-search-ui-root .restty-pane-search-status { display: inline-flex; align-items: center; height: 26px; padding: 0 6px; font: 11px var(--mono); color: var(--fg-3); white-space: nowrap; }
+.restty-search-ui-root .restty-pane-search-status[data-empty="1"] { display: none; }
+.restty-search-ui-root .restty-pane-search-status[data-active="1"] { color: var(--fg); }
+
+/* A terminal closed, for ⌘⇧T to take back while its shell waits. */
+.term-undo {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 55;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 8px 8px 8px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  border-left: 2px solid var(--accent);
+  box-shadow: var(--shadow);
+  font: 12px/1.4 var(--mono);
+  color: var(--fg-2);
+  animation: drop 0.14s ease-out;
+}
+.term-undo-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-undo-what b { color: var(--fg); font-weight: 600; }
+.term-undo-left { flex: none; color: var(--fg-4); }

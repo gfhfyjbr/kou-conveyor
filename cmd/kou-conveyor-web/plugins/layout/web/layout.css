@@ -276,7 +276,8 @@
   min-height: 0;
 }
 
-.dock { position: relative; padding: 0 24px 16px; }
+/* The dock clears the bar a phone keeps at the bottom of its screen. */
+.dock { position: relative; padding: 0 24px max(16px, env(safe-area-inset-bottom)); }
 .dock-inner { max-width: calc(var(--measure) - 48px); margin: 0 auto; }
 
 /* Two tabs head the rail: the sessions, and the accounts of the gateway. */
@@ -337,7 +338,7 @@
   .resizer[data-edge="rail"] { display: none; }
   .bar { padding: 0 8px 0 16px; gap: 8px; }
   .crumbs > span, .crumbs > i, .crumbs code, .crumb-ws { display: none; }
-  .dock { padding: 0 16px 12px; }
+  .dock { padding: 0 16px max(12px, env(safe-area-inset-bottom)); }
 }
 
 @media (max-width: 480px) {

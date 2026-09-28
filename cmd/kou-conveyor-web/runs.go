@@ -52,7 +52,11 @@ type event struct {
 	Text     string         `json:"text,omitempty"`
 	Error    string         `json:"error,omitempty"`
 	Stopped  bool           `json:"stopped,omitempty"`
-	Size     int64          `json:"size,omitempty"` // done: bytes in the session file after the run
+	// Interrupted (done) says that the run left its prompt unfinished, as the
+	// session says when it is read again; a run that ends without an error
+	// can, when the model stops short of an answer.
+	Interrupted *bool `json:"interrupted,omitempty"`
+	Size        int64 `json:"size,omitempty"` // done: bytes in the session file after the run
 	// Changes: a snapshot found the workspace changed.
 	Changes *cockpit.ChangeUpdate `json:"changes,omitempty"`
 	// Queue: what waits for the session's agent, as it is now (queue and
@@ -394,14 +398,21 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 	}
 	activity, usage := tr.Activity, tr.Usage
 	for line := range current.job.Lines() {
+		var changed []*cockpit.Entry
 		if line.Stderr {
-			current.publish(event{Type: "log", Text: cockpit.Clean(line.Text)})
-			continue
-		}
-		changed, err := tr.Apply([]byte(line.Text))
-		if err != nil {
-			current.publish(event{Type: "log", Text: "unreadable runner output: " + err.Error()})
-			continue
+			text := cockpit.Clean(line.Text)
+			current.publish(event{Type: "log", Text: text})
+			// A failed request to the model that is tried again is what the
+			// run is doing now.
+			if retry, ok := cockpit.ParseRetry(text); ok {
+				tr.Retrying(retry)
+			}
+		} else {
+			var err error
+			if changed, err = tr.Apply([]byte(line.Text)); err != nil {
+				current.publish(event{Type: "log", Text: "unreadable runner output: " + err.Error()})
+				continue
+			}
 		}
 		for _, e := range changed {
 			current.publish(event{Type: "entry", Entry: e})
@@ -440,7 +451,8 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		outcome = "failed"
 	}
 	next, queue := s.settle(current, tr, outcome)
-	done := event{Type: "done", Stopped: stopped, Usage: &tr.Usage, Queue: &queue}
+	interrupted := tr.Interrupted()
+	done := event{Type: "done", Stopped: stopped, Usage: &tr.Usage, Queue: &queue, Interrupted: &interrupted}
 	if err != nil && !stopped {
 		done.Error = err.Error()
 	}
@@ -531,6 +543,9 @@ func (s *server) close(ctx context.Context) bool {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+	// The terminals' shells are hung up on, as closing a terminal
+	// application would.
+	s.terminals.Close()
 	finished := make(chan struct{})
 	go func() {
 		s.pumps.Wait()

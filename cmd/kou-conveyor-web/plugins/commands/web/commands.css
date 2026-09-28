@@ -33,3 +33,8 @@
 .commands footer { display: flex; gap: 16px; align-items: center; height: 30px; padding: 0 14px; border-top: 1px solid var(--line); font: 10.5px var(--mono); color: var(--fg-4); }
 .commands footer kbd { margin-right: 4px; }
 .commands footer kbd + kbd { margin-left: 0; }
+/* A touch screen: no keys to hint at, and rows a finger hits. */
+@media (hover: none) and (pointer: coarse) {
+  .commands footer { display: none; }
+  .commands li { padding-top: 11px; padding-bottom: 11px; }
+}

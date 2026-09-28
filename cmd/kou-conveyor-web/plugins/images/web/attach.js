@@ -33,11 +33,14 @@ function fromBlob(blob, label) {
   return att;
 }
 
-// fromURL is an image a sent prompt brought, to edit the prompt with.
-function fromURL(info, url) {
+// fromURL is an image a sent prompt brought, to edit the prompt with. Its
+// bytes come from url, unless held has them (see createAttachments).
+function fromURL(info, url, held) {
   const att = { label: info.label, url, blob: null, type: info.media_type, size: info.size, width: info.width, height: info.height };
-  att.ready = fetch(url)
-    .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`${info.label} is no longer available`))))
+  const kept = held?.(url);
+  const bytes = kept ? Promise.resolve(kept) : fetch(url)
+    .then((res) => (res.ok ? res.blob() : Promise.reject(new Error(`${info.label} is no longer available`))));
+  att.ready = bytes
     .then((blob) => { att.blob = blob; })
     .catch(() => { att.broken = true; });
   return att;
@@ -143,8 +146,11 @@ function place(box, nodes) {
 // createAttachments keeps the images of a textarea's text: the composer's,
 // or a prompt's being edited. strip is where they show small (one is made
 // when none is given), preview where the one at the caret shows large, and
-// onChange hears when what the strip shows changes.
-export function createAttachments({ input, strip, preview, drop = input, toast = () => {}, onChange = () => {} }) {
+// onChange hears when what the strip shows changes. held(url) gives the
+// bytes of an image the page holds, by the address it shows it from: load
+// takes those rather than fetching them, which the page may not do for its
+// own blob: URLs — its policy lets it connect to the server alone.
+export function createAttachments({ input, strip, preview, drop = input, toast = () => {}, onChange = () => {}, held = () => null }) {
   strip ??= h('div', { class: 'attachments', hidden: true });
   let list = [];
   let active = null;
@@ -177,7 +183,7 @@ export function createAttachments({ input, strip, preview, drop = input, toast =
     clear() { ctl.set([]); },
     // load makes the images a sent prompt brought this text's again.
     load(infos, urlOf) {
-      ctl.set((infos || []).map((one, n) => fromURL(one, urlOf(n))));
+      ctl.set((infos || []).map((one, n) => fromURL(one, urlOf(n), held)));
       for (const att of list) att.ready.then(render);
     },
     add,

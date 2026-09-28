@@ -1,0 +1,5 @@
+{
+  "name": "sidebar",
+  "description": "The side panel of tabs: the inspector, terminals, files, settings, and the kinds of tab plugins add. With no tab open it says Hello, where tabs are opened. S shows or hides it.",
+  "web": {"script": "web/sidebar.js", "style": "web/sidebar.css", "after": ["layout", "ui"]}
+}

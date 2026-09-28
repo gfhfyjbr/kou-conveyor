@@ -1,7 +1,6 @@
 package contextbuilder
 
 import (
-	"cmp"
 	_ "embed"
 	"fmt"
 	"slices"
@@ -33,8 +32,8 @@ type builder struct {
 	// stagedInputs are the external inputs in stagedSuffix, and unanswered
 	// those committed since the model last responded: a compaction keeps
 	// them after its summary. answered holds the text of all earlier ones.
-	stagedInputs []llm.Item
-	unanswered   []llm.Item
+	stagedInputs []userInput
+	unanswered   []userInput
 	answered     []string
 	// compactable is set once the model responds and cleared by compaction.
 	compactable bool
@@ -85,17 +84,34 @@ func (current *builder) AddExternalInput(input inbox.Input) error {
 		)
 	}
 
-	text, images, err := ExternalMessage(input.Payload)
+	message, err := DecodeMessage(input.Payload)
 	if err != nil {
 		return fmt.Errorf("decode external input %q: %w", input.ID, err)
 	}
+	// The files the message links follow its text.
 	item := llm.Item{
 		Type: llm.ItemMessage,
-		Data: llm.Message{Role: llm.RoleUser, Text: text, Images: images},
+		Data: llm.Message{Role: llm.RoleUser, Text: linkedText(message.Text, message.Files), Images: message.Images},
 	}
 	current.stagedSuffix = append(current.stagedSuffix, item)
-	current.stagedInputs = append(current.stagedInputs, item)
+	current.stagedInputs = append(current.stagedInputs, userInput{item: item, answered: answeredText(message)})
 	return nil
+}
+
+// userInput is an external input of the conversation: the item the model
+// reads, and what a compaction keeps of it once the model answered it.
+type userInput struct {
+	item     llm.Item
+	answered string
+}
+
+// inputItems are the items of inputs.
+func inputItems(inputs []userInput) []llm.Item {
+	items := make([]llm.Item, len(inputs))
+	for index, input := range inputs {
+		items[index] = input.item
+	}
+	return items
 }
 
 func (current *builder) SetModel(model llm.Model) {
@@ -134,27 +150,13 @@ func (current *builder) AddModelResponse(response llm.Response) {
 		current.compactable = true
 	}
 	for _, input := range current.unanswered {
-		current.answered = append(current.answered, answeredText(input.Data.(llm.Message)))
+		current.answered = append(current.answered, input.answered)
 	}
 	current.unanswered = nil
 	current.usage, current.usageMark = 0, 0
 	if reported := response.Usage.InputTokens + response.Usage.OutputTokens; reported > 0 {
 		current.usage, current.usageMark = reported, len(current.committedPrefix)
 	}
-}
-
-// answeredText is what a compaction keeps of a message the model answered:
-// its text, and where images came with it, their labels. The images
-// themselves are left out.
-func answeredText(message llm.Message) string {
-	if len(message.Images) == 0 {
-		return message.Text
-	}
-	labels := make([]string, 0, len(message.Images))
-	for index, image := range message.Images {
-		labels = append(labels, cmp.Or(image.Label, fmt.Sprintf("image %d", index+1)))
-	}
-	return message.Text + "\n[The user attached " + strings.Join(labels, ", ") + " here; images are left out after a compaction.]"
 }
 
 func (current *builder) AddReasoning(reasoning llm.Reasoning) {
@@ -216,8 +218,8 @@ func (current *builder) Build() (Result, error) {
 	request.Input = current.detachResults(input, false)
 	request.Tools = append([]llm.Tool(nil), request.Tools...)
 	result := Result{Request: request, EstimatedTokens: current.estimate(), Compactable: current.compactable}
-	for _, item := range slices.Concat(current.unanswered, current.stagedInputs) {
-		result.PendingTokens += estimateItem(item)
+	for _, input := range slices.Concat(current.unanswered, current.stagedInputs) {
+		result.PendingTokens += estimateItem(input.item)
 	}
 	if current.compacted > 0 {
 		result.Report.Changes = append(result.Report.Changes, Change{

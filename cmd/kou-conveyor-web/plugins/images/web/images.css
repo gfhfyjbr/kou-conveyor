@@ -72,6 +72,12 @@
 .edit .attachments { margin: 0 0 8px; }
 /* Files dragged over the composer. */
 .composer[data-dropping] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-2)); }
+/* A touch screen: the hint names keys it has not, and the × is a finger's. */
+@media (hover: none) and (pointer: coarse) {
+  .attachments-hint { display: none; }
+  .attachment { padding-right: 36px; }
+  .attachment-drop { top: 0; right: 0; width: 34px; height: 34px; font-size: 18px; }
+}
 
 /* ---------------------------------------------------------------- the preview */
 

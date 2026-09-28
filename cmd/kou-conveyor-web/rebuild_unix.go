@@ -12,8 +12,9 @@ import (
 )
 
 // execSelf runs the program anew in this process, handing it the listening
-// socket, which it takes up in place of opening its own.
-func execSelf(exe string, listener net.Listener) error {
+// socket, which it takes up in place of opening its own, and env besides
+// the environment.
+func execSelf(exe string, listener net.Listener, env ...string) error {
 	tcp, ok := listener.(*net.TCPListener)
 	if !ok {
 		return errors.New("the listener is not a TCP socket")
@@ -26,14 +27,15 @@ func execSelf(exe string, listener net.Listener) error {
 		file.Close()
 		return errno
 	}
-	env := make([]string, 0, len(os.Environ())+1)
+	environment := make([]string, 0, len(os.Environ())+1+len(env))
 	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, listenerEnvironment+"=") {
-			env = append(env, value)
+		if !strings.HasPrefix(value, listenerEnvironment+"=") && !strings.HasPrefix(value, terminalsEnvironment+"=") {
+			environment = append(environment, value)
 		}
 	}
-	env = append(env, fmt.Sprintf("%s=%d", listenerEnvironment, file.Fd()))
-	err = syscall.Exec(exe, os.Args, env)
+	environment = append(environment, fmt.Sprintf("%s=%d", listenerEnvironment, file.Fd()))
+	environment = append(environment, env...)
+	err = syscall.Exec(exe, os.Args, environment)
 	file.Close()
 	return err
 }

@@ -99,11 +99,45 @@ changed tools, instructions and skills at its next turn, and the terminal
 cockpit its commands. Run from a checkout, the browser cockpit serves its
 own built-in plugins from it, live, and builds itself anew when its Go code
 changes, restarting in place with the pages left open. Plugins live in the user's
-configuration directory and in the workspace's `.harness/plugins`; a
-workspace's run only once the workspace is trusted. See
+configuration directory and in the workspace's `.harness/plugins` — a
+project's plugins come from there alone, load only in that workspace, and
+run only once the workspace is trusted. See
 [docs/plugins.md](docs/plugins.md),
 [examples/plugins/git-glance](examples/plugins/git-glance) and
 [examples/plugins/scratchpad](examples/plugins/scratchpad).
+
+## Skills
+
+A skill is a directory with a `SKILL.md` whose frontmatter names it and
+says when it helps; the agent sees the list and loads a skill with
+`SkillUse` when a task matches. A run has two kinds:
+
+| Scope | Directories |
+| --- | --- |
+| project — this workspace only | `.harness/skills` and `.agents/skills` in the workspace, and the skills of the workspace's plugins |
+| system-wide — every workspace | `skills/` in the configuration directory (`~/Library/Application Support/kou-conveyor/skills` on macOS, `~/.config/kou-conveyor/skills` on Linux, or beside `KOU_CONVEYOR_CONFIG`), `~/.agents/skills`, and the skills of the user's plugins |
+
+A project's skill replaces a system-wide one of the same name, and within a
+scope the first directory listed wins. A skill whose frontmatter says
+`disable-model-invocation: true` is not offered to the model on its own: it
+is named apart, and loads when you ask for it. Skills are read again as they
+change: a running agent has a skill added, edited or removed from its next
+turn. The browser cockpit's inspector lists them (the Skills bar, `/skills`),
+the terminal cockpit's `/skills` too, and `kou-conveyor-runner -list-skills
+-workspace .` prints them as JSON.
+
+## Sidebar, terminals and files
+
+The browser cockpit's side panel holds tabs: the inspector, terminals, the
+workspace's files, settings, and kinds of tab plugins add. With none open
+it says Hello, where tabs are opened. Terminals are drawn by
+[restty](https://github.com/wiedymi/restty) (libghostty-vt, WebGPU) and
+their shells run on the server, so they outlive reloads and the server's
+own restarts with a new build; ⌘D splits one right, ⌘⇧D down. Shells get a
+prompt theme of kou-conveyor's own without any change to `~/.zshrc`: zsh
+starts with `ZDOTDIR` pointing at the terminal's files, which source the
+user's own and then set the prompt — Settings turns it off. Files are
+highlighted on the server with chroma.
 
 ## Terminal UI
 
@@ -113,7 +147,8 @@ command, with the transcript in the terminal's scrollback. It provides a
 streaming timeline of
 reasoning and tool activity with collapsible output, a command palette,
 session and history pickers, persistent prompt history, a multi-line
-composer with an effort control, prompt editing, each prompt's changes as
+composer with an effort control and [file links](#files) (`$`), prompt
+editing, each prompt's changes as
 diffs beside the transcript, copying by mouse selection, cancellation and
 slash commands while preserving the runner's JSONL session format.
 
@@ -215,23 +250,62 @@ prompt's images come back with it when it is edited, branched or reused,
 stay with it in the queue and go with it when it is forced in. A compaction
 keeps the labels of earlier prompts' images in its summary, not the images.
 
+### Files
+
+A prompt can link files and folders with `$`: `$cmd/main.go`,
+`$cmd/main.go:120-160` for those lines, `$cmd/main.go:120` for the lines
+from 120 on, `$cmd/` for a folder's entries, `$~/notes.md` or `$/etc/hosts`
+outside the workspace, and `$"a b.txt"` for a path with spaces. Typing `$`
+lists the workspace's files and folders over the composer, in either
+cockpit: typing filters them, `↑/↓` choose, `Tab` completes (so does
+`Enter`, once a choice was made with the arrows; otherwise `Enter` runs the
+prompt as it is), `Esc` closes, and a folder completed lists what is in it.
+The list comes from git where the workspace is a work tree, leaving out what
+`.gitignore` names, and elsewhere leaves dependencies and caches out. Above
+the composer a strip shows what the text links. Only a reference to
+something that exists is a link: `$HOME`, `$1` or `$(pwd)` stay text, and
+so does a `$` in a code span or a fenced block or after a backslash;
+punctuation that ends a sentence is no part of the path.
+
+The model gets a slice of each file, not the whole of it. The runner reads
+the links as the prompt runs, and the model reads, after the prompt's text,
+each under its reference and numbered as `cat -n` numbers them, the lines
+asked for, or else the beginning of the file — the first 100 lines within 8
+KB, or the whole of a small one (up to 600 lines and 20 KB) — or a folder's
+first 200 entries. It is told which lines were left out, how large the file
+is, and a command that reads the next of them, and it reads the rest
+itself, from the file as it is now, when it needs it. Lines longer than
+2,000 bytes are cut short, binary files show nothing (an image is for
+`ViewImage`), the links of a prompt show 160 KB at most together, and a
+prompt takes up to 20.
+
+The session records what the model saw with the prompt, so a resumed,
+branched or edited session reads the same, while a prompt that is edited,
+queued or forced in reads its files as they are when it goes to the agent.
+Under a sent prompt its files say what the model saw of each, such as
+`lines 1–100 of 345`, and a click shows those lines: the browser opens them
+under the prompt, the terminal cockpit in the prompt's card (a click on the
+files, or `Ctrl-O`). A compaction keeps the references of earlier prompts,
+not what they showed, and the Markdown export lists them. A runner older
+than the cockpit gets the prompt's text alone.
+
 ### Queue
 
 While the agent works, both cockpits keep writing to it. What is written
 waits above the composer, in the session's queue:
 
-- **Queued** (`Enter`): the message runs as the next prompt of its own once
-  the run ends, however long it goes on, and the queued ones run one after
-  another. Each is a prompt like any other: it has its changes, can be edited
-  and branched from.
-- **Forced** (`⌘Enter` in the browser, `Ctrl-X` in the terminal, or `Force`
-  on a queued message): the running agent reads it after the tool calls it is
-  making, in the same run. It never cuts a response short: it waits for the
-  response the model is writing and for that response's tool calls to finish,
-  and goes to the model with their results, so the transcript shows it right
-  after the last tool call, marked `⚡ forced in`. With nothing running, it
-  goes at once; calls that outlast two minutes, such as a server that never
-  exits, do not hold it.
+- **Queued** (`Enter`, or the composer's queue button): the message runs as
+  the next prompt of its own once the run ends, however long it goes on, and
+  the queued ones run one after another. Each is a prompt like any other: it
+  has its changes, can be edited and branched from.
+- **Forced** (`⌘Enter` or the ⚡ button in the browser, `Ctrl-X` in the
+  terminal, or `Force` on a queued message): the running agent reads it after
+  the tool calls it is making, in the same run. It never cuts a response
+  short: it waits for the response the model is writing and for that
+  response's tool calls to finish, and goes to the model with their results,
+  so the transcript shows it right after the last tool call, marked
+  `⚡ forced in`. With nothing running, it goes at once; calls that outlast
+  two minutes, such as a server that never exits, do not hold it.
 
 Queued messages can be edited in place, reordered (drag them, or `⌥↑`/`⌥↓`
 in the browser and `Shift-↑`/`Shift-↓` in the terminal), forced in and
@@ -381,7 +455,10 @@ and collapsible tool calls, with a command palette (`⌘K`), slash commands in
 the composer, keyboard shortcuts (`?`), an inspector for tokens, tools and runner diagnostics, each prompt's
 [changes](#changes) as diffs (`D`), the [model](#models) of each prompt
 (`M`), an effort control shared with the terminal cockpit and light/dark
-themes. The sessions rail and the panel at the right (the inspector or the
+themes. The composer's row ends in buttons with an icon: run, stop while the
+agent works, and queue and force once something is written while it works.
+It fits a phone too, where `Enter` adds a line and the buttons send.
+The sessions rail and the panel at the right (the inspector or the
 changes) are as wide as their edges are dragged, and keep their widths:
 `←`/`→` move an edge that has the focus, and a double click gives it its
 default width back. Runs belong to the server, not the tab: closing
@@ -404,7 +481,8 @@ active edits the last one, and pressed while a run stops, opens it once the
 run has stopped); `Branch` starts a new session from the history before it
 instead, keeping the original.
 
-The composer takes the terminal cockpit's commands: `/` lists the ones that
+`$` in the composer links a file of the workspace, as [above](#files). The
+composer takes the terminal cockpit's commands: `/` lists the ones that
 apply to the session in view, with what they take, and typing filters them;
 `↑`/`↓` choose, `Tab` completes and `Enter` runs, and `Esc` closes the list.
 `/effort`, `/model`, `/resume` and `/workspace` complete their arguments as
@@ -436,7 +514,8 @@ upstream, and spreads requests over them, trying another when one fails:
   or aliases.
 
 The **Accounts** tab (`A`, the tab at the top of the session list, or
-`#/accounts`) is where runs connect. Its **Connection** sends them through
+`#/accounts`) is where runs connect, and its [Usage](#usage) tab what they
+used and would have cost as API credits. Its **Connection** sends them through
 the gateway with a model it serves, which makes the gateway the single point
 they go through; the ⚙ button, `,` and `/settings` lead there. That model is
 the default: any prompt can [pick another](#models), of any account or
@@ -482,8 +561,60 @@ models** lists from the endpoint itself. The `⋯` menu of an account
 refreshes its limits or its token, and of an endpoint edits it or checks its
 key; both disable and remove.
 
+### Usage
+
+The Accounts view's second tab, **Usage** (`U`, `/usage`,
+`#/accounts/usage`, or a click on the gateway's API cost), turns tokens into
+API credits: what the gateway's requests used, and what the same tokens
+would have cost through the providers' APIs. The gateway reports every
+request it sends upstream with its account, its model and its tokens by the
+kinds APIs price apart — fresh input, cache reads, cache writes and output —
+and the cockpit keeps them hour by hour for 92 days, in `usage.json` beside
+the history. Over the last day, week, month or quarter (`1`, `7`, `3`, `9`)
+the tab shows:
+
+- the **API cost**, against the span before and at its pace for a month,
+  beside the tokens, the requests and how much of the input a cache served,
+  with what caching saved;
+- a chart of the cost, the tokens or the requests, a bar an hour, four hours
+  or a day, stacked by model or by kind of token, with what a bar holds
+  under the pointer;
+- the **models** and the **accounts**, the costliest first: what each
+  subscription or key would have cost as API credits;
+- **Tokens → credits**: each kind's share of the tokens beside its share of
+  the cost, and what a million of it came to;
+- the hours of the week, darker where more was spent.
+
+The rail narrows all of it down to a provider, an account or a model.
+
+Prices are per million tokens of each kind. The cockpit fetches
+[OpenRouter's](https://openrouter.ai/api/v1/models) model list, which prices
+the models of every provider it resells at the providers' own prices and
+follows new ones within days, when the gateway starts and twice a day after
+(**Update** fetches it now), keeps it in `openrouter-prices.json` for when
+OpenRouter cannot be reached, and prices a model it lists by it: Claude's
+cache writes at its one-hour price. `KOU_CONVEYOR_OPENROUTER_PRICES=off`
+keeps the cockpit from asking. For a model OpenRouter does not list, the
+cockpit knows the list prices of the Anthropic, OpenAI, Google, xAI,
+Moonshot, DeepSeek, Zhipu and MiniMax models it knows, and prices a newer
+model of a family it knows as
+the latest of the family it knows, marked as an estimate (`≈`):
+`claude-opus-5-5` as Claude Opus 4.5. Claude's cache writes count at the
+one-hour rate the gateway asks for; long-context and priority tiers are left
+out. The price table, or `P`, sets the price of a model, or of every model a
+pattern matches (`gpt-6-*`), borrowing a list price if you like; yours
+override OpenRouter's and the cockpit's and are kept in `prices.json`. A model without a
+price says so, and its tokens are left out of the cost until it has one.
+Amounts show in US dollars, or in credits of your own worth a set amount
+each (**Amounts in**). The Accounts tab shows the last day's cost in the
+gateway's strip, and beside each account and endpoint what its requests of
+the span would have cost.
+
+### Where it lives
+
 The gateway keeps its `config.yaml`, where the endpoints live too, the
-credentials (`auths/`), its log and the history in `cliproxy/` beside the
+credentials (`auths/`), its log, the history, the usage (`usage.json`) and
+your prices (`prices.json`) in `cliproxy/` beside the
 connection settings (`-accounts-dir` moves it). The cockpit keeps the listen
 address, the credentials folder, an API key for runs and a management secret
 in the file and leaves everything else to the user; its management API

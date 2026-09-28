@@ -9,6 +9,8 @@
   background: var(--bg-2);
   border-left: 1px solid var(--line);
 }
+/* As a tab of the sidebar, the sections scroll in it. */
+.sb-pane > .ins-sections { overflow-x: hidden; overflow-y: auto; }
 .ins-head { display: flex; align-items: center; justify-content: space-between; height: var(--bar); padding: 0 8px 0 16px; border-bottom: 1px solid var(--line); }
 .ins { padding: 16px; border-bottom: 1px solid var(--line); }
 .ins h2 { display: flex; justify-content: space-between; margin: 0 0 10px; font: 700 10.5px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3); }
@@ -46,11 +48,104 @@
 .recent .n { font-weight: 700; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3); }
 .recent .i { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--fg-2); }
 
-.log-box summary { list-style: none; cursor: pointer; }
-.log-box summary::-webkit-details-marker { display: none; }
-.log-box summary h2 { margin: 0; }
-.log-box[open] summary h2 { margin-bottom: 10px; }
-.log-box pre {
+/* ---------------------------------------------------------------- bars */
+
+/* A bar: a title and a word on what it holds, that opens onto its body.
+   The body's row grows from 0fr to 1fr, so it opens to whatever height its
+   content has, and hides once it has closed. */
+.ins.ins-fold { padding: 0; }
+.ins-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 46px;
+  padding: 0 12px 0 16px;
+  text-align: left;
+  font: 700 10.5px/1.2 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  transition: background-color 0.15s, color 0.15s;
+}
+.ins-bar:hover { background: var(--bg-3); color: var(--fg-2); }
+.ins-bar:focus-visible { outline-offset: -1px; }
+.ins-bar-title { flex: none; }
+.ins-bar-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--fg-4);
+}
+.ins-bar-meta {
+  display: flex;
+  flex: none;
+  margin-left: auto;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--fg-4);
+  white-space: nowrap;
+}
+.ins-bar-meta > span + span::before { content: "\00b7"; margin: 0 6px; color: var(--fg-4); }
+.ins-bar-meta [data-tone="warn"] { color: var(--warn); }
+.ins-bar-meta [data-tone="err"] { color: var(--err); }
+.ins-bar-meta [data-tone="ok"] { color: var(--ok); }
+.ins-bar-meta [data-tone="accent"] { color: var(--accent); }
+.ins-chev {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--fg-4);
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), color 0.15s;
+}
+.ins-chev svg { width: 12px; height: 12px; }
+.ins-bar:hover .ins-chev { color: var(--fg-2); }
+.ins-fold[data-open="true"] > .ins-bar { color: var(--fg-2); }
+.ins-fold[data-open="true"] > .ins-bar .ins-chev { transform: rotate(90deg); color: var(--accent); }
+
+.ins-fold-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition: grid-template-rows 0.22s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.22s;
+}
+.ins-fold[data-open="true"] > .ins-fold-body {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows 0.32s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s;
+}
+.ins-fold-clip { min-height: 0; overflow: hidden; }
+.ins-fold-inner {
+  padding: 2px 16px 16px;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.12s ease-out, transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.ins-fold[data-open="true"] > .ins-fold-body > .ins-fold-clip > .ins-fold-inner {
+  opacity: 1;
+  transform: none;
+  transition: opacity 0.24s ease-out 0.04s, transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* A bar in a section's body, such as the Project and System-wide ones of
+   Plugins and Skills. */
+.ins-fold.level-2 { background: var(--bg); border: 1px solid var(--line); transition: border-color 0.2s; }
+.ins-fold.level-2[data-open="true"] { border-color: var(--line-2); }
+.ins-fold.level-2 > .ins-bar { min-height: 36px; padding: 0 8px 0 10px; font-size: 10px; letter-spacing: 0.09em; }
+.ins-fold.level-2 > .ins-fold-body > .ins-fold-clip > .ins-fold-inner { padding: 2px 10px 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ins-fold-body, .ins-fold-inner, .ins-chev, .ins-fold.level-2 { transition: none !important; }
+}
+
+.log-text {
   margin: 0;
   max-height: 280px;
   overflow: auto;

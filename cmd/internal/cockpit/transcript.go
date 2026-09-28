@@ -6,6 +6,7 @@ package cockpit
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
@@ -71,6 +72,10 @@ type Entry struct {
 	// Images describes the images a prompt brought, which its text refers
 	// to by their labels; their bytes stay in the session (PromptImages).
 	Images []ImageInfo `json:"images,omitempty"`
+	// Files describes the files a prompt linked by its $ references, and
+	// what the model saw of each; the lines stay in the session
+	// (PromptFiles).
+	Files []LinkedFileInfo `json:"files,omitempty"`
 
 	// Rev increases whenever the entry changes, so renderers can cache.
 	Rev int `json:"-"`
@@ -133,6 +138,9 @@ type Transcript struct {
 	runMark  int    // failures when the current run started
 	run      string // message ID of the current run
 	serial   int
+	// retrying is the activity while a failed model request is tried again,
+	// until the model answers or another turn starts (Retrying).
+	retrying string
 	// compactable is set by the model's answers and cleared by a compaction.
 	compactable bool
 }
@@ -174,7 +182,7 @@ func (t *Transcript) Running() []*Entry {
 // marks the start of a run. The entry settles when the runner persists the
 // input with the same message ID.
 func (t *Transcript) Submit(messageID, text string, at time.Time) *Entry {
-	t.runMark, t.run = t.failures, messageID
+	t.runMark, t.run, t.retrying = t.failures, messageID, ""
 	t.Activity = "Starting"
 	e := &Entry{ID: "input:" + messageID, Kind: KindUser, At: at, Text: Clean(text), State: Pending}
 	t.put(e)
@@ -203,7 +211,7 @@ func (t *Transcript) LastModel() string {
 // Begin marks the start of a run that sends no prompt, such as a compaction,
 // under an ID of the front-end's choosing, and says what it is doing.
 func (t *Transcript) Begin(runID, activity string) {
-	t.runMark, t.run = t.failures, runID
+	t.runMark, t.run, t.retrying = t.failures, runID, ""
 	t.Activity = activity
 }
 
@@ -239,7 +247,7 @@ func (t *Transcript) Finish(err error, stopped bool, at time.Time) []*Entry {
 	}
 	// A prompt the runner never took is answered by no turn.
 	t.awaiting = slices.DeleteFunc(t.awaiting, func(e *Entry) bool { return e.State == Undelivered })
-	t.Activity = ""
+	t.Activity, t.retrying = "", ""
 	return changed
 }
 
@@ -311,7 +319,7 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 			return nil
 		}
 		id := "input:" + string(data.ID)
-		text, images := payloadEntry(data.Payload)
+		text, images, files := payloadEntry(data.Payload)
 		forced := data.Delivery == inbox.DeliverAfterTools
 		if e := t.index[id]; e != nil {
 			e.At, e.State, e.Forced = at, "", forced
@@ -321,13 +329,17 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 			if images != nil {
 				e.Images = images
 			}
+			if files != nil {
+				e.Files = files
+			}
 			t.await(e)
 			return []*Entry{t.touch(e)}
 		}
-		e := t.put(&Entry{ID: id, Kind: KindUser, At: at, Text: text, Forced: forced, Images: images})
+		e := t.put(&Entry{ID: id, Kind: KindUser, At: at, Text: text, Forced: forced, Images: images, Files: files})
 		t.await(e)
 		return []*Entry{e}
 	case session.Turn:
+		t.retrying = ""
 		if data.Type == session.TurnCompaction {
 			t.compaction[data.ID] = true
 			t.Activity = "Compacting context"
@@ -361,6 +373,7 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 
 func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionstore.ModelResponse) []*Entry {
 	response := data.Response
+	t.retrying = ""
 	t.Usage.Input += response.Usage.InputTokens
 	t.Usage.Cached += response.Usage.CachedInputTokens
 	t.Usage.Output += response.Usage.OutputTokens
@@ -516,7 +529,9 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 	} else {
 		t.active[e.ID] = e
 	}
-	t.Activity = t.runningActivity()
+	// Tools go on while a failed request to the model is tried again; that
+	// is what the run waits for.
+	t.Activity = cmp.Or(t.retrying, t.runningActivity())
 }
 
 func (t *Transcript) runningActivity() string {

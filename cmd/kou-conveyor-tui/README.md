@@ -43,7 +43,8 @@ The transcript is a timeline: prompts are numbered and framed, with the
 accent along their edge; tool calls collapse to one line with their state,
 duration and exit code, and open into a card whose sections are their
 input, output and errors; thinking folds away. Click a tool call or a
-thinking line to expand it, or press `Ctrl-O` for all of them. A
+thinking line to expand it, or press `Ctrl-O` for all of them (and for
+what the model saw of the files prompts linked). A
 `ViewImage` call shows the picture the agent looked at under its line: small
 while it is folded, large once it is open, and a click on the picture folds or
 unfolds it. Pictures are drawn as described for images below, and in inline
@@ -80,7 +81,11 @@ copies it (without the line numbers when the selection starts past them),
 and `×` closes the panel. The panel's edge, the rule between it and the
 transcript, drags: the panel takes the columns right of the pointer, the
 transcript the rest, and each keeps room of its own (40 columns for the
-transcript, 36 for the panel). A double click on the edge gives the panel its
+transcript, 36 for the panel). However long the transcript, the edge keeps up
+with the pointer: what is on screen, of the transcript and of the diff, is
+drawn for the new width as the edge moves, and the rest of the transcript a
+little at a time once it rests or is let go; a terminal being resized is
+followed the same way. A double click on the edge gives the panel its
 default width back, a share of the terminal. Where the terminal is narrower
 than 110 columns the panel covers the transcript, and has no edge. It stays
 open for the next start, as wide as it was. Inline, where
@@ -123,6 +128,15 @@ Keys:
   at once. kitty and Ghostty draw them with the kitty graphics protocol,
   other terminals in half blocks; `KOU_CONVEYOR_IMAGES=kitty|blocks|text`
   overrides that. See the repository's [README](../../README.md#images).
+- `$` links a file or a folder of the workspace: typing it lists what it
+  can complete to at the foot of the transcript — typing filters, `↑/↓`
+  choose, `Tab` completes (`Enter` too, once a choice was made with the
+  arrows), `Esc` closes, and a folder completed lists what is in it — and
+  `$path:120-160` asks for those lines. A tray above the composer shows what
+  the text links; the model reads a slice of each and the rest itself.
+  Under a sent prompt its files say what the model saw of each, and a click
+  there, or `Ctrl-O`, shows those lines. See the repository's
+  [README](../../README.md#files).
 - While the agent works, `Enter` queues the prompt: it waits above the
   composer and runs as the next prompt once the run ends, one after
   another. `Ctrl-X` (or `Ctrl-Enter` in terminals that report it) forces it

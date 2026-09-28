@@ -341,6 +341,14 @@ func ExportMarkdown(title, id string, t *Transcript, now time.Time) string {
 				stamp += " · " + inlineCode(e.Model)
 			}
 			fmt.Fprintf(&b, "\n---\n\n## %d. You%s\n\n%s\n", prompt, stamp, strings.TrimSpace(e.Text))
+			// What the model saw of the files the prompt linked.
+			if len(e.Files) != 0 {
+				linked := make([]string, len(e.Files))
+				for i, file := range e.Files {
+					linked[i] = inlineCode(file.Label) + " (" + file.Describe() + ")"
+				}
+				fmt.Fprintf(&b, "\n_Linked files: %s_\n", strings.Join(linked, ", "))
+			}
 		case KindAssistant:
 			fmt.Fprintf(&b, "\n**Agent**%s\n\n%s\n", stamp, strings.TrimSpace(e.Text))
 		case KindReasoning:

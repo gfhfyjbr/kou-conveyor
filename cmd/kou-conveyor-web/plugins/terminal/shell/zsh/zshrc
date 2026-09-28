@@ -1,0 +1,15 @@
+# kou-conveyor terminal: the user's .zshrc, then the kou-conveyor prompt
+# (see .zshenv).
+_kou_to_user
+# The system's zshrc named its history file after ZDOTDIR while it was
+# this directory.
+if [[ $HISTFILE == $_kou_dir/.zsh_history ]]; then
+  HISTFILE=${ZDOTDIR:-$HOME}/.zsh_history
+fi
+if [[ -r ${ZDOTDIR:-$HOME}/.zshrc ]]; then
+  builtin source -- ${ZDOTDIR:-$HOME}/.zshrc
+fi
+_kou_to_kou
+builtin source -- $_kou_dir/kou.zsh
+# A shell that is not a login shell reads no .zlogin.
+[[ -o login ]] || _kou_done

@@ -55,4 +55,8 @@ type Skill struct {
 	Name        string
 	Description string
 	Path        string
+	// Manual is set for a skill whose frontmatter keeps the model from
+	// loading it on its own (disable-model-invocation): the model loads it
+	// when the user asks for it by name.
+	Manual bool
 }

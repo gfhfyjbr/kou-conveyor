@@ -37,7 +37,7 @@ export default function activate(cockpit) {
     const list = attached?.ctl.list || hot.composer;
     attached?.ctl.destroy();
     const ctl = createAttachments({
-      input, strip, preview, drop: composer.form || input, toast: (text, kind) => cockpit.toast(text, kind),
+      input, strip, preview, drop: composer.form || input, toast: (text, kind) => cockpit.toast(text, kind), held,
       onChange: () => {
         composer.autosize?.();
         cockpit.render();
@@ -59,21 +59,40 @@ export default function activate(cockpit) {
     if (list?.length) hot.sent.set(messageID, list);
   }
 
+  // copy is this tab's copy of the image labelled so that a prompt it sent
+  // brought, if it kept one. The copy shows from a URL of its own bytes: an
+  // image an edit took from the session came with the address of the prompt
+  // the edit replaced, which the edit's rewind took away.
+  function copy(messageID, label) {
+    const att = hot.sent.get(messageID)?.find((one) => one.label === label) || null;
+    if (att?.blob && !att.url?.startsWith('blob:')) att.url = URL.createObjectURL(att.blob);
+    return att;
+  }
+
+  // held is the bytes of an image this tab sent, by the address it shows the
+  // image from: editing the prompt, or putting it back in the composer, takes
+  // them as they are.
+  function held(url) {
+    for (const list of hot.sent.values()) {
+      const att = list.find((one) => one.url === url && one.blob);
+      if (att) return att.blob;
+    }
+    return null;
+  }
+
   function sessionImageURL(ws, sessionID, messageID, n) {
     return cockpit.wsPath(ws, `/sessions/${encodeURIComponent(sessionID)}/images/${encodeURIComponent(messageID)}/${n}`);
   }
 
   function queuedImageURL(v, item, n) {
-    const local = hot.sent.get(item.id)?.find((att) => att.label === item.images[n]?.label);
-    return local?.url || cockpit.wsPath(v.ws, `/sessions/${encodeURIComponent(v.id)}/queue/${encodeURIComponent(item.id)}/images/${n}`);
+    return copy(item.id, item.images[n]?.label)?.url || cockpit.wsPath(v.ws, `/sessions/${encodeURIComponent(v.id)}/queue/${encodeURIComponent(item.id)}/images/${n}`);
   }
 
   // imageURL is where image n of a prompt shows from: this tab's copy of an
   // image it sent, else the session.
   function imageURL(v, entry, n) {
     const messageID = entry.id.replace(/^input:/, '');
-    const local = hot.sent.get(messageID)?.find((att) => att.label === entry.images?.[n]?.label);
-    return local?.url || sessionImageURL(v.ws, v.id, messageID, n);
+    return copy(messageID, entry.images?.[n]?.label)?.url || sessionImageURL(v.ws, v.id, messageID, n);
   }
 
   function openImage(v, entry, n) {
@@ -114,7 +133,7 @@ export default function activate(cockpit) {
     dropDraft: (key) => hot.drafts.delete(key),
     // attach gives another textarea, such as a prompt being edited, images
     // of its own; destroy() lets go of it.
-    attach: (options) => createAttachments({ preview, toast: (text, kind) => cockpit.toast(text, kind), ...options }),
+    attach: (options) => createAttachments({ preview, toast: (text, kind) => cockpit.toast(text, kind), held, ...options }),
     preview: () => preview,
   });
 

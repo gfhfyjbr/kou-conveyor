@@ -18,7 +18,11 @@ export default function activate(cockpit) {
 
   const bars = h('span', { class: 'think-bars', id: 'think-bars', role: 'radiogroup', 'aria-label': 'Effort' });
   const label = h('span', { class: 'think-label', id: 'think-label', text: 'high' });
-  const node = h('div', { class: 'think', title: 'Effort, shared with the terminal cockpit (⌥↑ / ⌥↓)' }, h('span', { class: 'label', text: 'Effort' }), bars, label);
+  // On a touch screen the bars are too narrow to hit: this select lies over
+  // the control (effort.css) and opens the system's list of the levels. The
+  // bars stay what a screen reader reads.
+  const select = h('select', { class: 'think-select', id: 'think-select', tabindex: '-1', 'aria-hidden': 'true', onchange: () => set(select.value) });
+  const node = h('div', { class: 'think', title: 'Effort, shared with the terminal cockpit (⌥↑ / ⌥↓)' }, h('span', { class: 'label', text: 'Effort' }), bars, label, select);
   cockpit.ui.mount('composer.row', { id: 'effort', order: 20, node });
 
   function render() {
@@ -32,6 +36,8 @@ export default function activate(cockpit) {
       onclick: () => set(name),
     })));
     label.textContent = level;
+    select.replaceChildren(...all.map((name) => h('option', { value: name, text: `Effort: ${name}` })));
+    select.value = level;
   }
 
   // set chooses the effort for the next runs, in this tab and in every

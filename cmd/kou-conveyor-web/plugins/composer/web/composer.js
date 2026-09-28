@@ -1,20 +1,32 @@
 // composer: the prompt, in the layout's dock, with the banner of a run that
-// did not finish and the activity of the run going on over it. It offers
-// the slots composer.above (over the text: suggestions, images) and
-// composer.row (beside the buttons: the model, the effort), and asks
-// plugins through hooks:
+// did not finish and the activity of the run going on over it. Its row, under
+// the text, ends with the buttons that send it: icons alone. It offers the
+// slots composer.above (over the text: suggestions, images) and composer.row
+// (beside the buttons: the model, the effort), and asks plugins through
+// hooks:
 //
 //   composer.key     (event) → true when a plugin took the key
 //   composer.submit  ({ raw, text, force, view }) → true when a plugin
 //                    took what was written (a command, a queued message)
 //
-// Otherwise the prompt runs. It emits composer:input, composer:focus,
+// Otherwise the prompt runs. On a touch screen — a phone, or a tablet
+// without a mouse — Enter adds a line, as the keyboard's return key does
+// anywhere else, and the button runs the prompt (⌘Enter still does, on a
+// keyboard attached). It emits composer:input, composer:focus,
 // composer:blur and composer:ready (input, form) once its elements exist,
 // and provides the composer service: value(), set(text, { focus, end }),
 // focus(), clear(), restore(text, images), input, form, draftKey(v),
 // saveDraft(), forget(ws, id), submit({ force }).
+// The buttons' icons: Run, Stop, Queue (a list and a plus) and Force.
+const ICONS = {
+  run: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2.75v10.5L13.25 8z" fill="currentColor"/></svg>',
+  stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.75 3.75h8.5v8.5h-8.5z" fill="currentColor"/></svg>',
+  queue: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.75h10M2 7.75h10M2 11.75h5.5M12 9v6M9 12h6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
+  force: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.25 1.25 3.5 9h4l-1.25 5.75L12.5 7h-4z" fill="currentColor"/></svg>',
+};
+
 export default function activate(cockpit) {
-  const { h, fmt, prefs } = cockpit;
+  const { h, svg, fmt, prefs } = cockpit;
   const session = cockpit.use('session');
   const service = (name) => (cockpit.has(name) ? cockpit.use(name) : null);
   const view = () => session.view?.();
@@ -44,16 +56,18 @@ export default function activate(cockpit) {
     placeholder: 'Describe the task. Enter runs it, Shift+Enter adds a line, / lists commands.',
   });
   const row = h('div', { class: 'slot-contents' });
+  // What sends the prompt ends the row: one button — Run, Stop while the
+  // agent works — and, once something is written while it works, two: Force
+  // and Queue. Icons alone: their names and keys are in their labels and
+  // titles.
   const force = h('button', {
-    class: 'force', id: 'force', type: 'button', hidden: true,
-    title: 'Force it in: the agent reads it after the tool calls it is making, without waiting for the run to end',
+    class: 'send', id: 'force', type: 'button', data: { mode: 'force' }, hidden: true, 'aria-label': 'Force it in',
+    title: 'Force it in: the agent reads it after the tool calls it is making, without waiting for the run to end (⌘↵)',
     onclick: () => { submit({ force: true }); input.focus(); },
-  }, h('span', { class: 'force-bolt', 'aria-hidden': 'true', text: '⚡' }), h('span', { text: 'Force' }), h('kbd', { text: '⌘' }), h('kbd', { text: '↵' }));
-  const runLabel = h('span', { id: 'run-label', text: 'Run' });
-  const runKey = h('kbd', { id: 'run-key', text: '↵' });
-  const run = h('button', { class: 'run', id: 'run', type: 'submit', data: { mode: 'run' }, disabled: true }, runLabel, runKey);
+  }, svg(ICONS.force));
+  const run = h('button', { class: 'send', id: 'run', type: 'submit', data: { mode: 'run' }, 'aria-label': 'Run', disabled: true }, svg(ICONS.run));
   const form = h('form', { class: 'composer ticks', id: 'composer', autocomplete: 'off' },
-    above, input, h('div', { class: 'composer-row' }, row, force, run));
+    above, input, h('div', { class: 'composer-row' }, row, h('div', { class: 'composer-send' }, force, run)));
 
   cockpit.ui.mount('dock', { id: 'resume', order: 10, node: resume });
   cockpit.ui.mount('dock', { id: 'activity', order: 20, node: activity });
@@ -61,11 +75,23 @@ export default function activate(cockpit) {
   cockpit.ui.slot('composer.above', above);
   cockpit.ui.slot('composer.row', row);
 
+  // A touch screen: a phone, or a tablet without a mouse. Its keyboard has
+  // no Shift+Enter, nor keys to hint at.
+  const touch = window.matchMedia('(hover: none) and (pointer: coarse)');
+  cockpit.listen(touch, 'change', () => cockpit.render());
+
   // ---------------------------------------------------------------- text
+
+  // shown is the height of the page in sight: on a phone, what the keyboard
+  // leaves of it (pinch zoom aside).
+  function shown() {
+    const viewport = window.visualViewport;
+    return Math.min(window.innerHeight, viewport ? viewport.height * viewport.scale : Infinity);
+  }
 
   function autosize() {
     input.style.height = 'auto';
-    input.style.height = `${Math.min(input.scrollHeight, Math.round(window.innerHeight * 0.4))}px`;
+    input.style.height = `${Math.min(input.scrollHeight, Math.round(shown() * 0.4))}px`;
   }
 
   function set(text, { focus = false, end = false } = {}) {
@@ -134,10 +160,12 @@ export default function activate(cockpit) {
   });
   cockpit.listen(input, 'keydown', (event) => {
     if (cockpit.hooks.first('composer.key', event)) return;
-    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
-      event.preventDefault();
-      submit({ force: event.metaKey || event.ctrlKey });
-    }
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    const modified = event.metaKey || event.ctrlKey;
+    // A touch screen's Enter adds a line: the button runs the prompt.
+    if (touch.matches && !modified) return;
+    event.preventDefault();
+    submit({ force: modified });
   });
   cockpit.listen(input, 'input', () => {
     autosize();
@@ -150,6 +178,8 @@ export default function activate(cockpit) {
   cockpit.listen(input, 'focus', () => cockpit.emit('composer:focus'));
   cockpit.listen(input, 'blur', () => cockpit.emit('composer:blur'));
   cockpit.listen(window, 'resize', autosize);
+  // A phone's keyboard, as it opens and closes, changes what is in sight.
+  if (window.visualViewport) cockpit.listen(window.visualViewport, 'resize', autosize);
   // The stage changes width with the window, and as the rail or a panel
   // opens, closes or is resized: the text wraps anew.
   cockpit.on('layout:resize', autosize);
@@ -205,15 +235,32 @@ export default function activate(cockpit) {
     // the button stops the run.
     const queueing = cockpit.has('queue');
     const mode = busy ? (typed && !v.edit && queueing ? 'queue' : 'stop') : 'run';
-    run.dataset.mode = mode;
-    run.disabled = mode === 'stop' ? v.run.phase === 'stopping' : mode === 'queue' ? false : (!typed || v.loading || v.external || v.gone || missing);
-    runLabel.textContent = { run: 'Run', queue: 'Queue', stop: v.run?.phase === 'stopping' ? 'Stopping' : 'Stop' }[mode];
-    runKey.textContent = mode === 'stop' ? 'Esc Esc' : '↵';
-    run.title = mode === 'queue' ? 'Queue it: it runs as the next prompt when the agent finishes' : '';
+    const stopping = v.run?.phase === 'stopping';
+    if (run.dataset.mode !== mode) {
+      run.dataset.mode = mode;
+      run.replaceChildren(svg(ICONS[mode]));
+    }
+    run.disabled = mode === 'stop' ? stopping : mode === 'queue' ? false : (!typed || v.loading || v.external || v.gone || missing);
+    const label = { run: 'Run', queue: 'Queue', stop: stopping ? 'Stopping' : 'Stop' }[mode];
+    if (run.getAttribute('aria-label') !== label) run.setAttribute('aria-label', label);
+    run.title = {
+      run: 'Run (↵)',
+      queue: 'Queue it: it runs as the next prompt when the agent finishes (↵)',
+      stop: stopping ? 'Stopping' : 'Stop the agent (Esc Esc)',
+    }[mode];
     force.hidden = mode !== 'queue';
-    input.placeholder = busy && queueing
-      ? 'Message the agent. Enter queues it for when it finishes; ⌘Enter forces it in after its running tools.'
-      : 'Describe the task. Enter runs it, Shift+Enter adds a line, / lists commands.';
+    const files = cockpit.has('files');
+    // A touch screen's names no keys, and fits a line of a phone's (from
+    // 360px wide).
+    const placeholder = touch.matches
+      ? busy && queueing ? 'Message the agent at work' : 'Describe the task · / commands'
+      : busy && queueing
+        ? 'Message the agent. Enter queues it for when it finishes; ⌘Enter forces it in after its running tools.'
+        : `Describe the task. Enter runs it, Shift+Enter adds a line, / lists commands${files ? ', $ links a file' : ''}.`;
+    if (input.placeholder !== placeholder) {
+      input.placeholder = placeholder;
+      autosize(); // a placeholder of another length takes other lines
+    }
     activity.hidden = !busy;
     activityText.textContent = v.run?.activity || 'Working';
     activityClock.textContent = v.run ? fmt.timer(Date.now() - v.run.started) : '';

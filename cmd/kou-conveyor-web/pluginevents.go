@@ -15,10 +15,10 @@ import (
 // Open pages follow the plugins as they change. /api/w/{ws}/plugins/events
 // streams the workspace's plugin listing: at once, and again whenever it
 // changes — a plugin's file is written, one is added or taken away, the
-// workspace is trusted, a plugin turned off. The page loads what changed
-// and nothing else, without being loaded again itself. When the page's own
-// files change (assets read from a checkout), a "kernel" event has it load
-// again.
+// workspace is trusted, a plugin turned off, a skill added, removed or
+// edited. The page loads what changed and nothing else, without being
+// loaded again itself. When the page's own files change (assets read from a
+// checkout), a "kernel" event has it load again.
 
 // pluginPollInterval is how often the plugins' files are looked at.
 const pluginPollInterval = 400 * time.Millisecond
@@ -138,7 +138,7 @@ func (s *server) watchPlugins(ctx context.Context) {
 		for _, stream := range streams {
 			fingerprint, seen := watched[stream.ws]
 			if !seen {
-				fingerprint = plugin.Fingerprint(s.pluginSources(stream.ws)...)
+				fingerprint = s.listingFingerprint(stream.ws)
 				watched[stream.ws] = fingerprint
 			}
 			if fingerprint == stream.watched {
@@ -186,7 +186,7 @@ func (s *server) handlePluginEvents(w http.ResponseWriter, r *http.Request) {
 	flusher := http.NewResponseController(w)
 
 	stream := &pluginStream{ws: ws, send: make(chan pluginEvent, 1)}
-	stream.watched = plugin.Fingerprint(s.pluginSources(ws)...)
+	stream.watched = s.listingFingerprint(ws)
 	encoded := s.encodedPlugins(ws)
 	stream.sent = fingerprintOf(encoded)
 	s.followPlugins(stream)

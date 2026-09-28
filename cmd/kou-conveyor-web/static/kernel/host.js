@@ -465,11 +465,13 @@ function mount(scope, slot, spec) {
 // ---------------------------------------------------------------- keys
 
 // Keys are contributions to "keys": { key, run, when, global, priority,
-// views, repeat }. key is what KeyboardEvent.key says, after modifiers:
+// views, repeat, own }. key is what KeyboardEvent.key says, after modifiers:
 // "n", "E", "?", "Escape", "Mod+k", "Alt+ArrowUp". A key not global does
 // nothing while the user types in a field or a guard says so (a dialog is
-// open), and one with views only on those views. The first key that runs
-// and does not return false has the event.
+// open), and one with views only on those views. A part of the page that
+// takes the keys pressed in it itself — a terminal — is marked
+// data-keys="own": there only the keys registered with own run. The first
+// key that runs and does not return false has the event.
 function comboOf(event) {
   const parts = [];
   if (event.metaKey || event.ctrlKey) parts.push('Mod');
@@ -498,10 +500,12 @@ function onKey(event) {
     .filter((b) => (Array.isArray(b.key) ? b.key : [b.key]).some((k) => normalizeKey(k) === combo))
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
   if (!bindings.length) return;
+  const owned = event.target instanceof Element && !!event.target.closest('[data-keys="own"]');
   const typing = typingIn(event.target);
   let guarded = null;
   const view = store.get('view');
   for (const binding of bindings) {
+    if (owned && !binding.own) continue;
     if (!binding.global) {
       if (typing) continue;
       guarded ??= contributions('keys.guard').some((guard) => !!safely(guard.plugin, guard.fn, event));
@@ -873,6 +877,7 @@ const actions = Object.freeze({
   model: (id = '') => serviceCall('models', 'command', String(id).trim()),
   openSettings: () => serviceCall('connection', 'open'),
   openAccounts: () => serviceCall('accounts', 'show'),
+  openUsage: (range = '') => serviceCall('accounts', 'showUsage', String(range)),
   addAccount: (provider = '') => serviceCall('accounts', 'addAccount', String(provider)),
   addEndpoint: (kind = '') => serviceCall('accounts', 'addEndpoint', String(kind)),
   workspace: (query = '') => serviceCall('workspaces', 'command', String(query)),

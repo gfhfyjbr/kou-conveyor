@@ -14,6 +14,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/primitives"
 )
 
@@ -33,6 +34,7 @@ func (adapter *adapter) exchange(ctx context.Context, body []byte, cacheKey stri
 		}
 		now := time.Now()
 		delay := responseRetryDelay(request.RetryPolicy, attempt, result.apiError, result.headers, now, rand.Float64())
+		llm.ReportRetry(ctx, llm.Retry{Attempt: attempt, MaxAttempts: adapter.maxAttempts, Delay: delay, Err: result.failure()})
 		primitives.ScheduleTimer(ctx, primitives.TimerRequest{
 			Source: request.Source, CorrelationID: request.CorrelationID + ":backoff",
 			Deadline: now.Add(delay),
@@ -57,6 +59,17 @@ type responseAttempt struct {
 	err      error
 	apiError *APIError
 	retry    bool
+}
+
+// failure says why an attempt that is retried failed.
+func (result responseAttempt) failure() error {
+	switch {
+	case result.err != nil:
+		return result.err
+	case result.apiError != nil:
+		return result.apiError
+	}
+	return fmt.Errorf("response status %d %s", result.status, http.StatusText(result.status))
 }
 
 func (adapter *adapter) exchangeAttempt(ctx context.Context, request primitives.RemoteRequest, events chan primitives.PrimitiveEvent) responseAttempt {

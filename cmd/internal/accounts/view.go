@@ -53,8 +53,10 @@ type Account struct {
 	Priority  *int       `json:"priority,omitzero"`
 	Note      string     `json:"note,omitzero"`
 	Cooldowns []Cooldown `json:"cooldowns,omitzero"`
-	// Uptime is the account's requests over the span asked for.
+	// Uptime is the account's requests over the span asked for, and Spend
+	// what they used and would have cost at API prices.
 	Uptime Uptime        `json:"uptime"`
+	Spend  Spend         `json:"spend"`
 	Errors []ErrorSample `json:"errors,omitzero"` // newest first
 	// Quota is the account's latest known quota: fetched live, else read
 	// from its latest response.
@@ -195,6 +197,11 @@ type Summary struct {
 	Refreshing       int   `json:"refreshing,omitzero"`
 	OK               int64 `json:"ok"`
 	Failed           int64 `json:"failed"`
+	// Cost is what the last day's requests would have cost at API prices,
+	// in US dollars; Unpriced counts the tokens of models without a price,
+	// which it leaves out.
+	Cost     float64 `json:"cost,omitzero"`
+	Unpriced int64   `json:"unpriced_tokens,omitzero"`
 }
 
 // Summarize counts accounts and their requests over the span they report.

@@ -1,0 +1,6 @@
+{
+  "name": "terminal",
+  "version": "1.0.0",
+  "description": "Terminals in the sidebar: shells of the workspace that run on the server and outlive the page, drawn by restty (libghostty-vt, WebGPU). ⌘D splits one to the right, ⌘⇧D below; ` opens one. Shells start with kou-conveyor's prompt theme unless Settings says otherwise.",
+  "web": {"script": "web/terminal.js", "style": "web/terminal.css", "after": ["sidebar", "ui"]}
+}

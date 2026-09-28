@@ -9,6 +9,6 @@ import (
 
 // execSelf cannot run a program anew in place here: the server is restarted
 // by hand to take the new build up.
-func execSelf(string, net.Listener) error {
+func execSelf(string, net.Listener, ...string) error {
 	return errors.New("restarting in place needs a Unix system")
 }

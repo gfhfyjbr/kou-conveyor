@@ -212,6 +212,7 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 		if !retry || attempt >= client.maxAttempts {
 			return llm.Response{}, describe(err)
 		}
+		llm.ReportRetry(ctx, llm.Retry{Attempt: attempt, MaxAttempts: client.maxAttempts, Delay: delay, Err: describe(err)})
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

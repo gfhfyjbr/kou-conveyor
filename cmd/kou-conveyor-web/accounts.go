@@ -210,8 +210,12 @@ func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 			answer["error"] = err.Error()
 		}
 	}
-	// The gateway's summary is the overview's.
+	// The gateway's summary is the overview's; amounts show in the unit
+	// the user chose for the Usage tab.
 	answer["gateway"] = s.gatewayView()
+	if s.gateway != nil {
+		answer["unit"] = s.gateway.Unit()
+	}
 	answer["connection"] = s.connectionView(r)
 	writeJSON(w, http.StatusOK, answer)
 }

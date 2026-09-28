@@ -227,6 +227,10 @@ type Job struct {
 	// the runner cannot take any. fed is closed once stdin takes no more.
 	steer chan []byte
 	fed   chan struct{}
+	// workspace is where the files a message links are; links says the
+	// runner takes them.
+	workspace string
+	links     bool
 }
 
 // ErrCannotSteer reports a runner that takes no messages while it runs: one
@@ -253,7 +257,8 @@ func (j *Job) CanSteer() bool {
 // calls it is making finish: after their results, and never in the middle of
 // a response. The runner records it under messageID when it goes out, which
 // is how front-ends learn that it did; one the run ends before is never
-// recorded. The images its text refers to go with it. Steer does not block.
+// recorded. The images its text refers to go with it, and the files it
+// links. Steer does not block.
 func (j *Job) Steer(messageID, text string, images ...Image) error {
 	if !j.CanSteer() {
 		return ErrCannotSteer
@@ -261,11 +266,16 @@ func (j *Job) Steer(messageID, text string, images ...Image) error {
 	if _, err := uuid.Parse(messageID); err != nil {
 		return fmt.Errorf("invalid message ID %q", messageID)
 	}
+	var files []FileLink
+	if j.links {
+		files = FileLinks(text, j.workspace)
+	}
 	line, err := json.Marshal(struct {
-		Content   string  `json:"content"`
-		MessageID string  `json:"message_id"`
-		Images    []Image `json:"images,omitempty"`
-	}{text, messageID, Referenced(text, images)})
+		Content   string     `json:"content"`
+		MessageID string     `json:"message_id"`
+		Images    []Image    `json:"images,omitempty"`
+		Files     []FileLink `json:"files,omitempty"`
+	}{text, messageID, Referenced(text, images), files})
 	if err != nil {
 		return err
 	}
@@ -299,25 +309,35 @@ func (j *Job) feed(stdin io.WriteCloser, request []byte) {
 	}
 }
 
+// runnerFeatures is what a runner can do that runners built before could
+// not.
+type runnerFeatures struct {
+	// steer: it takes messages while it runs (-steer). One built before
+	// reads its request up to the end of stdin; its runs take messages only
+	// after they end.
+	steer bool
+	// links: its messages link files. One built before turns a request
+	// with files away; its prompts go without them.
+	links bool
+}
+
 var runnerSteering = struct {
 	sync.Mutex
-	byBinary map[string]bool
-}{byBinary: map[string]bool{}}
+	byBinary map[string]runnerFeatures
+}{byBinary: map[string]runnerFeatures{}}
 
-// runnerSteers reports whether the runner takes messages while it runs
-// (-steer). One built before could not, and reads its request up to the end
-// of stdin; its runs then take messages only after they end.
-func runnerSteers(runner string) bool {
+// featuresOf asks a runner what it can do, which its usage says.
+func featuresOf(runner string) runnerFeatures {
 	info, err := os.Stat(runner)
 	if err != nil {
-		return false
+		return runnerFeatures{}
 	}
 	key := fmt.Sprintf("%s\x00%d\x00%d", runner, info.Size(), info.ModTime().UnixNano())
 	runnerSteering.Lock()
-	steers, known := runnerSteering.byBinary[key]
+	features, known := runnerSteering.byBinary[key]
 	runnerSteering.Unlock()
 	if known {
-		return steers
+		return features
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -325,13 +345,16 @@ func runnerSteers(runner string) bool {
 	cmd := exec.CommandContext(ctx, runner, "-h")
 	cmd.Stdout, cmd.Stderr = &usage, &usage
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
-		return false // cannot tell; try again next time
+		return runnerFeatures{} // cannot tell; try again next time
 	}
-	steers = bytes.Contains(usage.Bytes(), []byte("-steer"))
+	features = runnerFeatures{
+		steer: bytes.Contains(usage.Bytes(), []byte("-steer")),
+		links: bytes.Contains(usage.Bytes(), []byte("files: array of {path")),
+	}
 	runnerSteering.Lock()
-	runnerSteering.byBinary[key] = steers
+	runnerSteering.byBinary[key] = features
 	runnerSteering.Unlock()
-	return steers
+	return features
 }
 
 // Lines delivers the runner's output in order and is closed after the runner
@@ -388,9 +411,10 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		return nil, err
 	}
 	type message struct {
-		Content   string  `json:"content"`
-		MessageID string  `json:"message_id"`
-		Images    []Image `json:"images,omitempty"`
+		Content   string     `json:"content"`
+		MessageID string     `json:"message_id"`
+		Images    []Image    `json:"images,omitempty"`
+		Files     []FileLink `json:"files,omitempty"`
 	}
 	payload := struct {
 		Messages     []message `json:"messages,omitempty"`
@@ -400,10 +424,16 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		Compact      bool      `json:"compact,omitempty"`
 		Instructions string    `json:"compact_instructions,omitempty"`
 	}{SessionID: r.SessionID, Model: r.Model, Thinking: r.Thinking}
+	features := featuresOf(o.Runner)
 	if r.Compact {
 		payload.Compact, payload.Instructions = true, strings.TrimSpace(r.Instructions)
 	} else {
-		payload.Messages = []message{{r.Prompt, r.MessageID, Referenced(r.Prompt, r.Images)}}
+		// The files the prompt links go with it, for the runner to read.
+		var files []FileLink
+		if features.links {
+			files = FileLinks(r.Prompt, o.Workspace)
+		}
+		payload.Messages = []message{{r.Prompt, r.MessageID, Referenced(r.Prompt, r.Images), files}}
 	}
 	// stdin keeps prompts out of process listings and argv size limits.
 	request, err := json.Marshal(payload)
@@ -462,7 +492,7 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		args = append(args, "-log-directory", o.LogDir)
 	}
 	// A compaction takes no messages: what is sent during it runs after it.
-	steers := !r.Compact && runnerSteers(o.Runner)
+	steers := !r.Compact && features.steer
 	if steers {
 		args = append(args, "-steer")
 	}
@@ -483,7 +513,10 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	configureProcess(cmd)
 	cmd.WaitDelay = stopTimeout
 
-	job := &Job{lines: make(chan Line, 64), done: make(chan struct{}), cancel: cancel, fed: make(chan struct{})}
+	job := &Job{
+		lines: make(chan Line, 64), done: make(chan struct{}), cancel: cancel, fed: make(chan struct{}),
+		workspace: o.Workspace, links: features.links,
+	}
 	emit := func(line Line) {
 		select {
 		case job.lines <- line:

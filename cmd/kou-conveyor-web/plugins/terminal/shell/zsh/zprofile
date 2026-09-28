@@ -1,0 +1,6 @@
+# kou-conveyor terminal: the user's .zprofile (see .zshenv).
+_kou_to_user
+if [[ -r ${ZDOTDIR:-$HOME}/.zprofile ]]; then
+  builtin source -- ${ZDOTDIR:-$HOME}/.zprofile
+fi
+_kou_to_kou

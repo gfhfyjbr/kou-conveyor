@@ -62,9 +62,16 @@ func TestExchangeRestartsFailedGeneration(t *testing.T) {
 					CacheKeyPlacement: CacheKeyPlacement{Header: "session-id", UsePromptCacheKeyField: true},
 					Trace:             func(Exchange) { traces.Add(1) },
 				})
-				response, err := adapter.Respond(t.Context(), validRequest(), llm.RequestOptions{CacheKey: "same-session"})
+				var retries []llm.Retry
+				ctx := llm.WithRetryReporter(t.Context(), func(r llm.Retry) { retries = append(retries, r) })
+				response, err := adapter.Respond(ctx, validRequest(), llm.RequestOptions{CacheKey: "same-session"})
 				if err != nil || response.ID != "new" || response.Failure != nil || calls.Load() != 2 || traces.Load() != 1 || len(response.Output) != 1 {
 					t.Fatalf("response=%#v error=%v calls=%d traces=%d", response, err, calls.Load(), traces.Load())
+				}
+				// The failed generation was told before its retry waited.
+				if len(retries) != 1 || retries[0].Attempt != 1 || retries[0].MaxAttempts != 2 || retries[0].Delay <= 0 ||
+					!strings.Contains(retries[0].Err.Error(), "temporary failure") {
+					t.Fatalf("retries = %+v", retries)
 				}
 				if response.Output[0].Data.(llm.Message).Text != "fallback" {
 					t.Fatal("retried generation did not discard the old tool call")

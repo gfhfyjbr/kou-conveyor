@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -195,6 +196,48 @@ func TestHost(t *testing.T) {
 		}
 		if s := o.Summary; s.Accounts != 0 || s.Endpoints != 1 || s.FailingEndpoints != 1 || s.OK != 1 || s.Failed < 1 {
 			t.Errorf("summary = %+v", s)
+		}
+
+		// The ledger has the same requests, by model, with their tokens;
+		// fake-model has no price until one is set.
+		var report UsageReport
+		for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if report, err = h.Usage(t.Context(), UsageQuery{Range: "24h"}); err != nil {
+				t.Fatal(err)
+			}
+			if report.Totals.Requests >= 2 {
+				break
+			}
+		}
+		tot := report.Totals
+		if tot.Requests < 2 || tot.Failed < 1 || tot.Tokens.Input != 11 || tot.Tokens.Output != 3 || tot.Unpriced != 14 || tot.Cost.Total() != 0 {
+			t.Fatalf("usage = %+v", tot)
+		}
+		if len(report.Models) != 1 || report.Models[0].ID != "fake-model" || !report.Models[0].Served || report.Models[0].Price.Source != PriceNone {
+			t.Errorf("models = %+v", report.Models)
+		}
+		if len(report.Accounts) != 1 || report.Accounts[0].Label != "fakeai" || report.Accounts[0].Kind != "endpoint" || report.Accounts[0].Gone {
+			t.Errorf("accounts = %+v", report.Accounts)
+		}
+		if _, err := h.SetPrice(PriceRule{Match: "fake-*", Price: Price{Input: 1e6, Output: 2e3}}); err == nil {
+			t.Error("a price over the bound was accepted")
+		}
+		if _, err := h.SetPrice(PriceRule{Match: "fake-*", Price: Price{Input: 1000, Output: 2000}}); err != nil {
+			t.Fatal(err)
+		}
+		report, _ = h.Usage(t.Context(), UsageQuery{Range: "24h"})
+		if got := report.Totals.Cost.Total(); math.Abs(got-(11*1000+3*2000)/1e6) > 1e-9 || report.Totals.Unpriced != 0 {
+			t.Errorf("priced usage = %+v", report.Totals)
+		}
+		listing := h.Prices(t.Context())
+		if len(listing.Rules) != 1 || len(listing.Models) != 1 || !listing.Models[0].Used || !listing.Models[0].Served || listing.Models[0].Price.Source != PriceCustom {
+			t.Errorf("prices = %+v", listing)
+		}
+		if o, _ := h.Overview(t.Context(), "24h"); o.Endpoints[0].Spend.Requests < 2 || o.Summary.Cost == 0 {
+			t.Errorf("spend = %+v, summary %+v", o.Endpoints[0].Spend, o.Summary)
+		}
+		if err := h.RemovePrice("fake-*"); err != nil {
+			t.Fatal(err)
 		}
 	})
 
@@ -429,6 +472,22 @@ func TestHost(t *testing.T) {
 		var saved historyFile
 		if err := json.Unmarshal(data, &saved); err != nil || len(saved.Accounts) != 1 {
 			t.Errorf("history = %s, %v", data, err)
+		}
+		if err := h.ledger.Save(); err != nil {
+			t.Fatal(err)
+		}
+		data, err = os.ReadFile(filepath.Join(dir, "usage.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ledger ledgerFile
+		if err := json.Unmarshal(data, &ledger); err != nil || len(ledger.Rows) == 0 || len(ledger.Auths) != 1 || ledger.Since.IsZero() {
+			t.Errorf("usage = %s, %v", data, err)
+		}
+		for _, a := range ledger.Auths {
+			if a.ID == "" || a.Label != "fakeai" || a.Kind != "endpoint" {
+				t.Errorf("the ledger remembers the endpoint as %+v", a)
+			}
 		}
 	})
 }

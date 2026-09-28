@@ -1,0 +1,6 @@
+{
+  "name": "explorer",
+  "version": "1.0.0",
+  "description": "Files in the sidebar: the workspace's folders as a tree, with what git ignores and what it sees changed, and a file's text highlighted by chroma on the server, fast for large files. F opens it.",
+  "web": {"script": "web/explorer.js", "style": "web/explorer.css", "after": ["sidebar", "ui"]}
+}

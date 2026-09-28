@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/terminal"
 )
 
 // Finished runs stay addressable for a while so a reconnecting browser can
@@ -54,6 +56,11 @@ type server struct {
 	instance string
 	started  time.Time // when this run of the server started
 
+	// terminals are the shells of the sidebar's terminal tabs
+	// (terminals.go); explorer what its Files tab shows (explorer.go).
+	terminals *terminal.Manager
+	explorer  *explorer
+
 	mu     sync.Mutex
 	runs   map[string]*run           // by run ID, including recently finished runs
 	active map[string]*run           // by activeKey, unfinished runs only
@@ -88,6 +95,8 @@ func newServer(ctx context.Context, o options, addr net.Addr) *server {
 	if o.rebuild {
 		s.rebuild = newRebuilder(s.assets)
 	}
+	s.explorer = newExplorer()
+	s.startTerminals()
 	// A page on another site can resolve its own name to this address (DNS
 	// rebinding), so only names that really denote this server are accepted.
 	// Bound to every interface, any IP literal is fine too: rebinding needs a
@@ -145,6 +154,14 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/sign-ins/{state}", s.withGateway(s.handleSignIn))
 	mux.HandleFunc("POST /api/sign-ins/{state}/callback", s.withGateway(s.handleFinishSignIn))
 	mux.HandleFunc("DELETE /api/sign-ins/{state}", s.withGateway(s.handleCancelSignIn))
+	// What the gateway's requests used, and what it comes to at API prices
+	// (usage.go).
+	mux.HandleFunc("GET /api/usage", s.withGateway(s.handleUsage))
+	mux.HandleFunc("GET /api/usage/prices", s.withGateway(s.handlePrices))
+	mux.HandleFunc("POST /api/usage/prices", s.withGateway(s.handleSetPrice))
+	mux.HandleFunc("DELETE /api/usage/prices", s.withGateway(s.handleRemovePrice))
+	mux.HandleFunc("PUT /api/usage/unit", s.withGateway(s.handleSetUnit))
+	mux.HandleFunc("POST /api/usage/prices/refresh", s.withGateway(s.handleRefreshPrices))
 	// Sessions and runs belong to a workspace. The routes without one act on
 	// the workspace the server was started in.
 	for _, prefix := range []string{"/api/w/{ws}", "/api"} {
@@ -170,6 +187,18 @@ func (s *server) handler() http.Handler {
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/images/{message}/{n}", s.handlePromptImage)
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/queue/{item}/images/{n}", s.handleQueuedImage)
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/tools/{call}/image", s.handleToolImage)
+		// The files prompts link: what the model saw, and for the composer,
+		// what a $ completes to and what a text links (files.go).
+		mux.HandleFunc("GET "+prefix+"/sessions/{id}/files/{message}", s.handlePromptFiles)
+		mux.HandleFunc("GET "+prefix+"/files", s.handleFiles)
+		mux.HandleFunc("POST "+prefix+"/links", s.handleLinks)
+		// The workspace's files for the sidebar's Files tab (explorer.go),
+		// and its terminals (terminals.go).
+		mux.HandleFunc("GET "+prefix+"/tree", s.handleTree)
+		mux.HandleFunc("GET "+prefix+"/file", s.handleFile)
+		mux.HandleFunc("GET "+prefix+"/raw", s.handleRawFile)
+		mux.HandleFunc("GET "+prefix+"/terminals", s.handleTerminals)
+		mux.HandleFunc("POST "+prefix+"/terminals", s.handleStartTerminal)
 		// Plugins (plugins.go), and the stream that says when they change
 		// (pluginevents.go).
 		mux.HandleFunc("GET "+prefix+"/plugins", s.handlePlugins)
@@ -181,6 +210,12 @@ func (s *server) handler() http.Handler {
 	}
 	mux.HandleFunc("GET /api/runs/{id}/events", s.handleEvents)
 	mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("GET /api/terminals/{id}", s.handleTerminal)
+	mux.HandleFunc("DELETE /api/terminals/{id}", s.handleKillTerminal)
+	mux.HandleFunc("POST /api/terminals/{id}/keep", s.handleKeepTerminal)
+	mux.HandleFunc("GET /api/terminals/{id}/socket", s.handleTerminalSocket)
+	mux.HandleFunc("GET /api/terminal/settings", s.handleTerminalSettings)
+	mux.HandleFunc("PUT /api/terminal/settings", s.handleSaveTerminalSettings)
 	notFound := func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not found") }
 	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /api/", notFound)
@@ -202,16 +237,31 @@ func (s *server) secure(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
-		// Transcripts render model and tool output; nothing may execute from it.
-		// Images pasted into a prompt show from blob: URLs until it is sent.
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; "+
-			"connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		if !s.hostAllowed(r.Host) {
 			writeError(w, http.StatusForbidden, "unexpected Host header")
 			return
 		}
+		// Transcripts render model and tool output; nothing may execute from it.
+		// Images pasted into a prompt show from blob: URLs until it is sent.
+		// The terminal compiles its emulator from WebAssembly, and talks to
+		// its shells over WebSockets of this host, which 'self' does not
+		// name in every browser. The one inline style allowed is the empty
+		// one: the markers that tell restty its styles are in place.
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' data: blob:; "+
+			"connect-src 'self'"+sockets(r.Host)+"; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// sockets names the WebSocket addresses of a host for connect-src: a host
+// the server took, whose name holds nothing but a host's characters.
+func sockets(host string) string {
+	if host == "" || strings.IndexFunc(host, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune(".-:[]", r))
+	}) >= 0 {
+		return ""
+	}
+	return " ws://" + host + " wss://" + host
 }
 
 func (s *server) hostAllowed(hostport string) bool {
@@ -419,3 +469,9 @@ func (r *statusRecorder) WriteHeader(status int) {
 
 // Unwrap lets http.ResponseController reach Flush for event streams.
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Hijack lets a WebSocket take the connection over (terminals.go).
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	r.status = http.StatusSwitchingProtocols
+	return http.NewResponseController(r.ResponseWriter).Hijack()
+}

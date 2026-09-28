@@ -31,12 +31,20 @@ type workspace struct {
 
 	changesOnce sync.Once
 	changesOf   *cockpit.Changes
+	filesOnce   sync.Once
+	filesOf     *cockpit.FileIndex
 }
 
 // changes records what runs change in the workspace.
 func (ws *workspace) changes() *cockpit.Changes {
 	ws.changesOnce.Do(func() { ws.changesOf = cockpit.NewChanges(ws.Path, ws.opt.SessionDir, ws.opt.LogDir) })
 	return ws.changesOf
+}
+
+// files lists the workspace's files for prompts to link.
+func (ws *workspace) files() *cockpit.FileIndex {
+	ws.filesOnce.Do(func() { ws.filesOf = cockpit.NewFileIndex(ws.Path, ws.opt.SessionDir, ws.opt.LogDir) })
+	return ws.filesOf
 }
 
 // warm takes a snapshot of a workspace that has sessions, so that the one

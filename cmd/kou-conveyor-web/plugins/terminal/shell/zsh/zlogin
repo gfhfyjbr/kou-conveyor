@@ -1,0 +1,7 @@
+# kou-conveyor terminal: the user's .zlogin, and ZDOTDIR theirs again (see
+# .zshenv).
+_kou_to_user
+if [[ -r ${ZDOTDIR:-$HOME}/.zlogin ]]; then
+  builtin source -- ${ZDOTDIR:-$HOME}/.zlogin
+fi
+_kou_done

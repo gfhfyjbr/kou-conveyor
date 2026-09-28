@@ -1,0 +1,5 @@
+{
+  "name": "files",
+  "description": "Files in prompts: $ links a file or a folder of the workspace, which the composer completes; the model reads its lines, and a sent prompt shows what the model saw of each.",
+  "web": {"script": "web/files.js", "style": "web/files.css", "after": ["composer", "commands", "timeline", "edit"]}
+}

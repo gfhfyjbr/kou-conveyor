@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore"
 )
@@ -23,14 +24,16 @@ func TestRunSelectsToolsFromStartupConfiguration(t *testing.T) {
 		disallowed []string
 		want       []string
 	}{
-		{name: "no integrations", want: []string{"Bash", "ViewImage"}},
-		{name: "valid skill", skill: "---\nname: review\ndescription: Review code.\n---\n", want: []string{"Bash", "ViewImage", "SkillUse"}},
-		{name: "disallowed SkillUse", skill: "---\nname: review\ndescription: Review code.\n---\n", disallowed: []string{"SkillUse"}, want: []string{"Bash", "ViewImage"}},
-		{name: "disallowed ViewImage", disallowed: []string{"ViewImage"}, want: []string{"Bash"}},
-		{name: "malformed skill", skill: "invalid", want: []string{"Bash", "ViewImage"}},
-		{name: "incomplete skill", skill: "---\nname: review\n---\n", want: []string{"Bash", "ViewImage"}},
-		{name: "disallowed tools", skill: "---\nname: review\ndescription: Review code.\n---\n", disallowed: []string{"Bash", "ViewImage", "SkillUse"}, want: nil},
-		{name: "empty selection", disallowed: []string{"Bash", "ViewImage"}},
+		// The runs take the shell profile: Bash and ViewImage, and SkillUse
+		// with a skill (KOU_CONVEYOR_TOOL_PROFILE below).
+		{name: "no integrations", want: []string{"Bash", "ViewImage", "TranscriptSearch"}},
+		{name: "valid skill", skill: "---\nname: review\ndescription: Review code.\n---\n", want: []string{"Bash", "ViewImage", "TranscriptSearch", "SkillUse"}},
+		{name: "disallowed SkillUse", skill: "---\nname: review\ndescription: Review code.\n---\n", disallowed: []string{"SkillUse"}, want: []string{"Bash", "ViewImage", "TranscriptSearch"}},
+		{name: "disallowed ViewImage", disallowed: []string{"ViewImage", "TranscriptSearch"}, want: []string{"Bash"}},
+		{name: "malformed skill", skill: "invalid", want: []string{"Bash", "ViewImage", "TranscriptSearch"}},
+		{name: "incomplete skill", skill: "---\nname: review\n---\n", want: []string{"Bash", "ViewImage", "TranscriptSearch"}},
+		{name: "disallowed tools", skill: "---\nname: review\ndescription: Review code.\n---\n", disallowed: []string{"Bash", "ViewImage", "SkillUse", "TranscriptSearch"}, want: nil},
+		{name: "empty selection", disallowed: []string{"Bash", "ViewImage", "TranscriptSearch"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workspace := t.TempDir()
@@ -60,8 +63,11 @@ func TestRunSelectsToolsFromStartupConfiguration(t *testing.T) {
 			code := RunMain(t.Context(), []string{
 				"-workspace", workspace, "-session-directory", t.TempDir(),
 			}, func(name string) string {
-				if name == "OPENAI_API_KEY" {
+				switch name {
+				case "OPENAI_API_KEY":
 					return "secret"
+				case runconfig.ToolProfileEnvironment:
+					return "shell"
 				}
 				return ""
 			}, func() []string { return nil }, bytes.NewReader(encoded), &stdout, &stderr, testConfig(client))

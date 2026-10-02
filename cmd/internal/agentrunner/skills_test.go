@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +72,11 @@ func TestRunnerHasTheProjectsAndTheSystemsSkills(t *testing.T) {
 	if !strings.Contains(systems[1], "<name>later</name><description>Come later.</description>") {
 		t.Fatalf("the skill that came is not in the next request: %s", systems[1])
 	}
-	if !strings.Contains(stderr, "skill> the skills changed; the agent has 5 from its next turn: +later") {
+	// The built-in skill comes last.
+	if at := strings.Index(first, "<name>kou-conveyor-plugins</name>"); at < 0 || at < strings.Index(first, "<name>release</name>") {
+		t.Fatalf("the built-in skill is not last: %s", first)
+	}
+	if !strings.Contains(stderr, "skill> the skills changed; the agent has 6 from its next turn: +later") {
 		t.Fatalf("stderr = %s", stderr)
 	}
 }
@@ -100,5 +105,39 @@ func TestRunnerListsSkills(t *testing.T) {
 		!strings.Contains(lines[1], `"scope":"system","directory":"~/.agents/skills","active":false,"reason":"replaced by the skill of the same name in .harness/skills"`) ||
 		!strings.Contains(lines[2], `"error":"parse skill`) {
 		t.Fatalf("listing:\n%s", stdout.String())
+	}
+}
+
+// Every run has the built-in guide skill, which tells the agent how to
+// write plugins: the system prompt lists it, and SkillUse loads it from
+// where it was written out, in the configuration directory.
+func TestRunnerLoadsTheBuiltInSkill(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "project")
+	os.MkdirAll(workspace, 0o755)
+	config := filepath.Join(workspace, "..", "config") // where runWithPlugins has it
+	var system, loaded string
+	var tools []string
+	stdout, stderr, code := runWithPlugins(t, workspace, nil, `{"prompt":"write me a plugin"}`,
+		func(n int, request llm.Request) llm.Response {
+			if n == 1 {
+				system, tools = request.Input[0].Data.(llm.Message).Text, strings.Split(toolNames(request), ",")
+				return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "SkillUse", Arguments: `{"name": "kou-conveyor-plugins"}`}}}}
+			}
+			for _, item := range request.Input {
+				if value, ok := item.Data.(llm.ToolResult); ok && value.CallID == "call-1" {
+					loaded = value.Output[0].Value
+				}
+			}
+			return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
+		})
+	if code != 0 {
+		t.Fatalf("exit %d: %s\n%s", code, stderr, stdout)
+	}
+	location := filepath.Join(config, "builtin")
+	if !strings.Contains(system, "<name>kou-conveyor-plugins</name>") || !strings.Contains(system, "<location>"+location) || !slices.Contains(tools, "SkillUse") {
+		t.Fatalf("tools %v, system prompt: %s", tools, system)
+	}
+	if !strings.Contains(loaded, "# Writing kou-conveyor plugins") || !strings.Contains(loaded, "## 1. Choose the scope") {
+		t.Fatalf("SkillUse loaded: %.300s", loaded)
 	}
 }

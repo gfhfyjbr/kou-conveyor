@@ -335,6 +335,10 @@ func advanceLocalOperation(current Operation, event *primitives.PrimitiveEvent) 
 		return AdvanceValue(current, event)
 	case TypeSkillUse:
 		return AdvanceSkillUse(current, event)
+	case TypeFile:
+		return AdvanceFile(current, event)
+	case TypeCode:
+		return AdvanceCode(current, event)
 	default:
 		return Step{}, fmt.Errorf(
 			"local operation manager does not support type %q: %w",
@@ -368,6 +372,14 @@ func failLocalOperation(current Operation, err error) Operation {
 			panic(fmt.Errorf("fail validated view-image operation %q: %w", current.ID, stateErr))
 		}
 		return *step.Operation
+	case TypeFile:
+		if failed, ok := failFile(current, err); ok {
+			return failed
+		}
+	case TypeCode:
+		if failed, ok := failCode(current, err); ok {
+			return failed
+		}
 	case TypeRemoteJob:
 		step, stateErr := FailRemoteJob(current, err)
 		if stateErr != nil {
@@ -413,6 +425,13 @@ func startLocalPrimitive(
 		}
 		primitives.Compute(ctx, request, events)
 
+	case primitives.PrimitiveDispatchTimerSchedule:
+		request, ok := dispatch.Data.(primitives.TimerRequest)
+		if !ok {
+			return fmt.Errorf("timer.schedule dispatch data is %T, want primitives.TimerRequest", dispatch.Data)
+		}
+		primitives.ScheduleTimer(ctx, request, events)
+
 	default:
 		return fmt.Errorf("local operation manager does not support dispatch %q", dispatch.Type)
 	}
@@ -436,7 +455,8 @@ func localPrimitiveCompleted(eventType primitives.PrimitiveEventType) bool {
 		primitives.PrimitiveEventProcessExited,
 		primitives.PrimitiveEventFailed,
 		primitives.PrimitiveEventCanceled,
-		primitives.PrimitiveEventComputeCompleted:
+		primitives.PrimitiveEventComputeCompleted,
+		primitives.PrimitiveEventTimerFired:
 		return true
 	default:
 		return false

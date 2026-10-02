@@ -219,8 +219,11 @@ started with.
 
 The run's skills are the project's — `.harness/skills` and `.agents/skills`
 in the workspace, and its plugins' — and the system-wide ones — `skills/`
-in the configuration directory, `~/.agents/skills` (`HOME`), and the user's
-plugins'. A project's skill replaces a system-wide one of the same name; a
+in the configuration directory, `~/.agents/skills` (`HOME`), the user's
+plugins', and the built-in plugins' — the `guide` plugin's
+`kou-conveyor-plugins`, on writing plugins, which the runner writes out to
+`builtin/` in the configuration directory for the agent to read. A
+project's skill replaces a system-wide one of the same name; a
 skill with `disable-model-invocation: true` in its frontmatter is named
 apart, for the model to load only when asked. The run looks at the skill
 directories before every turn too, a stat per skill, and a skill added,

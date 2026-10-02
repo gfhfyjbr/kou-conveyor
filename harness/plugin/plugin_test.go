@@ -118,14 +118,14 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 	}
 
 	found := Discover(Options{ConfigDirectory: config, Workspace: workspace})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
+	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] builtin:guide=on[] user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
 		t.Fatalf("untrusted: %s", got)
 	}
 	if len(found.Errors) != 2 || !strings.Contains(found.Errors[0].Error(), "BROKEN") || !strings.Contains(found.Errors[1].Error(), `tool "Bash" is "core"'s already`) {
 		t.Fatalf("errors = %v", found.Errors)
 	}
-	if found.Plugins[3].Reason != "the workspace is not trusted" {
-		t.Fatalf("reason = %q", found.Plugins[3].Reason)
+	if found.Plugins[4].Reason != "the workspace is not trusted" {
+		t.Fatalf("reason = %q", found.Plugins[4].Reason)
 	}
 
 	var settings Settings
@@ -135,13 +135,13 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = Discover(Options{ConfigDirectory: config, Workspace: workspace})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
+	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] builtin:guide=on[] user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
 		t.Fatalf("trusted: %s", got)
 	}
-	if found.Plugins[1].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[2].Reason != "turned off" {
-		t.Fatalf("reasons = %q, %q", found.Plugins[1].Reason, found.Plugins[2].Reason)
+	if found.Plugins[2].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[3].Reason != "turned off" {
+		t.Fatalf("reasons = %q, %q", found.Plugins[2].Reason, found.Plugins[3].Reason)
 	}
-	if active := found.Active(); len(active) != 2 || len(active[1].Commands) != 1 {
+	if active := found.Active(); len(active) != 3 || len(active[2].Commands) != 1 {
 		t.Fatalf("active = %+v", active)
 	}
 

@@ -38,6 +38,10 @@
 .entry:has(.tool[data-state="running"])::before { border-color: var(--accent); background: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
 .entry:has(.tool[data-state="failed"])::before { border-color: var(--err); }
 .entry.flash .body { animation: flash 1.2s ease-out; }
+/* Between the entries drawn, a gap stands in for those that are not
+   (timeline.js), which keeps what is in view in place itself. */
+.log { overflow-anchor: none; }
+.entries > .gap { display: block; }
 
 .gutter {
   padding-right: 10px;
@@ -168,10 +172,10 @@
 }
 .tool-head:hover { background: var(--bg-3); }
 .tstate { flex: none; width: 14px; text-align: center; font-size: 12px; color: var(--fg-3); }
-.tool[data-state="running"] .tstate { color: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
-.tool[data-state="done"] .tstate { color: var(--ok); }
-.tool[data-state="done"][data-exit="nonzero"] .tstate { color: var(--warn); }
-.tool[data-state="failed"] .tstate { color: var(--err); }
+.tool[data-state="running"] > .tool-head .tstate { color: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.tool[data-state="done"] > .tool-head .tstate { color: var(--ok); }
+.tool[data-state="done"][data-exit="nonzero"] > .tool-head .tstate { color: var(--warn); }
+.tool[data-state="failed"] > .tool-head .tstate { color: var(--err); }
 .tname { flex: none; font-weight: 700; font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-2); }
 .tinput { flex: 1; min-width: 0; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tinput.cmd::before { content: "$ "; color: var(--fg-4); }
@@ -205,6 +209,8 @@
   color: var(--fg-4);
 }
 .stream.err header { color: color-mix(in srgb, var(--err) 70%, var(--fg-3)); }
+/* Code in the colours of its tokens (theme.css). */
+.stream pre.syntax { color: var(--syn-fg); }
 .stream pre {
   margin: 0;
   padding: 0 12px 12px;
@@ -307,3 +313,123 @@
   .empty h1 { margin-top: 26px; }
   .tmeta .word, .tool-head .actions { display: none; }
 }
+
+/* ---------------------------------------------------------------- code calls */
+
+/* The calls a Code call's code made, as the tree they are: a row each, with
+   its state, name and argument, a lane that says when within the run it
+   ran, and how long it took. Closed, the tree hangs from the card's state
+   glyph; open, it is a section of the card, after the code. */
+.tool[data-tree] > .tool-head { position: relative; }
+.tool[data-tree] > .tool-head::before,
+.tool-tree > .tool-peek::before {
+  content: "";
+  position: absolute;
+  left: 17px;
+  top: 24px;
+  bottom: 0;
+  width: 1px;
+  background: var(--line-2);
+}
+.tool-tree { padding-bottom: 7px; }
+.tool-tree > .tool-peek { position: relative; padding-bottom: 3px; }
+.tool-tree > .tool-peek::before { top: 0; }
+
+.calls {
+  --rail: 17px;
+  --row: 24px;
+  --indent: 50px;
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 0 0;
+  font: 12px/1 var(--mono);
+}
+.call { position: relative; }
+/* The trunk, and a branch to each call; the last call ends the trunk. */
+.call::before, .call::after { content: ""; position: absolute; left: var(--rail); background: var(--line-2); pointer-events: none; }
+.call::before { top: 0; bottom: 0; width: 1px; }
+.call:last-child::before { bottom: auto; height: calc(var(--row) / 2 + 1px); }
+.call::after { top: calc(var(--row) / 2); width: 9px; height: 1px; }
+.call-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--row);
+  margin-left: 24px;
+  padding-left: 4px;
+  cursor: pointer;
+  user-select: none;
+}
+.call-head:hover { background: var(--bg-3); }
+.call .tstate { font-size: 11px; }
+.call[data-state="running"] .tstate { color: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.call[data-state="done"] .tstate { color: var(--ok); }
+.call[data-state="done"][data-exit="nonzero"] .tstate { color: var(--warn); }
+.call[data-state="failed"] .tstate { color: var(--err); }
+.call[data-state="canceled"] .tstate, .call[data-state="interrupted"] .tstate { color: var(--fg-4); }
+.cname { flex: none; width: var(--name); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg-3); }
+.cinput { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.cinput.cmd::before { content: "$ "; color: var(--fg-4); }
+.cmore { color: var(--fg-4); }
+.call-head:hover .cinput, .call[data-open="true"] > .call-head .cinput { color: var(--fg); }
+.call[data-state="canceled"] .cinput, .call[data-state="interrupted"] .cinput { color: var(--fg-3); }
+.cexit { flex: none; font-size: 11px; color: var(--warn); }
+.ctime { flex: none; min-width: 5ch; text-align: right; font-size: 11px; color: var(--fg-3); }
+.ctime.live { color: var(--accent); }
+
+/* A call's lane is the run, from the first call's start to the last one's
+   end; its bar is when the call ran in it. */
+.lane { flex: none; position: relative; width: 72px; height: 8px; }
+.lane::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
+.lane i { position: absolute; top: 2px; height: 4px; min-width: 2px; background: var(--fg-4); }
+.call-head:hover .lane i { background: var(--fg-3); }
+.call[data-state="running"] .lane i { background: var(--accent); }
+.call[data-state="failed"] .lane i { background: var(--err); }
+.call[data-exit="nonzero"] .lane i { background: var(--warn); }
+
+/* What a call was given, where its row cannot show it, and what it gave. */
+.call-body { padding: 2px 0 8px var(--indent); }
+.call-in, .call-out pre {
+  margin: 0;
+  padding: 6px 10px;
+  max-height: 260px;
+  overflow: auto;
+  border-left: 2px solid var(--line-2);
+  font: 11.5px/1.5 var(--mono);
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 4;
+}
+.call-in { color: var(--fg-3); }
+.call-in + * { margin-top: 4px; }
+.call-out { position: relative; }
+.call-out > .act { position: absolute; top: 4px; right: 4px; opacity: 0; transition: opacity 0.12s; background: var(--bg-2); }
+.call-out:hover > .act, .call-out > .act:focus-visible { opacity: 1; }
+.call-out.err pre { border-left-color: var(--err); background: var(--err-soft); color: var(--fg); }
+.call[data-exit="nonzero"] .call-out pre { border-left-color: var(--warn); }
+.call-none { font: 11.5px/1.5 var(--mono); color: var(--fg-4); }
+.call-peek { margin-top: -3px; padding: 0 12px 4px var(--indent); font: 11.5px/1.5 var(--mono); color: var(--err); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* The calls a long closed tree leaves out. */
+.call.folded::before { background: repeating-linear-gradient(to bottom, var(--line-2) 0 2px, transparent 2px 4px); }
+.call.folded .tstate { color: var(--fg-4); }
+.cfold { color: var(--fg-3); }
+.cfold-failed { color: var(--err); }
+.call.folded .call-head:hover .cfold { color: var(--fg); }
+
+.calls-stream .calls { padding-bottom: 10px; }
+.calls-sum { display: flex; gap: 10px; padding-right: 8px; }
+.calls-sum .live { color: var(--accent); }
+.calls-sum .failed { color: var(--err); }
+.calls-sum .exit { color: var(--warn); }
+
+@media (max-width: 560px) {
+  .calls .lane { display: none; }
+}
+@media (hover: none) {
+  .call-out > .act { opacity: 1; }
+}
+
+.tool-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; font: 11.5px/1.4 var(--mono); }
+.tool-files code { padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--fg-2); background: var(--bg-3); }

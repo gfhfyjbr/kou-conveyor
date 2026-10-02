@@ -16,9 +16,11 @@ import (
 // tools: Bash, ViewImage and SkillUse.
 const CoreName = "core"
 
-// Builtins are the plugins compiled into the harness.
+// Builtins are the plugins compiled into the harness: core, and those
+// compiled in as directories, such as guide.
 func Builtins() []Plugin {
-	return []Plugin{{
+	builtins, _ := compiledBuiltins()
+	return append([]Plugin{{
 		Manifest: Manifest{
 			Name:        CoreName,
 			Description: "The harness's own tools: Bash runs shell commands, ViewImage shows the model images, and SkillUse loads skills.",
@@ -29,7 +31,7 @@ func Builtins() []Plugin {
 			},
 		},
 		Source: SourceBuiltin,
-	}}
+	}}, builtins...)
 }
 
 // Environment variables of the plugin configuration.
@@ -202,6 +204,8 @@ func Discover(options Options) Found {
 	disabled := append(slices.Clone(settings.Disabled), options.Disabled...)
 
 	plugins := append(Builtins(), options.Builtins...)
+	_, broken := compiledBuiltins()
+	found.Errors = append(found.Errors, broken...)
 	if options.ConfigDirectory != "" {
 		user, problems := ReadDirectory(UserDirectory(options.ConfigDirectory), SourceUser)
 		plugins, found.Errors = append(plugins, user...), append(found.Errors, problems...)

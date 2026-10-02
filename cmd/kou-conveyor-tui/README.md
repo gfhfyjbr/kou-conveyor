@@ -48,7 +48,14 @@ what the model saw of the files prompts linked). A
 `ViewImage` call shows the picture the agent looked at under its line: small
 while it is folded, large once it is open, and a click on the picture folds or
 unfolds it. Pictures are drawn as described for images below, and in inline
-mode a call goes to the scrollback with its picture.
+mode a call goes to the scrollback with its picture. A `Code` call hangs the
+calls its code made under its line, as the tree they are: a line each, with
+its state, what it worked on (a command, a file, the files a patch changes), a
+lane that shows when within the run it ran — side by side for the calls the
+code made at once, in steps for those it made in turn — and how long it took.
+A failed call shows its error under it; closed, a tree of more than twelve
+calls shows its first and last four; open, the card shows the code in the
+colours of its tokens, as the web cockpit does, and what each call gave.
 
 ## Changes
 

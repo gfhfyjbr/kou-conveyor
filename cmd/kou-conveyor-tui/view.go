@@ -1,15 +1,19 @@
 package main
 
 import (
+	"cmp"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
 )
 
 // Layout, top to bottom, as the web cockpit's stage without its rail: the
@@ -500,15 +504,8 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	if !live && !tool.Terminal() {
 		state = "interrupted"
 	}
-	glyph := map[string]string{
-		cockpit.ToolQueued: st.accent.Render("□"), cockpit.ToolRunning: st.accent.Render("■"),
-		cockpit.ToolDone: st.ok.Render("✓"), cockpit.ToolFailed: st.err.Render("✗"),
-		cockpit.ToolCanceled: st.ghost.Render("⊘"), "interrupted": st.ghost.Render("◌"),
-	}[state]
 	nonzero := tool.ExitCode != nil && *tool.ExitCode != 0
-	if state == cockpit.ToolDone && nonzero {
-		glyph = st.warn.Render("✓")
-	}
+	glyph := m.stateGlyph(state, nonzero)
 
 	var meta []string
 	switch {
@@ -547,8 +544,18 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 
 	body := max(10, width-gutter)
 	if !open {
+		// Closed, the calls a Code call's code made hang from the call's
+		// node, one a line: the tree the run is. Why the call failed hangs
+		// above them.
+		trunk := "└"
+		if len(tool.Calls) != 0 {
+			trunk = "│"
+		}
 		if state == cockpit.ToolFailed && tool.Error != "" {
-			lines = append(lines, strings.Repeat(" ", gutter-2)+st.rule.Render("└")+" "+st.err.Render(ansi.Truncate(firstLine(tool.Error), body, "…")))
+			lines = append(lines, strings.Repeat(" ", gutter-2)+st.rule.Render(trunk)+" "+st.err.Render(ansi.Truncate(firstLine(tool.Error), body, "…")))
+		}
+		if len(tool.Calls) != 0 {
+			lines = append(lines, m.renderCalls(tool, state, strings.Repeat(" ", gutter-2), width, false)...)
 		}
 		return lines
 	}
@@ -557,7 +564,7 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	var text []string
 	joints := map[int]string{}
 	first := ""
-	section := func(title string, style lipgloss.Style, content string) {
+	begin := func(title, content string) {
 		count := strings.Count(strings.TrimRight(content, "\n"), "\n") + 1
 		unit := "LINES"
 		if count == 1 {
@@ -570,6 +577,9 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 			joints[len(text)] = heading
 			text = append(text, "")
 		}
+	}
+	section := func(title string, style lipgloss.Style, content string) {
+		begin(title, content)
 		for _, line := range clipLines(strings.Split(strings.TrimRight(strings.ReplaceAll(content, "\t", "    "), "\n"), "\n"), 150, 150) {
 			if line == "\x00" {
 				text = append(text, st.ghost.Render("   ⋯"))
@@ -580,8 +590,40 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 			}
 		}
 	}
+	inputTitle := "input"
+	if strings.EqualFold(tool.Name, "code") {
+		inputTitle = "code"
+	}
 	if strings.Contains(tool.Input, "\n") || ansi.StringWidth(tool.Input) > body-12 {
-		section("input", st.text, tool.Input)
+		if len(tool.Syntax) == 0 {
+			section(inputTitle, st.text, tool.Input)
+		} else {
+			// Code, in the colours of its tokens.
+			begin(inputTitle, tool.Input)
+			for _, row := range codeRows(tool.Input, tool.Syntax, body) {
+				if row == nil {
+					text = append(text, st.ghost.Render("   ⋯"))
+					continue
+				}
+				var line strings.Builder
+				for _, piece := range row {
+					line.WriteString(st.token(piece.class).Render(piece.text))
+				}
+				text = append(text, line.String())
+			}
+		}
+	}
+	// The calls the code made come after the code and before what it
+	// reported, as the model reads them.
+	if len(tool.Calls) != 0 {
+		heading := fmt.Sprintf("CALLS · %d", len(tool.Calls))
+		if first == "" {
+			first = heading
+		} else {
+			joints[len(text)] = heading
+			text = append(text, "")
+		}
+		text = append(text, m.renderCalls(tool, state, "", body, true)...)
 	}
 	if tool.Error != "" {
 		section("error", st.err, tool.Error)
@@ -592,7 +634,16 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	if tool.Stderr != "" {
 		section("stderr", st.warn, tool.Stderr)
 	}
-	if tool.Output == "" && tool.Stderr == "" && tool.Error == "" {
+	if tool.Logs != "" {
+		section("console", st.muted, tool.Logs)
+	}
+	if tool.Value != "" {
+		section("return value", st.text, tool.Value)
+	}
+	if len(tool.Files) != 0 {
+		section("files", st.text, strings.Join(tool.Files, "\n"))
+	}
+	if tool.Output == "" && tool.Stderr == "" && tool.Error == "" && len(tool.Calls) == 0 && tool.Value == "" && tool.Logs == "" {
 		waiting := "no output"
 		if state == cockpit.ToolRunning || state == cockpit.ToolQueued {
 			waiting = "waiting for output…"
@@ -606,6 +657,247 @@ func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []str
 	return append(lines, m.card(text, edge, first, joints, width)...)
 }
 
+// stateGlyph marks a call's state on its line: a tool call's, or a call its
+// code made.
+func (m *uiModel) stateGlyph(state string, nonzero bool) string {
+	st := m.styles
+	switch state {
+	case cockpit.ToolQueued:
+		return st.accent.Render("□")
+	case cockpit.ToolRunning:
+		return st.accent.Render("■")
+	case cockpit.ToolDone:
+		if nonzero {
+			return st.warn.Render("✓")
+		}
+		return st.ok.Render("✓")
+	case cockpit.ToolFailed:
+		return st.err.Render("✗")
+	case cockpit.ToolCanceled:
+		return st.ghost.Render("⊘")
+	}
+	return st.ghost.Render("◌")
+}
+
+// Closed, a tree of more than foldCalls calls shows its first and last
+// foldEnds, and how many are between them. laneCells is how wide a call's
+// lane is.
+const (
+	foldCalls = 12
+	foldEnds  = 4
+	laneCells = 10
+)
+
+// renderCalls draws the calls a Code call's code made as the tree they are,
+// from indent to width:
+//
+//	├─ ✓ bash   $ go test ./...             ━━━━━━━───  4.2s
+//	├─ ✓ read   main.go                     ━─────────  0.0s
+//	└─ ✗ edit   main.go                     ───────━──  0.0s
+//	     edit: oldString was not found in main.go
+//
+// A call's lane shows when it ran within the run: the calls the code made at
+// once lie side by side, those it made one after another in steps. Open, a
+// call shows what it was given, where its line cannot, and what it gave;
+// closed, a failed call shows the first line of its error, and a long tree
+// its first and last calls.
+func (m *uiModel) renderCalls(tool *cockpit.Tool, toolState, indent string, width int, open bool) []string {
+	st := m.styles
+	calls := tool.Calls
+	now := time.Now()
+	from, length := callSpan(calls, toolState, now)
+	folded := !open && len(calls) > foldCalls
+	shown := func(i int) bool { return !folded || i < foldEnds || i >= len(calls)-foldEnds }
+
+	// Names, lanes and times line up down the tree.
+	names, times := 0, 0
+	for i, call := range calls {
+		if shown(i) {
+			names = max(names, ansi.StringWidth(call.Name))
+			times = max(times, ansi.StringWidth(callTime(call, callState(call, toolState))))
+		}
+	}
+	names = min(names, 16)
+	lead := ansi.StringWidth(indent) + 5 + names + 2
+	lanes := len(calls) > 1 && length > 0 && width-lead-laneCells-times-4 >= 24
+	inner := max(5, width-ansi.StringWidth(indent)-5)
+
+	var lines []string
+	for i, call := range calls {
+		if !shown(i) {
+			if i == foldEnds {
+				hidden := calls[foldEnds : len(calls)-foldEnds]
+				text := st.faint.Render(fmt.Sprintf("⋯ %d more calls", len(hidden)))
+				failed := 0
+				for _, call := range hidden {
+					if call.State == cockpit.ToolFailed {
+						failed++
+					}
+				}
+				if failed != 0 {
+					text += st.ghost.Render(" · ") + st.err.Render(fmt.Sprintf("%d failed", failed))
+				}
+				lines = append(lines, fit(indent+st.rule.Render("├─ ")+text, width))
+			}
+			continue
+		}
+		state := callState(call, toolState)
+		nonzero := call.ExitCode != nil && *call.ExitCode != 0
+		branch, trunk := "├─ ", "│"
+		if i == len(calls)-1 {
+			branch, trunk = "└─ ", " "
+		}
+		name := call.Name
+		if ansi.StringWidth(name) > names {
+			name = ansi.Truncate(name, names, "…")
+		}
+		head := indent + st.rule.Render(branch) + m.stateGlyph(state, nonzero) + " " +
+			st.muted.Bold(true).Render(name) + strings.Repeat(" ", names-ansi.StringWidth(name)+2)
+
+		gist := cmp.Or(call.Gist, firstLine(call.Input))
+		text := st.text.Render(gist)
+		if call.Name == "bash" && gist != "" {
+			text = st.ghost.Render("$ ") + text
+		}
+		more := strings.Contains(strings.TrimSpace(call.Input), "\n")
+		if more && call.Gist != "" {
+			text += st.ghost.Render(" …")
+		}
+		exit := ""
+		if nonzero {
+			exit = "  " + st.warn.Render(fmt.Sprintf("exit %d", *call.ExitCode))
+		}
+		right := ""
+		if lanes {
+			right = m.lane(call, state, nonzero, from, length, now) + "  "
+		}
+		if times != 0 {
+			spent, style := callTime(call, state), st.faint
+			if state == cockpit.ToolRunning {
+				style = st.accent
+			}
+			right += strings.Repeat(" ", times-ansi.StringWidth(spent)) + style.Render(spent)
+		}
+		room := max(0, width-ansi.StringWidth(head)-ansi.StringWidth(exit)-ansi.StringWidth(right)-2)
+		cut := ansi.StringWidth(text) > room
+		if cut {
+			text = ansi.Truncate(text, room, "…")
+		}
+		line := head + text + exit
+		if right != "" {
+			line += strings.Repeat(" ", max(1, width-ansi.StringWidth(line)-ansi.StringWidth(right))) + right
+		}
+		lines = append(lines, fit(line, width))
+
+		pad := indent + st.rule.Render(trunk) + "    "
+		add := func(style lipgloss.Style, content string, head, tail int) {
+			for _, line := range clipLines(strings.Split(strings.TrimRight(strings.ReplaceAll(content, "\t", "    "), "\n"), "\n"), head, tail) {
+				if line == "\x00" {
+					lines = append(lines, pad+st.ghost.Render("⋯"))
+					continue
+				}
+				for _, part := range strings.Split(ansi.Hardwrap(line, inner, true), "\n") {
+					lines = append(lines, pad+style.Render(part))
+				}
+			}
+		}
+		if !open {
+			if state == cockpit.ToolFailed && call.Error != "" {
+				lines = append(lines, pad+st.err.Render(ansi.Truncate(firstLine(call.Error), inner, "…")))
+			}
+			continue
+		}
+		// What the call was given shows whole where its line could not.
+		if more || cut && gist == strings.TrimSpace(call.Input) {
+			add(st.text, call.Input, 20, 10)
+		}
+		switch {
+		case call.Error != "":
+			add(st.err, call.Error, 40, 20)
+		case call.Output != "":
+			add(st.muted, call.Output, 40, 20)
+		case state == cockpit.ToolRunning:
+			lines = append(lines, pad+st.ghost.Render("running…"))
+		default:
+			lines = append(lines, pad+st.ghost.Render("no output"))
+		}
+	}
+	return lines
+}
+
+// callState is the state a call of a Code call shows: one still running when
+// its run was interrupted was interrupted with it.
+func callState(call cockpit.CodeCall, toolState string) string {
+	if call.State == cockpit.ToolRunning && toolState == "interrupted" {
+		return "interrupted"
+	}
+	return call.State
+}
+
+// callTime is how long a call took, or that it runs.
+func callTime(call cockpit.CodeCall, state string) string {
+	switch {
+	case state == cockpit.ToolRunning:
+		return "running"
+	case !call.Started.IsZero() && !call.Finished.IsZero():
+		return duration(call.Finished.Sub(call.Started))
+	}
+	return ""
+}
+
+// callEnd is when a call ended: now, for one that runs.
+func callEnd(call cockpit.CodeCall, state string, now time.Time) time.Time {
+	switch {
+	case !call.Finished.IsZero():
+		return call.Finished
+	case state == cockpit.ToolRunning:
+		return now
+	}
+	return call.Started
+}
+
+// callSpan is when the calls of a Code call ran: from the first start to the
+// last end.
+func callSpan(calls []cockpit.CodeCall, toolState string, now time.Time) (time.Time, time.Duration) {
+	var from, to time.Time
+	for _, call := range calls {
+		if call.Started.IsZero() {
+			continue
+		}
+		if from.IsZero() || call.Started.Before(from) {
+			from = call.Started
+		}
+		if end := callEnd(call, callState(call, toolState), now); end.After(to) {
+			to = end
+		}
+	}
+	return from, to.Sub(from)
+}
+
+// lane draws where in the span of its run a call ran: a bar on a line,
+// laneCells wide.
+func (m *uiModel) lane(call cockpit.CodeCall, state string, nonzero bool, from time.Time, length time.Duration, now time.Time) string {
+	st := m.styles
+	if call.Started.IsZero() || length <= 0 {
+		return st.rule.Render(strings.Repeat("─", laneCells))
+	}
+	scale := float64(laneCells) / float64(length)
+	start := min(laneCells-1, max(0, int(float64(call.Started.Sub(from))*scale)))
+	end := min(laneCells, max(start+1, int(math.Ceil(float64(callEnd(call, state, now).Sub(from))*scale))))
+	bar := st.faint
+	switch {
+	case state == cockpit.ToolRunning:
+		bar = st.accent
+	case state == cockpit.ToolFailed:
+		bar = st.err
+	case nonzero:
+		bar = st.warn
+	case state != cockpit.ToolDone:
+		bar = st.ghost
+	}
+	return st.rule.Render(strings.Repeat("─", start)) + bar.Render(strings.Repeat("━", end-start)) + st.rule.Render(strings.Repeat("─", laneCells-end))
+}
+
 // clipLines keeps the head and tail of long output around a marker line.
 func clipLines(lines []string, head, tail int) []string {
 	if len(lines) <= head+tail {
@@ -614,6 +906,89 @@ func clipLines(lines []string, head, tail int) []string {
 	out := append([]string{}, lines[:head]...)
 	out = append(out, "\x00")
 	return append(out, lines[len(lines)-tail:]...)
+}
+
+// codePiece is a stretch of a row of code and the class of its token.
+type codePiece struct{ text, class string }
+
+// codeRows lays out code that runs highlight (cockpit.Tool.Syntax) as the
+// rows of a card width wide, each the pieces of its tokens: its lines, tabs
+// as four spaces, clipped as a stream's are, with a nil row where lines
+// were left out, and wrapped as ansi.Hardwrap wraps them, a token going on
+// in the next row.
+func codeRows(code string, runs []int32, width int) [][]codePiece {
+	code = strings.TrimRight(code, "\n")
+	lines := [][]codePiece{nil}
+	add := func(text, class string) {
+		for i, part := range strings.Split(text, "\n") {
+			if i > 0 {
+				lines = append(lines, nil)
+			}
+			if part != "" {
+				last := len(lines) - 1
+				lines[last] = append(lines[last], codePiece{strings.ReplaceAll(part, "\t", "    "), class})
+			}
+		}
+	}
+	// The runs count UTF-16 code units, as the browser does.
+	at := 0
+	for i := 0; i+1 < len(runs) && at < len(code); i += 2 {
+		end := at
+		for units := runs[i]; units > 0 && end < len(code); units-- {
+			r, size := utf8.DecodeRuneInString(code[end:])
+			end += size
+			if r >= 0x10000 {
+				units--
+			}
+		}
+		class := ""
+		if c := int(runs[i+1]); c > 0 && c < len(highlight.Classes) {
+			class = highlight.Classes[c]
+		}
+		add(code[at:end], class)
+		at = end
+	}
+	add(code[at:], "")
+
+	const head, tail = 150, 150
+	var rows [][]codePiece
+	for i, line := range lines {
+		if len(lines) > head+tail && i >= head && i < len(lines)-tail {
+			if i == head {
+				rows = append(rows, nil)
+			}
+			continue
+		}
+		var whole strings.Builder
+		for _, piece := range line {
+			whole.WriteString(piece.text)
+		}
+		wrapped := strings.Split(ansi.Hardwrap(whole.String(), width, true), "\n")
+		if strings.Join(wrapped, "") != whole.String() {
+			// Wrapping changed the text: it shows plain.
+			for _, text := range wrapped {
+				rows = append(rows, []codePiece{{text: text}})
+			}
+			continue
+		}
+		p, used := 0, 0 // the piece the next row starts in, and how much of it went before
+		for _, text := range wrapped {
+			row := []codePiece{}
+			for rest := len(text); rest > 0 && p < len(line); {
+				piece := line[p].text[used:]
+				if len(piece) > rest {
+					row = append(row, codePiece{piece[:rest], line[p].class})
+					used += rest
+					break
+				}
+				row = append(row, codePiece{piece, line[p].class})
+				rest -= len(piece)
+				p, used = p+1, 0
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 // ---------------------------------------------------------------- welcome

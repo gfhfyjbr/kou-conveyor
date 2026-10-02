@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
@@ -408,5 +409,50 @@ func TestTranslatorReturnsShellConfigurationError(t *testing.T) {
 	}
 	if len(ctx.specs) != 0 {
 		t.Fatalf("submitted specs = %d, want 0", len(ctx.specs))
+	}
+}
+
+func TestTranslatorPassesTheTimeoutAlong(t *testing.T) {
+	translator := bash.New(bash.Config{Shell: "/bin/bash", Directory: "/workspace", BaseDirectory: "/operations", DefaultTimeout: 30})
+	submitted := func(arguments string) (tool.CallStatus, operation.ShellInput) {
+		ctx := &recordingContext{}
+		status := translator.Translate(ctx, llm.ToolCall{CallID: "call-1", Name: "Bash", Arguments: arguments})
+		if status.Error != "" {
+			return status, operation.ShellInput{}
+		}
+		var state operation.ShellState
+		if err := json.Unmarshal(ctx.specs[0].State, &state); err != nil {
+			t.Fatal(err)
+		}
+		return status, state.Input
+	}
+	if _, input := submitted(`{"command":"true"}`); input.Timeout != 30 {
+		t.Fatalf("default timeout = %v", input.Timeout)
+	}
+	if _, input := submitted(`{"command":"true","timeout":2.5}`); input.Timeout != 2.5 {
+		t.Fatalf("timeout = %v", input.Timeout)
+	}
+	if _, input := submitted(`{"command":"true","timeout":0}`); input.Timeout != 0 {
+		t.Fatalf("timeout = %v", input.Timeout)
+	}
+	for _, bad := range []string{`{"command":"true","timeout":-1}`, `{"command":"true","timeout":"soon"}`, `{"command":"true","timeout":99999999}`} {
+		if status, _ := submitted(bad); status.Error == "" {
+			t.Fatalf("%s was accepted", bad)
+		}
+	}
+}
+
+func TestFormatResultDescribesRunningAndFinishedCommands(t *testing.T) {
+	running := operation.ShellState{OutTruncated: true, ErrTruncated: true, OutPath: "/o/out", ErrPath: "/o/err", ProcessGroupID: 4242, StartedAt: time.Now().Add(-90 * time.Second)}
+	encoded, _ := json.Marshal(running)
+	text, err := bash.FormatResult("call", operation.Operation{ID: "op", Type: operation.TypeShell, Version: operation.VersionShell, Status: operation.StatusAwaiting, MaxOutputLength: 100, State: encoded})
+	if err != nil || !strings.Contains(text, "Command is still running (1m30s so far)") || !strings.Contains(text, "/o/out (stdout) and /o/err (stderr)") || !strings.Contains(text, "kill -TERM -- -4242") {
+		t.Fatalf("text = %q, err = %v", text, err)
+	}
+	finished := operation.ShellState{Input: operation.ShellInput{Timeout: 5}, Result: &operation.ShellResult{Out: "partial", ExitCode: 143, TimedOut: true, Duration: 5.2}}
+	encoded, _ = json.Marshal(finished)
+	text, err = bash.FormatResult("call", operation.Operation{ID: "op", Type: operation.TypeShell, Version: operation.VersionShell, Status: operation.StatusCompleted, MaxOutputLength: 100, State: encoded})
+	if err != nil || text != "partial\nExit code: 143\nThe command was stopped at its timeout of 5.0 s.\nTook 5.2 s." {
+		t.Fatalf("text = %q, err = %v", text, err)
 	}
 }

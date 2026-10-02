@@ -26,6 +26,13 @@ import (
 // the transcript takes its bytes from there (Tool.Picture), one that does
 // not asks the session file (ToolImage).
 
+// KeepPictures says whether transcripts keep the bytes of the pictures
+// ViewImage calls read, for Tool.Picture. A session that looked at many
+// pictures holds hundreds of megabytes of them; a front-end that takes
+// them from the session file (ToolImage), as the web server does, turns it
+// off before it reads a transcript.
+var KeepPictures = true
+
 // viewedImage describes the picture of a ViewImage operation that read one,
 // or is nil.
 func viewedImage(state operation.ViewImageState) *ImageInfo {
@@ -61,20 +68,19 @@ func viewedPicture(state operation.ViewImageState) (Image, bool) {
 }
 
 // Picture returns the picture a ViewImage call read, with its bytes, as the
-// transcript holds it; a call that read none has none.
+// transcript holds it; a call that read none has none, and so has every
+// call when transcripts keep no pictures (KeepPictures).
 func (tool *Tool) Picture() (Image, bool) {
-	for i := len(tool.operations) - 1; i >= 0; i-- {
-		value := tool.operations[i]
-		if value.Type != operation.TypeViewImage || value.Status != operation.StatusCompleted {
+	for i := len(tool.outcomes) - 1; i >= 0; i-- {
+		o := tool.outcomes[i]
+		if o.kind != operation.TypeViewImage || o.status != operation.StatusCompleted || o.info == nil || o.picture == "" {
 			continue
 		}
-		var state operation.ViewImageState
-		if json.Unmarshal(value.State, &state) != nil {
+		data, err := base64.StdEncoding.DecodeString(o.picture)
+		if err != nil {
 			continue
 		}
-		if img, ok := viewedPicture(state); ok {
-			return img, true
-		}
+		return Image{Label: o.info.Label, MediaType: o.info.MediaType, Data: data}, true
 	}
 	return Image{}, false
 }

@@ -46,12 +46,16 @@ func TestCoordinatorHeartbeatsWhileWaitingForTools(t *testing.T) {
 			t.Fatal("heartbeat interrupted or overlapped an active model request")
 		}
 		run.respond(t, 0, textResponse("Still waiting."))
-		advanceHeartbeatTime(time.Minute - time.Nanosecond)
+		// The next heartbeat for the same calls waits twice as long.
+		advanceHeartbeatTime(2*time.Minute - time.Nanosecond)
 		assertHeartbeatCount(t, run, 1)
 		advanceHeartbeatTime(time.Nanosecond + (2 * slurpIdleTimeout))
 		assertHeartbeatCount(t, run, 2)
 		if run.requestCount() != 2 || countHeartbeatMessages(run.calls[1].request) != 2 {
 			t.Fatal("next heartbeat did not append exactly one check-in")
+		}
+		if reason := latestHeartbeatReason(t, run); !strings.HasPrefix(reason, "Heartbeat: waited 120 seconds") {
+			t.Fatalf("heartbeat reason = %q", reason)
 		}
 		run.update(t, 0, operation.StatusCompleted)
 		run.update(t, 1, operation.StatusCompleted)
@@ -152,7 +156,8 @@ func TestHeartbeatIntervalShorterThanInboxBatch(t *testing.T) {
 		run.current.dependencies.ToolHeartbeatInterval = time.Nanosecond
 		run.start(t)
 		for index := range 3 {
-			advanceHeartbeatTime(time.Nanosecond + (2 * slurpIdleTimeout))
+			// Each heartbeat for the same calls waits twice as long.
+			advanceHeartbeatTime(time.Nanosecond<<index + (2 * slurpIdleTimeout))
 			assertHeartbeatCount(t, run, index+1)
 			if run.requestCount() != index+1 {
 				t.Fatal("heartbeat prevented inbox delivery")

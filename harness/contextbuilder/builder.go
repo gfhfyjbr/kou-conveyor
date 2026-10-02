@@ -46,6 +46,10 @@ type builder struct {
 	toolTokens int64
 	// transcript is the file that keeps the whole conversation.
 	transcript string
+	// pruning says when the oldest tool results are cut down; pruned
+	// counts those cut so far.
+	pruning PruneOptions
+	pruned  int
 }
 
 var _ Builder = (*builder)(nil)
@@ -186,21 +190,33 @@ func (current *builder) AddToolResult(
 	payload []llm.ToolResultOutput,
 	running bool,
 ) {
-	runningOutput := []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: ToolCallRunningPayload}}
 	if running {
-		payload = runningOutput
+		payload = runningPayload(payload)
 	}
 	current.stagedSuffix = slices.DeleteFunc(current.stagedSuffix, func(item llm.Item) bool {
 		if item.Type != llm.ItemToolResult {
 			return false
 		}
 		result := item.Data.(llm.ToolResult)
-		return result.CallID == callID && slices.Equal(result.Output, runningOutput)
+		return result.CallID == callID && isRunning(result.Output)
 	})
 	current.stagedSuffix = append(current.stagedSuffix, llm.Item{
 		Type: llm.ItemToolResult,
 		Data: llm.ToolResult{CallID: callID, Output: payload},
 	})
+}
+
+// runningPayload is what a running call shows: that it runs, and what the
+// tool says of it meanwhile, such as where its output so far is.
+func runningPayload(payload []llm.ToolResultOutput) []llm.ToolResultOutput {
+	text := ToolCallRunningPayload
+	for _, part := range payload {
+		if part.Kind == llm.ToolResultText && strings.TrimSpace(part.Value) != "" {
+			text += "\n" + strings.TrimSpace(part.Value)
+			break
+		}
+	}
+	return []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: text}}
 }
 
 func (current *builder) Commit() {
@@ -211,6 +227,7 @@ func (current *builder) Commit() {
 }
 
 func (current *builder) Build() (Result, error) {
+	current.prune()
 	request := current.request
 	input := make([]llm.Item, 0, len(current.committedPrefix)+len(current.stagedSuffix))
 	input = append(input, current.committedPrefix...)
@@ -226,6 +243,13 @@ func (current *builder) Build() (Result, error) {
 			Kind:   ChangeCompacted,
 			Source: "conversation",
 			Reason: fmt.Sprintf("a summary replaced %d earlier items", current.compacted),
+		})
+	}
+	if current.pruned > 0 {
+		result.Report.Changes = append(result.Report.Changes, Change{
+			Kind:   ChangeTruncated,
+			Source: "tool results",
+			Reason: fmt.Sprintf("%d older tool results were pruned to save context", current.pruned),
 		})
 	}
 	return result, nil

@@ -7,6 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 )
 
 // Preferences are choices the cockpits keep that are not part of the
@@ -16,6 +19,11 @@ import (
 // this file changes whenever a preference does.
 type Preferences struct {
 	Effort string `json:"effort,omitzero"`
+	// ToolProfile is the set of built-in tools the next runs work with
+	// (tool.Profile): auto, edit, patch, code or shell.
+	ToolProfile string `json:"tool_profile,omitzero"`
+	// Sandbox is where the next runs work: off, worktree or container.
+	Sandbox string `json:"sandbox,omitzero"`
 	// Layout is how the terminal cockpit starts: LayoutFullscreen, in a
 	// screen of its own, or LayoutCompact, below the command that started it.
 	Layout string `json:"tui_layout,omitzero"`
@@ -66,6 +74,12 @@ func LoadPreferences(path string) Preferences {
 	if !ValidThinkingLevel(p.Effort) {
 		p.Effort = ""
 	}
+	if _, err := tool.ParseProfile(p.ToolProfile); err != nil {
+		p.ToolProfile = ""
+	}
+	if _, err := runconfig.ParseSandboxMode(p.Sandbox); err != nil {
+		p.Sandbox = ""
+	}
 	if p.Layout != LayoutFullscreen && p.Layout != LayoutCompact {
 		p.Layout = ""
 	}
@@ -88,6 +102,26 @@ func SaveEffort(path, level string) error {
 		return fmt.Errorf("unknown effort %q", level)
 	}
 	return savePreferences(path, func(p *Preferences) { p.Effort = level })
+}
+
+// SaveToolProfile records the tool profile of the next runs, keeping the
+// other preferences.
+func SaveToolProfile(path, profile string) error {
+	parsed, err := tool.ParseProfile(profile)
+	if err != nil {
+		return err
+	}
+	return savePreferences(path, func(p *Preferences) { p.ToolProfile = string(parsed) })
+}
+
+// SaveSandbox records where the next runs work, keeping the other
+// preferences.
+func SaveSandbox(path, mode string) error {
+	parsed, err := runconfig.ParseSandboxMode(mode)
+	if err != nil {
+		return err
+	}
+	return savePreferences(path, func(p *Preferences) { p.Sandbox = parsed })
 }
 
 // SaveLayout records how the terminal cockpit starts, keeping the other

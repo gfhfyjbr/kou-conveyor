@@ -31,6 +31,14 @@ type Translator interface {
 	Translate(Context, llm.ToolCall) CallStatus
 }
 
+// RunningDescriber is a translator that says what the model reads of a
+// call still running, after the harness's own note that it runs: where its
+// output so far is, how to stop it, what it has done. A translator without
+// it shows the note alone.
+type RunningDescriber interface {
+	DescribeRunning(operations []operation.Operation) string
+}
+
 type Definition struct {
 	Tool     llm.Tool
 	Metadata jsontext.Value

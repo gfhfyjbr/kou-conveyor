@@ -168,6 +168,7 @@ func (current *builder) Compact(response llm.Response) bool {
 	prefix = append(prefix, current.committedPrefix[0], message)
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
+	current.pruned = 0
 	current.usage, current.usageMark = 0, 0
 	return true
 }
@@ -350,7 +351,7 @@ func describeCall(call llm.ToolCall) string {
 }
 
 func isRunning(output []llm.ToolResultOutput) bool {
-	return len(output) == 1 && output[0].Kind == llm.ToolResultText && output[0].Value == ToolCallRunningPayload
+	return len(output) == 1 && output[0].Kind == llm.ToolResultText && strings.HasPrefix(output[0].Value, ToolCallRunningPayload)
 }
 
 func userMessage(text string) llm.Item {

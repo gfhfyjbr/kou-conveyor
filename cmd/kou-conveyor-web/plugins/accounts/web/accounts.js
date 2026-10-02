@@ -3,11 +3,14 @@
 // its filters in the rail, the count on its tab, and its dialogs to sign in
 // and to add an endpoint. Its second tab, Usage (usage.js, #/accounts/usage,
 // U), is what the gateway's requests used and what that comes to as API
-// credits, with the prices tokens count at. It provides the accounts
-// service: show(), showConnection(), showUsage(range), addAccount(provider),
-// addEndpoint(kind), refresh(), providers().
+// credits, with the prices tokens count at. Once the page opens, it offers
+// a newer CLIProxyAPI than the server's, if one is out (update.js). It
+// provides the accounts service: show(), showConnection(), showUsage(range),
+// addAccount(provider), addEndpoint(kind), refresh(), providers(),
+// checkUpdate().
 import { createAccounts } from './gateway.js';
 import { money } from './format.js';
+import { createUpdates } from './update.js';
 import { USAGE_RANGES, createUsage } from './usage.js';
 
 const MENU = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.4"/></svg>';
@@ -75,10 +78,18 @@ export default function activate(cockpit) {
   const pageTabs = h('nav', { class: 'page-tabs', role: 'tablist', 'aria-label': 'Accounts' },
     tabButton('accounts', 'Accounts', null, 'The connection, the gateway, its accounts and endpoints (A)'),
     tabButton('usage', 'Usage', tabCost, 'What the requests used, and what it comes to as API credits (U)'));
+  // A newer CLIProxyAPI, offered in a dialog, and by the badge beside the
+  // version.
+  const updates = createUpdates({
+    api: cockpit.api, prefs, toast: (text, kind, key) => cockpit.toast(text, kind, key), copy: (text, label) => cockpit.copy(text, label),
+    overlaysOpen: () => service('overlays')?.open?.() || [],
+    closeOverlays: () => service('overlays')?.closeTop?.(),
+  });
+  cockpit.onDispose(() => updates.destroy());
   const page = h('section', { class: 'accounts-page', id: 'accounts-page', 'aria-label': 'Accounts', data: { tab: 'accounts' } },
     h('header', { class: 'bar' },
       h('button', { class: 'icon rail-toggle', id: 'accounts-rail-toggle', type: 'button', 'aria-label': 'Menu', onclick: () => layout()?.rail?.() }, svg(MENU)),
-      h('div', { class: 'crumbs' }, pageTabs, h('code', { id: 'gw-version', text: 'CLIProxyAPI' })),
+      h('div', { class: 'crumbs' }, pageTabs, h('code', { id: 'gw-version', text: 'CLIProxyAPI' }), updates.badge),
       h('div', { class: 'bar-right' },
         h('span', { class: 'run-state gw-state', id: 'gw-state', data: { state: 'starting' } }, h('i', { 'aria-hidden': 'true' }), h('b', { id: 'gw-word', text: 'Starting' })),
         h('span', { class: 'bar-group', data: { for: 'accounts' } }, range),
@@ -122,7 +133,7 @@ export default function activate(cockpit) {
     return null;
   };
 
-  for (const [id, node, order] of [['signin', signin, 30], ['endpoint-dialog', endpoint, 31], ['price-dialog', price, 33], ['account-files', files, 32]]) {
+  for (const [id, node, order] of [['signin', signin, 30], ['endpoint-dialog', endpoint, 31], ['price-dialog', price, 33], ['account-files', files, 32], ['gw-update', updates.overlay, 34]]) {
     cockpit.ui.mount('overlays', { id, order, node });
   }
 
@@ -277,6 +288,18 @@ export default function activate(cockpit) {
   });
   cockpit.contribute('overlay', { id: 'signin', order: 30, modal: true, isOpen: () => !signin.hidden, close: () => panel.closeSignIn() });
   cockpit.contribute('overlay', { id: 'endpoint', order: 31, modal: true, isOpen: () => !endpoint.hidden, close: () => panel.closeEndpoint() });
+  cockpit.contribute('overlay', { id: 'gw-update', order: 34, modal: true, isOpen: () => updates.isOpen(), close: () => updates.close() });
+
+  // Once the page opens, it asks whether a newer CLIProxyAPI is out, and
+  // offers it; a version of the plugin loaded anew only catches up. The
+  // dialog follows the server's build and restart after an update.
+  cockpit.on('server', (status) => updates.serverBuild(status));
+  cockpit.on('server-restarted', () => updates.restarted());
+  if (cockpit.hot.data.updateAsked) updates.resume();
+  else {
+    cockpit.hot.data.updateAsked = true;
+    cockpit.timeout(() => updates.check({ popup: true }), 1200);
+  }
 
   // The tab's count stays current while the view, or its accounts, are not
   // in sight.
@@ -307,20 +330,22 @@ export default function activate(cockpit) {
   const addAccount = (provider = '') => { show(); panel.addAccount(String(provider)); };
   const addEndpoint = (kind = '') => { show(); panel.addEndpoint(String(kind)); };
   cockpit.commands.register({
-    name: 'accounts', args: '[add [provider] | endpoint [kind]]', order: 160,
+    name: 'accounts', args: '[add [provider] | endpoint [kind] | update]', order: 160,
     help: 'The accounts gateway: its connection, accounts and endpoints, with uptime, errors and limits',
     complete: () => [
       { value: 'add', label: 'add', detail: 'sign in with a subscription' },
       ...PROVIDERS.map(([id, name]) => ({ value: `add ${id}`, label: `add ${id}`, detail: `sign in with ${name}` })),
       { value: 'endpoint', label: 'endpoint', detail: 'add an API key: Anthropic, OpenAI, Gemini, xAI, OpenAI-compatible' },
       ...KINDS.map(([id, name]) => ({ value: `endpoint ${id}`, label: `endpoint ${id}`, detail: `add ${name}` })),
+      { value: 'update', label: 'update', detail: 'check for a newer CLIProxyAPI, and take it up' },
     ],
     run: (arg) => {
       const [verb, which = ''] = String(arg).split(/\s+/);
       if (!verb) return show();
       if (verb === 'add') return addAccount(which);
       if (verb === 'endpoint') return addEndpoint(which);
-      return cockpit.toast('/accounts takes add or endpoint', 'error');
+      if (verb === 'update') return updates.open({ refresh: true });
+      return cockpit.toast('/accounts takes add, endpoint or update', 'error');
     },
   });
   cockpit.commands.register({
@@ -347,11 +372,15 @@ export default function activate(cockpit) {
       ...panel.providers().map((p) => ({ group: 'Accounts', icon: '+', label: `Add account: ${p.name}`, detail: p.detail, order: 202, run: () => addAccount(p.id) })),
       { group: 'Accounts', icon: '↑', label: 'Import credential files…', order: 203, run: () => { show(); panel.pickFiles(); } },
       { group: 'Accounts', icon: '⌁', label: 'Add endpoint…', detail: 'An API key: Anthropic, OpenAI, Gemini, xAI, OpenAI-compatible', order: 204, run: () => addEndpoint() },
+      updates.available()
+        ? { group: 'Accounts', icon: '↑', label: `Update CLIProxyAPI to ${updates.available()}…`, detail: 'The gateway\'s latest release', order: 206, run: () => updates.open() }
+        : { group: 'Accounts', icon: '↑', label: 'Check for a CLIProxyAPI update', detail: 'A newer release of the gateway', order: 206, run: () => updates.open({ refresh: true }) },
     ],
   });
 
   cockpit.provide('accounts', {
     show: () => show('accounts'), back, showConnection, showUsage, addAccount, addEndpoint,
     refresh: (options) => panel.refresh(options), providers: () => panel.providers(), pickFiles: () => panel.pickFiles(),
+    checkUpdate: () => updates.open({ refresh: true }),
   });
 }

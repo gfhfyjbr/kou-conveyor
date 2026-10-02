@@ -19,6 +19,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 )
 
 type runState int
@@ -1141,6 +1143,8 @@ var commands = []struct{ name, args, help string }{
 	{"/settings", "", "connection: provider type, base URL, API key, model"},
 	{"/history", "", "reuse an earlier prompt"},
 	{"/effort", "<level>", "effort: low medium high xhigh max"},
+	{"/tools", "<profile>", "built-in tools of the next runs: auto edit patch code shell"},
+	{"/sandbox", "<mode>", "where the next runs work: off worktree container"},
 	{"/model", "[id]", "model of the next prompts, of any provider; alone, the list"},
 	{"/copy", "", "copy the last answer"},
 	{"/expand", "", "expand tool output and thinking"},
@@ -1315,6 +1319,31 @@ func (m *uiModel) command(text string) tea.Cmd {
 			return m.notify("effort levels: "+strings.Join(cockpit.ThinkingLevels, " "), "warn")
 		}
 		return m.setEffort(arg)
+	case "/tools", "/profile":
+		if arg == "" {
+			current := cockpit.LoadPreferences(m.opt.preferences).ToolProfile
+			return m.notify("tools: "+cmp.Or(current, string(tool.ProfileAuto))+" · profiles: "+tool.ProfileNames(), "info")
+		}
+		if _, err := tool.ParseProfile(arg); err != nil {
+			return m.notify("tool profiles: "+tool.ProfileNames(), "warn")
+		}
+		if err := cockpit.SaveToolProfile(m.opt.preferences, arg); err != nil {
+			return m.notify("tools: "+err.Error(), "warn")
+		}
+		return m.notify("tools for the next runs: "+strings.ToLower(strings.TrimSpace(arg)), "info")
+	case "/sandbox":
+		if arg == "" {
+			current := cockpit.LoadPreferences(m.opt.preferences).Sandbox
+			return m.notify("sandbox: "+cmp.Or(current, runconfig.SandboxOff)+" · modes: "+strings.Join(runconfig.SandboxModes, " "), "info")
+		}
+		mode, err := runconfig.ParseSandboxMode(arg)
+		if err != nil {
+			return m.notify("sandbox modes: "+strings.Join(runconfig.SandboxModes, " "), "warn")
+		}
+		if err := cockpit.SaveSandbox(m.opt.preferences, mode); err != nil {
+			return m.notify("sandbox: "+err.Error(), "warn")
+		}
+		return m.notify("sandbox for the next runs: "+mode, "info")
 	case "/model", "/models":
 		if arg == "" {
 			return m.openPicker("models")

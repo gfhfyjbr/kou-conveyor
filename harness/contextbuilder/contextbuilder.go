@@ -66,6 +66,10 @@ type Builder interface {
 	// SetTranscript names the file that keeps the whole conversation; the
 	// message that stands in for a compacted conversation points to it.
 	SetTranscript(path string)
+	// SetPruning says when the oldest tool results of the conversation
+	// are cut down to notes, to keep the context small between
+	// compactions (PruneOptions).
+	SetPruning(PruneOptions)
 	// Compact replaces the conversation a compaction turn summarized with the
 	// summary its response holds. Messages the model has not answered yet and
 	// everything that arrived during the compaction stay as they are. It

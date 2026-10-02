@@ -144,13 +144,14 @@ func TestDiscoverTakesTheProgramsBuiltins(t *testing.T) {
 	config := t.TempDir()
 	builtin := Plugin{Manifest: Manifest{Name: "layout", Web: &Web{Script: "web/layout.js"}}, Source: SourceBuiltin}
 	found := Discover(Options{ConfigDirectory: config, Builtins: []Plugin{builtin}})
-	if len(found.Plugins) != 2 || found.Plugins[1].Name != "layout" || !found.Plugins[1].Active {
+	// The harness's own built-in plugins come first: core, then guide.
+	if len(found.Plugins) != 3 || found.Plugins[2].Name != "layout" || !found.Plugins[2].Active {
 		t.Fatalf("plugins = %+v", found.Plugins)
 	}
 	// A user plugin of the same name replaces it.
 	writePlugin(t, filepath.Join(UserDirectory(config), "layout"), `{"name": "layout", "web": {"script": "layout.js"}}`, "layout.js", "")
 	found = Discover(Options{ConfigDirectory: config, Builtins: []Plugin{builtin}})
-	if len(found.Plugins) != 3 || found.Plugins[1].Active || found.Plugins[1].Reason != "replaced by the user plugin of the same name" || !found.Plugins[2].Active {
+	if len(found.Plugins) != 4 || found.Plugins[2].Active || found.Plugins[2].Reason != "replaced by the user plugin of the same name" || !found.Plugins[3].Active {
 		t.Fatalf("plugins = %+v", found.Plugins)
 	}
 	sources := Sources(Options{ConfigDirectory: config, Workspace: "/w", Builtins: []Plugin{{Manifest: Manifest{Name: "x"}, Directory: "/checkout/plugins/x"}}})

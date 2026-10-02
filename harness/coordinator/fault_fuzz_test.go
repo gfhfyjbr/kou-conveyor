@@ -93,7 +93,13 @@ func FuzzCoordinatorFaults(f *testing.F) {
 			}
 			usage := faultJSON(t, map[string]uint64{"input_tokens": tokens & math.MaxInt64, "output_tokens": tokens % 997})
 			transport := &coordinatorFaultTransport{trace: trace, started: make(chan struct{}), block: mode == 13}
-			for index, output := range [][]map[string]any{wireCalls, {}} {
+			// The final answer says the work is done: an empty answer would be
+			// asked for again.
+			final := []map[string]any{{
+				"type": "message", "id": "provider-final", "role": "assistant", "status": "completed",
+				"content": []map[string]any{{"type": "output_text", "text": "Done.", "annotations": []any{}}},
+			}}
+			for index, output := range [][]map[string]any{wireCalls, final} {
 				transport.bodies = append(transport.bodies, "data: "+string(faultJSON(t, map[string]any{
 					"type":     "response.completed",
 					"response": map[string]any{"id": fmt.Sprintf("response-%d", index), "status": "completed", "output": output, "usage": usage},

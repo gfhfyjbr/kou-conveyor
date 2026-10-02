@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 
 // fakeRegistry stands in for the gateway's model registry.

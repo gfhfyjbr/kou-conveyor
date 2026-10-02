@@ -15,6 +15,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit/cockpittest"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
 )
 
 func TestMain(m *testing.M) {
@@ -339,5 +340,15 @@ func TestSessionRunElsewhereIsReported(t *testing.T) {
 	unlock()
 	if _, session := h.do("GET", "/api/sessions/session-1", ""); session["external"] != false {
 		t.Fatalf("session = %#v", session)
+	}
+}
+
+// The page colours a Code call's code by the classes its runs name.
+func TestConfigNamesSyntaxClasses(t *testing.T) {
+	h := newHarness(t)
+	_, config := h.do("GET", "/api/config", "")
+	classes, _ := config["syntax_classes"].([]any)
+	if len(classes) != len(highlight.Classes) || classes[0] != "" || classes[1] != highlight.Classes[1] {
+		t.Fatalf("syntax_classes = %v", config["syntax_classes"])
 	}
 }

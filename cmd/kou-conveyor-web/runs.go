@@ -35,8 +35,10 @@ type run struct {
 	tracker              *cockpit.Tracker // what the run changes; nil when it is not recorded
 
 	mu       sync.Mutex
-	events   [][]byte      // encoded events; event i has SSE ID i+1
+	events   eventLog      // encoded events; event i has SSE ID i+1
 	wake     chan struct{} // closed and replaced whenever the log grows
+	readers  int           // the browsers that read the log now
+	retired  bool          // the run is gone from the server: its log goes with its last reader
 	stopping bool
 	done     bool
 }
@@ -77,7 +79,7 @@ func (r *run) publish(e event) {
 	if r.done {
 		return
 	}
-	r.events = append(r.events, data)
+	r.events.append(data)
 	if e.Type == "done" {
 		r.done = true
 	}
@@ -85,17 +87,49 @@ func (r *run) publish(e event) {
 	r.wake = make(chan struct{})
 }
 
-// since returns the events after the first n, whether the log is complete and
-// a channel that is closed when it grows.
-func (r *run) since(n int) ([][]byte, bool, <-chan struct{}) {
+// since returns where the events after the first n are, whether the log is
+// complete and a channel that is closed when it grows.
+func (r *run) since(n int) ([]logged, bool, <-chan struct{}) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var events [][]byte
-	if n < len(r.events) {
+	var events []logged
+	if index := r.events.index; n < len(index) {
 		// Published events are never modified, so the slice outlives the lock.
-		events = r.events[n:len(r.events):len(r.events)]
+		events = index[n:len(index):len(index)]
 	}
 	return events, r.done, r.wake
+}
+
+// attach has a browser read the run's events, unless the run is gone.
+func (r *run) attach() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.retired {
+		return false
+	}
+	r.readers++
+	return true
+}
+
+// detach is a browser done reading the run's events.
+func (r *run) detach() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.readers--
+	if r.retired && r.readers == 0 {
+		r.events.close()
+	}
+}
+
+// retire has the run gone from the server: its events go once no browser
+// reads them.
+func (r *run) retire() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.retired = true
+	if r.readers == 0 {
+		r.events.close()
+	}
 }
 
 func (r *run) isStopping() bool {
@@ -475,6 +509,7 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		s.mu.Lock()
 		delete(s.runs, current.id)
 		s.mu.Unlock()
+		current.retire()
 	})
 }
 
@@ -492,10 +527,11 @@ func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
 // resume with Last-Event-ID after a dropped connection.
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	current := s.lookup(r.PathValue("id"))
-	if current == nil {
+	if current == nil || !current.attach() {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
+	defer current.detach()
 	next := 0
 	if last := r.Header.Get("Last-Event-ID"); last != "" {
 		next, _ = strconv.Atoi(last)
@@ -519,8 +555,14 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {
-		for i, data := range events {
-			fmt.Fprintf(w, "id: %d\ndata: %s\n\n", next+i+1, data)
+		id := next
+		err := current.events.each(events, func(data []byte) error {
+			id++
+			_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", id, data)
+			return err
+		})
+		if err != nil {
+			return
 		}
 		next += len(events)
 		if err := flusher.Flush(); err != nil || done {

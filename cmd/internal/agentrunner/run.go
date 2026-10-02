@@ -2,6 +2,7 @@ package agentrunner
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json/jsontext"
@@ -20,6 +21,8 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
+	"github.com/gfhfyjbr/kou-conveyor/harness/codevm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/contextbuilder"
 	"github.com/gfhfyjbr/kou-conveyor/harness/coordinator"
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
@@ -33,6 +36,8 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/bash"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/code"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/file"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/viewimage"
 )
 
@@ -47,6 +52,10 @@ const (
 	llmMaxTokensEnvironment   = "KOU_CONVEYOR_LLM_MAX_TOKENS"
 	contextWindowEnvironment  = "KOU_CONVEYOR_CONTEXT_WINDOW"
 	autoCompactEnvironment    = "KOU_CONVEYOR_AUTO_COMPACT"
+	// recoveryEnvironment set to off leaves the model's answers as they
+	// come: no request to go on after the output limit, none to answer
+	// again after a refusal, no request sent again after a failure.
+	recoveryEnvironment = "KOU_CONVEYOR_RECOVERY"
 )
 
 // defaultSteerWait is how long a message sent while the agent works waits
@@ -62,9 +71,21 @@ const (
 	// the summary, up to 20,000 tokens, and 13,000 for what arrives before
 	// the next turn. A small window keeps a quarter of itself free instead.
 	autoCompactReserve = 33_000
+	// autoCompactCeiling is the most a conversation grows before it is
+	// compacted, whatever the window: past a few hundred thousand tokens a
+	// model reasons worse and every turn costs more, long before the window
+	// is full.
+	autoCompactCeiling = 300_000
+	// pruneShare is the share of the compaction threshold the tool results
+	// may take before the oldest are pruned; pruneKeep is how many of the
+	// latest results are never pruned, and pruneBytes what a pruned result
+	// keeps of its head.
+	pruneShare = 40
+	pruneKeep  = 12
+	pruneBytes = 600
 )
 
-const defaultSystemPrompt = `You are an AI agent running inside an isolated sandbox container.
+const defaultSystemPrompt = `You are a software engineering agent working in the user's workspace.
 
 ## Guidelines
 - Save output files to the workspace root.
@@ -103,6 +124,13 @@ type Request struct {
 	// to focus on.
 	Compact             bool   `json:"compact"`
 	CompactInstructions string `json:"compact_instructions"`
+	// ToolProfile is the set of built-in tools the model works with
+	// (tool.Profile): auto, edit, patch, code or shell. Empty follows
+	// KOU_CONVEYOR_TOOL_PROFILE, else auto.
+	ToolProfile string `json:"tool_profile"`
+	// Sandbox says where the run works: off, worktree or container (see
+	// sandbox.go). Empty follows KOU_CONVEYOR_SANDBOX, else off.
+	Sandbox string `json:"sandbox"`
 }
 
 type RequestMessage struct {
@@ -290,6 +318,8 @@ func Run(
 	listSkillsFlag := flags.Bool("list-skills", false, "print the skills a run in the workspace would find, the project's and the system-wide ones, one JSON object per line, and exit")
 	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
+	toolGrace := flags.Duration("tool-grace", 3*time.Second, "how long the results of a turn's tool calls are gathered before they wake the model; a result that arrives while other calls run waits this long again for them")
+	toolGraceLimit := flags.Duration("tool-grace-limit", 15*time.Second, "the longest the results wait for the other calls, from when the calls started (0 does not extend the wait)")
 	if err := flags.Parse(args); err != nil {
 		if usageErr != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -310,6 +340,9 @@ func Run(
 	}
 	if *steerWait < 0 {
 		return errors.New("steer wait must not be negative")
+	}
+	if *toolGrace < 0 || *toolGraceLimit < 0 {
+		return errors.New("tool grace must not be negative")
 	}
 	if *listProviders {
 		// Front-ends ask before a run, so a runner older than they are is
@@ -486,10 +519,7 @@ func Run(
 	if err := os.MkdirAll(operationDirectory, 0o700); err != nil {
 		return fmt.Errorf("create operation directory: %w", err)
 	}
-	shell := strings.TrimSpace(getenv("SHELL"))
-	if shell == "" {
-		shell = "/bin/sh"
-	}
+	shell := resolveShell(getenv)
 	// Plugins are followed while the run goes on (liveplugins.go): the
 	// fingerprint of where they come from is taken before they are read, so
 	// a change while they are read is seen at the next turn.
@@ -497,6 +527,24 @@ func Run(
 	pluginFingerprint := plugin.Fingerprint(plugin.Sources(options)...)
 	plugins := plugin.Discover(options)
 	plugins.Errors = append(optionProblems, plugins.Errors...)
+	// The sandbox: a worktree of the session's own, and a container for
+	// its commands when asked.
+	sandboxMode, err := ParseSandboxMode(cmp.Or(strings.TrimSpace(parsed.Sandbox), getenv(runconfig.SandboxEnvironment)))
+	if err != nil {
+		return err
+	}
+	box, err := prepareSandbox(runContext, sandboxMode, workspace, shell, operationDirectory, sessionID, getenv, plugins, flagOutput)
+	if err != nil {
+		return fmt.Errorf("prepare the sandbox: %w", err)
+	}
+	// From here on the run works in the sandbox's workspace.
+	workspace, shell = box.Workspace, box.Shell
+	// The profile: which built-in tools the model works with.
+	profile, err := defaultToolProfile(getenv, parsed.ToolProfile)
+	if err != nil {
+		return err
+	}
+	profile = profile.Resolve(model)
 	// Skills are followed the same way: the project's, in the workspace's
 	// .harness/skills and .agents/skills, and the system-wide ones, in
 	// ~/.agents/skills and kou-conveyor's configuration directory, besides
@@ -508,17 +556,44 @@ func Run(
 	// skills.
 	var names []string
 	if activePlugin(plugins, plugin.CoreName) {
-		names = []string{tool.BashName, tool.ViewImageName, tool.SkillUseName}
+		names = profile.Tools()
 	}
+	transcriptPath := store.Path(sessionID)
+	// The Code tool of code mode calls the skills and the plugins' tools
+	// as the run has them, which the live plugins keep up to date.
+	var live *livePlugins
+	codeTool := code.New(code.Config{
+		Shell: shell, Directory: workspace, Transcript: transcriptPath,
+		Image: operation.ViewImageConfig{MaxSize: viewimage.DefaultMaxSize, MaxWidth: viewimage.DefaultMaxWidth, MaxHeight: viewimage.DefaultMaxHeight},
+		Skills: func() map[string]string {
+			if live == nil {
+				return nil
+			}
+			return live.skillPaths()
+		},
+		Tools: func() []codevm.CommandTool {
+			if live == nil {
+				return nil
+			}
+			return live.commandTools
+		},
+	})
 	toolConfig := ToolConfig{
 		SessionID: sessionID, Getenv: getenv, Names: names,
 		Translators: tool.StaticTranslators{
 			Bash: bash.New(bash.Config{
-				Shell:         shell,
-				Directory:     workspace,
-				BaseDirectory: operationDirectory,
+				Shell:          shell,
+				Directory:      workspace,
+				BaseDirectory:  operationDirectory,
+				DefaultTimeout: tool.DefaultShellTimeout,
 			}),
-			ViewImage: viewimage.New(viewimage.Config{Directory: workspace}),
+			ViewImage:        viewimage.New(viewimage.Config{Directory: workspace}),
+			Read:             file.New(file.KindRead, tool.ReadName, file.Config{Directory: workspace}),
+			Edit:             file.New(file.KindEdit, tool.EditName, file.Config{Directory: workspace}),
+			Write:            file.New(file.KindWrite, tool.WriteName, file.Config{Directory: workspace}),
+			ApplyPatch:       file.New(file.KindApplyPatch, tool.ApplyPatchName, file.Config{Directory: workspace}),
+			TranscriptSearch: file.New(file.KindTranscriptSearch, tool.TranscriptSearchName, file.Config{Transcript: transcriptPath}),
+			Code:             codeTool,
 		},
 	}
 	configuredTools, err := newTools(runContext, toolConfig)
@@ -609,18 +684,25 @@ func Run(
 		ID:              model,
 		ReasoningEffort: reasoningEffort(parsed.ThinkingLevel),
 	})
-	systemPrompt := defaultSystemPrompt
+	// The default prompt comes with the working norms; a prompt of the
+	// request's own has its own. Both get the environment.
+	systemPrompt := defaultSystemPrompt + "\n\n" + engineeringNorms
 	if parsed.SystemPrompt != nil {
 		systemPrompt = *parsed.SystemPrompt
 	}
+	systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + environmentBlock(workspace, shell, profile, box.Description(), time.Now())
 	// A compaction points the model to the whole conversation.
-	builder.SetTranscript(store.Path(sessionID))
+	builder.SetTranscript(transcriptPath)
+	// Between compactions, the oldest tool results are pruned to notes.
+	if autoCompact > 0 {
+		builder.SetPruning(contextbuilder.PruneOptions{Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes})
+	}
 	// The plugins and the skill directories give the run tools,
 	// instructions and skills, now and as they change.
-	live := &livePlugins{
+	live = &livePlugins{
 		options: options, skillOptions: skills, parsed: parsed, sessionID: sessionID, workspace: workspace, operations: operationDirectory,
 		registry: registry, builder: builder, output: flagOutput,
-		systemPrompt: systemPrompt, static: staticTools, skillUse: skillUse,
+		systemPrompt: systemPrompt, static: staticTools, skillUse: skillUse, profile: profile, code: codeTool,
 		fingerprint: pluginFingerprint, skillFingerprint: skillFingerprint, tools: map[string]*liveTool{},
 	}
 	pluginErrors, skillErrors := live.apply(plugins)
@@ -647,10 +729,19 @@ func Run(
 	}
 	observerID := store.AddObserver(observer.Observe)
 	defer store.RemoveObserver(observerID)
-	current := coordinator.New(coordinator.Dependencies{
+	checks, err := newVerifier(getenv, workspace, shell, operationDirectory, plugins)
+	if err != nil {
+		return err
+	}
+	if checks != nil {
+		fmt.Fprintf(flagOutput, "verify> the work is checked before the run ends: %s\n", strings.Join(checks.commands, "; "))
+	}
+	dependencies := coordinator.Dependencies{
 		BeforeTurn:            beforeTurn,
 		ToolHeartbeatInterval: *toolHeartbeatInterval,
 		ToolWaitLimit:         *steerWait,
+		ToolGrace:             *toolGrace,
+		ToolGraceLimit:        *toolGraceLimit,
 		AutoCompactTokens:     autoCompact,
 		ContextWindow:         contextWindow,
 		SessionID:             sessionID,
@@ -661,7 +752,12 @@ func Run(
 		LLM:                   client,
 		Tools:                 registry,
 		Operations:            operations,
-	})
+		NoRecovery:            strings.EqualFold(strings.TrimSpace(getenv(recoveryEnvironment)), "off"),
+	}
+	if checks != nil {
+		dependencies.Verifier = checks
+	}
+	current := coordinator.New(dependencies)
 	// A model request that fails and is tried again says so at once, on the
 	// diagnostic output: its tries can take minutes, which would otherwise
 	// look like the model thinking.
@@ -1001,7 +1097,7 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 	setting := strings.ToLower(strings.TrimSpace(getenv(autoCompactEnvironment)))
 	switch setting {
 	case "":
-		return window, window - min(autoCompactReserve, window/4), nil
+		return window, min(window-min(autoCompactReserve, window/4), autoCompactCeiling), nil
 	case "off", "false", "no", "0":
 		return window, 0, nil
 	}

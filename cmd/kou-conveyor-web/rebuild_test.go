@@ -14,17 +14,18 @@ import (
 func TestGoFingerprintFollowsTheCode(t *testing.T) {
 	root := t.TempDir()
 	writeFiles(t, root, map[string]string{
-		"go.mod":                       "module example.com/x\n",
-		"cmd/tool/main.go":             "package main\nfunc main() {}\n",
-		"harness/lib/lib.go":           "package lib\n",
-		"harness/lib/lib_test.go":      "package lib\n",
-		"cmd/tool/plugins/x/web/x.js":  "export default () => {};",
-		"cmd/tool/static/index.html":   "<p>",
-		"internal/gen/testdata/x.go":   "package x\n",
-		"cmd/tool/.hidden/secret.go":   "package h\n",
-		"README.md":                    "readme",
-		"benchmarks/harbor/runner.go":  "package harbor\n",
-		"harness/lib/notes/readme.txt": "x",
+		"go.mod":                                         "module example.com/x\n",
+		"cmd/tool/main.go":                               "package main\nfunc main() {}\n",
+		"harness/lib/lib.go":                             "package lib\n",
+		"harness/lib/lib_test.go":                        "package lib\n",
+		"cmd/tool/plugins/x/web/x.js":                    "export default () => {};",
+		"cmd/tool/static/index.html":                     "<p>",
+		"internal/gen/testdata/x.go":                     "package x\n",
+		"cmd/tool/.hidden/secret.go":                     "package h\n",
+		"README.md":                                      "readme",
+		"benchmarks/harbor/runner.go":                    "package harbor\n",
+		"harness/lib/notes/readme.txt":                   "x",
+		"harness/plugin/builtin/guide/skills/x/SKILL.md": "---\nname: x\n---\n",
 	})
 	before := goFingerprint(root)
 	step := func(name string, change func(), changes bool) {
@@ -50,6 +51,8 @@ func TestGoFingerprintFollowsTheCode(t *testing.T) {
 	step("a hidden directory", touch("cmd/tool/.hidden/secret.go"), false)
 	step("code outside the programs", touch("benchmarks/harbor/runner.go"), false)
 	step("a program's code", touch("harness/lib/lib.go"), true)
+	step("a built-in plugin compiled in", touch("harness/plugin/builtin/guide/skills/x/SKILL.md"), true)
+	step("a text file beside the code", touch("harness/lib/notes/readme.txt"), false)
 	step("go.mod", touch("go.mod"), true)
 	step("a new file", func() { writeFiles(t, root, map[string]string{"cmd/tool/more.go": "package main\n"}) }, true)
 	step("a file removed", func() { os.Remove(filepath.Join(root, "cmd/tool/more.go")) }, true)

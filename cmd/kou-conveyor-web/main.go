@@ -133,6 +133,9 @@ func runMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "kou-conveyor-web:", err)
 		return 1
 	}
+	// The pages take the pictures the agent looked at from the session
+	// files (handleToolImage): the transcripts here keep none.
+	cockpit.KeepPictures = false
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	// A build before this one hands over its socket: pages that were open

@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
+	"github.com/gfhfyjbr/kou-conveyor/harness/codevm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
@@ -168,6 +170,78 @@ func TestTranscriptCallErrorFailsTool(t *testing.T) {
 	call := tr.Entry("tool:call-9")
 	if call.Tool.State != ToolFailed || !strings.Contains(call.Tool.Error, "must be set") || len(tr.Running()) != 0 {
 		t.Fatalf("tool = %#v", call.Tool)
+	}
+}
+
+func TestTranscriptFoldsCodeCalls(t *testing.T) {
+	exit := func(code int) *int { return &code }
+	start := recorded.Add(time.Second)
+	calls := []codevm.Call{
+		{Index: 0, Name: "bash", Arguments: "set -euo pipefail\ngo test ./...", Output: "FAIL", ExitCode: exit(1), Started: start, Finished: start.Add(2 * time.Second)},
+		{Index: 1, Name: "edit", Arguments: "/work/cmd/main.go", Error: "edit: oldString was not found in cmd/main.go", Started: start, Finished: start.Add(time.Second)},
+		{Index: 2, Name: "readText", Arguments: "/work/go.mod", Started: start.Add(time.Second), Running: true},
+	}
+	status := func(sequence int, status operation.Status, result *codevm.Result) []byte {
+		state, err := json.Marshal(operation.CodeState{Code: "await bash('go test ./...')", Config: codevm.Config{Shell: "/bin/bash", Directory: "/work"}, Result: result})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return liveLine(t, sequence, sessionstore.ItemToolCallStatus, sessionstore.ToolCallStatus{
+			TurnID: "turn-1", CallID: "call-1", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-1"}},
+			Operations: []operation.Operation{{ID: "op-1", Type: operation.TypeCode, Version: operation.VersionCode, Status: status, State: state}},
+		})
+	}
+	summary := func(calls []CodeCall) string {
+		var lines []string
+		for _, call := range calls {
+			lines = append(lines, call.State+" "+call.Gist)
+		}
+		return strings.Join(lines, "; ")
+	}
+	tr := NewTranscript()
+	apply(t, tr,
+		liveLine(t, 1, sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: "turn-1", Response: llm.Response{
+			Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "Code", Arguments: `{"code":"await bash('go test ./...')"}`}}},
+		}}),
+		status(2, operation.StatusAwaiting, &codevm.Result{Calls: calls, Started: start}),
+	)
+	code := tr.Entry("tool:call-1").Tool
+	if got, want := summary(code.Calls), "done go test ./...; failed cmd/main.go; running go.mod"; code.State != ToolRunning || got != want {
+		t.Fatalf("running code: %s, calls %q, want %q", code.State, got, want)
+	}
+	// The code is highlighted as JavaScript: it starts with a keyword.
+	if len(code.Syntax) < 2 || code.Syntax[0] != int32(len("await")) || highlight.Classes[code.Syntax[1]] != "k" {
+		t.Fatalf("syntax = %v", code.Syntax)
+	}
+	// Code that threw ends its run, and the call it left running with it:
+	// the Code call failed, though its operation completed.
+	apply(t, tr, status(3, operation.StatusCompleted, &codevm.Result{
+		Calls: calls, Error: "ReferenceError: x is not defined", Started: start, Finished: start.Add(3 * time.Second), Done: true,
+	}))
+	code = tr.Entry("tool:call-1").Tool
+	if got, want := summary(code.Calls), "done go test ./...; failed cmd/main.go; canceled go.mod"; code.State != ToolFailed || got != want || !strings.Contains(code.Error, "ReferenceError") {
+		t.Fatalf("code that threw: %s %q, calls %q, want %q", code.State, code.Error, got, want)
+	}
+}
+
+func TestCodeGist(t *testing.T) {
+	for _, test := range []struct{ name, input, want string }{
+		{"readText", "/work/cmd/main.go", "cmd/main.go"},
+		{"viewImage", "/work/shots/tree.png", "shots/tree.png"},
+		{"edit", "/elsewhere/main.go", "/elsewhere/main.go"},
+		{"read", "cmd/main.go", "cmd/main.go"},
+		{"applyPatch", "*** Begin Patch\n*** Update File: a.go\n@@\n-x\n+y\n*** Add File: b/c.go\n+package c\n*** Delete File: d.go\n*** End Patch", "Update a.go, Add b/c.go, Delete d.go"},
+		{"applyPatch", "*** Begin Patch\n*** End Patch", "*** Begin Patch"},
+		{"bash", "set -euo pipefail\n# build it first\n\ngo build ./...\ngo test ./...", "go build ./..."},
+		{"bash", "set -e; go test ./...", "set -e; go test ./..."},
+		{"bash", "#!/bin/sh\nset -e\n", "#!/bin/sh"},
+		{"bash", "\n  ls -la  \n", "ls -la"},
+		{"transcriptSearch", "\n\nfoo|bar\nmore", "foo|bar"},
+		{"sleep", "", ""},
+	} {
+		if got := codeGist(test.name, test.input, "/work"); got != test.want {
+			t.Errorf("codeGist(%q, %q) = %q, want %q", test.name, test.input, got, test.want)
+		}
 	}
 }
 

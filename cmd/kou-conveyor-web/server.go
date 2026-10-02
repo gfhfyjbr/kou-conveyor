@@ -18,6 +18,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/terminal"
 )
 
@@ -41,6 +42,9 @@ type server struct {
 	// gatewayGone is closed once the gateway stopped and its publication
 	// was withdrawn.
 	gatewayGone chan struct{}
+	// updates looks for newer releases of the gateway, and takes one up
+	// (gatewayupdate.go).
+	updates *gatewayUpdates
 
 	// models is the model list an endpoint gave last (models.go).
 	models catalogCache
@@ -86,6 +90,7 @@ func newServer(ctx context.Context, o options, addr net.Addr) *server {
 		queues:     make(map[string]*cockpit.Queue),
 		assets:     o.assets,
 		watch:      newPluginWatch(),
+		updates:    newGatewayUpdates(ctx),
 	}
 	if s.assets == nil {
 		s.assets = compiledAssets()
@@ -162,6 +167,10 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/usage/prices", s.withGateway(s.handleRemovePrice))
 	mux.HandleFunc("PUT /api/usage/unit", s.withGateway(s.handleSetUnit))
 	mux.HandleFunc("POST /api/usage/prices/refresh", s.withGateway(s.handleRefreshPrices))
+	// The gateway's version, and taking its latest release up
+	// (gatewayupdate.go).
+	mux.HandleFunc("GET /api/gateway/update", s.handleGatewayVersion)
+	mux.HandleFunc("POST /api/gateway/update", s.handleUpdateGateway)
 	// Sessions and runs belong to a workspace. The routes without one act on
 	// the workspace the server was started in.
 	for _, prefix := range []string{"/api/w/{ws}", "/api"} {
@@ -289,6 +298,8 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"thinking_levels": cockpit.ThinkingLevels,
 		"settings":        s.opt.SettingsFile != "",
 		"accounts":        s.gatewayView(),
+		// The classes of tokens the runs of a Code call's syntax name.
+		"syntax_classes": highlight.Classes,
 	}
 	if err != nil {
 		config["settings_error"] = err.Error()

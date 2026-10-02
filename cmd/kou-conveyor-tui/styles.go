@@ -4,7 +4,8 @@ import "github.com/charmbracelet/lipgloss"
 
 // One accent on a graphite/paper base, the web cockpit's tokens: fg to fg-4
 // are text, muted, faint and ghost; line and line-2 are the hairlines.
-// Everything else is weight, dimness and rules; colour carries state only.
+// Everything else is weight, dimness and rules; colour carries state, and
+// the tokens of code.
 var (
 	colorAccent = lipgloss.AdaptiveColor{Light: "#E4470C", Dark: "#FF5B1F"}
 	colorText   = lipgloss.AdaptiveColor{Light: "#151513", Dark: "#ECEBE6"}
@@ -28,6 +29,18 @@ var (
 	// Lines a diff adds and removes, tinted like the web cockpit's.
 	colorAdded   = lipgloss.AdaptiveColor{Light: "#E3F1E0", Dark: "#18241A"}
 	colorRemoved = lipgloss.AdaptiveColor{Light: "#FAE3E5", Dark: "#2C181B"}
+	// The tokens of code, in the web cockpit's syntax colours (--syn-*).
+	colorSynText    = lipgloss.AdaptiveColor{Light: "#1C1C19", Dark: "#E3E2DC"}
+	colorSynKeyword = lipgloss.AdaptiveColor{Light: "#C23D0A", Dark: "#FF8A57"}
+	colorSynType    = lipgloss.AdaptiveColor{Light: "#2D5F9A", Dark: "#7AA7D9"}
+	colorSynConst   = lipgloss.AdaptiveColor{Light: "#9C3D87", Dark: "#D28BC4"}
+	colorSynBuiltin = lipgloss.AdaptiveColor{Light: "#1F7A72", Dark: "#6FC2B8"}
+	colorSynFunc    = lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#EFC36E"}
+	colorSynString  = lipgloss.AdaptiveColor{Light: "#2E7A34", Dark: "#9CCF83"}
+	colorSynComment = lipgloss.AdaptiveColor{Light: "#8F8C83", Dark: "#6D6B64"}
+	colorSynPunct   = lipgloss.AdaptiveColor{Light: "#6F6C64", Dark: "#8C8A83"}
+	colorSynOp      = lipgloss.AdaptiveColor{Light: "#55534C", Dark: "#B3B1A9"}
+	colorSynProp    = lipgloss.AdaptiveColor{Light: "#3D3C38", Dark: "#CFCDC5"}
 )
 
 // With NO_COLOR the renderer drops every attribute, so state must also be
@@ -46,6 +59,8 @@ type styles struct {
 	chip, chipAccent, button, buttonOff lipgloss.Style
 	// state are the run-state chips of the bar, by phase.
 	state map[string]lipgloss.Style
+	// syntax colours the tokens of code by their class (highlight.Classes).
+	syntax map[string]lipgloss.Style
 }
 
 func newStyles(noColor bool) styles {
@@ -111,7 +126,42 @@ func newStyles(noColor bool) styles {
 		"failed":   chip(colorErr),
 		"stopped":  chip(colorText),
 	}
+	// The classes of tokens as the web cockpit colours them (theme.css).
+	st.syntax = map[string]lipgloss.Style{}
+	paint := func(style lipgloss.Style, classes ...string) {
+		for _, class := range classes {
+			st.syntax[class] = style
+		}
+	}
+	paint(s.Foreground(colorSynText), "")
+	paint(s.Foreground(colorSynKeyword), "k", "kd", "kn", "ow", "nt")
+	paint(s.Foreground(colorSynKeyword).Bold(true), "gh")
+	paint(s.Foreground(colorSynType), "kt", "nc")
+	paint(s.Foreground(colorSynConst), "kc", "no", "m", "l", "nd", "cp", "ss", "nl")
+	paint(s.Foreground(colorSynBuiltin), "nb", "se", "si", "sr")
+	paint(s.Foreground(colorSynFunc), "nf", "na")
+	paint(s.Foreground(colorSynFunc).Bold(true), "gu")
+	paint(s.Foreground(colorSynString), "s")
+	paint(s.Foreground(colorSynComment), "gp")
+	paint(s.Foreground(colorSynComment).Italic(true), "c", "sd")
+	paint(s.Foreground(colorSynComment).Bold(true), "cs")
+	paint(s.Foreground(colorSynPunct), "p")
+	paint(s.Foreground(colorSynOp), "o", "go")
+	paint(s.Foreground(colorSynProp), "py", "nv", "nn")
+	paint(s.Foreground(colorErr).Background(colorRemoved), "gd")
+	paint(s.Foreground(colorOK).Background(colorAdded), "gi")
+	paint(s.Foreground(colorSynText).Italic(true), "ge")
+	paint(s.Foreground(colorSynText).Bold(true), "gs")
+	paint(s.Foreground(colorErr), "gr", "err")
 	return st
+}
+
+// token is the style of a token of code of a class.
+func (st styles) token(class string) lipgloss.Style {
+	if style, ok := st.syntax[class]; ok {
+		return style
+	}
+	return st.syntax[""]
 }
 
 // providerColor is the colour the web cockpit gives a model provider's

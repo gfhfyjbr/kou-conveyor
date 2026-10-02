@@ -1,11 +1,14 @@
 /* edit: a prompt being edited in place. */
 
 /* A prompt being edited: the editor takes the bubble's place, and what the
-   edited prompt replaces fades until the edit runs or is cancelled. */
+   edited prompt replaces fades until the edit runs or is cancelled. The
+   timeline marks what it replaces (data-after-edit): a rule on the entries
+   after the edited one (~) has the page work out the style of every entry
+   again whenever one is drawn. */
 .flag.editing { color: var(--accent); }
 .entry[data-editing="true"]::before { box-shadow: 0 0 0 3px var(--accent-soft); }
-.entries > .entry[data-editing="true"] ~ .entry { opacity: 0.32; transition: opacity 0.15s; }
-.entries > .entry[data-editing="true"] ~ .entry:hover { opacity: 0.7; }
+.entries > .entry[data-after-edit] { opacity: 0.32; transition: opacity 0.15s; }
+.entries > .entry[data-after-edit]:hover { opacity: 0.7; }
 .edit {
   margin-top: 6px;
   padding: 11px 10px 10px 14px;

@@ -1,0 +1,158 @@
+=== 1. context growth per turn (within segments) ===
+n 4094 median abs err if thinking KEPT: 256  if STRIPPED: 475
+turns with think>15k & small tool output: (delta_in, out, think, tool_est)
+   [18045, 16812, 15736, 1457, '2026-09-30T20:26:48.416388+00:00']
+   [34568, 29719, 27681, 5337, '2026-09-30T20:44:21.456831+00:00']
+   [35293, 21836, 21027, 13155, '2026-10-01T01:11:06.112661+00:00']
+   [17348, 16064, 15912, 1099, '2026-10-01T02:09:53.500074+00:00']
+   [18761, 18551, 18456, 230, '2026-10-01T02:55:58.365215+00:00']
+   [25997, 16593, 16458, 11510, '2026-10-01T04:54:51.296245+00:00']
+   [25117, 21342, 20828, 4002, '2026-10-01T05:12:25.027668+00:00']
+   [34704, 30252, 30128, 4779, '2026-10-01T05:36:42.342683+00:00']
+   [21687, 20245, 19957, 1735, '2026-10-01T05:44:17.665227+00:00']
+   [21631, 18458, 18075, 2997, '2026-10-01T05:54:29.420129+00:00']
+   [26987, 18438, 18179, 10153, '2026-10-01T06:00:44.457338+00:00']
+   [22831, 21377, 21267, 1395, '2026-10-01T06:37:51.165099+00:00']
+input drops >20k inside regular turns (pruning evidence): 8
+   (-23302, 113412, 90110, '2026-09-30T21:00:28.523897+00:00')
+   (-53721, 251086, 197365, '2026-09-30T21:26:52.286509+00:00')
+   (-134373, 282612, 148239, '2026-09-30T22:10:17.480729+00:00')
+   (-137708, 270688, 132980, '2026-09-30T22:33:02.107193+00:00')
+   (-118643, 269663, 151020, '2026-09-30T22:38:33.130627+00:00')
+   (-133070, 281182, 148112, '2026-10-01T04:18:18.335800+00:00')
+   (-137967, 285616, 147649, '2026-10-01T04:21:54.233020+00:00')
+   (-141250, 288580, 147330, '2026-10-01T12:53:47.021130+00:00')
+
+=== 2. segments ===
+seg00 09-30T19:29 turns= 37 calls= 79 edits=  3 first_action_call_idx=5 dur=78min
+seg01 09-30T20:52 turns=118 calls=132 edits= 29 first_action_call_idx=5 dur=45min
+seg02 09-30T21:40 turns= 77 calls= 95 edits= 20 first_action_call_idx=1 dur=16min
+seg03 09-30T21:57 turns=143 calls=174 edits= 37 first_action_call_idx=11 dur=26min
+seg04 09-30T22:25 turns=133 calls=204 edits= 31 first_action_call_idx=0 dur=23min
+seg05 09-30T22:50 turns= 97 calls=124 edits= 31 first_action_call_idx=27 dur=20min
+seg06 09-30T23:12 turns= 77 calls=105 edits= 18 first_action_call_idx=31 dur=19min
+seg07 09-30T23:33 turns=103 calls=140 edits= 29 first_action_call_idx=20 dur=20min
+seg08 09-30T23:55 turns= 79 calls=118 edits= 53 first_action_call_idx=2 dur=15min
+seg09 10-01T00:11 turns=142 calls=164 edits= 29 first_action_call_idx=0 dur=23min
+seg10 10-01T00:37 turns= 72 calls=101 edits= 15 first_action_call_idx=1 dur=27min
+seg11 10-01T01:07 turns= 44 calls= 51 edits=  0 first_action_call_idx=5 dur=18min
+seg12 10-01T01:28 turns= 63 calls= 78 edits=  1 first_action_call_idx=53 dur=15min
+seg13 10-01T01:49 turns= 48 calls= 61 edits=  0 first_action_call_idx=15 dur=13min
+seg14 10-01T02:06 turns= 52 calls= 66 edits=  5 first_action_call_idx=6 dur=13min
+seg15 10-01T02:23 turns= 55 calls= 66 edits=  4 first_action_call_idx=18 dur=12min
+seg16 10-01T02:39 turns= 73 calls= 81 edits=  0 first_action_call_idx=27 dur=18min
+seg17 10-01T03:00 turns= 64 calls= 88 edits=  0 first_action_call_idx=29 dur=13min
+seg18 10-01T03:17 turns= 52 calls= 59 edits=  0 first_action_call_idx=58 dur=14min
+seg19 10-01T03:35 turns= 38 calls= 54 edits=  1 first_action_call_idx=33 dur=13min
+seg20 10-01T03:53 turns= 53 calls= 59 edits=  3 first_action_call_idx=56 dur=15min
+seg21 10-01T04:13 turns= 88 calls=114 edits=  0 first_action_call_idx=- dur=15min
+seg22 10-01T04:31 turns= 59 calls= 64 edits=  0 first_action_call_idx=- dur=15min
+seg23 10-01T04:51 turns= 37 calls= 46 edits=  0 first_action_call_idx=- dur=12min
+seg24 10-01T05:09 turns= 37 calls= 49 edits=  1 first_action_call_idx=46 dur=18min
+seg25 10-01T05:30 turns= 35 calls= 43 edits=  0 first_action_call_idx=- dur=17min
+seg26 10-01T05:51 turns= 32 calls= 44 edits=  1 first_action_call_idx=43 dur=13min
+seg27 10-01T06:10 turns= 48 calls= 58 edits= 12 first_action_call_idx=9 dur=17min
+seg28 10-01T06:34 turns= 72 calls= 93 edits= 13 first_action_call_idx=17 dur=21min
+seg29 10-01T06:56 turns=124 calls=169 edits= 53 first_action_call_idx=19 dur=20min
+seg30 10-01T07:18 turns=110 calls=124 edits= 28 first_action_call_idx=19 dur=25min
+seg31 10-01T07:45 turns= 94 calls=107 edits= 18 first_action_call_idx=12 dur=19min
+seg32 10-01T08:06 turns= 95 calls=112 edits= 19 first_action_call_idx=2 dur=23min
+seg33 10-01T08:32 turns= 73 calls= 83 edits= 16 first_action_call_idx=29 dur=20min
+seg34 10-01T08:56 turns= 65 calls= 83 edits=  6 first_action_call_idx=4 dur=17min
+seg35 10-01T09:16 turns= 60 calls=107 edits= 42 first_action_call_idx=7 dur=21min
+seg36 10-01T09:38 turns= 92 calls=114 edits= 23 first_action_call_idx=0 dur=16min
+seg37 10-01T09:56 turns= 54 calls= 60 edits=  8 first_action_call_idx=11 dur=15min
+seg38 10-01T10:13 turns= 45 calls= 64 edits= 20 first_action_call_idx=10 dur=24min
+seg39 10-01T10:39 turns= 81 calls= 99 edits=  9 first_action_call_idx=9 dur=17min
+seg40 10-01T10:59 turns= 26 calls= 33 edits=  0 first_action_call_idx=- dur=19min
+seg41 10-01T11:30 turns= 24 calls= 35 edits=  1 first_action_call_idx=34 dur=22min
+seg42 10-01T11:57 turns= 19 calls= 28 edits=  6 first_action_call_idx=22 dur=22min
+seg43 10-01T12:22 turns= 45 calls= 77 edits= 23 first_action_call_idx=30 dur=18min
+seg44 10-01T12:41 turns=111 calls=119 edits= 10 first_action_call_idx=0 dur=21min
+seg45 10-01T13:05 turns=109 calls=129 edits= 19 first_action_call_idx=0 dur=25min
+seg46 10-01T13:36 turns= 47 calls= 70 edits= 10 first_action_call_idx=7 dur=18min
+seg47 10-01T13:56 turns= 32 calls= 62 edits=  6 first_action_call_idx=46 dur=22min
+seg48 10-01T14:20 turns= 91 calls=130 edits= 30 first_action_call_idx=8 dur=19min
+seg49 10-01T14:41 turns= 76 calls=116 edits= 29 first_action_call_idx=0 dur=26min
+seg50 10-01T15:08 turns= 51 calls= 94 edits= 34 first_action_call_idx=2 dur=19min
+seg51 10-01T15:28 turns= 91 calls=129 edits= 29 first_action_call_idx=2 dur=33min
+seg52 10-01T16:03 turns= 98 calls=110 edits= 10 first_action_call_idx=14 dur=18min
+seg53 10-01T16:23 turns=106 calls=128 edits= 19 first_action_call_idx=14 dur=24min
+seg54 10-01T16:49 turns= 92 calls=110 edits= 15 first_action_call_idx=10 dur=13min
+seg55 10-01T17:04 turns=103 calls=114 edits=  0 first_action_call_idx=71 dur=15min
+seg56 10-01T17:24 turns=110 calls=143 edits=  0 first_action_call_idx=61 dur=16min
+segments with no action: 6 / 58  median calls before first action 11.5
+
+=== 3. hallucinated tool names ===
+first bad at turn 296 2026-09-30T22:07:29.405332+00:00 ['grace_Read']
+turns with bad names 44 span 2026-09-30T22:07:29.405332+00:00 .. 2026-10-01T17:28:37.819866+00:00
+
+=== 4. Edit race ===
+turns with >1 Edit to same file 36
+re-applied identical edits (same path+old_string) after an earlier success: 39
+  turn 111 -> 114 build.rs
+  turn 111 -> 115 build.rs
+  turn 111 -> 116 build.rs
+  turn 246 -> 251 style.rs
+  turn 246 -> 252 style.rs
+  turn 265 -> 266 main.rs
+  turn 266 -> 267 main.rs
+  turn 322 -> 326 main.rs
+  turn 324 -> 327 main.rs
+  turn 446 -> 450 main.rs
+
+=== 5. repeated reads ===
+distinct files read 552 total reads 2356
+  74 segs=14 /tmp/gecko/gfx_thebes_gfxFont.cpp
+  68 segs=12 /tmp/gecko/gfx_thebes_gfxTextRun.cpp
+  64 segs=25 /jw-dom/src/host_surface.rs
+  52 segs=10 crates/jw-dom/src/dom.rs
+  51 segs=12 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/style.rs
+  42 segs=12 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/dom.rs
+  42 segs=15 /jw-sys/csrc/jw_glue.cpp
+  41 segs= 9 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/canvas2d.rs
+  39 segs= 7 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-sys/csrc/jw_glue.cpp
+  37 segs=11 /jw-dom/src/style.rs
+  37 segs=11 /tmp/gecko/gfx_thebes_gfxHarfBuzzShaper.cpp
+  34 segs=18 /jw-dom/src/dom.rs
+  34 segs=14 /jw-dom/src/node.rs
+  33 segs=10 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/host_surface.rs
+  33 segs=12 /tmp/gecko/dom_canvas_CanvasRenderingContext2D.cpp
+  31 segs= 5 crates/jw-dom/src/canvas2d.rs
+  27 segs= 3 crates/jw-dom/src/web_api.rs
+  26 segs=13 /jw-dom/src/*.rs
+  25 segs= 6 crates/jw-sys/csrc/jw_glue.cpp
+  25 segs=13 /tmp/gecko/gfx_thebes_gfxFT2FontBase.cpp
+  24 segs=13 /Users/gfhfyjbr/Projects/Rust/joroweave/playground/jw-managed-probe/src/main.rs
+  22 segs= 9 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/layout.rs
+  20 segs=14 /jw-engine/src/host/spec.rs
+  19 segs= 5 /Users/gfhfyjbr/Projects/Rust/joroweave/crates/jw-dom/src/web_api.rs
+  17 segs=12 /Users/gfhfyjbr/Projects/Rust/joroweave/.h
+
+=== 6. shell ===
+shell ops 3099 nonzero exit 42 sleep cmds 83 timeouts 1 outputs hitting 40k cap 15 probe runs cmds 235 cargo test cmds 45
+longest builds/tests: []
+keys in shell state: ['Input', 'BaseDirectory', 'Phase', 'ProcessGroupID', 'StartedAt', 'PendingExitCode', 'OutSize', 'ErrSize', 'InlineOut', 'InlineErr', 'InlineOutTail', 'InlineErrTail', 'Result', 'TerminalError', 'ErrorTruncated', 'OutTruncated', 'ErrTruncated', 'OutPath', 'ErrPath']
+
+=== 7. Read result sizes ===
+reads 1294 median chars 5131.5 p90 20501 max 83213 sum MB 11.4
+
+=== 8. summaries: section sizes ===
+ 44.0%  Key technical concepts
+ 24.9%  Files and code
+  4.1%  Problem solving
+  3.9%  All user messages
+  3.4%  Primary request and intent
+  3.2%  Pending tasks
+  2.6%  Current work
+  2.5%  Errors and fixes
+  1.7%  Files and code (this segment)
+  1.6%  Next step
+  0.8%  Implement the persona text engine and wi
+  0.6%  Files and code (all changes this segment
+
+=== 9. visible messages ===
+messages >400 chars: 3
+  2026-09-30T19:35:52.447697+00:00 7700 # JoroWeave: repository map  I couldn't compile or run any tests on this Mac. Every cargo build fails while resolving de
+  2026-09-30T20:31:46.796741+00:00 3767 # muno и SpiderMonkey подняты с git.sisya.cc  Оба на нужных ревизиях, tracked-файлы в репо не менялись, тесты muno прохо
+  2026-09-30T21:26:34.803404+00:00 3457 Проект перенесён на macOS arm64: весь workspace собирается, SpiderMonkey собирается и линкуется, реальный сетевой прогон

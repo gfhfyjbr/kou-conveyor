@@ -1,0 +1,5 @@
+{
+  "name": "guide",
+  "description": "kou-conveyor's own skills for the agent: how to write plugins and skills for kou-conveyor, and where they live — a workspace's own or system-wide.",
+  "skills": "skills"
+}

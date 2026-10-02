@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 	"golang.org/x/crypto/bcrypt"
 	"gopkg.in/yaml.v3"
 )

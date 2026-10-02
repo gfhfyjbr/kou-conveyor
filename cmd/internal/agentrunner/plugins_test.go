@@ -98,7 +98,7 @@ func TestRunnerRunsWorkspacePluginTools(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s\n%s", code, stderr, stdout)
 	}
-	if got := toolNames(first); got != "Bash,ViewImage,SkillUse,Echo" {
+	if got := toolNames(first); got != "Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse,Echo" {
 		t.Fatalf("tools = %s", got)
 	}
 	system := first.Input[0].Data.(llm.Message).Text
@@ -122,8 +122,9 @@ func TestRunnerLeavesUntrustedWorkspacePluginsOut(t *testing.T) {
 		request string
 		want    string
 	}{
-		{"untrusted", nil, `{"prompt":"hi"}`, `"Text":"Bash,ViewImage"`},
-		{"disallowed", map[string]string{plugin.TrustEnvironment: "1"}, `{"prompt":"hi","disallowed_tools":["Echo"]}`, `"Text":"Bash,ViewImage,SkillUse"`},
+		{"untrusted", map[string]string{plugin.DisabledEnvironment: "guide"}, `{"prompt":"hi"}`, `"Text":"Bash,Read,apply_patch,ViewImage,TranscriptSearch"`},
+		{"untrusted, with the built-in skill", nil, `{"prompt":"hi"}`, `"Text":"Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse"`},
+		{"disallowed", map[string]string{plugin.TrustEnvironment: "1"}, `{"prompt":"hi","disallowed_tools":["Echo"]}`, `"Text":"Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse"`},
 		{"core off", map[string]string{plugin.TrustEnvironment: "1", plugin.DisabledEnvironment: "core, other"}, `{"prompt":"hi"}`, `"Text":"Echo"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -145,10 +146,11 @@ func TestRunnerListsPlugins(t *testing.T) {
 	code := RunMain(t.Context(), []string{"-workspace", workspace, "-list-plugins"}, func(string) string { return "" }, func() []string { return nil },
 		strings.NewReader(""), &stdout, &bytes.Buffer{}, testConfig(&fakeClient{}))
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	if code != 0 || len(lines) != 3 ||
+	if code != 0 || len(lines) != 4 ||
 		!strings.Contains(lines[0], `"name":"core"`) || !strings.Contains(lines[0], `"source":"builtin","active":true,"tools":["Bash","ViewImage","SkillUse"]`) ||
-		!strings.Contains(lines[1], `"name":"echo"`) || !strings.Contains(lines[1], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"]`) ||
-		!strings.Contains(lines[2], `"error":`) || !strings.Contains(lines[2], "lowercase") {
+		!strings.Contains(lines[1], `"name":"guide"`) || !strings.Contains(lines[1], `"source":"builtin","active":true,"skills":true`) ||
+		!strings.Contains(lines[2], `"name":"echo"`) || !strings.Contains(lines[2], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"],"skills":true,"instructions":true`) ||
+		!strings.Contains(lines[3], `"error":`) || !strings.Contains(lines[3], "lowercase") {
 		t.Fatalf("exit %d:\n%s", code, stdout.String())
 	}
 }
@@ -187,7 +189,8 @@ func TestRunnerFollowsPluginsDuringARun(t *testing.T) {
 	var tools []string
 	var systems []string
 	var results []string
-	stdout, stderr, code := runWithPlugins(t, workspace, map[string]string{plugin.TrustEnvironment: "1"}, `{"prompt":"work"}`,
+	// Without the built-in skill, SkillUse comes and goes with the plugin's.
+	stdout, stderr, code := runWithPlugins(t, workspace, map[string]string{plugin.TrustEnvironment: "1", plugin.DisabledEnvironment: "guide"}, `{"prompt":"work"}`,
 		func(n int, request llm.Request) llm.Response {
 			tools = append(tools, toolNames(request))
 			systems = append(systems, request.Input[0].Data.(llm.Message).Text)
@@ -227,7 +230,8 @@ func TestRunnerFollowsPluginsDuringARun(t *testing.T) {
 	if len(tools) != 6 {
 		t.Fatalf("%d turns: %v", len(tools), tools)
 	}
-	if tools[0] != "Bash,ViewImage" || tools[1] != "Bash,ViewImage,SkillUse,Late" || tools[3] != "Bash,ViewImage,SkillUse,Late" || tools[4] != "Bash,ViewImage" {
+	const core = "Bash,Read,apply_patch,ViewImage,TranscriptSearch"
+	if tools[0] != core || tools[1] != core+",SkillUse,Late" || tools[3] != core+",SkillUse,Late" || tools[4] != core {
 		t.Fatalf("tools by turn = %q", tools)
 	}
 	if strings.Contains(systems[0], "Late has come") || !strings.Contains(systems[1], "## late plugin\n\nLate has come.") || !strings.Contains(systems[1], "<name>slow</name>") ||

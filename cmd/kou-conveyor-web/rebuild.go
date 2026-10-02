@@ -19,8 +19,9 @@ import (
 )
 
 // A web cockpit built from a checkout follows its Go code the way it follows
-// its plugins. When a .go file of the checkout changes — or go.mod, go.sum —
-// it builds itself anew, with the runner and the terminal cockpit that sit
+// its plugins. When a .go file of the checkout changes — or go.mod, go.sum,
+// or a file of the harness's built-in plugins compiled into the programs,
+// such as the guide's skill — it builds itself anew, with the runner and the terminal cockpit that sit
 // beside it, and, once no agent runs and nothing waits in a queue, takes up
 // the new build in place: the same process, the same port, whose socket the
 // new build inherits (rebuild_unix.go). Open pages reconnect by themselves
@@ -34,6 +35,10 @@ const listenerEnvironment = "KOU_CONVEYOR_WEB_LISTENER_FD"
 // (-ldflags -X); a build made otherwise has none, and counts as the code
 // the checkout has when it starts.
 var sourceFingerprint string
+
+// compiledPlugins holds the harness's built-in plugins that are compiled
+// into the programs as files (harness/plugin/builtin.go embeds them).
+const compiledPlugins = "harness/plugin/builtin/"
 
 // How long the code must stay as it is before a build starts: an editor
 // saves several files one after another.
@@ -82,7 +87,8 @@ func newRebuilder(a *assets) *rebuilder {
 }
 
 // goFingerprint fingerprints the Go code of the programs: the .go files of
-// cmd/, harness/ and internal/ but tests, and go.mod and go.sum.
+// cmd/, harness/ and internal/ but tests, go.mod and go.sum, and every file
+// of the harness's built-in plugins compiled in (compiledPlugins).
 func goFingerprint(root string) string {
 	digest := sha256.New()
 	for _, file := range []string{"go.mod", "go.sum"} {
@@ -102,14 +108,15 @@ func goFingerprint(root string) string {
 				}
 				return nil
 			}
-			if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			relative, _ := filepath.Rel(root, path)
+			compiledIn := strings.HasPrefix(filepath.ToSlash(relative), compiledPlugins)
+			if !compiledIn && (!strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go")) {
 				return nil
 			}
 			info, err := entry.Info()
 			if err != nil {
 				return nil
 			}
-			relative, _ := filepath.Rel(root, path)
 			fmt.Fprintf(digest, "%s %d %d\n", filepath.ToSlash(relative), info.Size(), info.ModTime().UnixNano())
 			return nil
 		})

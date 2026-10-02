@@ -63,6 +63,25 @@ type Manifest struct {
 	Commands []Command `json:"commands,omitzero"`
 	// Web is what the browser cockpit loads.
 	Web *Web `json:"web,omitzero"`
+	// Verify lists shell commands that check the work once the agent says
+	// it is done with a prompt: the build, the tests. What fails goes back
+	// to the agent.
+	Verify []string `json:"verify,omitzero"`
+	// Sandbox says how the agent's commands are isolated in this
+	// workspace: the image its container runs, with what it needs.
+	Sandbox *Sandbox `json:"sandbox,omitzero"`
+}
+
+// Sandbox says how a workspace's commands run apart from the machine: in a
+// container of Image, with Setup run once when the container starts, and
+// Environment set in it. The runner keeps the container over the runs of a
+// workspace; see agentrunner's sandbox.
+type Sandbox struct {
+	Image       string            `json:"image"`
+	Setup       []string          `json:"setup,omitzero"`
+	Environment map[string]string `json:"environment,omitzero"`
+	// Mounts are extra volumes, in docker's host:container form.
+	Mounts []string `json:"mounts,omitzero"`
 }
 
 // Tool is a tool the agent can call. Run is the command the call runs, in
@@ -154,6 +173,19 @@ func inside(relative string) (string, error) {
 		return "", fmt.Errorf("path %q is not inside the plugin", relative)
 	}
 	return clean, nil
+}
+
+// Sub returns the plugin's files under a path of the plugin, which may not
+// leave it: a directory of its, such as that of its skills.
+func (current Plugin) Sub(relative string) (fs.FS, error) {
+	clean, err := inside(relative)
+	if err != nil {
+		return nil, err
+	}
+	if current.Files == nil {
+		return nil, fmt.Errorf("plugin %q has no files", current.Name)
+	}
+	return fs.Sub(current.Files, clean)
 }
 
 // Stat describes a file of the plugin.

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gfhfyjbr/kou-conveyor/harness/codevm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/contextbuilder"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
@@ -14,6 +15,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/code"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/command"
 )
 
@@ -82,9 +84,12 @@ type livePlugins struct {
 	builder      contextbuilder.Builder
 	output       io.Writer
 
-	systemPrompt string     // the system prompt without the plugins' instructions
-	static       []llm.Tool // the built-in tools the run enabled, when core is on
-	skillUse     bool       // SkillUse resolves: skills can be registered
+	systemPrompt string          // the system prompt without the plugins' instructions
+	static       []llm.Tool      // the built-in tools the run enabled, when core is on
+	skillUse     bool            // SkillUse resolves: skills can be registered
+	profile      tool.Profile    // the built-in tools the model works with
+	code         tool.Translator // the Code tool, whose declarations the prompt shows in code mode
+	commandTools []codevm.CommandTool
 
 	fingerprint      string       // of the plugins' files
 	skillFingerprint string       // of the skill directories
@@ -112,6 +117,7 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 		}
 	}
 	active := map[string]bool{}
+	var commandTools []codevm.CommandTool
 	for _, current := range found.Active() {
 		if current.Source == plugin.SourceBuiltin {
 			continue // built-in tools come with the registry
@@ -123,6 +129,16 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 			model, translator, err := pluginTool(current, definition, live.sessionID, live.workspace, live.operations)
 			if err != nil {
 				problems = append(problems, fmt.Errorf("plugin %q: %w", current.Name, err))
+				continue
+			}
+			if run, err := current.ToolCommand(definition); err == nil {
+				commandTools = append(commandTools, codevm.CommandTool{
+					Name: definition.Name, Description: definition.Description, Parameters: definition.Parameters, Command: run,
+					Directory: live.workspace, Environment: pluginEnvironment(current, live.sessionID, live.workspace),
+				})
+			}
+			// In code mode the plugins' tools are functions of the code.
+			if live.profile == tool.ProfileCode {
 				continue
 			}
 			existing := live.tools[definition.Name]
@@ -144,13 +160,42 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 			existing.set(nil)
 		}
 	}
+	live.commandTools = commandTools
 	live.builder.SetTools(tools)
 	systemPrompt := live.systemPrompt
 	if instructions := pluginInstructions(found); instructions != "" {
 		systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + instructions
 	}
+	if live.profile == tool.ProfileCode && live.code != nil {
+		systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + codePrompt(live.code)
+	}
 	live.builder.SetSystemPrompt(systemPrompt)
 	return problems, skillProblems
+}
+
+// skillPaths are the skills by name, for the code's skill().
+func (live *livePlugins) skillPaths() map[string]string {
+	paths := make(map[string]string, len(live.skills))
+	for _, current := range live.registry.Skills() {
+		paths[current.Name] = current.Path
+	}
+	return paths
+}
+
+// pluginEnvironment is what a plugin's tool runs with.
+func pluginEnvironment(current plugin.Plugin, sessionID session.ID, workspace string) map[string]string {
+	return map[string]string{
+		"KOU_CONVEYOR_PLUGIN_NAME": current.Name,
+		"KOU_CONVEYOR_PLUGIN_DIR":  current.Directory,
+		"KOU_CONVEYOR_WORKSPACE":   workspace,
+		"KOU_CONVEYOR_SESSION_ID":  string(sessionID),
+	}
+}
+
+// codePrompt is what the system prompt says of the Code tool: the
+// functions the code may call, as TypeScript declarations.
+func codePrompt(translator tool.Translator) string {
+	return "## Code tool\n\nYou have one tool, Code, which runs the JavaScript you write in an isolated VM. The VM has no file system, network or modules of its own: only the functions declared below, which run the harness's tools and resolve to their results. Write the body of an async function; await the calls; run independent work at once with Promise.all; console.log what should be reported; return the value the result should end with. The result lists every call the code made and how it ended, then what the code logged and returned; a call's output is shown only when the call failed or when the code neither logs nor returns anything, so log or return what you need to read. Calls the code does not await are stopped when it returns. Prefer one well-planned call that does several steps to many small calls: each call is a turn.\n\n```ts\n" + code.Declarations(translator) + "\n```"
 }
 
 // applySkills registers the skills the agent has now — the project's and
@@ -285,12 +330,7 @@ func pluginTool(current plugin.Plugin, definition plugin.Tool, sessionID session
 	translator, err := command.New(command.Config{
 		Tool: model, Command: run, Directory: workspace, BaseDirectory: operations,
 		MaxOutputLength: definition.MaxOutputLength,
-		Environment: map[string]string{
-			"KOU_CONVEYOR_PLUGIN_NAME": current.Name,
-			"KOU_CONVEYOR_PLUGIN_DIR":  current.Directory,
-			"KOU_CONVEYOR_WORKSPACE":   workspace,
-			"KOU_CONVEYOR_SESSION_ID":  string(sessionID),
-		},
+		Environment:     pluginEnvironment(current, sessionID, workspace),
 	})
 	return model, translator, err
 }

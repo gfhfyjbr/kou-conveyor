@@ -16,6 +16,17 @@
 .ins h2 { display: flex; justify-content: space-between; margin: 0 0 10px; font: 700 10.5px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg-3); }
 .ins h2 span { color: var(--fg-4); letter-spacing: 0; }
 
+.kv-choice { align-items: center; }
+.ins-select {
+  flex: none;
+  max-width: 62%;
+  padding: 1px 4px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  color: var(--fg);
+  font: 12px/1.6 var(--mono);
+}
+.ins-select:hover { border-color: var(--fg-4); }
 .kv.state-running .v, .kv.state-starting .v { color: var(--accent); }
 .kv.state-failed .v { color: var(--err); }
 .kv.state-done .v { color: var(--ok); }

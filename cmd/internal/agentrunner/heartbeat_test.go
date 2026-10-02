@@ -52,7 +52,7 @@ func TestRunMainHeartbeatReleasesWaitingBashAndReplays(t *testing.T) {
 				continue
 			}
 			result := item.Data.(llm.ToolResult)
-			if result.CallID != "waiting-call" || result.Output[0].Value == contextbuilder.ToolCallRunningPayload {
+			if result.CallID != "waiting-call" || strings.HasPrefix(result.Output[0].Value, contextbuilder.ToolCallRunningPayload) {
 				continue
 			}
 			if result.Output[0].Value != "released" {

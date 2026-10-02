@@ -10,13 +10,16 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 	"unicode"
 
 	"github.com/charmbracelet/x/ansi"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
 	"github.com/gfhfyjbr/kou-conveyor/harness/contextbuilder"
+	"github.com/gfhfyjbr/kou-conveyor/harness/coordinator"
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
@@ -96,9 +99,43 @@ type Tool struct {
 	// Image describes the picture a ViewImage call read, as the model got
 	// it; its bytes stay with the call (Picture, ToolImage).
 	Image *ImageInfo `json:"image,omitempty"`
+	// Syntax is the highlighting of a Code call's code: runs of a length,
+	// in UTF-16 code units, and a class, by its index in highlight.Classes.
+	// The code past the last run is plain.
+	Syntax []int32 `json:"syntax,omitempty"`
+	// Calls are the tool calls a Code call's code made, in order, as the
+	// run reports them: the batch the code is, drawn under it.
+	Calls []CodeCall `json:"calls,omitempty"`
+	// Logs is what a Code call's code logged, and Value what it returned.
+	Logs  string `json:"logs,omitempty"`
+	Value string `json:"value,omitempty"`
+	// Files are the files a call changed: an Edit, a Write, a patch.
+	Files []string `json:"files,omitempty"`
 
-	callError  string
-	operations []operation.Operation
+	callError   string
+	highlighted string // the code Syntax is of
+	// outcomes are what the call's operations came to, in their order,
+	// without their states, which hold whole outputs and pictures.
+	outcomes []outcome
+	// threw notes code that ended with an error, though its operation
+	// completed: the call failed.
+	threw bool
+}
+
+// CodeCall is one tool call the code of a Code call made.
+type CodeCall struct {
+	Name  string `json:"name"`
+	Input string `json:"input,omitempty"`
+	// Gist is the call's line: a path as the workspace names it, the files
+	// a patch changes, the first line of a script that does something, or
+	// the first line of its input.
+	Gist     string    `json:"gist,omitempty"`
+	Output   string    `json:"output,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	ExitCode *int      `json:"exit_code,omitempty"`
+	State    string    `json:"state"`
+	Started  time.Time `json:"started,omitzero"`
+	Finished time.Time `json:"finished,omitzero"`
 }
 
 // Terminal reports whether the tool will not change state any more.
@@ -363,7 +400,7 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 		e.Tool.callError = data.Status.Error
 		for _, value := range data.Operations {
 			t.operations[value.ID] = data.CallID
-			e.Tool.operations = mergeOperation(e.Tool.operations, value)
+			e.Tool.outcomes = mergeOutcome(e.Tool.outcomes, outcomeOf(value))
 		}
 		t.refresh(e, at)
 		return []*Entry{t.touch(e)}
@@ -427,6 +464,7 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 				if input := toolInput(value.Arguments); input != "" {
 					e.Tool.Input = input
 				}
+				e.Tool.highlightCode()
 				changed = append(changed, t.touch(e))
 			}
 		}
@@ -470,7 +508,7 @@ func (t *Transcript) applyOperation(value operation.Operation) []*Entry {
 	if e == nil {
 		return nil
 	}
-	e.Tool.operations = mergeOperation(e.Tool.operations, value)
+	e.Tool.outcomes = mergeOutcome(e.Tool.outcomes, outcomeOf(value))
 	t.refresh(e, time.Time{})
 	return []*Entry{t.touch(e)}
 }
@@ -491,13 +529,15 @@ func (t *Transcript) tool(callID string, at time.Time) *Entry {
 func (t *Transcript) refresh(e *Entry, at time.Time) {
 	tool := e.Tool
 	tool.Output, tool.Stderr, tool.Error, tool.ExitCode, tool.Image = "", "", "", nil, nil
+	tool.Calls, tool.Logs, tool.Value, tool.Files, tool.threw = nil, "", "", nil, false
 	state := ToolDone
 	if tool.callError != "" {
 		state, tool.Error = ToolFailed, Clean(tool.callError)
 	}
 	var outputs, errors []string
-	for _, value := range tool.operations {
-		switch value.Status {
+	for i := range tool.outcomes {
+		o := &tool.outcomes[i]
+		switch o.status {
 		case operation.StatusCompleted:
 		case operation.StatusFailed:
 			state = ToolFailed
@@ -510,7 +550,7 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 				state = ToolRunning
 			}
 		}
-		output, stderr := describeOperation(tool, value)
+		output, stderr := o.apply(tool)
 		if output != "" {
 			outputs = append(outputs, output)
 		}
@@ -518,8 +558,13 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 			errors = append(errors, stderr)
 		}
 	}
-	tool.Output = Clean(strings.Join(outputs, "\n"))
-	tool.Stderr = Clean(strings.Join(errors, "\n"))
+	// The outputs are clean already: a call's only one is its output as it
+	// is, not a copy.
+	tool.Output = strings.Join(outputs, "\n")
+	tool.Stderr = strings.Join(errors, "\n")
+	if tool.threw && state == ToolDone {
+		state = ToolFailed
+	}
 	tool.State = state
 	if tool.Terminal() {
 		delete(t.active, e.ID)
@@ -532,6 +577,20 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 	// Tools go on while a failed request to the model is tried again; that
 	// is what the run waits for.
 	t.Activity = cmp.Or(t.retrying, t.runningActivity())
+	tool.highlightCode()
+}
+
+// highlightTime bounds the highlighting of a Code call's code: what is not
+// done by then shows plain.
+const highlightTime = 100 * time.Millisecond
+
+// highlightCode highlights a Code call's code, once for each code it shows.
+func (tool *Tool) highlightCode() {
+	if tool.Input == tool.highlighted || !strings.EqualFold(tool.Name, "code") {
+		return
+	}
+	tool.highlighted = tool.Input
+	tool.Syntax = highlight.Highlight("code.js", tool.Input, time.Now().Add(highlightTime)).Runs
 }
 
 func (t *Transcript) runningActivity() string {
@@ -549,70 +608,234 @@ func (t *Transcript) runningActivity() string {
 	return "Running a tool"
 }
 
-func describeOperation(tool *Tool, value operation.Operation) (output, stderr string) {
+// outcome is what an operation of a tool call came to, as the call shows
+// it, read once from the operation's state (outcomeOf). A state holds the
+// operation's whole output, and the picture a ViewImage call read: a
+// session of many calls holds hundreds of megabytes of them, which the
+// transcript keeps only what it shows of, once.
+type outcome struct {
+	id     operation.ID
+	kind   operation.Type
+	status operation.Status
+	read   bool // the state was there and could be read: the rest says what it says
+
+	output, stderr string   // clean
+	input          string   // the call's input, if nothing else names one
+	verify         bool     // the harness's own check of the work, once the model was done
+	errors         []string // clean; each joins the call's error
+	exitCode       *int
+	image          bool       // whether a picture was read: info is the call's, nil or not
+	info           *ImageInfo // the picture
+	picture        string     // the picture's bytes in base64, if transcripts keep them (KeepPictures)
+	files          []string
+	calls          []CodeCall
+	code           bool // a Code call's result: logs and value are the call's
+	logs, value    string
+	threw          bool
+}
+
+// outcomeOf reads what an operation came to from its state.
+func outcomeOf(value operation.Operation) outcome {
+	o := outcome{id: value.ID, kind: value.Type, status: value.Status}
 	if len(value.State) == 0 {
-		return "", ""
+		return o
 	}
 	switch value.Type {
 	case operation.TypeShell:
 		var state operation.ShellState
 		if json.Unmarshal(value.State, &state) != nil {
-			return "", ""
+			return o
 		}
-		if tool.Input == "" {
-			tool.Input = Clean(state.Input.Command)
-		}
+		o.read = true
+		o.verify = string(value.Idempotency) == coordinator.VerificationMarker
+		o.input = Clean(state.Input.Command)
 		if state.TerminalError != "" {
-			tool.Error = joinLines(tool.Error, Clean(state.TerminalError))
+			o.errors = append(o.errors, Clean(state.TerminalError))
 		}
 		if state.Result != nil {
 			code := state.Result.ExitCode
-			tool.ExitCode = &code
-			return state.Result.Out, state.Result.Err
+			o.exitCode = &code
+			o.output, o.stderr = Clean(state.Result.Out), Clean(state.Result.Err)
 		}
 	case operation.TypeViewImage:
 		var state operation.ViewImageState
 		if json.Unmarshal(value.State, &state) != nil {
-			return "", ""
+			return o
 		}
-		if tool.Input == "" {
-			tool.Input = Clean(state.Path)
-		}
+		o.read = true
+		o.input = Clean(state.Path)
 		if result := state.Result; result != nil {
 			if result.Error != "" {
-				tool.Error = joinLines(tool.Error, Clean(result.Error))
-				return "", ""
+				o.errors = append(o.errors, Clean(result.Error))
+				return o
 			}
 			if value.Status == operation.StatusCompleted {
-				tool.Image = viewedImage(state)
+				o.image, o.info = true, viewedImage(state)
+				if o.info != nil && KeepPictures {
+					o.picture = result.Content
+				}
 			}
-			return fmt.Sprintf("%d×%d %s", result.OriginalWidth, result.OriginalHeight, result.OriginalMIMEType), ""
+			o.output = Clean(fmt.Sprintf("%d×%d %s", result.OriginalWidth, result.OriginalHeight, result.OriginalMIMEType))
 		}
 	case operation.TypeSkillUse:
 		var state operation.SkillUseState
 		if json.Unmarshal(value.State, &state) != nil {
-			return "", ""
+			return o
 		}
-		if tool.Input == "" {
-			tool.Input = Clean(state.Path)
-		}
+		o.read = true
+		o.input = Clean(state.Path)
 		if state.TerminalError != "" {
-			tool.Error = joinLines(tool.Error, Clean(state.TerminalError))
+			o.errors = append(o.errors, Clean(state.TerminalError))
 		} else if value.Status == operation.StatusCompleted {
-			return "Loaded " + state.Path, ""
+			o.output = Clean("Loaded " + state.Path)
+		}
+	case operation.TypeFile:
+		var state operation.FileState
+		if json.Unmarshal(value.State, &state) != nil {
+			return o
+		}
+		o.read = true
+		o.input = Clean(cmp.Or(state.Path, state.Query, Headline(state.Patch, 200)))
+		if state.TerminalError != "" {
+			o.errors = append(o.errors, Clean(state.TerminalError))
+			return o
+		}
+		if state.Result != nil {
+			o.files = state.Result.Files
+			if state.Action == operation.FileRead && state.Result.Lines > 0 {
+				code := 0
+				o.exitCode = &code
+			}
+			o.output = Clean(state.Result.Text)
+		}
+	case operation.TypeCode:
+		var state operation.CodeState
+		if json.Unmarshal(value.State, &state) != nil {
+			return o
+		}
+		o.read = true
+		o.input = Clean(state.Code)
+		if state.TerminalError != "" {
+			o.errors = append(o.errors, Clean(state.TerminalError))
+		}
+		if result := state.Result; result != nil {
+			// A run that ended has no call running: what one it left was
+			// doing, it stopped with it.
+			ended := value.Status == operation.StatusCompleted || value.Status == operation.StatusFailed || value.Status == operation.StatusCanceled
+			for _, call := range result.Calls {
+				current := CodeCall{
+					Name: Clean(call.Name), Input: Clean(call.Arguments), Output: Clean(call.Output), Error: Clean(call.Error),
+					ExitCode: call.ExitCode, Started: call.Started, Finished: call.Finished, State: ToolDone,
+				}
+				current.Gist = codeGist(current.Name, current.Input, state.Config.Directory)
+				switch {
+				case call.Running && ended:
+					current.State = ToolCanceled
+				case call.Running:
+					current.State = ToolRunning
+				case call.Error != "":
+					current.State = ToolFailed
+				}
+				o.calls = append(o.calls, current)
+			}
+			o.code, o.logs, o.value = true, Clean(result.Logs), Clean(result.Value)
+			if result.Error != "" {
+				o.errors = append(o.errors, Clean(result.Error))
+				o.threw = true
+			}
 		}
 	}
-	return "", ""
+	return o
 }
 
-func mergeOperation(operations []operation.Operation, value operation.Operation) []operation.Operation {
-	for i := range operations {
-		if operations[i].ID == value.ID {
-			operations[i] = value
-			return operations
+// apply does to a call what the operation says of it, as refresh draws the
+// call again from its operations in order, and returns the operation's
+// output and errors, clean.
+func (o *outcome) apply(tool *Tool) (output, stderr string) {
+	if !o.read {
+		return "", ""
+	}
+	if o.verify && tool.Name == "" {
+		tool.Name = "Verify"
+	}
+	if tool.Input == "" {
+		tool.Input = o.input
+	}
+	for _, text := range o.errors {
+		tool.Error = joinLines(tool.Error, text)
+	}
+	if o.exitCode != nil {
+		code := *o.exitCode
+		tool.ExitCode = &code
+	}
+	if o.image {
+		tool.Image = nil
+		if o.info != nil {
+			info := *o.info
+			tool.Image = &info
 		}
 	}
-	return append(operations, value)
+	tool.Files = append(tool.Files, o.files...)
+	tool.Calls = append(tool.Calls, o.calls...)
+	if o.code {
+		tool.Logs, tool.Value = o.logs, o.value
+	}
+	tool.threw = tool.threw || o.threw
+	return o.output, o.stderr
+}
+
+// codeGist is the line a call of a Code call's code shows: the files a patch
+// changes, a path the code read or wrote as the directory the code ran in
+// names it, the first line of a script that does something, or the first
+// line of what the call was given.
+func codeGist(name, input, directory string) string {
+	switch name {
+	case "bash":
+		// Comments, and the options a script sets its shell, say nothing of
+		// what it does.
+		for line := range strings.Lines(input) {
+			line = strings.TrimSpace(line)
+			options := (strings.HasPrefix(line, "set -") || strings.HasPrefix(line, "set +")) && !strings.ContainsAny(line, ";&|")
+			if line != "" && !strings.HasPrefix(line, "#") && !options {
+				return line
+			}
+		}
+	case "applyPatch":
+		var files []string
+		for line := range strings.Lines(input) {
+			line = strings.TrimSpace(line)
+			for _, action := range []string{"Add", "Update", "Delete"} {
+				if file, ok := strings.CutPrefix(line, "*** "+action+" File: "); ok {
+					files = append(files, action+" "+strings.TrimSpace(file))
+				}
+			}
+		}
+		if len(files) != 0 {
+			return strings.Join(files, ", ")
+		}
+	case "read", "readText", "write", "edit", "viewImage":
+		if directory != "" && filepath.IsAbs(input) {
+			if relative, err := filepath.Rel(directory, input); err == nil && filepath.IsLocal(relative) {
+				return relative
+			}
+		}
+	}
+	for line := range strings.Lines(input) {
+		if line = strings.TrimSpace(line); line != "" {
+			return line
+		}
+	}
+	return ""
+}
+
+func mergeOutcome(outcomes []outcome, o outcome) []outcome {
+	for i := range outcomes {
+		if outcomes[i].id == o.id {
+			outcomes[i] = o
+			return outcomes
+		}
+	}
+	return append(outcomes, o)
 }
 
 // await notes a prompt that the next turn answers.
@@ -658,7 +881,7 @@ func toolInput(arguments string) string {
 	if json.Unmarshal([]byte(arguments), &fields) != nil {
 		return Headline(Clean(arguments), 400)
 	}
-	for _, name := range []string{"command", "path", "name"} {
+	for _, name := range []string{"command", "path", "file_path", "name", "query", "code", "input"} {
 		var value string
 		if raw, ok := fields[name]; ok && json.Unmarshal(raw, &value) == nil && value != "" {
 			return Clean(value)

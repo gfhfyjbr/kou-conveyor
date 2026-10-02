@@ -45,6 +45,38 @@ type Dependencies struct {
 	// and the calls still running show as such. Zero waits however long the
 	// calls take; a heartbeat still wakes the model.
 	ToolWaitLimit time.Duration
+	// ToolGrace is how long the results of a response's tool calls are
+	// gathered before they wake the model, from when the calls start:
+	// results that land together arrive in one turn. Zero is a second.
+	// ToolGraceLimit, when set, lets every result that arrives while other
+	// calls of the response still run extend the wait by ToolGrace again,
+	// up to ToolGraceLimit after the calls started: the model does not
+	// answer results that were about to be joined by others.
+	ToolGrace      time.Duration
+	ToolGraceLimit time.Duration
+	// Verifier, when set, checks the work once the model finishes a prompt:
+	// its checks run before the run goes idle, and their failures go back
+	// to the model, MaxVerifications times a prompt at most (zero is 3).
+	Verifier         Verifier
+	MaxVerifications int
+	// NoRecovery leaves the model's answers as they come: without it, the
+	// coordinator asks the model to go on after an answer the output limit
+	// cut, asks again after a refusal or an empty answer, and sends a
+	// request again after a response that failed, a few times each.
+	NoRecovery bool
+}
+
+// Verifier checks the work the model did for a prompt before the run goes
+// idle, as an operation the coordinator runs: the project's build, its
+// tests. The runner gives one when the workspace's plugins or the
+// environment name the checks.
+type Verifier interface {
+	// Spec is the operation that runs the checks; false when there are
+	// none.
+	Spec() (operation.Spec, bool)
+	// Report reads a finished check: what the model reads of it, and
+	// whether it passed.
+	Report(operation.Operation) (report string, passed bool)
 }
 
 type Coordinator interface {

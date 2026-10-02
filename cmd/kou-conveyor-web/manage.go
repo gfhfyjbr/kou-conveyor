@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 )
 
 // decodeJSON reads a small JSON request body into v and reports failures to
@@ -169,21 +172,59 @@ func (s *server) effort() (level string, saved bool) {
 }
 
 func (s *server) handlePreferences(w http.ResponseWriter, r *http.Request) {
-	effort, saved := s.effort()
-	writeJSON(w, http.StatusOK, map[string]any{"effort": effort, "saved": saved})
+	writeJSON(w, http.StatusOK, s.preferencesView())
 }
 
-// handleSavePreferences records the effort for both cockpits: the terminal
-// one picks it up too.
+// preferencesView is what the cockpit reads of the preferences: the
+// effort, the tool profile and the sandbox of the next runs, and the
+// choices there are.
+func (s *server) preferencesView() map[string]any {
+	effort, saved := s.effort()
+	p := cockpit.LoadPreferences(cockpit.PreferencesPath(s.opt.SettingsFile))
+	profiles := make([]map[string]string, 0, len(tool.Profiles))
+	for _, profile := range tool.Profiles {
+		profiles = append(profiles, map[string]string{"value": string(profile), "description": profile.Description()})
+	}
+	sandboxes := make([]map[string]string, 0, len(runconfig.SandboxModes))
+	for _, mode := range runconfig.SandboxModes {
+		sandboxes = append(sandboxes, map[string]string{"value": mode, "description": runconfig.SandboxDescription(mode)})
+	}
+	return map[string]any{
+		"effort": effort, "saved": saved,
+		"tool_profile": cmp.Or(p.ToolProfile, string(tool.ProfileAuto)), "tool_profiles": profiles,
+		"sandbox": cmp.Or(p.Sandbox, runconfig.SandboxOff), "sandboxes": sandboxes,
+	}
+}
+
+// handleSavePreferences records the effort, the tool profile or the
+// sandbox for both cockpits: the terminal one picks them up too.
 func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	var change struct {
-		Effort string `json:"effort"`
+		Effort      *string `json:"effort"`
+		ToolProfile *string `json:"tool_profile"`
+		Sandbox     *string `json:"sandbox"`
 	}
 	if !decodeJSON(w, r, &change) {
 		return
 	}
-	if !cockpit.ValidThinkingLevel(change.Effort) {
+	if change.Effort != nil && !cockpit.ValidThinkingLevel(*change.Effort) {
 		writeError(w, http.StatusBadRequest, "effort must be low, medium, high, xhigh or max")
+		return
+	}
+	if change.ToolProfile != nil {
+		if _, err := tool.ParseProfile(*change.ToolProfile); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if change.Sandbox != nil {
+		if _, err := runconfig.ParseSandboxMode(*change.Sandbox); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if change.Effort == nil && change.ToolProfile == nil && change.Sandbox == nil {
+		writeError(w, http.StatusBadRequest, "nothing to save: effort, tool_profile or sandbox")
 		return
 	}
 	path := cockpit.PreferencesPath(s.opt.SettingsFile)
@@ -192,13 +233,22 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.settingsMu.Lock()
-	err := cockpit.SaveEffort(path, change.Effort)
+	var err error
+	if change.Effort != nil {
+		err = cockpit.SaveEffort(path, *change.Effort)
+	}
+	if err == nil && change.ToolProfile != nil {
+		err = cockpit.SaveToolProfile(path, *change.ToolProfile)
+	}
+	if err == nil && change.Sandbox != nil {
+		err = cockpit.SaveSandbox(path, *change.Sandbox)
+	}
 	s.settingsMu.Unlock()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"effort": change.Effort, "saved": true})
+	writeJSON(w, http.StatusOK, s.preferencesView())
 }
 
 // ---------------------------------------------------------------- sessions

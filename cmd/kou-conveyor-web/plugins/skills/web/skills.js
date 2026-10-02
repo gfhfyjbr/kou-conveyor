@@ -7,7 +7,8 @@
 //                .harness/skills and .agents/skills, and its plugins'.
 //   System-wide  the user's, which it has in every workspace: skills/ in
 //                kou-conveyor's configuration directory, ~/.agents/skills,
-//                and the other plugins'.
+//                the user's plugins', and the built-in plugins' — such as
+//                the guide's, which teaches the agent to write plugins.
 //
 // A project's skill replaces a system-wide one of the same name; a skill
 // whose frontmatter says disable-model-invocation loads only when the user
@@ -69,7 +70,7 @@ export default function activate(cockpit) {
     const make = (id, title, hint) => (fold ? fold({ id, title, hint, level: 2, beforeOpen: () => draw(true) }) : plainBar(title));
     bars = {
       project: make('skills.project', 'Project', '.harness · .agents'),
-      system: make('skills.system', 'System-wide', '~/.agents · kou-conveyor'),
+      system: make('skills.system', 'System-wide', '~/.agents · kou-conveyor · built in'),
     };
     return bars;
   }

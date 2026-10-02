@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	sdkconfig "github.com/router-for-me/CLIProxyAPI/v7/sdk/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v8/sdk/config"
 )
 
 // upstream is an OpenAI-compatible provider the gateway is configured with,

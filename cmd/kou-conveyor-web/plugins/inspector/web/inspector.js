@@ -2,9 +2,11 @@
 // ("sidebar.tab" inspector), or, without the sidebar plugin, a side panel
 // of its own (layout.panel "inspector"). Every section is a contribution
 // to "inspector.section" — { id, title, order, shown(view), render(view) →
-// node or text, fold, open, meta(view) } — its own (Run, Tokens, Tools,
-// Session, Runner log) as much as a plugin's (cockpit.inspector.register).
-// A section with the id of another takes its place.
+// node, nodes or text, fold, open, meta(view) } — its own (Run, Tokens,
+// Tools, Session, Runner log) as much as a plugin's
+// (cockpit.inspector.register). A section with the id of another takes its
+// place. A node a section renders again stays where it is, so a select the
+// section keeps does not close the menu it has open.
 //
 // A section with fold is a bar: its title, and what meta says of it —
 // text, or parts { text, tone } — that opens, animated, onto its body. It
@@ -79,10 +81,31 @@ export default function activate(cockpit) {
 
   // ---------------------------------------------------------------- bars
 
-  // put gives parent those children, unless it holds them already: a node
-  // put in again would lose the transition it runs.
+  // put gives parent those children, leaving where they are the ones it
+  // holds already: a node put in again would lose the transition it runs,
+  // and a select the menu it has open.
   const same = (parent, nodes) => parent.childNodes.length === nodes.length && nodes.every((node, i) => parent.childNodes[i] === node);
-  const put = (parent, nodes) => { if (!same(parent, nodes)) parent.replaceChildren(...nodes); };
+  const put = (parent, nodes) => {
+    if (same(parent, nodes)) return;
+    const keep = new Set(nodes);
+    for (const child of [...parent.childNodes]) if (!keep.has(child)) child.remove();
+    let at = parent.firstChild;
+    for (const node of nodes) {
+      if (node === at) at = node.nextSibling;
+      else parent.insertBefore(node, at);
+    }
+  };
+  // nodesOf is what a section rendered, as the nodes to put: a node, the
+  // children of a fragment, a list of them, or text.
+  const nodesOf = (body) => {
+    if (Array.isArray(body)) {
+      return body.flat(Infinity).filter((part) => part != null && part !== false)
+        .flatMap((part) => (part instanceof Node ? nodesOf(part) : [document.createTextNode(String(part))]));
+    }
+    if (body instanceof DocumentFragment) return [...body.childNodes];
+    if (body instanceof Node) return [body];
+    return [h('p', { class: 'none', text: body == null ? '' : String(body) })];
+  };
   const setText = (el, text) => {
     text = text == null ? '' : String(text);
     if (el.textContent !== text) el.textContent = text;
@@ -151,8 +174,10 @@ export default function activate(cockpit) {
     return handle;
   }
 
-  // Each section keeps its element, so its body is replaced in place.
+  // Each section keeps its element and its heading, so its body is replaced
+  // in place.
   const boxes = new WeakMap(); // section → its element, or its bar
+  const heads = new WeakMap(); // section → its heading
   const folded = new Map(); // id → the bar of the section shown with it
   function render() {
     if (!open()) return;
@@ -174,9 +199,17 @@ export default function activate(cockpit) {
     }
     const body = cockpit.safely(() => section.render(summary, v));
     const title = typeof section.title === 'function' ? section.title(summary, v) : section.title || section.plugin;
-    if (section.raw && body instanceof Node) box.replaceChildren(body);
-    else box.replaceChildren(title instanceof Node ? title : h('h2', { text: title }), body instanceof Node ? body : h('p', { class: 'none', text: body == null ? '' : String(body) }));
+    if (section.raw && (body instanceof Node || Array.isArray(body))) put(box, nodesOf(body));
+    else put(box, [headOf(section, title), ...nodesOf(body)]);
     return box;
+  }
+
+  function headOf(section, title) {
+    if (title instanceof Node) return title;
+    let head = heads.get(section);
+    if (!head) heads.set(section, (head = h('h2')));
+    setText(head, title);
+    return head;
   }
 
   // A folded section is a bar, whose body is rendered while it is open.
@@ -204,7 +237,7 @@ export default function activate(cockpit) {
       summary = session.summary(v);
     }
     const body = cockpit.safely(() => section.render(summary, v));
-    put(bar.body, [body instanceof Node ? body : h('p', { class: 'none', text: body == null ? '' : String(body) })]);
+    put(bar.body, nodesOf(body));
   }
 
   // expand opens (or, with false, closes) the bar of a section, now or when
@@ -239,6 +272,66 @@ export default function activate(cockpit) {
     return f;
   };
 
+  // The tool profile and the sandbox of the next runs: chosen here, kept
+  // by the server where the terminal cockpit reads them too.
+  const runPrefs = { profile: null, sandbox: null, profiles: [], sandboxes: [], ticket: 0 };
+  async function refreshRunPrefs() {
+    const ticket = runPrefs.ticket;
+    let saved;
+    try {
+      saved = await cockpit.api('/api/preferences');
+    } catch {
+      return;
+    }
+    if (ticket !== runPrefs.ticket) return;
+    runPrefs.profile = saved?.tool_profile || 'auto';
+    runPrefs.sandbox = saved?.sandbox || 'off';
+    runPrefs.profiles = saved?.tool_profiles || [];
+    runPrefs.sandboxes = saved?.sandboxes || [];
+    cockpit.render();
+  }
+  async function saveRunPref(key, value) {
+    const ticket = ++runPrefs.ticket;
+    if (key === 'tool_profile') runPrefs.profile = value;
+    else runPrefs.sandbox = value;
+    cockpit.render();
+    try {
+      await cockpit.api('/api/preferences', { method: 'PUT', body: { [key]: value } });
+      cockpit.toast(key === 'tool_profile' ? `Tools for the next runs: ${value}` : `Sandbox for the next runs: ${value}`, 'info', 'run-prefs');
+    } catch (error) {
+      if (ticket === runPrefs.ticket) cockpit.toast(`Not saved: ${error.message}`, 'error', 'run-prefs');
+    }
+  }
+  // choice is a key · · · <select> row. It keeps its elements from one
+  // render to the next, as a run renders the section every second and more:
+  // a select made anew would close the menu the user has open. While it has
+  // the focus, the value the user is choosing stays.
+  const choices = new Map(); // key → { row, select, list }
+  function choice(label, key, current, options, title) {
+    let made = choices.get(key);
+    if (!made) {
+      const select = h('select', { class: 'ins-select', 'aria-label': label, title, onchange: () => saveRunPref(key, select.value) });
+      made = { select, row: h('div', { class: 'kv kv-choice' }, h('span', { class: 'k', text: label }), h('span', { class: 'dots' }), select), list: '' };
+      choices.set(key, made);
+    }
+    const { select, row } = made;
+    const list = JSON.stringify(options.map((option) => [option.value, option.description || '']));
+    const fresh = list !== made.list;
+    if (fresh) {
+      made.list = list;
+      select.replaceChildren(...options.map((option) => h('option', { value: option.value, text: option.value, title: option.description || '' })));
+    }
+    const value = current || options[0]?.value || '';
+    if (fresh || (select.value !== value && document.activeElement !== select)) select.value = value;
+    const description = options.find((option) => option.value === select.value)?.description || '';
+    if (row.title !== description) row.title = description;
+    return row;
+  }
+  const connectionActions = h('div', { class: 'ins-actions' },
+    h('button', { class: 'act', type: 'button', onclick: () => service('connection')?.open?.() }, 'Connection…'));
+  cockpit.interval(() => { if (document.visibilityState === 'visible' && open()) refreshRunPrefs(); }, 10000);
+  refreshRunPrefs();
+
   cockpit.contribute('inspector.section', {
     id: 'run', title: 'Run', order: 10,
     render: (summary, v) => {
@@ -252,7 +345,8 @@ export default function activate(cockpit) {
         ? models?.find?.(next)?.api || (/(^|\/)claude/i.test(next) ? 'messages' : 'responses')
         : link?.provider_type;
       const via = service('connection')?.viaGateway?.(link?.base_url, link);
-      return frag(kvs(
+      // A list, not a fragment: the rows it keeps stay where they are.
+      return kvs(
         kv('State', session.PHASE_LABEL[phase] || phase, `state-${phase}`),
         kv('Elapsed', v.run ? fmt.timer(Date.now() - v.run.started) : '—'),
         kv('Activity', v.run?.activity || '—'),
@@ -262,9 +356,34 @@ export default function activate(cockpit) {
         kv('Default', session.defaultModel() || 'runner default'),
         kv('Endpoint', link?.source === 'gateway' ? `accounts gateway${state.config?.accounts?.url ? ` · ${host(state.config.accounts.url)}` : ''}`
           : link?.base_url ? (via ? `accounts gateway · ${host(link.base_url)}` : host(link.base_url)) : 'provider default'),
-        cockpit.has('connection') ? h('div', { class: 'ins-actions' },
-          h('button', { class: 'act', type: 'button', onclick: () => service('connection')?.open?.() }, 'Connection…')) : null));
+        runPrefs.profiles.length ? choice('Tools', 'tool_profile', runPrefs.profile, runPrefs.profiles,
+          'The built-in tools the next runs work with: edit (Read/Edit/Write) for Claude, patch (apply_patch) for GPT, code (one Code tool: JavaScript that calls the tools), shell (Bash only)') : null,
+        runPrefs.sandboxes.length ? choice('Sandbox', 'sandbox', runPrefs.sandbox, runPrefs.sandboxes,
+          'Where the next runs work: the workspace, a git worktree of its own, or a worktree with the commands in the workspace\'s container') : null,
+        cockpit.has('connection') ? connectionActions : null);
     },
+  });
+  cockpit.commands.register({
+    name: 'tools', args: '<profile>', help: 'The built-in tools of the next runs: auto, edit, patch, code or shell', order: 135,
+    run: (arg) => {
+      const value = (arg || '').trim().toLowerCase();
+      const known = runPrefs.profiles.map((option) => option.value);
+      if (!value) return cockpit.toast(`Tools: ${runPrefs.profile || 'auto'}. Profiles: ${known.join(', ')}.`);
+      if (!known.includes(value)) return cockpit.toast(`Tool profiles: ${known.join(', ')}.`, 'error');
+      return saveRunPref('tool_profile', value);
+    },
+    complete: () => runPrefs.profiles.map((option) => ({ value: option.value, label: option.value, detail: option.description, current: option.value === runPrefs.profile })),
+  });
+  cockpit.commands.register({
+    name: 'sandbox', args: '<mode>', help: 'Where the next runs work: off, worktree or container', order: 136,
+    run: (arg) => {
+      const value = (arg || '').trim().toLowerCase();
+      const known = runPrefs.sandboxes.map((option) => option.value);
+      if (!value) return cockpit.toast(`Sandbox: ${runPrefs.sandbox || 'off'}. Modes: ${known.join(', ')}.`);
+      if (!known.includes(value)) return cockpit.toast(`Sandbox modes: ${known.join(', ')}.`, 'error');
+      return saveRunPref('sandbox', value);
+    },
+    complete: () => runPrefs.sandboxes.map((option) => ({ value: option.value, label: option.value, detail: option.description, current: option.value === runPrefs.sandbox })),
   });
 
   cockpit.contribute('inspector.section', {

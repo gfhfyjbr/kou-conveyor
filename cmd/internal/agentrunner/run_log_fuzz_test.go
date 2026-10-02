@@ -124,6 +124,9 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 							// Fuzzed usage would compact at random; the log
 							// checks follow ordinary turns.
 							return "off"
+						case recoveryEnvironment:
+							// The planned responses are the whole exchange.
+							return "off"
 						}
 						return ""
 					}, func() []string { return nil }, bytes.NewReader(encodedRequest), destination, io.Discard, testConfig(client))

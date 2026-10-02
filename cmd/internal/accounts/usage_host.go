@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 
 // Usage reports what the gateway's requests used over a range, and what it

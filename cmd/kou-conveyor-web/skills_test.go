@@ -48,7 +48,7 @@ func TestPluginListingHasTheSkills(t *testing.T) {
 		directory := value.(map[string]any)
 		labels = append(labels, directory["scope"].(string)+":"+directory["kind"].(string)+":"+directory["label"].(string))
 	}
-	if len(labels) != 4 || labels[0] != "project:harness:.harness/skills" || labels[1] != "project:agents:.agents/skills" || labels[3] != "system:agents:~/.agents/skills" {
+	if len(labels) != 5 || labels[0] != "project:harness:.harness/skills" || labels[1] != "project:agents:.agents/skills" || labels[3] != "system:agents:~/.agents/skills" || labels[4] != "system:builtin:built in · guide" {
 		t.Fatalf("directories = %v", labels)
 	}
 	skills := skillsOf(t, listing)
@@ -58,6 +58,9 @@ func TestPluginListingHasTheSkills(t *testing.T) {
 	}
 	if replaced == nil || replaced["scope"] != "system" || replaced["active"] != false || replaced["reason"] != "replaced by the skill of the same name in .harness/skills" || replaced["file"] != nil {
 		t.Fatalf("the system's commit = %v", replaced)
+	}
+	if builtin := skills["kou-conveyor-plugins@built in · guide"]; builtin == nil || builtin["active"] != true || builtin["plugin"] != "guide" {
+		t.Fatalf("the built-in skill = %v", builtin)
 	}
 	if release == nil || release["active"] != true || skills["deploy@.agents/skills"] == nil {
 		t.Fatalf("skills = %v", skills)

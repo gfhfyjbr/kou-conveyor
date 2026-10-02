@@ -190,6 +190,59 @@ func TestToolImageFollowsTheFile(t *testing.T) {
 	}
 }
 
+// A front-end that takes the pictures from the session file keeps none: its
+// transcripts describe them, and the file has their bytes. A record longer
+// than the reader's buffer is read whole, one still being written is not.
+func TestTranscriptsKeepNoPicturesUnlessAsked(t *testing.T) {
+	sessions, id := t.TempDir(), uuid.New().String()
+	path := filepath.Join(sessions, id+".session.jsonl")
+	// A picture of a megabyte, as a screenshot comes: its record runs past
+	// the reader's buffer.
+	picture := append(cockpittest.Picture(), make([]byte, 1<<20)...)
+	done := &operation.ViewImageResult{
+		Content: base64.StdEncoding.EncodeToString(picture), OriginalWidth: 480, OriginalHeight: 320,
+		OriginalMIMEType: "image/png", EncodedMIMEType: "image/png", ScaleRatio: 1,
+	}
+	last := statusRecord(t, 3, "call-c", viewOperation(t, "op-c", operation.StatusCompleted, done))
+	data := bytes.Join([][]byte{
+		sessionRecord(t, "session", map[string]any{"Version": 2}),
+		statusRecord(t, 1, "call-a", viewOperation(t, "op-a", operation.StatusCompleted, done)),
+		[]byte("not a record\n"),
+		last[:len(last)/2], // still being written
+	}, nil)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := func(keep bool) *cockpit.Transcript {
+		t.Helper()
+		was := cockpit.KeepPictures
+		cockpit.KeepPictures = keep
+		defer func() { cockpit.KeepPictures = was }()
+		tr, err := cockpit.LoadSession(sessions, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tr
+	}
+	tr := read(false)
+	if tr.Size != int64(len(data)) || tr.Entry("tool:call-c") != nil || tr.Entry("skipped") == nil {
+		t.Fatalf("read %d bytes of %d, entries %+v", tr.Size, len(data), tr.Entries)
+	}
+	e := tr.Entry("tool:call-a")
+	if e == nil || e.Tool.Image == nil || e.Tool.Image.Width != 480 || e.Tool.Image.Size != len(picture) || e.Tool.Output != "480×320 image/png" {
+		t.Fatalf("call = %+v", e)
+	}
+	if _, ok := e.Tool.Picture(); ok {
+		t.Fatal("a transcript that keeps no pictures has one")
+	}
+	if img, err := cockpit.ToolImage(sessions, id, "call-a"); err != nil || !bytes.Equal(img.Data, picture) {
+		t.Fatalf("picture from the file: %v", err)
+	}
+	if img, ok := read(true).Entry("tool:call-a").Tool.Picture(); !ok || !bytes.Equal(img.Data, picture) || img.Label != "after.png" {
+		t.Fatalf("kept picture = %q (%d bytes)", img.Label, len(img.Data))
+	}
+}
+
 func TestValidCallID(t *testing.T) {
 	for _, id := range []string{"call-1", "toolu_01JTCyurFezfXA6SqFnQGz6u", "call_abc|fc_1"} {
 		if !cockpit.ValidCallID(id) {

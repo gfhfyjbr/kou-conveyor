@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/primitives"
@@ -934,4 +935,29 @@ func advanceShellOnce(t *testing.T, current operation.Operation, event *primitiv
 		return operation.Step{}, err
 	}
 	return shell.Handle(event)
+}
+
+func TestShellActorStopsACommandAtItsTimeout(t *testing.T) {
+	current := newShellOperation(t, "shell-timeout", operation.ShellInput{
+		Shell: testShellPath, Command: "echo started; sleep 30; echo never", Directory: t.TempDir(), Timeout: 0.5,
+	}, t.TempDir(), 4096)
+	started := time.Now()
+	manager := operation.NewLocalOperationManager(t.Context())
+	if err := manager.Add(current); err != nil {
+		t.Fatal(err)
+	}
+	completed := receiveTerminalOperation(t, manager.Updates(), current.ID)
+	if completed.Status != operation.StatusCompleted {
+		t.Fatalf("status = %q", completed.Status)
+	}
+	state := shellState(t, completed)
+	if state.Result == nil || !state.Result.TimedOut || state.Result.ExitCode != 128+int(syscall.SIGTERM) || state.Result.Out != "started\n" {
+		t.Fatalf("result = %#v", state.Result)
+	}
+	if elapsed := time.Since(started); elapsed > 15*time.Second || state.Result.Duration <= 0 || state.Result.Duration > 15 {
+		t.Fatalf("took %s, duration %v", elapsed, state.Result.Duration)
+	}
+	if _, err := operation.NewShellSpec(operation.ShellInput{Shell: testShellPath, Command: "true", Timeout: -1}, t.TempDir(), 10); err == nil {
+		t.Fatal("a negative timeout was accepted")
+	}
 }

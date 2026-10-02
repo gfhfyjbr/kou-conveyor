@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
 )
 
 // The models the gateway serves come from its model registry, which runs in

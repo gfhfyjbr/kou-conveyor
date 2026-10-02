@@ -205,8 +205,9 @@ func TestBuilderRemovesOnlyStagedRunningResultsForUpdatedCall(t *testing.T) {
 		name := "completed"
 		output := "done A"
 		if running {
+			// What a tool says of a running call follows the note.
 			name = "still running"
-			output = ToolCallRunningPayload
+			output = ToolCallRunningPayload + "\ndone A"
 		}
 		t.Run(name, func(t *testing.T) {
 			current := NewBuilder()
@@ -305,5 +306,26 @@ When a skill file references a relative path, resolve it against the skill direc
 Be concise.`
 	if got := result.Request.Input[0].Data.(llm.Message).Text; got != want {
 		t.Fatalf("system prompt = %q, want %q", got, want)
+	}
+}
+
+func TestRunningResultShowsTheNoteAndWhatTheToolSays(t *testing.T) {
+	current := NewBuilder()
+	current.AddToolResult("A", nil, true)
+	current.AddToolResult("B", []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "  output so far in /o/out  "}}, true)
+	result, err := current.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Request.Input[1].Data.(llm.ToolResult).Output[0].Value; got != ToolCallRunningPayload {
+		t.Fatalf("A = %q", got)
+	}
+	if got := result.Request.Input[2].Data.(llm.ToolResult).Output[0].Value; got != ToolCallRunningPayload+"\noutput so far in /o/out" {
+		t.Fatalf("B = %q", got)
+	}
+	current.AddToolResult("B", []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: "done"}}, false)
+	result, _ = current.Build()
+	if len(result.Request.Input) != 3 || result.Request.Input[2].Data.(llm.ToolResult).Output[0].Value != "done" {
+		t.Fatalf("input = %#v", result.Request.Input)
 	}
 }

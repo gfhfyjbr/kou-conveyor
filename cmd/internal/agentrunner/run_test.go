@@ -104,12 +104,16 @@ description: Review code.
 	if len(messages) != 3 || messages[0].Role != llm.RoleSystem ||
 		!strings.Contains(messages[0].Text, "<name>review</name>") ||
 		!strings.Contains(messages[0].Text, "<location>"+skillPath+"</location>") ||
-		!strings.HasSuffix(messages[0].Text, "\n\nbe concise") ||
+		!strings.Contains(messages[0].Text, "\n\nbe concise\n\n## Environment\n") ||
+		strings.Contains(messages[0].Text, "## Working norms") ||
 		!reflect.DeepEqual(messages[1:], wantMessages) {
 		t.Fatalf("messages = %#v, want system preamble plus %#v", messages, wantMessages)
 	}
-	if len(request.Tools) != 3 || !containsTool(request.Tools, "Bash") || !containsTool(request.Tools, "ViewImage") || !containsTool(request.Tools, "SkillUse") {
-		t.Fatalf("tools = %#v, want Bash, ViewImage, and SkillUse", request.Tools)
+	// A GPT model gets the patch profile: Bash, Read, apply_patch, ViewImage
+	// and the transcript search, and SkillUse for the skill.
+	if len(request.Tools) != 6 || !containsTool(request.Tools, "Bash") || !containsTool(request.Tools, "ViewImage") || !containsTool(request.Tools, "SkillUse") ||
+		!containsTool(request.Tools, "Read") || !containsTool(request.Tools, "apply_patch") || containsTool(request.Tools, "Edit") {
+		t.Fatalf("tools = %#v, want the patch profile and SkillUse", request.Tools)
 	}
 	assertItemSequence(t, stdout.String(),
 		"input.control input.external input.external input.control turn model_response",

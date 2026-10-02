@@ -126,15 +126,18 @@ func pluginInstructions(found plugin.Found) string {
 
 // listedPlugin is a line of -list-plugins.
 type listedPlugin struct {
-	Name        string   `json:"name"`
-	Version     string   `json:"version,omitzero"`
-	Description string   `json:"description,omitzero"`
-	Source      string   `json:"source"`
-	Directory   string   `json:"directory,omitzero"`
-	Active      bool     `json:"active"`
-	Reason      string   `json:"reason,omitzero"`
-	Tools       []string `json:"tools,omitzero"`
-	Commands    []string `json:"commands,omitzero"`
+	Name         string   `json:"name"`
+	Version      string   `json:"version,omitzero"`
+	Description  string   `json:"description,omitzero"`
+	Source       string   `json:"source"`
+	Directory    string   `json:"directory,omitzero"`
+	Active       bool     `json:"active"`
+	Reason       string   `json:"reason,omitzero"`
+	Tools        []string `json:"tools,omitzero"`
+	Commands     []string `json:"commands,omitzero"`
+	Skills       bool     `json:"skills,omitzero"`
+	Instructions bool     `json:"instructions,omitzero"`
+	Web          bool     `json:"web,omitzero"`
 }
 
 // listPlugins prints the plugins a run in the workspace would find, one JSON
@@ -144,6 +147,7 @@ func listPlugins(output io.Writer, found plugin.Found) error {
 		line := listedPlugin{
 			Name: current.Name, Version: current.Version, Description: current.Description, Source: string(current.Source),
 			Directory: current.Directory, Active: current.Active, Reason: current.Reason,
+			Skills: current.Skills != "", Instructions: current.Instructions != "", Web: current.Web != nil,
 		}
 		for _, definition := range current.Tools {
 			line.Tools = append(line.Tools, definition.Name)

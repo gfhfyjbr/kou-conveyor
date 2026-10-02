@@ -28,10 +28,13 @@ func TestCompactionLimits(t *testing.T) {
 		wantWindow, want             int64
 		err                          bool
 	}{
-		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 367_000},
+		// Automatic compaction comes no later than the ceiling, however
+		// large the window.
+		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 300_000},
 		{name: "unknown model", model: "other", provider: knows, wantWindow: 128_000, want: 96_000},
 		{name: "provider without models", model: "known", wantWindow: 128_000, want: 96_000},
-		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 967_000},
+		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 300_000},
+		{name: "window under the ceiling", model: "known", provider: knows, window: "320k", wantWindow: 320_000, want: 287_000},
 		{name: "small window", model: "known", provider: knows, window: "32k", wantWindow: 32_000, want: 24_000},
 		{name: "share of the window", model: "known", provider: knows, setting: "50%", wantWindow: 400_000, want: 200_000},
 		{name: "fractional share", model: "known", provider: knows, setting: " 62.5 % ", wantWindow: 400_000, want: 250_000},

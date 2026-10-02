@@ -193,16 +193,30 @@ func SessionTitle(dir, id string, t *Transcript) string {
 
 // LoadSession reads a persisted session into a transcript. A trailing record
 // the runner is still writing is ignored; records that cannot be decoded are
-// skipped and reported once at the end of the transcript.
+// skipped and reported once at the end of the transcript. The file is read
+// a record at a time: it runs to hundreds of megabytes, of which the
+// transcript keeps little.
 func LoadSession(dir, id string) (*Transcript, error) {
 	if !ValidSessionID(id) {
 		return nil, fmt.Errorf("invalid session ID %q", id)
 	}
-	data, err := os.ReadFile(SessionPath(dir, id))
+	file, err := os.Open(SessionPath(dir, id))
 	if err != nil {
 		return nil, err
 	}
-	return readTranscript(data), nil
+	defer file.Close()
+	t := NewTranscript()
+	skipped := 0
+	t.Size, err = eachRecord(file, func(line []byte) {
+		if _, err := t.Apply(line); err != nil {
+			skipped++
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	t.settle(skipped)
+	return t, nil
 }
 
 // readTranscript folds the contents of a session file into a transcript.
@@ -220,6 +234,13 @@ func readTranscript(data []byte) *Transcript {
 			skipped++
 		}
 	}
+	t.settle(skipped)
+	return t
+}
+
+// settle ends the reading of a session file: records that could not be read
+// are told of, and nothing is going on.
+func (t *Transcript) settle(skipped int) {
 	if skipped > 0 {
 		t.put(&Entry{
 			ID: "skipped", Kind: KindNotice,
@@ -227,7 +248,35 @@ func readTranscript(data []byte) *Transcript {
 		})
 	}
 	t.Activity = ""
-	return t
+}
+
+// eachRecord calls fn with each line of r, without its newline, and returns
+// how many bytes it read; a last line without one, a record the runner is
+// still writing, is left out. A line is fn's only until fn returns.
+func eachRecord(r io.Reader, fn func(line []byte)) (int64, error) {
+	reader := bufio.NewReaderSize(r, 256<<10)
+	var long []byte // a line longer than the reader's buffer: a prompt's images, a picture
+	var n int64
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		n += int64(len(chunk))
+		switch {
+		case errors.Is(err, bufio.ErrBufferFull):
+			long = append(long, chunk...)
+			continue
+		case errors.Is(err, io.EOF):
+			return n, nil
+		case err != nil:
+			return n, err
+		}
+		line := chunk
+		if len(long) > 0 {
+			long = append(long, chunk...)
+			line = long
+		}
+		fn(line[:len(line)-1])
+		long = long[:0]
+	}
 }
 
 // A session's first prompt is persisted before its first turn and stays

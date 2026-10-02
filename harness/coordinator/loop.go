@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 	"uuid"
 
@@ -27,6 +28,27 @@ const (
 )
 
 const toolCallRunGracePeriod = time.Second
+
+// The harness speaks to the model through heartbeat controls whose reason
+// starts with harnessPrefix: it tells the model to go on after an answer
+// the output limit cut, to answer again after a refusal or an empty
+// answer, and what a verification found.
+const (
+	harnessPrefix      = "[harness]"
+	verificationPrefix = "[harness verification]"
+	// maxContinues bounds the answers the harness asks for in a row after
+	// answers the output limit cut; maxRetries the answers asked for after
+	// refusals and empty answers; maxFailures the requests sent again after
+	// responses that failed.
+	maxContinues = 3
+	maxRetries   = 1
+	maxFailures  = 2
+	// defaultMaxVerifications bounds the verifications of one prompt.
+	defaultMaxVerifications = 3
+	// VerificationMarker is the idempotency of a verification's operation,
+	// which the cockpits show as the harness's own check.
+	VerificationMarker = `{"harness":"verification"}`
+)
 
 // Automatic compaction backs off where it cannot help, as Claude Code's
 // does: after compactionBreaker compactions in a row without a summary, and
@@ -104,6 +126,28 @@ type loopState struct {
 	// is the budget of the compaction that makes up for such a request.
 	sent           sentRequest
 	overflowBudget int64
+	// graceStarted is when the grace period of the latest response's
+	// tool calls began, for its limit.
+	graceStarted time.Time
+	// heartbeats counts the heartbeats posted in a row while the same
+	// tool calls run: each waits longer than the one before.
+	heartbeats int
+	// continues, retries and failures count what the harness asked of the
+	// model in a row: answers to go on with after the output limit cut
+	// one, answers again after refusals and empty answers, and requests
+	// sent again after failed responses. A whole answer resets them.
+	continues int
+	retries   int
+	failures  int
+	// verifying is the verification running, if one is; verifications
+	// counts those of the current prompt, and workSinceVerification is set
+	// once the model made tool calls the checks have not seen.
+	verifying             operation.ID
+	verifications         int
+	workSinceVerification bool
+	// runningDetail is what the tool last said of each running call, so
+	// the call's placeholder is refreshed only when that changes.
+	runningDetail map[toolCallKey]string
 }
 
 type compactRequest struct {
@@ -151,6 +195,7 @@ func newLoopState() loopState {
 		stepCalls:            make(map[toolCallKey]struct{}),
 		compactionTurns:      make(map[session.TurnID]struct{}),
 		turnModels:           make(map[session.TurnID]string),
+		runningDetail:        make(map[toolCallKey]string),
 		turnsSinceCompaction: -1,
 	}
 }
@@ -192,7 +237,7 @@ func (current *coordinator) Run(ctx context.Context) error {
 		if !current.isWaitingForOnlyToolCalls() {
 			heartbeat = nil
 		} else if heartbeat == nil && current.dependencies.ToolHeartbeatInterval > 0 {
-			heartbeat = time.After(current.dependencies.ToolHeartbeatInterval)
+			heartbeat = time.After(current.heartbeatInterval())
 		}
 		select {
 		case <-ctx.Done():
@@ -376,6 +421,9 @@ func (current *coordinator) processModelResponse(ctx context.Context, modelRespo
 				current.state.stepCalls[key] = struct{}{}
 			}
 		}
+		if err := current.answerStop(ctx, modelResponse.response, len(statuses)); err != nil {
+			return err
+		}
 	}
 	for _, status := range statuses {
 		for _, value := range status.Operations {
@@ -385,10 +433,7 @@ func (current *coordinator) processModelResponse(ctx context.Context, modelRespo
 		}
 	}
 	if !current.state.callModel && len(statuses) > 0 {
-		for _, status := range statuses {
-			current.state.graceToolCalls[toolCallKey{turnID: status.TurnID, callID: status.CallID}] = struct{}{}
-		}
-		current.state.grace = time.After(toolCallRunGracePeriod)
+		current.startToolGrace(statuses)
 	}
 	return nil
 }
@@ -396,6 +441,159 @@ func (current *coordinator) processModelResponse(ctx context.Context, modelRespo
 func (current *coordinator) clearToolGrace() {
 	clear(current.state.graceToolCalls)
 	current.state.grace = nil
+	current.state.graceStarted = time.Time{}
+}
+
+// toolGrace is how long the results of a response's calls are gathered.
+func (current *coordinator) toolGrace() time.Duration {
+	return cmp.Or(current.dependencies.ToolGrace, toolCallRunGracePeriod)
+}
+
+// startToolGrace begins the grace period of the calls a response made.
+func (current *coordinator) startToolGrace(statuses []sessionstore.ToolCallStatus) {
+	for _, status := range statuses {
+		current.state.graceToolCalls[toolCallKey{turnID: status.TurnID, callID: status.CallID}] = struct{}{}
+	}
+	current.state.graceStarted = time.Now()
+	current.state.grace = time.After(current.toolGrace())
+}
+
+// extendToolGrace lets a result that arrives while other calls of the
+// response still run wait for them a while longer, within the limit.
+func (current *coordinator) extendToolGrace() {
+	limit := current.dependencies.ToolGraceLimit
+	if limit <= 0 || len(current.state.graceToolCalls) == 0 || current.state.graceStarted.IsZero() {
+		return
+	}
+	wait := min(current.toolGrace(), time.Until(current.state.graceStarted.Add(limit)))
+	if wait <= 0 {
+		return
+	}
+	current.state.grace = time.After(wait)
+}
+
+// heartbeatInterval is how long the next heartbeat waits: the configured
+// interval, doubled for each heartbeat already posted for the same calls,
+// up to four times as long.
+func (current *coordinator) heartbeatInterval() time.Duration {
+	return current.dependencies.ToolHeartbeatInterval << min(current.state.heartbeats, 2)
+}
+
+// answerStop acts on how the model's response ended, where it did not end
+// well: an answer the output limit cut is asked to go on, a refusal is
+// asked again, and a response that failed is requested again, each a
+// bounded number of times in a row. A whole answer resets the counts, and,
+// when it makes no tool call, has the work verified.
+func (current *coordinator) answerStop(ctx context.Context, response llm.Response, calls int) error {
+	state := &current.state
+	if current.stop.request.Mode == inbox.StopHard || current.dependencies.NoRecovery {
+		return nil
+	}
+	if response.Failure != nil {
+		state.failures++
+		if state.failures > maxFailures {
+			return fmt.Errorf("the model's response failed %d times in a row: %s: %s", state.failures, response.Failure.Code, response.Failure.Message)
+		}
+		state.callModel = true
+		return nil
+	}
+	state.failures = 0
+	switch {
+	case response.Stop == llm.StopMaxOutputTokens && calls == 0:
+		state.retries = 0
+		if state.continues >= maxContinues {
+			return nil
+		}
+		state.continues++
+		return current.nudge(ctx, harnessPrefix+" Your previous answer was cut off at the output token limit. Continue exactly from where it stopped, without repeating what you already wrote.")
+	case response.Stop == llm.StopRefused:
+		state.continues = 0
+		if state.retries >= maxRetries {
+			return nil
+		}
+		state.retries++
+		return current.nudge(ctx, harnessPrefix+" The previous response was refused. If the task is complete, say so in a sentence; otherwise carry on with it.")
+	}
+	state.continues, state.retries = 0, 0
+	if calls == 0 {
+		return current.verify(ctx)
+	}
+	return nil
+}
+
+// nudge speaks to the model as the harness: a heartbeat control with the
+// reason, handled at once so a run that would go idle answers it first.
+func (current *coordinator) nudge(ctx context.Context, reason string) error {
+	payload, err := json.Marshal(inbox.ControlMessage{Mode: inbox.Heartbeat, Reason: reason})
+	if err != nil {
+		return fmt.Errorf("encode harness message: %w", err)
+	}
+	return current.handleInboxInputs(ctx, []inbox.Input{{
+		ID: inbox.ID(uuid.New().String()), Kind: inbox.InputControl, Payload: payload,
+	}})
+}
+
+// verify runs the verifier's checks once the model finished a prompt, if
+// there are checks, the model did something since they last ran, and they
+// have not run too often for this prompt. Their failures reach the model
+// as a message (verified); their success lets the run go idle.
+func (current *coordinator) verify(ctx context.Context) error {
+	state := &current.state
+	verifier := current.dependencies.Verifier
+	if verifier == nil || !state.workSinceVerification || state.verifying != "" ||
+		state.verifications >= cmp.Or(current.dependencies.MaxVerifications, defaultMaxVerifications) ||
+		current.pendingInputs() > 0 || len(state.deferred) != 0 {
+		return nil
+	}
+	spec, ok := verifier.Spec()
+	if !ok {
+		return nil
+	}
+	check := operation.Operation{
+		MaxOutputLength: spec.MaxOutputLength,
+		ID:              operation.ID("verification-" + uuid.New().String()),
+		Type:            spec.Type,
+		Version:         spec.Version,
+		Status:          operation.StatusReady,
+		State:           spec.State,
+		Idempotency:     []byte(VerificationMarker),
+	}
+	// The check is recorded as a call of the harness's own on the current
+	// turn: the session keeps the operation with it, and the cockpits show
+	// it as a tool call. The model made no such call, so no result of it
+	// reaches the context.
+	item, err := current.addItemToLocalState(sessionstore.Item{
+		Kind: sessionstore.ItemToolCallStatus,
+		Data: sessionstore.ToolCallStatus{
+			TurnID: state.currentTurnID, CallID: string(check.ID),
+			Status: tool.CallStatus{WaitingFor: []operation.ID{check.ID}}, Operations: []operation.Operation{check},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := current.storeItemInSessionStore(ctx, item); err != nil {
+		return err
+	}
+	state.workSinceVerification = false
+	state.verifying = check.ID
+	return current.dispatchOperationToManager(check)
+}
+
+// verified reads a finished verification: a failure goes to the model.
+func (current *coordinator) verified(ctx context.Context, check operation.Operation) error {
+	state := &current.state
+	state.verifying = ""
+	state.verifications++
+	report, passed := current.dependencies.Verifier.Report(check)
+	if passed || current.stop.request.Mode == inbox.StopHard {
+		return nil
+	}
+	return current.nudge(ctx, verificationPrefix+" "+strings.TrimSpace(report))
+}
+
+func isVerification(value operation.Operation) bool {
+	return string(value.Idempotency) == VerificationMarker
 }
 
 func (current *coordinator) handleStop() (bool, error) {
@@ -567,9 +765,11 @@ func (current *coordinator) postHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode heartbeat tool calls: %w", err)
 	}
+	waited := current.heartbeatInterval()
+	current.state.heartbeats++
 	payload, err := json.Marshal(inbox.ControlMessage{
 		Mode:   inbox.Heartbeat,
-		Reason: fmt.Sprintf("Heartbeat: waited %g seconds for tool calls.\nRunning: %s", current.dependencies.ToolHeartbeatInterval.Seconds(), runningCalls),
+		Reason: fmt.Sprintf("Heartbeat: waited %g seconds for tool calls.\nRunning: %s", waited.Seconds(), runningCalls),
 	})
 	if err != nil {
 		return fmt.Errorf("encode heartbeat: %w", err)
@@ -820,7 +1020,46 @@ func (current *coordinator) handleOperationUpdate(
 	update operation.Operation,
 ) error {
 	update = current.addOperationToLocalState(update)
-	return current.storeOperationInSessionStore(ctx, update)
+	if err := current.storeOperationInSessionStore(ctx, update); err != nil {
+		return err
+	}
+	if update.ID == current.state.verifying && operationIsTerminal(update.Status) && current.dependencies.Verifier != nil {
+		return current.verified(ctx, update)
+	}
+	current.refreshRunning(update)
+	return nil
+}
+
+// refreshRunning renews the placeholder of a call still running when its
+// tool has something new to say of it (tool.RunningDescriber): where a
+// command's output is, what a code run has done so far.
+func (current *coordinator) refreshRunning(update operation.Operation) {
+	if operationIsTerminal(update.Status) {
+		return
+	}
+	for key, call := range current.state.toolCalls {
+		if _, owns := call.operations[update.ID]; !owns || call.status == nil {
+			continue
+		}
+		translator, exists := current.dependencies.Tools.Resolve(call.toolCall.Name)
+		if !exists {
+			continue
+		}
+		describer, ok := translator.(tool.RunningDescriber)
+		if !ok {
+			continue
+		}
+		operations := make([]operation.Operation, 0, len(call.status.WaitingFor))
+		for _, id := range call.status.WaitingFor {
+			operations = append(operations, current.state.operations[id])
+		}
+		detail := describer.DescribeRunning(operations)
+		if detail == "" || detail == current.state.runningDetail[key] {
+			continue
+		}
+		current.state.runningDetail[key] = detail
+		current.dependencies.ContextBuilder.AddToolResult(key.callID, []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: detail}}, true)
+	}
 }
 
 func (current *coordinator) restore(ctx context.Context) error {
@@ -829,6 +1068,9 @@ func (current *coordinator) restore(ctx context.Context) error {
 	}
 	for _, value := range current.dependencies.Restored.Operations {
 		current.addOperationToLocalState(value)
+		if isVerification(value) && !operationIsTerminal(value.Status) {
+			current.state.verifying = value.ID
+		}
 	}
 	return nil
 }
@@ -915,6 +1157,9 @@ func (current *coordinator) addItemToLocalState(
 				)
 			}
 			current.state.availableInputs++
+			// A prompt of the user's starts the verifications over.
+			current.state.verifications = 0
+			current.state.heartbeats = 0
 		}
 		if input.Kind == inbox.InputControl {
 			request, err := input.DecodeControlMessage()
@@ -924,6 +1169,9 @@ func (current *coordinator) addItemToLocalState(
 			current.dependencies.ContextBuilder.AddControlMessage(request)
 			if request.Mode == inbox.Heartbeat {
 				current.state.availableInputs++
+				if strings.HasPrefix(request.Reason, verificationPrefix) {
+					current.state.verifications++
+				}
 			}
 			if request.Mode == inbox.Compact {
 				current.state.compactionAsked = true
@@ -1021,6 +1269,7 @@ func (current *coordinator) addToolCallsToLocalState(response sessionstore.Model
 		if output.Type != llm.ItemToolCall {
 			continue
 		}
+		current.state.workSinceVerification = true
 		call := output.Data.(llm.ToolCall)
 		current.state.toolCalls[toolCallKey{
 			turnID: response.TurnID,
@@ -1059,11 +1308,16 @@ func (current *coordinator) finishToolCall(
 ) {
 	key := toolCallKey{turnID: turnID, callID: callID}
 	delete(current.state.toolCalls, key)
+	_, graced := current.state.graceToolCalls[key]
 	delete(current.state.graceToolCalls, key)
 	delete(current.state.stepCalls, key)
+	delete(current.state.runningDetail, key)
 	if len(current.state.graceToolCalls) == 0 {
 		current.clearToolGrace()
+	} else if graced {
+		current.extendToolGrace()
 	}
+	current.state.heartbeats = 0
 	current.state.availableInputs++
 }
 
@@ -1119,6 +1373,16 @@ func (current *coordinator) addToolResultToLocalState(
 		return fmt.Errorf("add tool call %q result to context: %w", status.CallID, err)
 	}
 	running := !current.toolCallOperationsAreTerminal(status.TurnID, status.CallID)
+	if running {
+		// A running call shows the harness's note, and what the tool says
+		// of the call meanwhile, if it says anything.
+		result.Output = nil
+		if describer, ok := translator.(tool.RunningDescriber); ok {
+			if detail := describer.DescribeRunning(operations); detail != "" {
+				result.Output = []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: detail}}
+			}
+		}
+	}
 	current.dependencies.ContextBuilder.AddToolResult(
 		status.CallID,
 		result.Output,

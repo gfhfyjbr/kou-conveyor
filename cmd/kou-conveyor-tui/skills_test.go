@@ -25,16 +25,18 @@ func TestSkillsListsTheProjectsAndTheSystems(t *testing.T) {
 	write(skill.AgentsDirectory(home), "animate", "Animate things.")
 
 	m.command("/skills")
-	if m.picker == nil || m.picker.kind != "skills" || len(m.picker.items) != 3 {
+	if m.picker == nil || m.picker.kind != "skills" || len(m.picker.items) != 4 {
 		t.Fatalf("picker = %+v", m.picker)
 	}
 	var rows []string
 	for _, item := range m.picker.items {
-		rows = append(rows, item.title+" | "+item.detail)
+		title, _, _ := strings.Cut(item.title, " — ")
+		rows = append(rows, title+" | "+item.detail)
 	}
-	want := "commit — The project's commits. | project · .harness/skills\n" +
-		"animate — Animate things. | system · ~/.agents/skills\n" +
-		"commit — Any commits. | replaced · system"
+	want := "commit | project · .harness/skills\n" +
+		"animate | system · ~/.agents/skills\n" +
+		"commit | replaced · system\n" +
+		"kou-conveyor-plugins | system · built in · guide"
 	if got := strings.Join(rows, "\n"); got != want {
 		t.Fatalf("rows:\n%s\nwant:\n%s", got, want)
 	}

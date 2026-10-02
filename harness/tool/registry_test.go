@@ -84,6 +84,7 @@ func TestRegistryOwnsCanonicalBashDefinition(t *testing.T) {
 					"description": "The shell command to execute.",
 				},
 				"max_output_length": map[string]any{"type": "integer", "description": "Maximum characters per output text field. Truncated text keeps its head and tail, around a marker stating how much was omitted, and path to the file with the complete stream. Defaults to 40000.", "minimum": 1, "maximum": 1000000, "default": 40000},
+				"timeout":           map[string]any{"type": "number", "description": "Seconds the command may run before it is stopped (SIGTERM, then SIGKILL). Defaults to 600; 0 lets it run; at most 14400.", "minimum": 0, "maximum": 14400},
 			},
 			"required": []any{"command"},
 		},

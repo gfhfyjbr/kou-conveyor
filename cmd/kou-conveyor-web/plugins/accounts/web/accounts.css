@@ -593,6 +593,41 @@
 .u-borrow b { font-weight: 600; color: var(--fg); }
 .price-form > footer .primary { height: 30px; }
 
+/* The gateway's update: a newer CLIProxyAPI, and taking it up. */
+.gw-update-badge {
+  align-self: center;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line-2));
+  font: 700 10px/18px var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.gw-update-badge:hover { background: var(--accent-soft); }
+.gw-update-badge[data-phase="working"], .gw-update-badge[data-phase="building"] { animation: pulse 1.6s ease-in-out infinite; }
+.gw-update-badge[data-phase="failed"] { border-color: color-mix(in srgb, var(--err) 50%, var(--line-2)); color: var(--err); }
+.gw-update-badge[data-phase="failed"]:hover { background: var(--err-soft); }
+/* A newer major version, which the dialog only tells of. */
+.gw-update-badge[data-major="true"] { border-color: color-mix(in srgb, var(--warn) 50%, var(--line-2)); color: var(--warn); }
+.gw-update-badge[data-major="true"]:hover { background: color-mix(in srgb, var(--warn) 8%, transparent); }
+.gw-update { width: min(600px, 100%); }
+.gw-update:focus { outline: 0; }
+.gw-update > footer .primary { height: 30px; }
+.gw-update-versions { display: flex; flex-wrap: wrap; align-items: baseline; gap: 12px; font: 600 20px/1.2 var(--mono); color: var(--fg-3); }
+.gw-update-versions .arrow { color: var(--fg-4); }
+.gw-update-versions .to { font-weight: 700; color: var(--accent); }
+.gw-update-facts { margin: -8px 0 0; font: 11px/1.5 var(--mono); color: var(--fg-4); overflow-wrap: anywhere; }
+.gw-update-facts .module { white-space: nowrap; }
+.gw-update-state { padding: 2px 0; font: 500 12px var(--mono); letter-spacing: 0; text-transform: none; color: var(--fg-2); }
+.gw-update-command { display: flex; align-items: center; gap: 8px; }
+.gw-update-command code { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line-2); background: var(--bg); font: 12px/1.4 var(--mono); color: var(--fg); overflow-wrap: anywhere; user-select: all; }
+.gw-update-command .act { height: 32px; line-height: 30px; border-color: var(--line-2); }
+.gw-update-output { max-height: 220px; margin: 0; padding: 10px 12px; overflow: auto; border: 1px solid var(--line); background: var(--bg); font: 11px/1.5 var(--mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.gw-update-major { margin: 0; padding: 8px 12px; border-left: 2px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 12.5px; line-height: 1.55; color: var(--fg-2); }
+.gw-update-link { color: var(--fg-3); text-decoration: underline dotted var(--fg-4); text-underline-offset: 3px; }
+.gw-update-link:hover { color: var(--accent); }
+
 @media (max-width: 1080px) {
   .u-split, .u-split-even { grid-template-columns: minmax(0, 1fr); }
 }

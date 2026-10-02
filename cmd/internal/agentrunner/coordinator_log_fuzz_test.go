@@ -65,6 +65,8 @@ func FuzzCoordinatorLogMatchesExecution(f *testing.F) {
 				SessionID: id, Inbox: inputs, Sessions: store, ContextBuilder: builder,
 				LLM: model, Tools: tool.NewRegistry(tool.StaticTranslators{}),
 				Operations: operation.NewLocalOperationManager(ctx),
+				// The planned responses are the whole exchange.
+				NoRecovery: true,
 			})
 
 			var submitted []inbox.Input

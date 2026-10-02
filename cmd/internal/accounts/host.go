@@ -15,14 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy"
-	"github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/usage"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy"
+	"github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/usage"
 	log "github.com/sirupsen/logrus"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 // Module is the Go module of the gateway.
-const Module = "github.com/router-for-me/CLIProxyAPI/v7"
+const Module = "github.com/router-for-me/CLIProxyAPI/v8"
 
 // Gateway states.
 const (

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/primitives"
@@ -31,12 +33,24 @@ const (
 	ShellPhaseReadOutTail     ShellPhase = "read_out_tail"
 	ShellPhaseReadErr         ShellPhase = "read_err"
 	ShellPhaseReadErrTail     ShellPhase = "read_err_tail"
+
+	// The timers of a command's timeout: one to terminate it, then one to
+	// kill it.
+	shellTimeoutCorrelation primitives.CorrelationID = "timeout"
+	shellKillCorrelation    primitives.CorrelationID = "kill"
+	shellKillGrace                                   = 5 * time.Second
+
+	// MaxShellTimeout bounds a command's timeout, in seconds.
+	MaxShellTimeout = 4 * 60 * 60
 )
 
 type ShellInput struct {
 	Command   string
 	Shell     string
 	Directory string
+	// Timeout is how many seconds the command may run before it is
+	// terminated (then killed); 0 lets it run.
+	Timeout float64 `json:",omitzero"`
 }
 
 type ShellResult struct {
@@ -45,6 +59,10 @@ type ShellResult struct {
 	OutSize  int64
 	ErrSize  int64
 	ExitCode int
+	// TimedOut reports a command stopped at its timeout.
+	TimedOut bool `json:",omitzero"`
+	// Duration is how long the command ran, in seconds.
+	Duration float64 `json:",omitzero"`
 }
 
 type ShellState struct {
@@ -53,6 +71,8 @@ type ShellState struct {
 
 	Phase           ShellPhase
 	ProcessGroupID  int
+	StartedAt       time.Time `json:",omitzero"`
+	TimedOut        bool      `json:",omitzero"`
 	PendingExitCode *int
 	OutSize         int64
 	ErrSize         int64
@@ -254,6 +274,9 @@ func (shell *Shell) handleAwaiting(event primitives.PrimitiveEvent) (Step, error
 			current.ID,
 		))
 	}
+	if event.CorrelationID == shellTimeoutCorrelation || event.CorrelationID == shellKillCorrelation {
+		return shell.timerEvent(event)
+	}
 	if event.Type == primitives.PrimitiveEventCanceled {
 		return shell.cancel()
 	}
@@ -316,7 +339,15 @@ func (shell *Shell) processEvent(event primitives.PrimitiveEvent, paths shellPat
 			return shell.fail(errors.New("start shell returned an invalid result"))
 		}
 		state.ProcessGroupID = started.PID
-		return shell.await()
+		state.StartedAt = time.Now().Round(0)
+		step, err := shell.await()
+		if err != nil {
+			return Step{}, err
+		}
+		if state.Input.Timeout > 0 {
+			step.Dispatches = []PrimitiveDispatch{shell.timer(shellTimeoutCorrelation, time.Duration(state.Input.Timeout*float64(time.Second)))}
+		}
+		return step, nil
 
 	case primitives.PrimitiveEventProcessExited:
 		exit, ok := event.Result.(primitives.ProcessExitResult)
@@ -337,6 +368,43 @@ func (shell *Shell) processEvent(event primitives.PrimitiveEvent, paths shellPat
 	default:
 		return shell.fail(fmt.Errorf("shell process returned unexpected event %q", event.Type))
 	}
+}
+
+// timer is a timer of the command's timeout that fires after delay.
+func (shell *Shell) timer(correlation primitives.CorrelationID, delay time.Duration) PrimitiveDispatch {
+	return PrimitiveDispatch{
+		Type: primitives.PrimitiveDispatchTimerSchedule,
+		Data: primitives.TimerRequest{
+			Source:        primitives.SourceID(shell.current.ID),
+			CorrelationID: correlation,
+			Deadline:      time.Now().Add(delay),
+		},
+	}
+}
+
+// timerEvent answers the timers of the command's timeout: the first
+// terminates the command's process group, the second kills what is left
+// of it. A timer that fires once the command has exited means nothing; so
+// does one canceled or failed, the command being canceled with it.
+func (shell *Shell) timerEvent(event primitives.PrimitiveEvent) (Step, error) {
+	state := &shell.state
+	if event.Type != primitives.PrimitiveEventTimerFired || state.Phase != ShellPhaseProcess || state.ProcessGroupID == 0 {
+		return Step{}, nil
+	}
+	switch event.CorrelationID {
+	case shellTimeoutCorrelation:
+		state.TimedOut = true
+		syscall.Kill(-state.ProcessGroupID, syscall.SIGTERM)
+		step, err := shell.checkpoint()
+		if err != nil {
+			return Step{}, err
+		}
+		step.Dispatches = []PrimitiveDispatch{shell.timer(shellKillCorrelation, shellKillGrace)}
+		return step, nil
+	case shellKillCorrelation:
+		syscall.Kill(-state.ProcessGroupID, syscall.SIGKILL)
+	}
+	return Step{}, nil
 }
 
 func (shell *Shell) readRequest(paths shellPaths) (primitives.IOReadRequest, error) {
@@ -443,6 +511,10 @@ func (shell *Shell) finish(paths shellPaths) (Step, error) {
 		OutSize:  state.OutSize,
 		ErrSize:  state.ErrSize,
 		ExitCode: *state.PendingExitCode,
+		TimedOut: state.TimedOut,
+	}
+	if !state.StartedAt.IsZero() {
+		state.Result.Duration = time.Since(state.StartedAt).Seconds()
 	}
 	state.Result.Out, state.OutTruncated = boundOutput(string(state.InlineOut), string(state.InlineOutTail), state.OutSize, current.MaxOutputLength, paths.out)
 	state.Result.Err, state.ErrTruncated = boundOutput(string(state.InlineErr), string(state.InlineErrTail), state.ErrSize, current.MaxOutputLength, paths.err)
@@ -489,6 +561,9 @@ func validateShellState(state ShellState) error {
 	}
 	if state.OutSize < 0 || state.ErrSize < 0 {
 		return errors.New("captured output sizes must not be negative")
+	}
+	if state.Input.Timeout < 0 || state.Input.Timeout > MaxShellTimeout {
+		return fmt.Errorf("the timeout must be between 0 and %d seconds", MaxShellTimeout)
 	}
 	return nil
 }

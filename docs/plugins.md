@@ -10,6 +10,11 @@ The project's own features come the same way:
 
 - The agent's `Bash`, `ViewImage` and `SkillUse` tools are the built-in
   **core** plugin, which can be turned off like any other.
+- The agent knows how to write plugins: the built-in **guide** plugin gives
+  it a skill, `kou-conveyor-plugins`, with what this document says — the
+  manifest, tools, skills, commands, the browser cockpit's API — and the
+  scopes plugins and skills live in. Ask the agent for a plugin and it
+  loads the skill.
 - The browser cockpit is nothing but plugins. Its page is a small plugin
   host (the *kernel*, [`static/kernel`](../cmd/kou-conveyor-web/static/kernel))
   that builds nothing itself: the layout, the sessions, the transcript, the
@@ -48,8 +53,9 @@ and a user plugin named `core` replaces the built-in tools — or one named
 `composer` the cockpit's composer. Two active plugins cannot share a tool or
 a command: the first keeps it and the conflict is reported.
 
-The built-in plugins are `core` (the agent's tools) and the browser
-cockpit's `accounts`, `changes`, `commands`, `composer`, `connection`,
+The built-in plugins are `core` (the agent's tools), `guide` (its skill for
+writing plugins) and the browser cockpit's `accounts`, `changes`,
+`commands`, `composer`, `connection`,
 `edit`, `effort`, `explorer`, `files`, `header`, `help`, `images`, `inspector`,
 `layout`, `markdown`, `models`, `palette`, `plugins`, `queue`, `session`,
 `session-list`, `sidebar`, `skills`, `terminal`, `theme`, `timeline`, `ui`
@@ -141,6 +147,13 @@ background while the agent goes on, is resumed if the runner restarts, and
 is stopped with the run. A request's `disallowed_tools` leave plugin tools out
 as well.
 
+With the `code` tool profile a plugin tool is a function of the Code tool's
+JavaScript instead: `name(args)`, or `tools["name"](args)` for a name the code
+cannot call as it is (one with a `-`, a reserved word, or a name the runtime's
+functions or JavaScript's globals have). It runs as above, within the Code
+call and without `KOU_CONVEYOR_TOOL_CALL_ID`; it resolves to what the command
+prints and rejects when the command exits with a nonzero code.
+
 ```sh
 #!/bin/sh
 arguments=$(cat)      # {"commits":3}
@@ -168,9 +181,15 @@ winning:
 | Scope | Directory |
 | --- | --- |
 | project | `.harness/skills` in the workspace, then `.agents/skills` in the workspace, then the workspace's plugins' |
-| system-wide | `skills/` in the configuration directory, beside `plugins/`, then `~/.agents/skills`, then the user's plugins' |
+| system-wide | `skills/` in the configuration directory, beside `plugins/`, then `~/.agents/skills`, then the user's plugins', then the built-in plugins' |
 
-So a project's skill replaces a system-wide one of the same name. The
+So a project's skill replaces a system-wide one of the same name, and any
+skill of yours a built-in one. The skills of a plugin compiled into the
+program — the guide's `kou-conveyor-plugins` — are written out to
+`builtin/<plugin>-<hash>/` in the configuration directory, where the agent
+reads them and the files beside them; edits there are undone, so to change
+a built-in skill put one of the same name in `skills/`, or turn the plugin
+off. The
 Skills bar of the browser cockpit's inspector lists both scopes, with the
 skills another replaces; the plugin listing (`/api/w/<workspace>/plugins`)
 carries them as `skills`, and changes with the skill directories.
@@ -307,7 +326,7 @@ export default function activate(cockpit) {
 | `host.listing()`, `host.loaded()`, `host.reload({ force })`, `host.setWorkspace(id)`, `host.safe` | the plugins |
 | `commands.register({ name, aliases, args, help, order, shown(view), complete(view), run(arg) })` | a slash command; `complete` returns `{ value, label, detail, current }` choices for the argument, `shown` hides it where it does not apply. A command replaces another plugin's of the same name |
 | `palette.register({ group, icon, label, hint, detail, order, shown(view), run() })` | a command palette item |
-| `inspector.register({ id, title, order, shown(view), render(view), fold, open, meta(view) })`, `inspector.refresh()` | an inspector section; `render` returns a node or text and runs whenever the cockpit redraws; the `id` of another takes its place. With `fold` the section is a bar — its title and what `meta` says (text, or parts `{ text, tone }`) — that opens, animated, onto its body; it starts closed (open with `open`), stays as the user leaves it, and `render` runs only while it is open |
+| `inspector.register({ id, title, order, shown(view), render(view), fold, open, meta(view) })`, `inspector.refresh()` | an inspector section; `render` returns a node, a list of nodes or text and runs whenever the cockpit redraws — a node it returns again stays where it is, so a control it keeps (a select with its menu open, a button being clicked) is not replaced under the user; the `id` of another takes its place. With `fold` the section is a bar — its title and what `meta` says (text, or parts `{ text, tone }`) — that opens, animated, onto its body; it starts closed (open with `open`), stays as the user leaves it, and `render` runs only while it is open |
 | `tools.register(name, { summary(entry), render(entry, ui) })` | how a tool's calls look; `ui` has `h`, `fmt`, `stream(label, text)` and `copy` |
 | `view()` | the session in view: `id`, `ws`, `fresh`, `title`, `running`, `interrupted`, `external`, `activity`, `usage`, `prompts`, `entries`, `queued`, `paused`, `pinned` |
 | `entries()` | its entries: `{ id, kind, text, at, files, tool: { call_id, name, input, state, output, stderr, error, exit_code, image } }`; `image` describes the picture a `ViewImage` call read (`{ label, media_type, width, height, size }`), and a prompt's `files` what the model saw of the files it linked (`{ label, path, directory, from, to, lines, size, binary, error }`) |
@@ -363,6 +382,9 @@ plugins read these:
 The renderers' `ctx` has `h`, `fmt`, `view`, `summary`, `live`,
 `index(id)`, `expanded(entry)`, `toggle(id, open)`, `copy`, `markdown(text)`,
 `button(label, run, title)`, `actions(entry)` and `stream(label, text)`.
+The timeline draws only the entries in view and about a screen around it:
+a renderer, a decoration or an editor runs as its entry comes into view,
+and again each time it comes back into it.
 
 ### Services
 

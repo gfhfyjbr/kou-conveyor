@@ -14,9 +14,15 @@ import (
 )
 
 const (
-	BashName      = "Bash"
-	ViewImageName = "ViewImage"
-	SkillUseName  = "SkillUse"
+	BashName             = "Bash"
+	ViewImageName        = "ViewImage"
+	SkillUseName         = "SkillUse"
+	ReadName             = "Read"
+	EditName             = "Edit"
+	WriteName            = "Write"
+	ApplyPatchName       = "apply_patch"
+	CodeName             = "Code"
+	TranscriptSearchName = "TranscriptSearch"
 )
 
 type registry struct {
@@ -39,8 +45,14 @@ type registeredTool struct {
 }
 
 type StaticTranslators struct {
-	Bash      Translator
-	ViewImage Translator
+	Bash             Translator
+	ViewImage        Translator
+	Read             Translator
+	Edit             Translator
+	Write            Translator
+	ApplyPatch       Translator
+	Code             Translator
+	TranscriptSearch Translator
 }
 
 func NewRegistry(configured StaticTranslators, enabled ...string) Registry {
@@ -52,16 +64,21 @@ func NewRegistry(configured StaticTranslators, enabled ...string) Registry {
 	for _, name := range enabled {
 		current.enabled[name] = struct{}{}
 	}
-	if configured.Bash == nil {
-		configured.Bash = unavailableTranslator{name: BashName}
-	}
-	if configured.ViewImage == nil {
-		configured.ViewImage = unavailableTranslator{name: ViewImageName}
-	}
 	current.staticTranslators = map[string]Translator{
-		BashName:      configured.Bash,
-		ViewImageName: configured.ViewImage,
-		SkillUseName:  &skillUseTranslator{registry: current},
+		BashName:             configured.Bash,
+		ViewImageName:        configured.ViewImage,
+		ReadName:             configured.Read,
+		EditName:             configured.Edit,
+		WriteName:            configured.Write,
+		ApplyPatchName:       configured.ApplyPatch,
+		CodeName:             configured.Code,
+		TranscriptSearchName: configured.TranscriptSearch,
+		SkillUseName:         &skillUseTranslator{registry: current},
+	}
+	for name, translator := range current.staticTranslators {
+		if translator == nil {
+			current.staticTranslators[name] = unavailableTranslator{name: name}
+		}
 	}
 	return current
 }

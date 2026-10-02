@@ -115,10 +115,13 @@ says when it helps; the agent sees the list and loads a skill with
 | Scope | Directories |
 | --- | --- |
 | project — this workspace only | `.harness/skills` and `.agents/skills` in the workspace, and the skills of the workspace's plugins |
-| system-wide — every workspace | `skills/` in the configuration directory (`~/Library/Application Support/kou-conveyor/skills` on macOS, `~/.config/kou-conveyor/skills` on Linux, or beside `KOU_CONVEYOR_CONFIG`), `~/.agents/skills`, and the skills of the user's plugins |
+| system-wide — every workspace | `skills/` in the configuration directory (`~/Library/Application Support/kou-conveyor/skills` on macOS, `~/.config/kou-conveyor/skills` on Linux, or beside `KOU_CONVEYOR_CONFIG`), `~/.agents/skills`, the skills of the user's plugins, and the built-in ones |
 
 A project's skill replaces a system-wide one of the same name, and within a
-scope the first directory listed wins. A skill whose frontmatter says
+scope the first directory listed wins. One skill is built in:
+`kou-conveyor-plugins`, the built-in `guide` plugin's, teaches the agent to
+write plugins and skills and where each scope keeps them — ask it for a
+plugin. A skill whose frontmatter says
 `disable-model-invocation: true` is not offered to the model on its own: it
 is named apart, and loads when you ask for it. Skills are read again as they
 change: a running agent has a skill added, edited or removed from its next
@@ -609,6 +612,29 @@ Amounts show in US dollars, or in credits of your own worth a set amount
 each (**Amounts in**). The Accounts tab shows the last day's cost in the
 gateway's strip, and beside each account and endpoint what its requests of
 the span would have cost.
+
+### Updates
+
+The gateway is the CLIProxyAPI release `go.mod` requires
+(`github.com/router-for-me/CLIProxyAPI/v8`). Once a page of the browser
+cockpit opens, it asks the server whether a newer release is out, and the
+server asks the module proxies `GOPROXY` names, as `go` does, at most once an
+hour. A newer release opens a dialog — `v8.0.6 → v8.0.10`, how many
+releases that is, when it came out and a link to what changed — and shows as
+`↑ v8.0.10` beside the version in the Accounts view, which opens the dialog
+again, as do `/accounts update` and the palette. **Update**, on a server that
+builds itself from its checkout (see [Plugins](#plugins)), runs `go get` on
+copies of `go.mod` and `go.sum` and builds the programs with them; only once
+they build do the copies take the place of `go.mod` and `go.sum`, and the
+server builds itself anew and restarts with the new gateway as soon as no
+agent is at work, the dialog following it there. A release the programs do
+not build with leaves both files as they were, and the dialog shows the
+compiler's errors. A server that cannot update itself — installed without a
+checkout, started with `-rebuild=false`, or with no `go` on the `PATH` —
+gives the `go get` to run instead. **Skip this version** stops offering that
+release and **Later** waits a day. A newer major version (`/v9`) is another
+Go module, with an API of its own: the badge beside the version and the
+dialog say it is out, but moving to it takes changes to the code.
 
 ### Where it lives
 

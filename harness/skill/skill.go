@@ -9,13 +9,16 @@
 //     and the skills of the workspace's plugins.
 //   - The system's, for every workspace: skills/ in kou-conveyor's
 //     configuration directory (beside plugins/), ~/.agents/skills, and the
-//     skills of the user's and the built-in plugins.
+//     skills of the user's plugins, then of the built-in ones — such as the
+//     guide plugin's, which tell the agent how to write plugins.
 //
 // A project's skill replaces a system-wide one of the same name, and within
 // a scope kou-conveyor's own directory comes first, then the shared one,
-// then the plugins'. Directories are read again as they change (see
-// Fingerprint), so skills added, removed or edited reach a running agent at
-// its next turn.
+// then the plugins': a user's skill replaces a built-in one. Directories
+// are read again as they change (see Fingerprint), so skills added,
+// removed or edited reach a running agent at its next turn. The skills of a
+// plugin compiled into the program are written out for the agent to read
+// (see written).
 package skill
 
 import (
@@ -45,7 +48,8 @@ const (
 	KindHarness = "harness" // .harness/skills in the workspace
 	KindAgents  = "agents"  // .agents/skills, in the workspace or the home directory
 	KindConfig  = "config"  // skills/ in kou-conveyor's configuration directory
-	KindPlugin  = "plugin"  // the skills directory of a plugin
+	KindPlugin  = "plugin"  // the skills directory of a user's or a workspace's plugin
+	KindBuiltin = "builtin" // the skills directory of a built-in plugin
 )
 
 // HarnessDirectory is where a workspace keeps kou-conveyor's skills.
@@ -71,7 +75,8 @@ type Options struct {
 	// Home is the user's home directory, with ~/.agents/skills.
 	Home string
 	// ConfigDirectory is kou-conveyor's configuration directory, with
-	// skills/.
+	// skills/; the skills of plugins compiled into the program are written
+	// to builtin/ there. Without it, those are left out.
 	ConfigDirectory string
 	// Plugins are the plugins of the workspace; the active ones bring their
 	// skills, a workspace's plugin to the project and the others to the
@@ -87,7 +92,7 @@ type Directory struct {
 	// Plugin names the plugin whose skills the directory holds.
 	Plugin string
 	// Label is how the cockpits name the directory: .harness/skills,
-	// ~/.agents/skills, plugin git-glance.
+	// ~/.agents/skills, plugin git-glance, built in · guide.
 	Label string
 }
 
@@ -162,24 +167,35 @@ func Directories(options Options) ([]Directory, []error) {
 		seen[key] = true
 		directories = append(directories, directory)
 	}
-	addPlugins := func(scope Scope) {
-		for _, current := range options.Plugins {
-			if !current.Active || current.Skills == "" || (current.Source == plugin.SourceWorkspace) != (scope == ScopeProject) {
-				continue
+	// addPlugins adds the skills of the active plugins of these sources, in
+	// that order.
+	addPlugins := func(scope Scope, sources ...plugin.Source) {
+		for _, source := range sources {
+			for _, current := range options.Plugins {
+				if !current.Active || current.Skills == "" || current.Source != source {
+					continue
+				}
+				path, err := pluginSkills(current, options.ConfigDirectory)
+				if err != nil {
+					problems = append(problems, fmt.Errorf("plugin %q: skills: %w", current.Name, err))
+					continue
+				}
+				if path == "" {
+					continue // compiled in, with nowhere to write them
+				}
+				directory := Directory{Path: path, Scope: scope, Kind: KindPlugin, Plugin: current.Name, Label: "plugin " + current.Name}
+				if source == plugin.SourceBuiltin {
+					directory.Kind, directory.Label = KindBuiltin, "built in · "+current.Name
+				}
+				add(directory)
 			}
-			path, err := current.Resolve(current.Skills)
-			if err != nil {
-				problems = append(problems, fmt.Errorf("plugin %q: skills: %w", current.Name, err))
-				continue
-			}
-			add(Directory{Path: path, Scope: scope, Kind: KindPlugin, Plugin: current.Name, Label: "plugin " + current.Name})
 		}
 	}
 	if options.Workspace != "" {
 		add(Directory{Path: HarnessDirectory(options.Workspace), Scope: ScopeProject, Kind: KindHarness, Label: ".harness/skills"})
 		add(Directory{Path: AgentsDirectory(options.Workspace), Scope: ScopeProject, Kind: KindAgents, Label: ".agents/skills"})
 	}
-	addPlugins(ScopeProject)
+	addPlugins(ScopeProject, plugin.SourceWorkspace)
 	if options.ConfigDirectory != "" {
 		path := UserDirectory(options.ConfigDirectory)
 		add(Directory{Path: path, Scope: ScopeSystem, Kind: KindConfig, Label: tilde(path, options.Home)})
@@ -187,7 +203,7 @@ func Directories(options Options) ([]Directory, []error) {
 	if options.Home != "" {
 		add(Directory{Path: AgentsDirectory(options.Home), Scope: ScopeSystem, Kind: KindAgents, Label: "~/.agents/skills"})
 	}
-	addPlugins(ScopeSystem)
+	addPlugins(ScopeSystem, plugin.SourceUser, plugin.SourceBuiltin)
 	return directories, problems
 }
 

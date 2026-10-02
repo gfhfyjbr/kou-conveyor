@@ -18,6 +18,7 @@ import (
 	"time"
 	"uuid"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
 )
 
@@ -463,9 +464,17 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		provider = WorkspaceEnv(o.Workspace)(providerVariable)
 	}
 	// The runner finds the user's plugins, and the workspaces trusted with
-	// theirs, beside the cockpit's settings.
+	// theirs, beside the cockpit's settings; the tool profile and the
+	// sandbox the cockpits chose go with it.
 	if o.SettingsFile != "" {
 		env = setEnv(env, plugin.ConfigEnvironment, o.SettingsFile)
+		preferences := LoadPreferences(PreferencesPath(o.SettingsFile))
+		if preferences.ToolProfile != "" {
+			env = setEnv(env, runconfig.ToolProfileEnvironment, preferences.ToolProfile)
+		}
+		if preferences.Sandbox != "" {
+			env = setEnv(env, runconfig.SandboxEnvironment, preferences.Sandbox)
+		}
 	}
 	if err := checkRunner(o.Runner, provider); err != nil {
 		return nil, err

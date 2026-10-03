@@ -63,7 +63,7 @@ type rebuilder struct {
 }
 
 // programs are built in this order; beside the server, those there are.
-var programs = []string{"kou-conveyor-runner", "kou-conveyor-web", "kou-conveyor-tui"}
+var programs = []string{"kou-conveyor-runner", "kou-conveyor-web", "kou-conveyor-tui", "kou-conveyor-canvas"}
 
 // newRebuilder returns a rebuilder for a server whose assets are read from
 // a checkout, or nil when there is none to build from.
@@ -317,6 +317,9 @@ func (s *server) takeUp(ctx context.Context, listener net.Listener, fingerprint 
 	}
 	s.setBuild(buildStatus{State: "restarting", Message: "restarting with the new build"})
 	time.Sleep(250 * time.Millisecond) // the pages hear it
+	// What the canvases have yet to write is written; the new build reads
+	// it, and takes their shells up with the terminals'.
+	s.canvas.Flush()
 	// The terminals' shells go on in the new build.
 	var env []string
 	handover, err := s.terminals.Handover()

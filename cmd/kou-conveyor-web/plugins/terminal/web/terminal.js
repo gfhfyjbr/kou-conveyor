@@ -18,7 +18,12 @@
 // preference), and the terminal's colours are the cockpit's (theme.js). It
 // adds the terminals that run without a tab to Hello, and a section to
 // Settings: the prompt theme, the font and its size.
+//
+// It provides the terminal service: mount(container, options), which draws
+// a shell that runs in another plugin's element (mount.js: the canvas's
+// terminal nodes), open(fresh) and settings().
 import { createTerminal } from './view.js';
+import { mountTerminal } from './mount.js';
 
 const ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 6.2 6.8 8l-2.3 1.8M8.5 10.5h3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 const FONTS = [
@@ -51,6 +56,7 @@ export default function activate(cockpit) {
   const setSettings = (change) => {
     prefs.set('terminal', { ...settings(), ...change });
     for (const view of views) cockpit.safely(() => view.applySettings());
+    for (const mounted of mounts) cockpit.safely(() => mounted.applySettings());
   };
   const fontURL = (file) => new URL(`./fonts/${file}`, import.meta.url).href;
   // The fonts come with the plugin; a font of the computer's own, when
@@ -159,7 +165,12 @@ export default function activate(cockpit) {
     return bar.open('terminal', { id: entry.tab, index: entry.index, state: { layout: entry.layout, fontSize: entry.fontSize || undefined }, title: entry.title });
   }
 
+  // ---------------------------------------------------------------- shells shown elsewhere
 
+  // What the terminal service mounted in other plugins' elements (the
+  // canvas's terminal nodes): they follow the settings and the theme too.
+  const mounts = new Set();
+  cockpit.onDispose(() => { for (const mounted of [...mounts]) cockpit.safely(() => mounted.dispose()); });
 
   cockpit.contribute('sidebar.tab', {
     id: 'terminal', title: 'Terminal', icon: ICON, order: 20, key: '`',
@@ -191,6 +202,24 @@ export default function activate(cockpit) {
     if (!bar) return cockpit.toast('The terminal needs the sidebar plugin, which is off.', 'error');
     return bar.open('terminal', { reuse: !fresh });
   }
+
+  // The terminal service: a shell that runs, drawn in another plugin's
+  // element (mount.js), and the terminal of the sidebar.
+  cockpit.provide('terminal', {
+    mount(container, options = {}) {
+      const mounted = mountTerminal(env, container, {
+        ...options,
+        onDispose: () => {
+          mounts.delete(mounted);
+          options.onDispose?.();
+        },
+      });
+      mounts.add(mounted);
+      return mounted;
+    },
+    open: (fresh = false) => openTerminal(!!fresh),
+    settings: () => settings(),
+  });
 
   // ---------------------------------------------------------------- keys
 
@@ -253,17 +282,14 @@ export default function activate(cockpit) {
       },
     });
   }
-  // ⌘⌫ deletes the word before the cursor (^W), as in macOS text fields.
-  cockpit.keys.register({
-    key: 'Mod+Backspace', global: true, own: true, priority: 60,
-    when: (event) => mac && event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && [...views].some((view) => view.contains(event.target)),
-    run: (event) => {
-      event.stopPropagation();
-      viewOf(event).deleteWord();
-    },
-  });
+  // ⌘⌫, ⌥⌫, ⌘← and ⌥← edit as in Ghostty: editing.js, in each terminal.
   cockpit.keys.register({ key: ['`', 'ё'], views: ['sessions'], run: () => openTerminal() });
-  if (mac) cockpit.contribute('help.keys', { keys: ['⌘', '⌫'], text: 'Delete the word before the cursor', order: 219.9 });
+  if (mac) {
+    cockpit.contribute('help.keys', { keys: ['⌥', '⌫'], text: 'Delete the word before the cursor', order: 219.9 });
+    cockpit.contribute('help.keys', { keys: ['⌘', '⌫'], text: 'Delete the line before the cursor', order: 219.91 });
+    cockpit.contribute('help.keys', { keys: ['⌥', '←→'], text: 'A word back / on', order: 219.92 });
+    cockpit.contribute('help.keys', { keys: ['⌘', '←→'], text: 'The line\'s start / end', order: 219.93 });
+  }
   cockpit.contribute('help.keys', { keys: mac ? ['⌃', 'W'] : ['Ctrl', '⇧', 'W'], text: 'Close the terminal pane', order: 219.6 });
   cockpit.contribute('help.keys', { keys: mac ? ['⌃', '⇧', 'T'] : ['Ctrl', '⇧', 'T'], text: `Reopen it, within ${GRACE}s`, order: 219.7 });
   cockpit.contribute('help.keys', { keys: mac ? ['⌘', '+ −'] : ['Ctrl', '+ −'], text: 'Terminal text larger / smaller (⌘0 back)', order: 219.8 });
@@ -294,10 +320,15 @@ export default function activate(cockpit) {
     },
   });
 
-  // The terminals follow the cockpit's light and dark.
-  cockpit.on('theme', () => { for (const view of views) cockpit.safely(() => view.applyTheme()); });
+  // The terminals follow the cockpit's light and dark, those mounted
+  // elsewhere too.
+  const retheme = () => {
+    for (const view of views) cockpit.safely(() => view.applyTheme());
+    for (const mounted of mounts) cockpit.safely(() => mounted.applyTheme());
+  };
+  cockpit.on('theme', retheme);
   const scheme = matchMedia('(prefers-color-scheme: light)');
-  cockpit.listen(scheme, 'change', () => { for (const view of views) cockpit.safely(() => view.applyTheme()); });
+  cockpit.listen(scheme, 'change', retheme);
 
   // ---------------------------------------------------------------- Hello
 

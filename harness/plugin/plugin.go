@@ -70,6 +70,12 @@ type Manifest struct {
 	// Sandbox says how the agent's commands are isolated in this
 	// workspace: the image its container runs, with what it needs.
 	Sandbox *Sandbox `json:"sandbox,omitzero"`
+	// Canvas is what the plugin adds to the browser cockpit's canvas:
+	// harnesses, sources of events, templates (canvas.go).
+	Canvas *Canvas `json:"canvas,omitzero"`
+	// Requires says what the plugin needs to run, such as variables of the
+	// environment; without them it is not active.
+	Requires *Requires `json:"requires,omitzero"`
 }
 
 // Sandbox says how a workspace's commands run apart from the machine: in a
@@ -310,6 +316,7 @@ func (current Plugin) validate() error {
 			}
 		}
 	}
+	problems = append(problems, current.validateCanvas()...)
 	for _, field := range slices.Sorted(maps.Keys(files)) {
 		relative := files[field]
 		if relative == "" {

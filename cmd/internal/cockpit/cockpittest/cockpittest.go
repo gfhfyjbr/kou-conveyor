@@ -149,12 +149,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return compact(*sessions, request.SessionID, request.Instructions, model, stdout, stderr)
 	}
 	prompt := request.Messages[0].Content
+	// A canvas node's first prompt starts with its brief, a paragraph about
+	// the canvas, and a blank line: what follows it picks the script, as
+	// the brief's own words are no one's request.
+	script := prompt
+	if strings.HasPrefix(prompt, "You are node «") {
+		if _, rest, ok := strings.Cut(prompt, "\n\n"); ok {
+			script = rest
+		}
+	}
 	switch {
-	case strings.Contains(prompt, "fail"):
+	case strings.Contains(script, "fail"):
 		fmt.Fprintln(stdout, `{"type":"error","message":"fake failure"}`)
 		fmt.Fprintln(stderr, "fake-runner: fake failure")
 		return 1
-	case strings.Contains(prompt, "crash"):
+	case strings.Contains(script, "crash"):
 		fmt.Fprintln(stderr, "panic: fake crash")
 		return 2
 	}
@@ -165,7 +174,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	s.model = model
-	if strings.Contains(prompt, "slow") {
+	if strings.Contains(script, "slow") {
 		s.pace = 700 * time.Millisecond
 	}
 	if len(request.Messages[0].Files) != 0 && os.Getenv(NoLinks) == "1" {
@@ -178,14 +187,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		ID: inbox.ID(request.Messages[0].MessageID), Kind: inbox.InputExternal, Payload: payload,
 	})
 	turn := s.turn()
-	if strings.Contains(prompt, "retry") {
+	if strings.Contains(script, "retry") {
 		// The turn reaches the front-end first, as it does when a request
 		// takes a moment to fail.
 		time.Sleep(100 * time.Millisecond)
 		fmt.Fprintln(stderr, "retry> attempt 1 of 5 failed, trying again in 2s: Messages API request failed: "+
 			`Post "http://127.0.0.1:8318/v1/messages": dial tcp 127.0.0.1:8318: connect: connection refused`)
 	}
-	if strings.Contains(prompt, "unfinished") {
+	if strings.Contains(script, "unfinished") {
 		s.emit(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn, Response: llm.Response{
 			Stop: llm.StopMaxOutputTokens,
 			Output: []llm.Item{{Type: llm.ItemReasoning, Data: llm.Reasoning{
@@ -195,13 +204,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}})
 		return 0
 	}
-	if strings.Contains(prompt, "wait") {
+	if strings.Contains(script, "wait") {
 		interrupted := make(chan os.Signal, 1)
 		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
 		<-interrupted
 		return 130
 	}
-	if strings.Contains(prompt, "gate") {
+	if strings.Contains(script, "gate") {
 		interrupted := make(chan os.Signal, 1)
 		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
 		for {
@@ -216,7 +225,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 	}
 	steered := ""
-	if strings.Contains(prompt, "steer") && *steer {
+	if strings.Contains(script, "steer") && *steer {
 		// A long command, and a message for the agent while it runs.
 		s.emit(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn, Response: llm.Response{
 			Stop: llm.StopComplete,
@@ -250,15 +259,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			steered = message.Content
 		}
 	}
-	if strings.Contains(prompt, "touch") {
+	if strings.Contains(script, "touch") {
 		path := filepath.Join(*workspace, "touched.txt")
 		old, _ := os.ReadFile(path)
 		os.WriteFile(path, append([]byte(prompt+"\n"), old...), 0o600)
 	}
-	if strings.Contains(prompt, "look") {
+	if strings.Contains(script, "look") {
 		turn = s.look(turn)
 	}
-	if strings.Contains(prompt, "tool") || strings.Contains(prompt, "touch") {
+	if strings.Contains(script, "tool") || strings.Contains(script, "touch") {
 		s.emit(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn, Response: llm.Response{
 			Stop: llm.StopComplete,
 			Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{
@@ -287,7 +296,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if len(images) != 0 {
 		answer += fmt.Sprintf(" · %d images", len(images))
 	}
-	if strings.Contains(prompt, "print-env") {
+	if strings.Contains(script, "print-env") {
 		var values []string
 		for _, name := range []string{"PROVIDER", "BASE_URL", "API_KEY", "MODEL"} {
 			value, set := os.LookupEnv("KOU_CONVEYOR_LLM_" + name)
@@ -298,7 +307,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}
 		answer = strings.Join(values, " ")
 	}
-	if strings.Contains(prompt, "print-thinking") {
+	if strings.Contains(script, "print-thinking") {
 		answer = "thinking=" + request.Thinking
 	}
 	if steered != "" {

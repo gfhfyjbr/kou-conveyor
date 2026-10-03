@@ -1,0 +1,106 @@
+{
+  "name": "canvas",
+  "description": "The canvas: terminals, agents and events on a board without edges, wired output to input. New session → Canvas.",
+  "web": {
+    "script": "web/canvas.js",
+    "style": "web/canvas.css",
+    "after": ["layout", "session", "ui", "terminal", "markdown", "files", "models", "session-list"]
+  },
+  "canvas": {
+    "harnesses": [
+      {
+        "id": "shell", "title": "Shell", "icon": "▣", "description": "A shell in the workspace, or in a worktree of its own.",
+        "launch": "shell", "status": ["osc133"], "output": "osc133",
+        "config": {"type": "object", "properties": {
+          "cwd": {"type": "string", "title": "Folder", "description": "Where it starts, in the workspace; the workspace itself when empty."}
+        }}
+      },
+      {
+        "id": "command", "title": "Command…", "icon": "▶", "description": "A shell that runs a command when it starts: a server, a watcher, the tests.",
+        "launch": "type", "status": ["osc133"], "output": "osc133",
+        "config": {"type": "object", "required": ["command"], "properties": {
+          "command": {"type": "string", "title": "Command", "description": "Typed at the shell's first prompt."},
+          "cwd": {"type": "string", "title": "Folder", "description": "Where it runs, in the workspace; the workspace itself when empty."}
+        }}
+      },
+      {
+        "id": "claude-code", "title": "Claude Code", "icon": "✻", "description": "Anthropic's coding agent in a terminal, told of the canvas through its hooks.",
+        "command": ["claude"], "launch": "launcher",
+        "session_arg": ["--session-id", "{{runtime.agent_session}}"],
+        "args": ["--settings", "{{files.settings}}", "--mcp-config", "{{files.mcp}}",
+                 "--append-system-prompt", "{{brief}}", "--permission-mode", "{{config.permission_mode}}"],
+        "files": {
+          "settings": {"hooks": {
+            "SessionStart": [{"hooks": [{"type": "command", "command": "\"${KOU_CANVAS_CLI:-kou-canvas}\" hook claude", "timeout": 5}]}],
+            "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "\"${KOU_CANVAS_CLI:-kou-canvas}\" hook claude", "timeout": 5}]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "\"${KOU_CANVAS_CLI:-kou-canvas}\" hook claude", "timeout": 5}]}],
+            "Notification": [{"hooks": [{"type": "command", "command": "\"${KOU_CANVAS_CLI:-kou-canvas}\" hook claude", "timeout": 5}]}]
+          }},
+          "mcp": {"mcpServers": {"kou-canvas": {"command": "kou-canvas", "args": ["mcp"], "timeout": 1800000}}}
+        },
+        "input": {"paste": "bracketed", "newline": "cr", "submit": "\r", "submit_delay_ms": 80},
+        "status": ["hooks"], "output": "hooks",
+        "resume": ["--resume", "{{runtime.agent_session}}"],
+        "config": {"type": "object", "properties": {
+          "permission_mode": {"type": "string", "title": "Permissions", "enum": ["default", "acceptEdits", "plan", "bypassPermissions"], "default": "default"},
+          "output": {"type": "string", "title": "Output", "enum": ["replies", "all", "explicit"], "default": "replies",
+                     "description": "What goes along its edges: replies — its answers to messages from the canvas (what you ask it stays with you); all — every answer; explicit — only what it emits."}
+        }},
+        "check": ["claude", "--version"]
+      },
+      {
+        "id": "codex", "title": "Codex", "icon": "◎", "description": "OpenAI's coding agent in a terminal, told of the canvas through its notify program.",
+        "command": ["codex"], "launch": "launcher",
+        "args": ["-c", "notify=[\"kou-canvas\",\"hook\",\"codex\"]",
+                 "-c", "mcp_servers.kou-canvas.command=\"kou-canvas\"", "-c", "mcp_servers.kou-canvas.args=[\"mcp\"]",
+                 "-c", "mcp_servers.kou-canvas.env_vars=[\"KOU_CANVAS_URL\",\"KOU_CANVAS_TOKEN\",\"KOU_CANVAS_ID\",\"KOU_CANVAS_NODE\"]",
+                 "-c", "mcp_servers.kou-canvas.tool_timeout_sec=1800"],
+        "input": {"paste": "bracketed", "newline": "cr", "submit": "\r", "submit_delay_ms": 80},
+        "status": ["notify", "idle"], "idle_ms": 8000, "output": "notify",
+        "resume": ["resume", "{{runtime.agent_session}}"],
+        "config": {"type": "object", "properties": {
+          "output": {"type": "string", "title": "Output", "enum": ["replies", "all", "explicit"], "default": "replies",
+                     "description": "What goes along its edges: replies — its answers to messages from the canvas (what you ask it stays with you); all — every answer; explicit — only what it emits."}
+        }},
+        "check": ["codex", "--version"]
+      },
+      {
+        "id": "opencode", "title": "OpenCode", "icon": "⌬", "description": "The opencode agent in a terminal; the canvas reads when it is quiet.",
+        "command": ["opencode"], "launch": "launcher",
+        "input": {"paste": "bracketed", "submit": "\r", "submit_delay_ms": 80},
+        "status": ["idle"], "idle_ms": 4000, "output": "none",
+        "check": ["opencode", "--version"]
+      }
+    ],
+    "sources": [
+      {
+        "id": "manual", "title": "Manual", "icon": "⚡", "description": "A button: what it fires goes along its edges.", "builtin": true,
+        "outputs": [{"id": "out", "title": "Fired"}],
+        "config": {"type": "object", "properties": {
+          "text": {"type": "string", "title": "Text", "description": "What it fires when the field is empty."}
+        }}
+      },
+      {
+        "id": "timer", "title": "Timer", "icon": "◷", "description": "Fires every so often, or at a time of the day.", "builtin": true,
+        "outputs": [{"id": "out", "title": "Tick"}],
+        "config": {"type": "object", "properties": {
+          "every": {"type": "string", "title": "Every", "default": "15m", "description": "A duration: 30s, 15m, 2h (10s at least)."},
+          "at": {"type": "string", "title": "At", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$", "description": "A time of the day, HH:MM, instead."},
+          "text": {"type": "string", "title": "Text", "description": "What it fires; the time when empty."}
+        }}
+      },
+      {
+        "id": "files", "title": "Files", "icon": "⊡", "description": "Fires when files of the workspace that match a pattern change.", "builtin": true,
+        "outputs": [{"id": "out", "title": "Changed"}],
+        "config": {"type": "object", "required": ["pattern"], "properties": {
+          "pattern": {"type": "string", "title": "Pattern", "description": "Files of the workspace: *.go, docs/**/*.md."},
+          "interval": {"type": "string", "title": "Look every", "default": "1s", "description": "How often the files are looked at."}
+        }}
+      },
+      {
+        "id": "webhook", "title": "Webhook", "icon": "⇥", "description": "Fires when something sends a request to its secret address.", "builtin": true,
+        "outputs": [{"id": "out", "title": "Received"}]
+      }
+    ]
+  }
+}

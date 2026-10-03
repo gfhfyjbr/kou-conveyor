@@ -60,14 +60,19 @@ export default function activate(cockpit) {
   cockpit.ui.mount('overlays', { id: 'menu', order: 90, node: menu });
   let anchor = null;
 
-  function open(at, items) {
+  // open opens the menu by anchor. A compact menu has denser rows, and
+  // says the items' details in their tooltips (an item's title).
+  function open(at, items, { compact = false } = {}) {
     close();
+    menu.dataset.compact = compact ? 'true' : '';
     menu.replaceChildren(...items.filter(Boolean).map((item) => {
       if (item.separator) return h('div', { class: 'sep', role: 'separator' });
       const label = h('span', { class: 'l', text: item.label });
-      const text = item.detail ? h('span', { class: 'lines' }, label, h('small', { text: item.detail })) : label;
+      const detail = compact ? '' : item.detail;
+      const text = detail ? h('span', { class: 'lines' }, label, h('small', { text: detail })) : label;
+      const tip = item.title || (compact ? item.detail : '') || null;
       return h('button', {
-        type: 'button', role: 'menuitem', class: item.danger ? 'danger' : null, disabled: !!item.disabled,
+        type: 'button', role: 'menuitem', class: item.danger ? 'danger' : null, disabled: !!item.disabled, title: tip,
         onclick: (event) => {
           event.stopPropagation();
           // Destructive items take a second, deliberate click.
@@ -102,12 +107,12 @@ export default function activate(cockpit) {
   }
 
   // toggle opens the menu by anchor, or closes it if it is open there.
-  function toggle(at, items) {
+  function toggle(at, items, options) {
     if (anchor === at) {
       close();
       return;
     }
-    open(at, typeof items === 'function' ? items() : items);
+    open(at, typeof items === 'function' ? items() : items, options);
   }
 
   cockpit.provide('menu', { open, close, toggle, anchor: () => anchor, isOpen: () => !menu.hidden });

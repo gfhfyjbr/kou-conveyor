@@ -20,6 +20,8 @@ check:
 build-tui: build-runner
 	go build -trimpath -o bin/kou-conveyor-tui ./cmd/kou-conveyor-tui
 
-# The browser cockpit follows the checkout it was built from, live.
+# The browser cockpit follows the checkout it was built from, live. Its
+# canvases' nodes call it with kou-canvas, built beside it.
 build-web: build-runner
 	go build -trimpath -ldflags "-X 'main.builtFrom=$(CURDIR)'" -o bin/kou-conveyor-web ./cmd/kou-conveyor-web
+	go build -trimpath -o bin/kou-conveyor-canvas ./cmd/kou-conveyor-canvas

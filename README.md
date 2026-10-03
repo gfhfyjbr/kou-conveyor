@@ -142,6 +142,79 @@ starts with `ZDOTDIR` pointing at the terminal's files, which source the
 user's own and then set the prompt — Settings turns it off. Files are
 highlighted on the server with chroma.
 
+## Canvas
+
+The browser cockpit's canvas is a board without edges for terminals and
+agents, wired output to input. The Chat · Canvas switch over a new session,
+`/canvas [name]` or **New canvas** in the palette make one; canvases show in
+the session list (◧) and in the rail's Canvas tab, and links name them:
+`#/w/<workspace>/c/<canvas>`. A canvas holds:
+
+- **terminals**: a shell, a command (a server, a watcher, the tests), or a
+  coding agent in a terminal — Claude Code, Codex, OpenCode, or a harness a
+  plugin adds. Their shells run on the server, as the sidebar's do, and
+  outlive reloads and the server's restarts. A terminal can work in a git
+  worktree of its own (`.harness/worktrees/<name>`, on branch `kou/<name>`).
+- **kou agents**: agents of this cockpit, each with a session of its own,
+  which the session list leaves out until asked to show them; **Open
+  session** shows the whole of one.
+- **sources** of events: a button, a timer, files of the workspace that
+  change, a webhook, or a program a plugin adds — such as
+  [examples/plugins/github-events](examples/plugins/github-events), which
+  brings a repository's issues as they are opened.
+- **notes**, in Markdown.
+
+An edge takes what a node gives on an output — the output of a command, the
+answer an agent ends its turn with, an event — to another node's input, as
+a prompt or as text typed into its terminal. Each edge has a template
+(`{{text}}`, `{{title}}`, `{{data.<path>}}`, `{{from.title}}`…) and a mode:
+`auto`, `approve` (each message waits on its target for Approve, Edit or
+Drop) or `off`. A message waits for its target to be idle unless the edge
+says `now`, and waits on disk, so it outlives a restart. A chain of messages
+stops after 32 hops, and edges and canvases are held to so many messages a
+minute, so two agents wired to each other do not run away. A paused canvas
+runs no sources and keeps its messages waiting.
+
+An agent's answer goes where the message it answers came from. What came
+from the canvas — along an edge, or from another node — is answered along
+the agent's edges, and back to the node that sent it; what the user asks
+it in its node, it answers to the user alone. Its **Output** setting
+changes that: `all` puts every answer out, `explicit` only what the agent
+emits. A node asks another in one call — `CanvasSend` (`kou-canvas send`)
+with `wait`, by the other's ID or title — and has its answer as the call's
+result; without `wait`, the answer comes back to it as a reply. Agents are
+told the nodes they can message, with their IDs, when they start.
+
+A shell node finds the coding agent the user runs in it — Claude Code,
+Codex, Gemini CLI, OpenCode, Aider and others — from the command it ran and
+the program in its terminal's foreground: the node shows the agent, takes
+prompts for it, and once the agent falls quiet after a message, what it
+shows is its answer. The **Agents** window over a canvas — the bar's
+**Agents** shows and hides it — lists the agents of its nodes, what each is
+doing and for how long; a click shows one on the board. A command that
+shows nothing for a while, such as a server, runs on quietly: its node says
+*running*, and nothing blinks for it.
+
+Agents build canvases too. A canvas's terminals have `kou-canvas` (the
+`kou-conveyor-canvas` program) on their `PATH`: `kou-canvas view` shows the
+board; `spawn`, `rm`, `connect`, `disconnect` and `move` change it; `send`,
+`keys`, `read` and `wait` work with another node, and `emit` gives an
+output. `kou-canvas mcp` serves the same tools over MCP, which the Claude
+Code and Codex presets are given, and the built-in `canvas-agent` plugin
+gives them to the kou agents of a canvas (`CanvasView`, `CanvasSpawn`, …).
+Each node has a token of its own, which allows what its access says —
+observe, talk, build or admin — and the canvas's settings bound how many
+nodes and terminals agents make, and how fast. **Ask the foreman…**, the
+field at the foot of a canvas, gives a request to a kou agent that builds
+the canvas and keeps it up.
+
+A canvas is a file of its workspace, `.harness/canvases/<id>.json`, with its
+messages beside it in `.harness/canvases/<id>/`; canvases saved as templates
+go to `.harness/canvas-templates`. Plugins add terminal presets, sources and
+templates with `canvas` in their manifest (see
+[docs/plugins.md](docs/plugins.md#canvas)). `-canvas off` (or
+`KOU_CONVEYOR_CANVAS=off`) runs the server without canvases.
+
 ## Terminal UI
 
 The repository also ships `kou-conveyor-tui`, a terminal wrapper around

@@ -53,11 +53,33 @@ type pluginView struct {
 	After        []string `json:"after,omitzero"`
 	// Live is set for a plugin read from disk, whose changes show at once.
 	Live bool `json:"live,omitzero"`
+	// Canvas says what the plugin adds to the canvas, such as "1 source,
+	// 2 harnesses".
+	Canvas string `json:"canvas,omitzero"`
 }
 
 type pluginToolView struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+}
+
+// canvasSummary says what a plugin adds to the canvas.
+func canvasSummary(c *plugin.Canvas) string {
+	var parts []string
+	count := func(n int, one, many string) {
+		switch {
+		case n == 1:
+			parts = append(parts, "1 "+one)
+		case n > 1:
+			parts = append(parts, fmt.Sprintf("%d %s", n, many))
+		}
+	}
+	count(len(c.Sources), "source", "sources")
+	count(len(c.Harnesses), "harness", "harnesses")
+	if c.Templates != "" {
+		parts = append(parts, "templates")
+	}
+	return strings.Join(parts, ", ")
 }
 
 // plugins finds the plugins of a workspace, the cockpit's own among them.
@@ -167,6 +189,9 @@ func (s *server) pluginsOf(ws *workspace) map[string]any {
 			Directory: current.Directory, Active: current.Active, Reason: current.Reason,
 			Tools: []pluginToolView{}, Commands: current.Commands, Skills: current.Skills != "", Instructions: current.Instructions != "",
 			Live: current.Directory != "",
+		}
+		if current.Canvas != nil {
+			view.Canvas = canvasSummary(current.Canvas)
 		}
 		if view.Commands == nil {
 			view.Commands = []plugin.Command{}

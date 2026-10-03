@@ -15,7 +15,9 @@ import (
 	"os/exec"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -85,6 +87,12 @@ type Spec struct {
 	// Theme gives the shell kou-conveyor's integration and prompt.
 	Theme      bool
 	Cols, Rows int
+	// Owner names what the shell belongs to besides the sidebar's tabs,
+	// such as a node of a canvas ("canvas:<ws>/<canvas>/<node>"): List
+	// leaves such shells out, ListOwned lists them.
+	Owner string
+	// Env adds variables to the shell's environment, after the server's.
+	Env []string
 }
 
 // Info describes a shell.
@@ -107,11 +115,14 @@ type Info struct {
 	ClosingAt time.Time `json:"closing_at,omitzero"`
 	Exited    bool      `json:"exited,omitzero"`
 	Code      int       `json:"exit_code,omitzero"`
+	// Owner is what the shell belongs to, when it is not a tab's.
+	Owner string `json:"owner,omitzero"`
 }
 
 // Session is a shell in a pseudo-terminal.
 type Session struct {
 	id, workspace, shell string
+	owner                atomic.Value // string: Spec.Owner, until Disown
 	theme                bool
 	started              time.Time
 	pid                  int
@@ -120,21 +131,26 @@ type Session struct {
 	manager              *Manager
 
 	writing sync.Mutex // one write to the terminal at a time
+	// lastInput is when something was last typed into the terminal, in
+	// Unix nanoseconds.
+	lastInput atomic.Int64
 
-	mu      sync.Mutex
-	ring    *ring
-	scan    *scanner // what the output said, all of it
-	base    *scanner // what it said up to where the ring starts
-	cols    int
-	rows    int
-	resized int // how many times the page resized the terminal
-	clients map[*Client]struct{}
-	exited  bool
-	code    int
-	closing *time.Timer // ends the shell, once its tab closed
-	closeAt time.Time
-	read    chan struct{} // closed once the output is all read
-	ended   chan struct{} // closed once the shell ended and its output was sent
+	mu        sync.Mutex
+	ring      *ring
+	scan      *scanner // what the output said, all of it
+	base      *scanner // what it said up to where the ring starts
+	cols      int
+	rows      int
+	resized   int // how many times the page resized the terminal
+	clients   map[*Client]struct{}
+	observers map[int]func(Event)
+	observed  int // the last observer's number
+	exited    bool
+	code      int
+	closing   *time.Timer // ends the shell, once its tab closed
+	closeAt   time.Time
+	read      chan struct{} // closed once the output is all read
+	ended     chan struct{} // closed once the shell ended and its output was sent
 }
 
 func newID() string {
@@ -185,6 +201,7 @@ func (m *Manager) Start(spec Spec) (*Session, error) {
 		pid: cmd.Process.Pid, master: master, proc: cmd.Process, manager: m,
 		cols: spec.Cols, rows: spec.Rows,
 	}
+	s.owner.Store(spec.Owner)
 	s.init(nil)
 	if !m.add(s) {
 		s.hangUp()
@@ -198,6 +215,7 @@ func (m *Manager) Start(spec Spec) (*Session, error) {
 // before, if anything.
 func (s *Session) init(kept *handedOver) {
 	s.clients = make(map[*Client]struct{})
+	s.observers = make(map[int]func(Event))
 	s.read = make(chan struct{})
 	s.ended = make(chan struct{})
 	s.scan = newScanner()
@@ -211,6 +229,8 @@ func (s *Session) init(kept *handedOver) {
 		s.ring.write(kept.Output)
 		s.scan.title, s.scan.dir = kept.Title, kept.Dir
 	}
+	// The marks of the output from here on are the observers'.
+	s.scan.marking = true
 }
 
 // run reads the shell's output and waits for it to end.
@@ -240,12 +260,34 @@ func (m *Manager) Get(id string) (*Session, error) {
 }
 
 // List describes the sessions of a workspace, or all of them for "", the
-// oldest first.
+// oldest first. Sessions that have an owner (Spec.Owner) are not the
+// sidebar's, and are left out.
 func (m *Manager) List(workspace string) []Info {
+	return m.list(func(s *Session) bool { return s.Owner() == "" && (workspace == "" || s.workspace == workspace) })
+}
+
+// ListOwned describes the sessions whose owner starts with prefix, the
+// oldest first.
+func (m *Manager) ListOwned(prefix string) []Info {
+	return m.list(func(s *Session) bool { owner := s.Owner(); return owner != "" && strings.HasPrefix(owner, prefix) })
+}
+
+// Disown gives a session that has an owner to the sidebar: List lists it
+// from now on.
+func (m *Manager) Disown(id string) error {
+	s, err := m.Get(id)
+	if err != nil {
+		return err
+	}
+	s.owner.Store("")
+	return nil
+}
+
+func (m *Manager) list(keep func(*Session) bool) []Info {
 	m.mu.Lock()
 	sessions := make([]*Session, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		if workspace == "" || s.workspace == workspace {
+		if keep(s) {
 			sessions = append(sessions, s)
 		}
 	}
@@ -312,9 +354,18 @@ func (s *Session) Info() Info {
 	return Info{
 		ID: s.id, Workspace: s.workspace, Shell: s.shell, Theme: s.theme, Title: s.scan.title, Dir: s.scan.dir,
 		Started: s.started, Cols: s.cols, Rows: s.rows, Clients: len(s.clients), Running: running, Exited: s.exited, Code: s.code,
-		ClosingAt: s.closeAt,
+		ClosingAt: s.closeAt, Owner: s.Owner(),
 	}
 }
+
+// Owner is what the session belongs to, "" for a tab's.
+func (s *Session) Owner() string {
+	owner, _ := s.owner.Load().(string)
+	return owner
+}
+
+// Ended is closed once the shell ended.
+func (s *Session) Ended() <-chan struct{} { return s.ended }
 
 // maxGrace bounds how long a closed tab's shell waits.
 const maxGrace = 5 * time.Minute
@@ -362,7 +413,7 @@ func (m *Manager) Keep(id string) error {
 
 // running names the program in the foreground, if it is not the shell.
 func (s *Session) running() string {
-	group := foreground(s.master)
+	group := s.foregroundGroup()
 	if group <= 0 || group == s.pid {
 		return ""
 	}
@@ -370,6 +421,17 @@ func (s *Session) running() string {
 		return name
 	}
 	return "a program"
+}
+
+// foregroundGroup is the process group in the foreground of the shell's
+// terminal; 0 once the shell ended, as its terminal is closed after (wait).
+func (s *Session) foregroundGroup() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.exited {
+		return 0
+	}
+	return foreground(s.master)
 }
 
 // Dir is where the shell is: where it last said it is, else the working
@@ -383,7 +445,7 @@ func (s *Session) Dir() string {
 			return dir
 		}
 	}
-	for _, pid := range []int{foreground(s.master), s.pid} {
+	for _, pid := range []int{s.foregroundGroup(), s.pid} {
 		if pid <= 0 {
 			continue
 		}
@@ -398,14 +460,36 @@ func (s *Session) Dir() string {
 func (s *Session) Write(p []byte) error {
 	s.writing.Lock()
 	defer s.writing.Unlock()
-	for len(p) > 0 {
-		n, err := s.master.Write(p)
-		if err != nil {
-			return err
-		}
-		p = p[n:]
+	return s.writeAll(p)
+}
+
+// LastInput is when something was last typed into the terminal — by a
+// page, a paste, keys —, zero before anything was: what the terminal shows
+// right after is mostly its echo.
+func (s *Session) LastInput() time.Time {
+	if at := s.lastInput.Load(); at != 0 {
+		return time.Unix(0, at)
 	}
-	return nil
+	return time.Time{}
+}
+
+// Program is a program in the foreground of a shell's terminal.
+type Program struct {
+	PID int
+	// Name is the name it runs as; Args are its arguments, the first the
+	// name it was run by, where the system says them.
+	Name string
+	Args []string
+}
+
+// Foreground describes the program in the foreground of the terminal —
+// the leader of the process group there —, when it is not the shell.
+func (s *Session) Foreground() (Program, bool) {
+	group := s.foregroundGroup()
+	if group <= 0 || group == s.pid {
+		return Program{}, false
+	}
+	return Program{PID: group, Name: processName(group), Args: processArgs(group)}, true
 }
 
 // Resize gives the terminal a size in cells, and in pixels when known.
@@ -413,13 +497,14 @@ func (s *Session) Resize(cols, rows, width, height int) error {
 	if cols <= 0 || rows <= 0 || cols > 1000 || rows > 500 {
 		return errors.New("a terminal of an impossible size")
 	}
+	// The terminal's size is set under the lock, while the shell has not
+	// ended: its terminal is closed only after it has (wait).
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.cols, s.rows = cols, rows
-	exited := s.exited
 	s.resized++
 	resized := s.resized
-	s.mu.Unlock()
-	if exited {
+	if s.exited {
 		return nil
 	}
 	size := &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows), X: uint16(clamp(width)), Y: uint16(clamp(height))}
@@ -430,9 +515,8 @@ func (s *Session) Resize(cols, rows, width, height int) error {
 	// size it knew back: the size is set again if it is not the one given.
 	time.AfterFunc(resizeCheck, func() {
 		s.mu.Lock()
-		current := s.resized == resized && !s.exited
-		s.mu.Unlock()
-		if !current {
+		defer s.mu.Unlock()
+		if s.resized != resized || s.exited {
 			return
 		}
 		if rows, cols, err := pty.Getsize(s.master); err == nil && (rows != int(size.Rows) || cols != int(size.Cols)) {
@@ -445,15 +529,21 @@ func (s *Session) Resize(cols, rows, width, height int) error {
 // Redraw has the program in the foreground draw its screen anew: it is told
 // the size changed, and back.
 func (s *Session) Redraw() {
-	s.mu.Lock()
-	cols, rows, exited := s.cols, s.rows, s.exited
-	s.mu.Unlock()
-	if exited || cols < 2 {
-		return
+	// Each size is set under the lock, while the shell has not ended: its
+	// terminal is closed only after it has (wait).
+	resize := func(narrower int) bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.exited || s.cols < 2 {
+			return false
+		}
+		_ = pty.Setsize(s.master, &pty.Winsize{Cols: uint16(s.cols - narrower), Rows: uint16(s.rows)})
+		return true
 	}
-	_ = pty.Setsize(s.master, &pty.Winsize{Cols: uint16(cols - 1), Rows: uint16(rows)})
-	time.Sleep(20 * time.Millisecond)
-	_ = pty.Setsize(s.master, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	if resize(1) {
+		time.Sleep(20 * time.Millisecond)
+		resize(0)
+	}
 }
 
 // FullScreen reports whether a program holds the alternate screen.
@@ -491,6 +581,7 @@ func (s *Session) pump() {
 			s.mu.Lock()
 			s.ring.write(chunk)
 			changed := s.scan.feed(chunk)
+			marks := s.scan.takeMarks()
 			var meta *Meta
 			if changed {
 				meta = &Meta{Title: s.scan.title, Dir: s.scan.dir}
@@ -500,6 +591,9 @@ func (s *Session) pump() {
 				if meta != nil {
 					c.send(Message{Meta: meta})
 				}
+			}
+			for _, observe := range s.observers {
+				observe(Event{Output: chunk, Marks: marks, Meta: meta})
 			}
 			s.mu.Unlock()
 		}
@@ -530,6 +624,9 @@ func (s *Session) wait() {
 	s.exited, s.code = true, code
 	for c := range s.clients {
 		c.send(Message{Exit: &code})
+	}
+	for _, observe := range s.observers {
+		observe(Event{Exit: &code})
 	}
 	s.mu.Unlock()
 	close(s.ended)

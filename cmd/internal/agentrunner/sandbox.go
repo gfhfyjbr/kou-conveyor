@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/worktree"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 )
@@ -41,8 +42,7 @@ const (
 	SandboxWorktree  = runconfig.SandboxWorktree
 	SandboxContainer = runconfig.SandboxContainer
 
-	worktreesDirectory = ".harness/worktrees"
-	sandboxDockerfile  = ".harness/sandbox/Dockerfile"
+	sandboxDockerfile = ".harness/sandbox/Dockerfile"
 	// containerStart bounds starting a container and its setup.
 	containerStart = 10 * time.Minute
 )
@@ -118,34 +118,18 @@ func ensureWorktree(ctx context.Context, workspace string, id session.ID, report
 	if len(short) > 8 {
 		short = short[:8]
 	}
-	branch := "kou/" + short
-	worktree := filepath.Join(workspace, worktreesDirectory, short)
-	if _, err := os.Stat(filepath.Join(worktree, ".git")); err == nil {
-		return worktree, branch, nil
+	existed := false
+	if _, err := os.Stat(filepath.Join(worktree.Path(workspace, short), ".git")); err == nil {
+		existed = true
 	}
-	if err := os.MkdirAll(filepath.Dir(worktree), 0o755); err != nil {
-		return "", "", fmt.Errorf("create the worktrees directory: %w", err)
-	}
-	git := func(arguments ...string) (string, error) {
-		command := exec.CommandContext(ctx, "git", arguments...)
-		command.Dir = workspace
-		out, err := command.CombinedOutput()
-		if err != nil {
-			return "", fmt.Errorf("git %s: %v: %s", strings.Join(arguments, " "), err, strings.TrimSpace(string(out)))
-		}
-		return strings.TrimSpace(string(out)), nil
-	}
-	// A stale registration of the path, from a worktree removed by hand.
-	git("worktree", "prune")
-	if _, err := git("rev-parse", "--verify", "--quiet", "refs/heads/"+branch); err == nil {
-		if _, err := git("worktree", "add", worktree, branch); err != nil {
-			return "", "", err
-		}
-	} else if _, err := git("worktree", "add", "-b", branch, worktree, "HEAD"); err != nil {
+	path, branch, err := worktree.Ensure(ctx, workspace, short, "", "")
+	if err != nil {
 		return "", "", err
 	}
-	fmt.Fprintf(report, "sandbox> worktree %s on branch %s\n", worktree, branch)
-	return worktree, branch, nil
+	if !existed {
+		fmt.Fprintf(report, "sandbox> worktree %s on branch %s\n", path, branch)
+	}
+	return path, branch, nil
 }
 
 // sandboxConfig is the sandbox the active plugins declare, if one does:

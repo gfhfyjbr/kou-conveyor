@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/canvas"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/terminal"
@@ -64,6 +65,8 @@ type server struct {
 	// (terminals.go); explorer what its Files tab shows (explorer.go).
 	terminals *terminal.Manager
 	explorer  *explorer
+	// canvas runs the canvases (canvas.go), nil when they are off.
+	canvas *canvas.Engine
 
 	mu     sync.Mutex
 	runs   map[string]*run           // by run ID, including recently finished runs
@@ -102,6 +105,7 @@ func newServer(ctx context.Context, o options, addr net.Addr) *server {
 	}
 	s.explorer = newExplorer()
 	s.startTerminals()
+	s.startCanvas(addr)
 	// A page on another site can resolve its own name to this address (DNS
 	// rebinding), so only names that really denote this server are accepted.
 	// Bound to every interface, any IP literal is fine too: rebinding needs a
@@ -225,6 +229,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/terminals/{id}/socket", s.handleTerminalSocket)
 	mux.HandleFunc("GET /api/terminal/settings", s.handleTerminalSettings)
 	mux.HandleFunc("PUT /api/terminal/settings", s.handleSaveTerminalSettings)
+	// The canvases (canvas.go): those of the workspaces, and the routes the
+	// programs of their nodes call with their tokens.
+	s.canvas.Register(mux)
 	notFound := func(w http.ResponseWriter, r *http.Request) { writeError(w, http.StatusNotFound, "not found") }
 	for _, method := range []string{"GET", "POST", "PUT", "PATCH", "DELETE"} {
 		mux.HandleFunc(method+" /api/", notFound)
@@ -300,6 +307,8 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"accounts":        s.gatewayView(),
 		// The classes of tokens the runs of a Code call's syntax name.
 		"syntax_classes": highlight.Classes,
+		// Whether the canvases run (-canvas).
+		"canvas": s.canvas != nil,
 	}
 	if err != nil {
 		config["settings_error"] = err.Error()
@@ -429,7 +438,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	// follow the file instead of a stream.
 	external := reserved == nil && cockpit.SessionBusy(dir, id)
 	meta := cockpit.LoadMeta(dir, id)
-	writeJSON(w, http.StatusOK, map[string]any{
+	body := map[string]any{
 		"id": id, "workspace": ws.ID, "title": titleOf(dir, id, tr, reserved), "entries": tr.Entries, "usage": tr.Usage,
 		"run": summary, "size": tr.Size, "external": external,
 		"pinned": meta.Pinned, "queue": queue,
@@ -437,7 +446,12 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		// prompt and changes with it.
 		"renamed":     meta.Title != "",
 		"interrupted": reserved == nil && !external && tr.Interrupted(),
-	})
+	}
+	// The session of a canvas's agent names the canvas and its node.
+	if meta.Canvas != "" {
+		body["canvas"], body["node"] = meta.Canvas, meta.Node
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

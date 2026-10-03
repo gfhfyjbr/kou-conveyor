@@ -211,3 +211,8 @@ _kou_precmd() {
 add-zsh-hook preexec _kou_preexec
 add-zsh-hook precmd _kou_precmd
 PROMPT=$_kou_prompt RPROMPT=$_kou_rprompt PS2='%F{8}…%f '
+
+# A terminal of a canvas finds its kou-canvas first.
+if [[ -n ${KOU_CANVAS_BIN-} ]]; then
+  path=($KOU_CANVAS_BIN $path)
+fi

@@ -6,6 +6,7 @@
 // from the output the server kept. The tab saves its layout — the splits,
 // their sizes and each pane's shell — to come back to.
 import { ghostty, colours } from './theme.js';
+import { editingKeys } from './editing.js';
 
 const encoder = new TextEncoder();
 const SPLIT_RIGHT = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="2.5" width="13" height="11" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 2.5v11" stroke="currentColor" stroke-width="1.4"/></svg>';
@@ -487,13 +488,12 @@ export function createTerminal(env, tab) {
     state?.transport?.write(encoder.encode('\x0c'));
   }
 
-  // deleteWord deletes the word before the cursor, as ^W does in a shell,
-  // vim or less: what ⌘⌫ does.
-  function deleteWord() {
+  // ⌘⌫, ⌥⌫ and the like go to the pane in focus as Ghostty sends them.
+  const stopEditing = editingKeys(surface, (text) => {
     const pane = activePane();
     const state = pane ? panes.get(pane.id) : null;
-    state?.transport?.write(encoder.encode('\x17'));
-  }
+    return !!state?.transport?.write(encoder.encode(text));
+  });
 
   function find() {
     const pane = activePane();
@@ -741,6 +741,7 @@ export function createTerminal(env, tab) {
     close,
     dispose() {
       disposed = true;
+      stopEditing();
       clearTimeout(saving);
       clearTimeout(runningTimer);
       cancelAnimationFrame(sizing);
@@ -755,7 +756,7 @@ export function createTerminal(env, tab) {
       env.forget(view);
     },
     // What the plugin asks of its tabs.
-    split, move, clear, find, applyTheme, applySettings, restartAll, zoom, closeActive, adopt, deleteWord,
+    split, move, clear, find, applyTheme, applySettings, restartAll, zoom, closeActive, adopt,
     started: () => !!restty,
     contains: (node) => root.contains(node),
     terminals: () => [...panes.values()].map((state) => state.terminal).filter(Boolean),

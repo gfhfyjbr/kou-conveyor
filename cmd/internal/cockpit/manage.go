@@ -27,6 +27,34 @@ type Meta struct {
 	Title    string `json:"title,omitzero"`
 	Pinned   bool   `json:"pinned,omitzero"`
 	PinOrder int    `json:"pin_order,omitzero"`
+	// Canvas and Node name the canvas, and the node on it, whose agent the
+	// session is: the canvas made it.
+	Canvas string `json:"canvas,omitzero"`
+	Node   string `json:"node,omitzero"`
+}
+
+// SetCanvasMeta records that a session is the agent of a node of a canvas,
+// titled title, before the session has a file: the canvas makes the
+// session's ID first, and its runs make the file.
+func SetCanvasMeta(dir, id, title, canvas, node string) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("invalid session ID %q", id)
+	}
+	m := LoadMeta(dir, id)
+	m.Title, m.Canvas, m.Node = Headline(Clean(title), 120), canvas, node
+	return saveMeta(dir, id, m)
+}
+
+// DropMeta removes what the cockpits added to a session that has no file:
+// a session a canvas made for a node that never ran.
+func DropMeta(dir, id string) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("invalid session ID %q", id)
+	}
+	if _, err := os.Stat(SessionPath(dir, id)); err == nil {
+		return nil
+	}
+	return saveMeta(dir, id, Meta{})
 }
 
 func metaPath(dir, id string) string { return filepath.Join(dir, ".meta", id+".json") }

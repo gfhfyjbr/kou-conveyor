@@ -209,6 +209,9 @@ type Request struct {
 	Instructions string
 	// Images go with the prompt, which refers to each by its label.
 	Images []Image
+	// Env adds variables to the runner's environment, after all the
+	// others: what a canvas gives the agents of its nodes.
+	Env []string
 }
 
 // Line is one line of runner output.
@@ -474,6 +477,13 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		}
 		if preferences.Sandbox != "" {
 			env = setEnv(env, runconfig.SandboxEnvironment, preferences.Sandbox)
+		}
+	}
+	// What the request adds wins: a canvas's agents get its variables, and
+	// their sandbox.
+	for _, entry := range r.Env {
+		if name, value, ok := strings.Cut(entry, "="); ok && name != "" {
+			env = setEnv(env, name, value)
 		}
 	}
 	if err := checkRunner(o.Runner, provider); err != nil {

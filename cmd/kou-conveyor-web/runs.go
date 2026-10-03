@@ -356,6 +356,8 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		SessionID: req.SessionID, MessageID: req.MessageID, Prompt: req.Prompt, Model: req.Model, Thinking: req.Thinking,
 		Resume: req.Resume, Rewind: req.Rewind, Compact: req.Compact, Instructions: req.Instructions,
 		Images: req.Images,
+		// The agent of a canvas's node is given the canvas's variables.
+		Env: s.canvas.RunEnv(ws.ID, req.SessionID),
 	})
 	if err != nil {
 		if tracker != nil {
@@ -371,8 +373,10 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	queue := s.queueSnapshot(key)
 	s.runs[current.id] = current
 	s.mu.Unlock()
+	s.canvas.RunStarted(ws.ID, req.SessionID)
 	if prompt != nil {
 		current.publish(event{Type: "entry", Entry: prompt})
+		s.canvas.RunEntry(ws.ID, req.SessionID, prompt)
 	}
 	current.publish(event{Type: "status", Activity: tr.Activity, Usage: &tr.Usage})
 	// Those who follow the run learn what waits for it.
@@ -450,6 +454,7 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		}
 		for _, e := range changed {
 			current.publish(event{Type: "entry", Entry: e})
+			s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
 			// A finished tool call may have changed files.
 			if e.Kind == cockpit.KindTool && e.Tool.Terminal() && current.tracker != nil {
 				current.tracker.Poke()
@@ -460,6 +465,9 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 			}
 		}
 		if tr.Activity != activity || tr.Usage != usage {
+			if tr.Activity != activity {
+				s.canvas.RunActivity(current.ws.ID, current.sessionID, tr.Activity)
+			}
 			activity, usage = tr.Activity, tr.Usage
 			current.publish(event{Type: "status", Activity: activity, Usage: &usage, Stopping: current.isStopping()})
 		}
@@ -473,6 +481,7 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 	stopped := errors.Is(err, context.Canceled)
 	for _, e := range tr.Finish(err, stopped, time.Now().UTC()) {
 		current.publish(event{Type: "entry", Entry: e})
+		s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
 	}
 	// The session is free (the runner released its lock when it exited)
 	// before browsers hear that the run is done, so they can start the next
@@ -485,6 +494,8 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		outcome = "failed"
 	}
 	next, queue := s.settle(current, tr, outcome)
+	// The canvas hears of the end before the next queued prompt runs.
+	s.canvasRunFinished(current, tr, outcome)
 	interrupted := tr.Interrupted()
 	done := event{Type: "done", Stopped: stopped, Usage: &tr.Usage, Queue: &queue, Interrupted: &interrupted}
 	if err != nil && !stopped {
@@ -585,6 +596,9 @@ func (s *server) close(ctx context.Context) bool {
 	s.mu.Lock()
 	s.closed = true
 	s.mu.Unlock()
+	// The canvases write what they have yet to, and stop their sources;
+	// their shells end with the terminals'.
+	s.canvas.Close()
 	// The terminals' shells are hung up on, as closing a terminal
 	// application would.
 	s.terminals.Close()

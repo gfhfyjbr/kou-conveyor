@@ -271,35 +271,61 @@ func (s *server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	key := activeKey(ws, id)
-	s.mu.Lock()
-	q := s.queueFor(key)
-	current := s.active[key]
 	model := ""
 	if req.Model != nil {
 		model = *req.Model
 	}
-	if current == nil && (req.Force || !q.Paused && len(q.Items) == 0) {
+	result, err := s.enqueue(r.Context(), ws, id, "", *req.Text, model, req.Images, req.Force)
+	switch {
+	case err != nil:
+		launchError(w, err)
+	case result.started != nil:
+		s.answerRun(w, result.started, result.item)
+	default:
+		writeJSON(w, http.StatusCreated, map[string]any{"queue": result.queue, "item": result.item, "note": result.note})
+	}
+}
+
+// enqueued is what became of a prompt given to a session: the run it
+// started, or else its place in the queue, which is as queue says, and why
+// a forced one waits there after all (note).
+type enqueued struct {
+	started *run
+	item    cockpit.QueueItem
+	note    string
+	queue   cockpit.Queue
+}
+
+// enqueue gives a session a prompt, as handleEnqueue does for a browser,
+// and the canvas for the agent of a node; promptID, a UUID, is the
+// prompt's ID when it is not empty. The error is launch's.
+func (s *server) enqueue(ctx context.Context, ws *workspace, id, promptID, text, model string, images []cockpit.Image, force bool) (enqueued, error) {
+	if promptID == "" {
+		promptID = uuid.New().String()
+	}
+	key := activeKey(ws, id)
+	s.mu.Lock()
+	q := s.queueFor(key)
+	current := s.active[key]
+	if current == nil && (force || !q.Paused && len(q.Items) == 0) {
 		s.mu.Unlock()
-		item := cockpit.QueueItem{ID: uuid.New().String(), Text: *req.Text, Model: model, Images: req.Images}
-		started, err := s.runNow(r.Context(), ws, id, item)
+		item := cockpit.QueueItem{ID: promptID, Text: text, Model: model, Images: images}
+		started, err := s.runNow(ctx, ws, id, item)
 		var busy *busyError
 		if !errors.As(err, &busy) {
 			if err != nil {
-				launchError(w, err)
-			} else {
-				s.answerRun(w, started, item)
+				return enqueued{}, err
 			}
-			return
+			return enqueued{started: started, item: item}, nil
 		}
 		// A run started meanwhile: the prompt waits for it after all.
 		s.mu.Lock()
 		current = s.active[key]
 	}
-	item := q.Add(*req.Text, model)
-	q.SetImages(item.ID, req.Images)
+	item := q.AddID(promptID, text, model)
+	q.SetImages(item.ID, images)
 	note := ""
-	if req.Force {
+	if force && current != nil {
 		if err := s.force(current, q, item.ID); err != nil {
 			note = err.Error()
 		} else if model != "" && current.model != "" && model != current.model {
@@ -308,7 +334,13 @@ func (s *server) handleEnqueue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	item, _, _ = q.Get(item.ID)
-	s.answerQueue(w, key, http.StatusCreated, map[string]any{"item": item, "note": note})
+	queue := s.queueSnapshot(key)
+	current = s.active[key]
+	s.mu.Unlock()
+	if current != nil {
+		current.publish(event{Type: "queue", Queue: &queue})
+	}
+	return enqueued{item: item, note: note, queue: queue}, nil
 }
 
 // handleUpdateQueued edits, moves or forces a queued prompt. Between runs,

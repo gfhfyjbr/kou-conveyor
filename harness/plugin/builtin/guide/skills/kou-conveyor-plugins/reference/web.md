@@ -81,8 +81,8 @@ take any part's place (`ui.mount(slot, { id, order, node })`), hide it
 | Slot | Offered by | Holds, by order |
 | --- | --- | --- |
 | `rail.head` | layout | the mark (`mark`) |
-| `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20) and help (`help-open`, 30) |
-| `bar.crumbs` | layout | the workspace and the title (`crumbs`) |
+| `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`, 10) and the canvases that run (`canvas-live`, 20); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20) and help (`help-open`, 30) |
+| `bar.crumbs` | layout | the workspace and the title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
 | `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
 | `stage.main` | layout | the transcript (`timeline`) |
 | `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
@@ -115,12 +115,32 @@ plugins read these:
 | `session.menu` | `{ items(ws, id, view) }`: more items of a session's menu | session |
 | `overlay` | `{ id, order, modal, isOpen(), close() }`: Esc closes the first open one; while a modal one is open, keys that are not global do nothing | ui |
 | `help.keys` | `{ keys: ['⌘', 'K'], text, order }`: a line of the keyboard sheet | help |
+| `session-list.rows` | `{ id, order, rows(ws) }`: rows of the session list, among the sessions not pinned by when they changed; `rows` returns `{ id, glyph, title, meta, at, href, current, running, open(), menu() }` — `menu` returns menu items (the canvases are such rows) | session-list |
+| `canvas.node` | `{ kind, preset, order, create(node, ctx) }`: what a canvas node shows (below); a `preset` (`"id"` or `"plugin/id"`) is matched before a `kind` | canvas |
+| `canvas.add` | `{ id, group, title, icon, order, shown(canvas), create(at) }`: an item of a canvas's + Add menu; `at` is the point of the board it was asked at | canvas |
+| `canvas.template` | `{ id, title, description, build() }`: a canvas an empty one can start from; `build` returns the operations that make it (`{ op: 'node.add', node }`, `{ op: 'edge.add', edge }`…) | canvas |
+| `canvas.inspector` | `{ kinds, order, title, render(node, ctx) }`: a section of a canvas node's inspector, for nodes of the `kinds` (kinds, presets or `plugin/preset`; all when empty) | canvas |
 | `keys`, `routes` | what `keys.register` and `routes.register` add | the kernel |
 
 The renderers' `ctx` has `h`, `fmt`, `view`, `summary`, `live`,
 `index(id)`, `expanded(entry)`, `toggle(id, open)`, `copy`,
 `markdown(text)`, `button(label, run, title)`, `actions(entry)` and
 `stream(label, text)`.
+
+### Canvas nodes
+
+A node's body is what `create(node, ctx)` returns: `{ node, update(node),
+status(), lod(level, live), shown(), hidden(), focus(), blur(), resized(),
+zoomed(zoom), contains(element), menu(), dispose() }` — `node` the
+element, the rest optional: `lod` says how much the zoom shows (`low`,
+`mid`, `full`) and whether a terminal may draw live, `focus` gives the
+node the keys (true if it took them), `menu` returns items of the node's
+⋯. `ctx` has `cockpit`, `h`, `fmt`, `model` (the canvas: `doc`,
+`status`, `send(node, { text, submit, keys, deliver })`, `read(node,
+what)`, `apply(ops)`, `on(event, fn)`…), `kinds`, `zoom()`, `touch()`,
+`toast(text, kind)`, `update(set, label)` (changes the node, undoably),
+`apply(ops, options)`, `markdown(text)`, `inspect()`, `select()`,
+`focus()` and `center()`.
 
 ### Sidebar tabs
 
@@ -169,6 +189,8 @@ off.
 | `images` | images | `take(text)`, `encode(list)`, `attach({ input })`, `imageURL(v, entry, n)`, `toolImageURL(v, entry)`, `openToolImage(v, entry)` |
 | `files` | files | `attach({ input, container })`, `complete(query)`, `links(text)`, `query(before)`, `label(path)` |
 | `explorer` | explorer | `open(path)`: the Files tab, at a file of the workspace |
+| `terminal` | terminal | `mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady })` draws a shell of the server's that runs (by its `id`) in an element, and returns `{ focus(), blur(), resize(), dispose(), connected() }`; `open(fresh)`, a terminal tab; `settings()` |
+| `canvas` | canvas | `open(id, ws)`, `create({ template, title })`, `current()` — `{ ws, id, title, exists, live, nodes, selected }` —, `addNode(spec, at)`, `select(ids)`, `focusNode(id)`, `fit()` |
 | `queue`, `edit` | queue, edit | `enqueue(text, { force })`, `command(arg)`; `begin(id)`, `editLast()` |
 | `markdown` | markdown | `render(text, { onCopy })`, `inline(text)`, `codeBlock(text, language)` |
 | `inspector` | inspector | `toggle()`, `open()`, `show()`, `expand(id, open)`, `fold({ id, title, hint, meta, level, beforeOpen })` — a bar for a section to hold: `{ node, body, isOpen(), set(open), meta(parts) }` |

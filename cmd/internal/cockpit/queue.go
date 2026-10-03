@@ -43,7 +43,13 @@ type QueueItem struct {
 
 // Add queues a prompt, to run with model, at the end and returns it.
 func (q *Queue) Add(text, model string) QueueItem {
-	item := QueueItem{ID: uuid.New().String(), Text: text, At: time.Now().UTC(), Model: model}
+	return q.AddID(uuid.New().String(), text, model)
+}
+
+// AddID is Add under an ID of the caller's choosing, a UUID: what gave the
+// prompt knows it by the ID before it runs.
+func (q *Queue) AddID(id, text, model string) QueueItem {
+	item := QueueItem{ID: id, Text: text, At: time.Now().UTC(), Model: model}
 	q.Items = append(q.Items, item)
 	return item
 }

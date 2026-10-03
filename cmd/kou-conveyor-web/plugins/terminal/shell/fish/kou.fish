@@ -3,7 +3,8 @@
 # The terminal starts fish as a login shell with --init-command, which runs
 # this after the user's config.fish; the user's files are never changed. It
 # sets the kou-conveyor prompt and tells the terminal where the shell is
-# (OSC 7) and its title:
+# (OSC 7), its title, and where each prompt, command and its output start
+# (OSC 133):
 #
 #   ▪ …/Go/kou-conveyor/cmd main* ❯                                4.2s ✕ 1
 #
@@ -11,6 +12,7 @@
 
 function fish_prompt
     set -l code $status
+    printf '\e]133;A\a'
     set -l arrow (set_color 208)❯(set_color normal)
     test $code -ne 0; and set arrow (set_color red)❯(set_color normal)
     set -l path (prompt_pwd --full-length-dirs 1 2>/dev/null; or prompt_pwd)
@@ -24,6 +26,22 @@ function fish_prompt
         end
     end
     printf '%s▪%s %s%s%s%s %s ' (set_color 208) (set_color normal) (set_color --bold) $path (set_color normal) "$vcs" $arrow
+    printf '\e]133;B\a'
+end
+
+# Where a command's output starts, and where the command ended with its
+# code (OSC 133 C and D).
+function __kou_preexec --on-event fish_preexec
+    printf '\e]133;C\a'
+end
+
+function __kou_postexec --on-event fish_postexec
+    printf '\e]133;D;%s\a' $status
+end
+
+# A terminal of a canvas finds its kou-canvas first.
+if set -q KOU_CANVAS_BIN; and test -n "$KOU_CANVAS_BIN"
+    set -gx PATH $KOU_CANVAS_BIN $PATH
 end
 
 function fish_right_prompt

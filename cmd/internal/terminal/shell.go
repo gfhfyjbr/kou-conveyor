@@ -209,6 +209,13 @@ func command(shell string, spec Spec, id, version string, base []string, integra
 	name := filepath.Base(shell)
 	l := launch{path: shell, args: []string{"-" + name}}
 	env := shellEnvironment(base, spec.Dir, id, version)
+	// What the spec adds comes after, and wins over the server's.
+	for _, entry := range spec.Env {
+		if variable, _, ok := strings.Cut(entry, "="); ok && variable != "" {
+			env = slices.DeleteFunc(env, func(other string) bool { return strings.HasPrefix(other, variable+"=") })
+			env = append(env, entry)
+		}
+	}
 	kind := kindOf(shell)
 	if spec.Theme && integration != nil && kind != "" {
 		env = append(env, "KOU_CONVEYOR_TERMINAL_THEME=kou")
@@ -257,6 +264,8 @@ var dropped = []string{
 	"VTE_VERSION=", "WT_SESSION=", "WT_PROFILE_ID=", "VSCODE_", "TMUX=", "TMUX_PANE=", "STY=", "WINDOW=",
 	"INSIDE_EMACS=", "__CFBundleIdentifier=", "SHLVL=", "COLUMNS=", "LINES=", "OLDPWD=", "PWD=", "P9K_", "_P9K_",
 	"ZDOTDIR=", "KOU_CONVEYOR_USER_ZDOTDIR=", "KOU_CONVEYOR_TERMINAL", "KOU_CONVEYOR_BASH_LOGIN=", "KOU_CONVEYOR_WEB_",
+	// A canvas's own variables are given to the shells of its nodes only.
+	"KOU_CANVAS_",
 }
 
 // shellEnvironment is the environment a terminal's shell starts with.

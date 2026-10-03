@@ -54,8 +54,9 @@ and a user plugin named `core` replaces the built-in tools — or one named
 a command: the first keeps it and the conflict is reported.
 
 The built-in plugins are `core` (the agent's tools), `guide` (its skill for
-writing plugins) and the browser cockpit's `accounts`, `changes`,
-`commands`, `composer`, `connection`,
+writing plugins), `canvas-agent` (the canvas's tools, for agents on a
+canvas: see [Canvas](#canvas)) and the browser cockpit's `accounts`,
+`canvas`, `changes`, `commands`, `composer`, `connection`,
 `edit`, `effort`, `explorer`, `files`, `header`, `help`, `images`, `inspector`,
 `layout`, `markdown`, `models`, `palette`, `plugins`, `queue`, `session`,
 `session-list`, `sidebar`, `skills`, `terminal`, `theme`, `timeline`, `ui`
@@ -122,6 +123,8 @@ may not leave it.
 | `prompt` | a file, up to 64 KiB, whose text joins the system prompt under `## <name> plugin` |
 | `commands` | slash commands for both cockpits (below) |
 | `web` | `script`, an ES module, and `style`, a style sheet, for the browser cockpit; `after`, plugins to start before this one when they are there (below) |
+| `canvas` | what the plugin adds to the browser cockpit's canvas: `harnesses`, presets of terminal nodes; `sources`, nodes that bring events; `templates`, a directory of canvases to start from (see [Canvas](#canvas)) |
+| `requires` | what the plugin needs to run: `env`, variables that must be set. Without them it is not active, and `-list-plugins` says why: the built-in `canvas-agent` requires `KOU_CANVAS_TOKEN`, so only the agents of a canvas have its tools |
 
 ## Tools
 
@@ -193,6 +196,143 @@ off. The
 Skills bar of the browser cockpit's inspector lists both scopes, with the
 skills another replaces; the plugin listing (`/api/w/<workspace>/plugins`)
 carries them as `skills`, and changes with the skill directories.
+
+## Canvas
+
+The browser cockpit's canvas is a board of terminals, agents and sources of
+events, wired output to input (see the [README](../README.md#canvas)). A
+plugin adds to it with `canvas`: presets of terminal nodes (`harnesses`),
+nodes that bring events (`sources`) and canvases to start from
+(`templates`). The canvas's own come the same way, from the manifest of the
+built-in `canvas` plugin: the Shell, Command, Claude Code, Codex and
+OpenCode presets, and the Manual, Timer, Files and Webhook sources.
+
+```json
+"canvas": {
+  "sources": [{
+    "id": "github-issues", "title": "GitHub issues", "icon": "⊙",
+    "run": ["python3", "./bin/github-issues"], "mode": "poll", "interval": "60s",
+    "config": {"type": "object", "required": ["repo"],
+               "properties": {"repo": {"type": "string", "title": "Repository"}}},
+    "outputs": [{"id": "opened", "title": "Issue opened"}, {"id": "updated", "title": "Issue updated"}],
+    "template": "Issue #{{data.number}}: {{data.title}}\n{{data.url}}"
+  }],
+  "harnesses": [{
+    "id": "aider", "title": "Aider", "icon": "◇", "command": ["aider"],
+    "args": ["--model", "{{config.model}}"],
+    "status": ["idle"], "idle_ms": 4000, "output": "screen",
+    "config": {"type": "object", "properties": {"model": {"type": "string", "title": "Model"}}}
+  }],
+  "templates": "templates"
+}
+```
+
+What a plugin adds shows in a canvas's **+ Add** menu, and the nodes of its
+presets name it: `plugin/id`. Ids are lowercase letters, digits and dashes.
+A workspace's plugin adds to the canvas once the workspace is trusted, as
+its tools do; a plugin turned off takes its presets away, and its sources
+stop until it is back.
+
+### Sources
+
+A source runs a program as a tool does: `run` is the program and its
+arguments, without a shell, with `./` and `../` paths in the plugin's
+directory, and it runs in the workspace. Its standard input is a line of
+JSON — `{"config": {…}, "node": "n_…", "canvas": "…", "first_run": true}`,
+where `config` is what the node's form holds — and each line it prints is
+one of:
+
+| Line | |
+| --- | --- |
+| `{"type": "event", "port": "opened", "key": "42:2026-10-02T12:00:00Z", "title": "…", "text": "…", "data": {…}}` | an event on one of its `outputs` (`out` when it names none); one whose `key` the node had before is dropped |
+| `{"type": "status", "state": "ok", "text": "…"}` | what the node says it does; `"state": "error"` shows the node failing, and counts the run as failed |
+| `{"type": "log", "text": "…"}` | a line of the node's log, where its standard error goes too |
+
+- In `poll` mode, the default, the program runs every `interval` (a
+  duration of `10s` or more, a minute when none is given; the node's
+  settings may give a longer `interval`) and exits; a run is stopped after
+  5 minutes. In `stream` mode it runs on, and its standard input closes
+  when it should stop.
+- A program that fails runs again a second later, then later and later, up
+  to a minute apart; three failures in a row show the node failing.
+- `first_run` is true until the node's program has run once, so a source
+  can start from now rather than from the beginning of history.
+  `KOU_CANVAS_STATE_DIR` is a directory of the node's own for what it keeps
+  between runs, such as a cursor; the keys of its events (the latest
+  10,000) are kept there too.
+- Its environment is the server's, with `KOU_CANVAS_STATE_DIR`,
+  `KOU_CONVEYOR_PLUGIN_DIR`, `KOU_CONVEYOR_WORKSPACE`, `KOU_CANVAS_URL`,
+  `KOU_CANVAS_ID`, `KOU_CANVAS_NODE` and `KOU_CANVAS_TOKEN`, a token that
+  lets it emit its own node's events (`kou-canvas emit`) and nothing more.
+- `template` is how an edge from the source words its events, unless the
+  edge has a template of its own: `{{text}}`, `{{title}}`,
+  `{{data.<path>}}` (`{{data.labels.0.name}}`), `{{from.title}}`,
+  `{{from.id}}`, `{{edge.id}}`, `{{now}}`.
+- A source runs while its canvas is live: pausing the canvas, removing the
+  node or turning its plugin off stops it.
+
+[`examples/plugins/github-events`](../examples/plugins/github-events) is a
+source: the issues of a repository, through `gh`.
+
+### Harnesses
+
+A harness is a preset of a terminal node: a program that runs in the
+node's shell — a coding agent, a REPL, any program of a terminal — told of
+the canvas and followed by it.
+
+| Field | |
+| --- | --- |
+| `id`, `title`, `icon`, `description` | how the + Add menu shows it |
+| `command`, `args` | the program with its fixed arguments, and arguments that are templates: `{{brief}}`, what the node is told of the canvas (its name and ID, the nodes it can message and how, where its answers go, its access); `{{files.<name>}}`, the path of a file of `files`; `{{node.title}}`, `{{node.id}}`, `{{canvas.id}}`; `{{runtime.agent_session}}`, a session ID the canvas keeps for the program; `{{config.<key>}}`, a value of the node's settings or its default. An argument whose values are all missing is left out, and the flag before it with it |
+| `files` | written for the program before it starts, in a directory of the node's: an object or an array as `<name>.json`, a string — a template — as `<name>.txt` |
+| `env` | variables for the program, templates too |
+| `launch` | `launcher`, the default: the shell runs `kou-canvas launch`, which asks the canvas for the program's arguments, variables and folder and runs it, so leaving the program gives the shell back; `type`: the command is typed at the shell's first prompt; `shell`: the shell alone |
+| `input` | how a message is typed into it: `paste` (`bracketed`, as a paste where the program asked for that, or `type`), `newline` (`cr` or `lf`), `submit` (what follows the text, `\r` by default) and `submit_delay_ms` |
+| `status` | how the canvas learns whether it works or waits: `hooks` (it calls `kou-canvas hook claude`, as Claude Code's hooks do), `notify` (`kou-canvas hook codex`, Codex's notify program), `osc133` (a shell's marks of its prompts and commands, as for the Shell and Command presets), `idle` (quiet for `idle_ms`, 4 seconds by default); `ready` is a pattern its screen shows when it waits |
+| `output` | what it gives on `out`: what its `hooks` or `notify` program say it answered (`kou-canvas emit` with `"answer": true`, as `kou-canvas hook` does), a command's output (`osc133`), its `screen` once it falls idle, or `none`. An answer goes where the message it answers came from: along the node's edges and back to the node that sent it, when it came from the canvas; nowhere, when the user typed it — unless the node's `output` setting is `all` (or `explicit`: only what it emits) |
+| `session_arg`, `resume` | the arguments that start the program on the session the canvas names for it (`{{runtime.agent_session}}`), and those that take it up again — **Resume** on the node |
+| `config` | the JSON schema of the node's settings |
+| `check` | the command that shows the harness is installed (`["claude", "--version"]`): the + Add menu marks the preset as not installed when its program — or the `command`'s — is not on the server's `PATH` |
+
+A program does more on the canvas itself: the terminals of a canvas have
+`kou-canvas` on their `PATH` and their node's token in `KOU_CANVAS_TOKEN`,
+and `kou-canvas mcp` serves the canvas's tools over MCP, which the Claude
+Code and Codex presets give their programs.
+
+### Settings and templates
+
+`config` is a JSON schema of `"type": "object"` whose properties are
+strings, numbers, integers, booleans, enums and arrays of strings, with
+`title`, `description`, `default`, `enum`, `pattern` and `required`: the
+canvas makes the node's form of it, and asks for what is required when the
+node is added.
+
+`templates` is a directory of canvases, one per `*.json` file, offered when
+a canvas is empty; ⋯ → **Save as template…** writes one of a canvas,
+without what runs, to `.harness/canvas-templates` in the workspace.
+
+### Nodes in the browser
+
+A web plugin draws nodes its own way (`canvas.node`), adds items to a
+canvas's + Add menu (`canvas.add`), canvases to start from
+(`canvas.template`) and sections to a node's inspector (`canvas.inspector`),
+and the `canvas` service opens canvases and adds nodes (see [Contribution
+points](#contribution-points) and [Services](#services)). A node's body is
+what `create(node, ctx)` returns: `{ node, update(node), status(),
+lod(level, live), shown(), hidden(), focus(), blur(), resized(),
+zoomed(zoom), contains(element), menu(), dispose() }` — `node`, the
+element, and the rest optional. `lod` says how much the zoom shows (`low`,
+`mid`, `full`) and whether a terminal may draw live, `focus` gives the node
+the keys (true if it took them), and `menu` returns items of the node's ⋯.
+`ctx` has `cockpit`, `h`, `fmt`, `model` (the canvas: `doc`, `status` —
+a node's `{ state, detail, since, activity, agent, quiet }`, where `agent`
+is the agent a terminal runs, its preset's or one found in its shell
+(`detected`), and `quiet` says a command at work has shown nothing for a
+while —, `send(node, { text, submit, keys, deliver })`, `read(node, what)`,
+`apply(ops)`, `on(event, fn)`…), `kinds`, `zoom()`, `touch()`,
+`toast(text, kind)`, `update(set, label)`, which changes the node so that
+it can be undone, `apply(ops, options)`, `markdown(text)`, `inspect()`,
+`select()`, `focus()` and `center()`.
 
 ## Changes while things run
 
@@ -343,8 +483,8 @@ put its own before or after it by `order`.
 | Slot | Offered by | Holds |
 | --- | --- | --- |
 | `rail.head` | layout | the mark (`mark`) |
-| `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20), help (`help-open`, 30) |
-| `bar.crumbs` | layout | the workspace and title (`crumbs`) |
+| `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`) and the canvases that run (`canvas-live`, 20); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20), help (`help-open`, 30) |
+| `bar.crumbs` | layout | the workspace and title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
 | `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
 | `stage.main` | layout | the transcript (`timeline`) |
 | `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
@@ -377,6 +517,11 @@ plugins read these:
 | `session.menu` | `{ items(ws, id, view) }`: more items for a session's menu | session |
 | `overlay` | `{ id, order, modal, isOpen(), close() }`: Esc closes the first open one; while a modal one is open, keys that are not global do nothing | ui |
 | `help.keys` | `{ keys: ['⌘', 'K'], text, order }`: a line of the keyboard sheet | help |
+| `session-list.rows` | `{ id, order, rows(ws) }`: rows of the session list, among the sessions not pinned by when they changed; `rows` returns `{ id, glyph, title, meta, at, href, current, running, open(), menu() }` — `menu` returns menu items (the canvases are such rows) | session-list |
+| `canvas.node` | `{ kind, preset, order, create(node, ctx) }`: what a canvas node shows (see [Canvas](#canvas)); a `preset` (`"id"` or `"plugin/id"`) is matched before a `kind` | canvas |
+| `canvas.add` | `{ id, group, title, icon, order, shown(canvas), create(at) }`: an item of a canvas's + Add menu; `at` is the point of the board it was asked at | canvas |
+| `canvas.template` | `{ id, title, description, build() }`: a canvas an empty one can start from; `build` returns the operations that make it (`{ op: 'node.add', node }`, `{ op: 'edge.add', edge }`…) | canvas |
+| `canvas.inspector` | `{ kinds, order, title, render(node, ctx) }`: a section of a canvas node's inspector, for nodes of the `kinds` (kinds, presets or `plugin/preset`; all when empty) | canvas |
 | `keys`, `routes` | what `keys.register` and `routes.register` add | the kernel |
 
 The renderers' `ctx` has `h`, `fmt`, `view`, `summary`, `live`,
@@ -397,7 +542,7 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | --- | --- | --- |
 | `session` | session | `view()`, `summary()`, `state`, `submit(text, options)`, `prompt(text)`, `compact(focus)`, `stop()`, `newSession()`, `openSession(id)`, `branch(ws, id, message)`, `rename(ws, id, title)`, `menuItems(ws, id)`, `runBlocked(v)`, `switchWorkspace(id)`, `refreshSessions()` |
 | `layout` | layout | `view()`, `show(id)`, `openPanel(id)`, `closePanel(id)`, `togglePanel(id)`, `panelOpen(id)`, `rail(open)`, `scroller()`, `width(id)` and `setWidth(id, px)` for the rail (`'rail'`) and the panels (`null` gives the default back) |
-| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`; `open(anchor, items)`, `toggle(anchor, items)`, `close()`; `copy(text, label)`; `closeTop()` |
+| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`; `open(anchor, items, { compact })`, `toggle(anchor, items, { compact })`, `close()` — an item is `{ icon, label, detail, title, hint, danger, confirm, disabled, run }` or `{ separator: true }`, and a compact menu has denser rows that say their `detail` in a tooltip; `copy(text, label)`; `closeTop()` |
 | `timeline` | timeline | `schedule(id)`, `flushNow()`, `reveal(id)`, `scrollToBottom()`, `promptInView(v)`, `setAllTools(open)` |
 | `composer` | composer | `value()`, `set(text, { focus, end })`, `focus()`, `clear()`, `submit({ force })`, `input`, `form` |
 | `commands` | commands | `list()`, `named(name)`, `parse(text)`, `run(parsed)` |
@@ -405,6 +550,8 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | `effort` | effort | `current()`, `levels()`, `set(level)`, `cycle(step)` |
 | `images` | images | `take(text)`, `encode(list)`, `attach({ input })`, `imageURL(v, entry, n)`, `toolImageURL(v, entry)`, `openToolImage(v, entry)` |
 | `files` | files | `attach({ input, container })` completes `$` in another textarea, `complete(query)`, `links(text)`, `query(before)`, `label(path)` |
+| `terminal` | terminal | `mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady })` draws a shell of the server's that runs (by its `id`) in an element, and returns `{ focus(), blur(), resize(), dispose(), connected() }`; `open(fresh)`, a terminal tab; `settings()` |
+| `canvas` | canvas | `open(id, ws)`, `create({ template, title })`, `current()` — `{ ws, id, title, exists, live, nodes, selected }` —, `addNode(spec, at)`, `select(ids)`, `focusNode(id)`, `fit()` |
 | `queue`, `edit` | queue, edit | `enqueue(text, { force })`, `command(arg)`; `begin(id)`, `editLast()` |
 | `markdown` | markdown | `render(text, { onCopy })`, `inline(text)`, `codeBlock(text, language)` |
 | `inspector` | inspector | `toggle()`, `open()`, `show()`, `expand(id, open)` opens a section's bar, `fold({ id, title, hint, meta, level, beforeOpen })` makes a bar for a section to hold — `{ node, body, isOpen(), set(open), meta(parts) }` — as Plugins and Skills hold one for the project's and one for the system-wide ones |

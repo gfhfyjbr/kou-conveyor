@@ -390,6 +390,10 @@ func (s *server) handleRemoveWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "a run is in progress in this workspace; stop it first")
 		return
 	}
+	if s.canvas.Live(ws.ID) > 0 {
+		writeError(w, http.StatusConflict, "a canvas of this workspace is live; pause it first")
+		return
+	}
 	switch err := s.workspaces.remove(ws.ID); {
 	case errors.Is(err, errStartupWorkspace):
 		writeError(w, http.StatusConflict, err.Error())

@@ -78,7 +78,8 @@ in the order built in, system-wide, workspace (a workspace's only once it
 is trusted): a workspace can bring its own version of a user's plugin, and
 a plugin named `composer` replaces the cockpit's composer. So name yours
 apart from the built-in ones unless you mean to replace one: `core`,
-`guide`, and the browser cockpit's `accounts`, `changes`, `commands`,
+`guide`, `canvas-agent` (the canvas's tools, for agents on a canvas), and
+the browser cockpit's `accounts`, `canvas`, `changes`, `commands`,
 `composer`, `connection`, `edit`, `effort`, `explorer`, `files`, `header`,
 `help`, `images`, `inspector`, `layout`, `markdown`, `models`, `palette`,
 `plugins`, `queue`, `session`, `session-list`, `sidebar`, `skills`,
@@ -154,6 +155,8 @@ directory: a manifest that breaks a rule leaves the whole plugin out, and
 | `web` | `script`, an ES module (`.js` or `.mjs`), and `style`, a `.css` file, for the browser cockpit; `after`, plugins to start before this one when they are there ([7](#7-the-browser-cockpit)) |
 | `verify` | shell commands that check the work once the agent says it is done with a prompt ([5a](#5a-verification)) |
 | `sandbox` | how the workspace's commands run apart from the machine: `image`, `setup`, `environment`, `mounts` ([5b](#5b-sandbox)) |
+| `canvas` | what the plugin adds to the browser cockpit's canvas: `harnesses` (presets of terminal nodes), `sources` (nodes that bring events) and `templates` ([5c](#5c-canvas)) |
+| `requires` | what the plugin needs to run: `env`, variables that must be set; without them it is not active |
 
 ## 3. Tools
 
@@ -272,6 +275,54 @@ extra volumes in docker's `host:container` form. A workspace can instead
 keep a Dockerfile in `.harness/sandbox/`, which is built into the image,
 or set `KOU_CONVEYOR_SANDBOX_IMAGE`. `KOU_CONVEYOR_SANDBOX=worktree` gives
 the worktree alone, with the commands on the machine.
+
+## 5c. Canvas
+
+The browser cockpit's canvas is a board of terminals, agents and sources of
+events, wired output to input. A plugin adds to it with `canvas`:
+
+```json
+"canvas": {
+  "sources": [{
+    "id": "github-issues", "title": "GitHub issues", "run": ["python3", "./bin/github-issues"],
+    "mode": "poll", "interval": "60s",
+    "config": {"type": "object", "required": ["repo"], "properties": {"repo": {"type": "string", "title": "Repository"}}},
+    "outputs": [{"id": "opened", "title": "Opened"}, {"id": "updated", "title": "Updated"}]
+  }],
+  "harnesses": [{"id": "aider", "title": "Aider", "command": ["aider"], "status": ["idle"], "idle_ms": 4000, "output": "none"}],
+  "templates": "templates"
+}
+```
+
+- A **source** runs in the workspace. Its standard input is one line of
+  JSON — `{"config": {…}, "node": "…", "canvas": "…", "first_run": true}`
+  — and its standard output lines of JSON:
+  `{"type": "event", "port": "opened", "key": "42:2026-10-02T12:00:00Z", "title": "…", "text": "…", "data": {…}}`,
+  `{"type": "status", "state": "ok" | "error", "text": "…"}` or
+  `{"type": "log", "text": "…"}`. In `poll` mode it runs every `interval`
+  (10 seconds at least) and exits; in `stream` mode it runs on, until its
+  standard input closes. The canvas drops events whose `key` it has seen,
+  and gives the source `KOU_CANVAS_STATE_DIR`, a directory of its own for
+  a cursor, besides `KOU_CANVAS_URL`, `KOU_CANVAS_TOKEN`, `KOU_CANVAS_ID`
+  and `KOU_CANVAS_NODE`. An event's `port` is one of its `outputs` (`out`
+  when it names none); its `template` (`{{title}}`, `{{text}}`,
+  `{{data.<path>}}`) is how an edge from it words its events, unless the
+  edge has a template of its own.
+- A **harness** is a preset of a terminal node: `command` and `args` (with
+  `{{brief}}`, `{{files.<name>}}`, `{{node.title}}`, `{{config.<key>}}`),
+  `files` written before it starts, `env`, `launch` (`launcher`, `type`,
+  `shell`), `input` (`paste`, `newline`, `submit`, `submit_delay_ms`),
+  `status` (`hooks`, `notify`, `osc133`, `idle`) with `idle_ms` and `ready`,
+  `output` (`hooks`, `notify`, `osc133`, `screen`, `none`), `session_arg`,
+  `resume`, `config` (a JSON schema of the node's settings) and `check`.
+- `config` schemas are objects of `string`, `number`, `integer`, `boolean`
+  and arrays of strings, with `enum`, `default`, `title`, `description`,
+  `pattern` and `required`: the canvas makes a form of them.
+- `templates` is a directory of canvases saved as JSON (⋯ → Save as
+  template), shown when a canvas is made.
+
+A workspace's sources and harnesses run only in a trusted workspace, as its
+tools do.
 
 ## 6. Commands
 

@@ -16,7 +16,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/runtime v1.6.0
-	github.com/router-for-me/CLIProxyAPI/v8 v8.0.10
+	github.com/router-for-me/CLIProxyAPI/v8 v8.0.13
 	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.46.0

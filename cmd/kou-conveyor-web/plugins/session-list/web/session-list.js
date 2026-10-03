@@ -6,7 +6,14 @@
 // work does not change. Rows glide to their new places. Its rail's tools
 // are the slot sessions.tools (the workspace switcher heads them). It
 // provides the session-list service: rename(ws, id, place), which edits a
-// title in place, in the rail or in the header, and move(step).
+// title in place, in the rail or in the header, move(step), and render().
+//
+// Other plugins put rows of their own among the sessions not pinned, by
+// when they changed, through the point session-list.rows:
+//   { id, order, rows(ws) → [{ id, glyph, title, meta, at, href, current,
+//     running, open(), menu() → menu items }] }
+// (the canvases do). The sessions of the agents of canvas nodes stay out
+// of the list until it is asked to show them, or a filter finds them.
 const SEARCH = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.4"/></svg>';
 
 export default function activate(cockpit) {
@@ -45,6 +52,27 @@ export default function activate(cockpit) {
   let drag = null; // the pinned session being dragged, by ID
   let lastQuery = '';
 
+  // The sessions of the agents of canvas nodes stay out of the list unless
+  // asked for (or searched for): their canvas shows them.
+  const AGENTS = 'session-list.canvas-agents';
+  const showAgents = () => cockpit.prefs.get(AGENTS, false) === true;
+  const at = (value) => Date.parse(value || '') || 0;
+
+  // extraRows are the rows plugins put among the sessions
+  // (session-list.rows) for the workspace, as the filter leaves them.
+  function extraRows(ws, query) {
+    const out = [];
+    for (const source of cockpit.contributions('session-list.rows', { unique: 'id' })) {
+      const rows = cockpit.safely(() => source.rows?.(ws));
+      for (const r of Array.isArray(rows) ? rows : []) {
+        if (!r?.id) continue;
+        if (query && !String(r.title || '').toLowerCase().includes(query) && !String(r.id).includes(query)) continue;
+        out.push({ ...r, key: `${source.id}:${r.id}` });
+      }
+    }
+    return out.sort((a, b) => at(b.at) - at(a.at));
+  }
+
   function render() {
     // An edit in place survives until it is committed, and a drag until it
     // drops; the list catches up then.
@@ -57,14 +85,36 @@ export default function activate(cockpit) {
     // them, as it does with every letter typed.
     const glide = query === lastQuery ? positions() : null;
     lastQuery = query;
-    const shown = sessions.filter((s) => !query || (s.title || '').toLowerCase().includes(query) || s.id.includes(query));
-    count.textContent = query ? `${shown.length}/${sessions.length}` : String(sessions.length);
-    const grouped = !query && shown.some((s) => s.pinned) && shown.some((s) => !s.pinned);
+    const inView = (s) => !!v && s.id === v.id && v.ws === state.ws;
+    const agents = sessions.filter((s) => s.canvas && !inView(s)).length;
+    const hideAgents = !query && !showAgents();
+    const shown = sessions.filter((s) => (!query || (s.title || '').toLowerCase().includes(query) || s.id.includes(query)) && !(hideAgents && s.canvas && !inView(s)));
+    // The other rows go among the sessions that are not pinned, by when
+    // they changed.
+    const extras = extraRows(state.ws, query);
+    const items = [];
+    let next = 0;
+    for (const s of shown) {
+      if (!s.pinned) while (next < extras.length && at(extras[next].at) >= at(s.updated_at)) items.push({ row: extras[next++] });
+      items.push({ session: s });
+    }
+    while (next < extras.length) items.push({ row: extras[next++] });
+    const total = sessions.length - (hideAgents ? agents : 0) + (query ? extraRows(state.ws, '').length : extras.length);
+    count.textContent = query ? `${items.length}/${total}` : String(items.length);
+    const pinned = (item) => !!item.session?.pinned;
+    const grouped = !query && items.some(pinned) && items.some((item) => !pinned(item));
     const nodes = [];
-    shown.forEach((s, n) => {
-      if (grouped && (n === 0 || s.pinned !== shown[n - 1].pinned)) {
-        nodes.push(h('div', { class: 'session-group', text: s.pinned ? 'Pinned' : 'Recent' }));
+    let n = -1;
+    items.forEach((item, i) => {
+      if (grouped && (i === 0 || pinned(item) !== pinned(items[i - 1]))) {
+        nodes.push(h('div', { class: 'session-group', text: pinned(item) ? 'Pinned' : 'Recent' }));
       }
+      if (item.row) {
+        nodes.push(extraRow(item.row));
+        return;
+      }
+      const s = item.session;
+      n++;
       const title = s.title || 'Untitled session';
       // Pinned sessions are dragged into another order, while the whole
       // list shows.
@@ -81,7 +131,7 @@ export default function activate(cockpit) {
         h('span', { class: 'n', text: s.pinned ? '◆' : String(n + 1).padStart(2, '0') }),
         h('span', { class: 't', text: title }),
         h('span', { class: 'm' },
-          [s.run_id ? 'running' : fmt.ago(s.updated_at), s.size ? fmt.bytes(s.size) : '', s.id.slice(0, 8)].filter(Boolean).join(' · '),
+          [s.canvas ? '◧' : '', s.run_id ? 'running' : fmt.ago(s.updated_at), s.size ? fmt.bytes(s.size) : '', s.id.slice(0, 8)].filter(Boolean).join(' · '),
           // What waits for the session's agent.
           s.queued && h('span', { class: 'queued', data: { paused: s.queue_paused ? 'true' : null }, text: s.queue_paused ? ` · ${s.queued} paused` : ` · +${s.queued} queued` }))),
         h('button', {
@@ -97,10 +147,51 @@ export default function activate(cockpit) {
     if (!nodes.length) {
       nodes.push(h('p', { class: 'sessions-empty', text: query ? 'No sessions match.' : 'Sessions you run appear here.' }));
     }
+    if (!query && agents) {
+      const on = showAgents();
+      nodes.push(h('button', {
+        class: 'sessions-toggle', type: 'button',
+        title: on ? 'Their canvases show them' : 'The sessions of the agents on the canvases',
+        onclick: () => {
+          cockpit.prefs.set(AGENTS, on ? null : true);
+          render();
+        },
+      }, on ? 'Hide the canvas agents' : `Show ${agents} canvas agent${agents === 1 ? '' : 's'}`));
+    }
     const focused = document.activeElement?.closest?.('a.session')?.getAttribute('href');
     list.replaceChildren(...nodes);
     if (focused) list.querySelector(`a.session[href="${CSS.escape(focused)}"]`)?.focus();
     if (glide) animate(glide);
+  }
+
+  // extraRow draws a row a plugin put in the list: its link opens what it
+  // stands for, its ⋯ the plugin's menu for it.
+  function extraRow(r) {
+    const title = r.title || 'Untitled';
+    return h('div', { class: 'session-row', data: { id: r.key, row: 'true' } },
+      h('a', {
+        class: 'session', href: r.href || '#', title, 'aria-current': r.current ? 'true' : null,
+        data: { running: r.running ? 'true' : null, row: 'true' },
+        onclick: (event) => {
+          if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+          event.preventDefault();
+          service('layout')?.rail?.(false);
+          cockpit.safely(() => r.open?.());
+        },
+      },
+      h('span', { class: 'n', text: r.glyph || '◇' }),
+      h('span', { class: 't', text: title }),
+      h('span', { class: 'm', text: r.meta || '' })),
+      typeof r.menu === 'function' ? h('button', {
+        class: 'more', type: 'button', title: 'Actions', 'aria-label': `Actions for ${title}`,
+        'aria-haspopup': 'menu', 'aria-expanded': 'false',
+        onclick: (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const items = cockpit.safely(() => r.menu()) || [];
+          if (items.length) service('menu')?.open?.(event.currentTarget, items);
+        },
+      }, h('span', { 'aria-hidden': 'true', text: '⋯' })) : null);
   }
 
   // positions are where the rows are now, by session.
@@ -218,6 +309,7 @@ export default function activate(cockpit) {
     reorder(row.dataset.id, at + (event.key === 'ArrowUp' ? -1 : 1));
   });
   cockpit.on('session:sessions', render);
+  cockpit.on('point:session-list.rows', render);
   cockpit.on('session:view', render);
   cockpit.on('session:workspace', () => { filter.value = ''; });
 
@@ -235,7 +327,8 @@ export default function activate(cockpit) {
   });
   cockpit.listen(list, 'click', (event) => {
     const link = event.target.closest('a.session');
-    if (!link || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+    // A plugin's row opens what it stands for itself.
+    if (!link || link.dataset.row || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
     event.preventDefault();
     service('layout')?.rail?.(false);
     const id = link.dataset.id;
@@ -299,9 +392,10 @@ export default function activate(cockpit) {
     input.select();
   }
 
-  // moveSession opens the next or previous session of the list.
+  // moveSession opens the next or previous session of the list, as it
+  // shows them.
   function move(step) {
-    const sessions = session.state.sessions || [];
+    const sessions = (session.state.sessions || []).filter((s) => !s.canvas || showAgents() || s.id === view().id);
     if (!sessions.length) return;
     const at = sessions.findIndex((s) => s.id === view().id);
     const next = sessions[Math.max(0, Math.min(sessions.length - 1, at < 0 ? 0 : at + step))];

@@ -20,6 +20,24 @@ type scanner struct {
 	title   string
 	dir     string
 	modes   map[int]bool // the tracked modes that are set
+	// marking has the scanner keep the semantic prompt marks (OSC 133) it
+	// reads in marks, with where each ended in the output fed; the caller
+	// takes them after each feed.
+	marking bool
+	marks   []Mark
+	at      int // where in the output fed now the scanner is
+}
+
+// Mark is a semantic prompt mark a shell prints (OSC 133): where its
+// prompt starts (A), where the command typed at it starts (B), where the
+// command's output starts (C) and where the command ended (D, with its
+// exit code).
+type Mark struct {
+	Kind byte `json:"kind"`
+	// Code is the exit code a D mark gives, -1 when it gives none.
+	Code int `json:"code"`
+	// At is where in the output it came with the mark ended.
+	At int `json:"at"`
 }
 
 type scanState uint8
@@ -66,13 +84,22 @@ func (s *scanner) clone() *scanner {
 	for mode, set := range s.modes {
 		c.modes[mode] = set
 	}
+	c.marking, c.marks = false, nil
 	return &c
+}
+
+// takeMarks returns the marks the last feeds found, and forgets them.
+func (s *scanner) takeMarks() []Mark {
+	marks := s.marks
+	s.marks = nil
+	return marks
 }
 
 // feed reads output; changed says whether the title or the directory
 // changed.
 func (s *scanner) feed(p []byte) (changed bool) {
-	for _, b := range p {
+	for i, b := range p {
+		s.at = i + 1
 		switch s.state {
 		case ground:
 			if b == 0x1b {
@@ -150,6 +177,19 @@ func (s *scanner) command() bool {
 		if dir != "" && s.dir != dir {
 			s.dir = dir
 			return true
+		}
+	case "133":
+		if s.marking && text != "" && strings.IndexByte("ABCD", text[0]) >= 0 {
+			mark := Mark{Kind: text[0], Code: -1, At: s.at}
+			if mark.Kind == 'D' {
+				fields := strings.Split(text, ";")
+				if len(fields) > 1 {
+					if code, err := strconv.Atoi(fields[1]); err == nil {
+						mark.Code = code
+					}
+				}
+			}
+			s.marks = append(s.marks, mark)
 		}
 	}
 	return false

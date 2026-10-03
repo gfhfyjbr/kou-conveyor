@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""github-issues: a source of events for the kou-conveyor canvas.
+
+The canvas runs it every minute (a "poll" source). Each run reads its
+settings from the line of JSON on its standard input, asks the gh CLI for
+the issues of the repository updated since the last run, and prints a line
+of JSON for each: an event on the port "opened" for an issue made since
+then, on "updated" for one that changed. Where the last run got to — its
+cursor — is kept in the directory the canvas gives the source
+(KOU_CANVAS_STATE_DIR). The canvas drops an event whose key it has seen, so
+an issue seen twice goes along the edges once.
+"""
+
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timedelta, timezone
+
+FIELDS = "number,title,url,body,labels,author,createdAt,updatedAt,state"
+
+
+def say(kind, **fields):
+    """say prints a line of the source's protocol."""
+    print(json.dumps({"type": kind, **fields}, ensure_ascii=False), flush=True)
+
+
+def stamp(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse(text):
+    try:
+        return datetime.fromisoformat(str(text).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def gh(*args):
+    return subprocess.run(["gh", *args], capture_output=True, text=True)
+
+
+def main():
+    line = sys.stdin.readline()
+    request = json.loads(line) if line.strip() else {}
+    config = request.get("config") or {}
+    repo = str(config.get("repo") or "").strip()
+    if not repo:
+        say("status", state="error", text="no repository: name one in the node's settings")
+        return
+    search = str(config.get("search", "is:open") or "").strip()
+    wanted = set(config.get("events") or ["opened"])
+
+    try:
+        signed_in = gh("auth", "status").returncode == 0
+    except FileNotFoundError:
+        say("status", state="error", text="gh is not installed: see https://cli.github.com")
+        return
+    if not signed_in:
+        say("status", state="error", text="gh is not signed in: run gh auth login")
+        return
+
+    cursor_file = os.path.join(os.environ.get("KOU_CANVAS_STATE_DIR") or ".", "cursor")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    try:
+        with open(cursor_file, encoding="utf-8") as f:
+            cursor = parse(f.read().strip())
+    except OSError:
+        cursor = None
+    if cursor is None:
+        # The first run does not pour the repository's history out: it
+        # starts now, or a day back when asked to backfill.
+        if not config.get("backfill"):
+            save(cursor_file, now)
+            say("status", state="ok", text=f"watching {repo}")
+            return
+        cursor = now - timedelta(days=1)
+
+    query = f"{search} updated:>={stamp(cursor)}".strip()
+    result = gh("issue", "list", "--repo", repo, "--search", query, "--state", "all",
+                "--json", FIELDS, "--limit", "50")
+    if result.returncode != 0:
+        say("status", state="error", text=(result.stderr.strip() or "gh issue list failed")[:300])
+        return
+    issues = json.loads(result.stdout or "[]")
+    for issue in sorted(issues, key=lambda i: i.get("updatedAt") or ""):
+        created = parse(issue.get("createdAt"))
+        port = "opened" if created is not None and created >= cursor else "updated"
+        if port not in wanted:
+            continue
+        number = issue.get("number")
+        data = {
+            "number": number,
+            "title": issue.get("title") or "",
+            "url": issue.get("url") or "",
+            "body": issue.get("body") or "",
+            "state": (issue.get("state") or "").lower(),
+            "labels": [label.get("name") for label in issue.get("labels") or [] if label.get("name")],
+            "author": (issue.get("author") or {}).get("login") or "",
+            "created_at": issue.get("createdAt") or "",
+            "updated_at": issue.get("updatedAt") or "",
+        }
+        say("event", port=port, key=f"{number}:{data['updated_at']}",
+            title=f"#{number} {data['title']}", text=data["body"], data=data)
+    # The next run starts where this one began: what changed while it ran is
+    # seen again, and the keys drop what was given already.
+    save(cursor_file, now)
+    say("status", state="ok", text=f"watching {repo}")
+
+
+def save(path, t):
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    temp = path + ".tmp"
+    with open(temp, "w", encoding="utf-8") as f:
+        f.write(stamp(t) + "\n")
+    os.replace(temp, path)
+
+
+if __name__ == "__main__":
+    main()

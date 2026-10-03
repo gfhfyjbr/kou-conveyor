@@ -1,0 +1,1217 @@
+/* canvas: the board of terminals, agents and sources of events, its bar,
+   its inspector and the foreman's field over it, and its part of the rail.
+   Everything a node has is drawn in world pixels and zoomed with the world;
+   what must stay legible at any zoom (lines, the selection, a far-out
+   node's title) is divided by --cv-zoom, which the board sets. */
+
+/* ---------------------------------------------------------------- the page */
+
+.cv-page { display: grid; grid-template-rows: var(--bar) minmax(0, 1fr); min-width: 0; min-height: 0; }
+.cv-bar .crumbs { align-items: center; }
+.cv-crumb-glyph { flex: none; font: 400 13px/1 var(--mono); color: var(--accent); }
+.cv-crumb-title { flex: 0 1 auto; }
+.cv-bar .crumbs code { flex: none; }
+.cv-bar .bar-right { gap: 6px; }
+.cv-bar .act { height: 24px; line-height: 22px; }
+.cv-bar .act.strong { padding: 0 9px; }
+
+.cv-counts { font: 600 10.5px/1 var(--mono); color: var(--fg-3); white-space: nowrap; margin-right: 4px; }
+.cv-counts:empty { display: none; }
+.cv-counts[data-state="busy"] { color: var(--accent); }
+.cv-counts[data-state="waiting"] { color: var(--warn); }
+
+/* Live or Paused: a switch, its square lit while the canvas runs. */
+.cv-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  white-space: nowrap;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cv-live i { width: 7px; height: 7px; background: var(--ok); }
+.cv-live:hover:not(:disabled) { border-color: var(--fg-3); color: var(--fg); }
+.cv-live[data-live="false"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+.cv-live[data-live="false"] i { background: none; border: 1.5px solid var(--warn); }
+.cv-live:disabled { opacity: 0.45; cursor: default; }
+.cv-zoom { min-width: 52px; text-align: center; font-variant-numeric: tabular-nums; }
+
+/* Agents N: shows the window of the agents, or hides it; its square says
+   what they do — at work, one waiting, all idle. */
+.cv-agents-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--line-2);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-2);
+  white-space: nowrap;
+  transition: border-color 0.12s, color 0.12s;
+}
+.cv-agents-toggle i { width: 7px; height: 7px; border: 1.5px solid var(--fg-4); }
+.cv-agents-toggle[data-state="idle"] i { border: 0; background: var(--ok); }
+.cv-agents-toggle[data-state="busy"] i { border: 0; background: var(--accent); }
+.cv-agents-toggle[data-state="waiting"] i { border: 0; background: var(--warn); }
+.cv-agents-toggle:hover { border-color: var(--fg-3); color: var(--fg); }
+.cv-agents-toggle[aria-pressed="true"] { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-2)); color: var(--accent); }
+
+/* The board, and what floats over it. */
+.cv-main { position: relative; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg); container: cv-main / inline-size; }
+
+/* ---------------------------------------------------------------- the board */
+
+/* An endless grid of dots, four snaps apart, which pans and zooms with the
+   world (the board sets the step and the origin). */
+.cv-viewport {
+  --cv-dot: color-mix(in srgb, var(--fg) 13%, transparent);
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  touch-action: none;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle, var(--cv-dot) 0.9px, transparent 1.3px);
+  background-size: var(--cv-step, 32px) var(--cv-step, 32px);
+  background-position: calc(var(--cv-ox, 0px) - var(--cv-step, 32px) / 2) calc(var(--cv-oy, 0px) - var(--cv-step, 32px) / 2);
+}
+/* The board has the keys: a faint frame, not one that reads as selected. */
+.cv-viewport:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); outline-offset: -1px; }
+.cv-viewport[data-space="true"] { cursor: grab; }
+.cv-viewport[data-space="true"] .cv-world,
+.cv-viewport[data-panning="true"] .cv-world { pointer-events: none; }
+.cv-viewport[data-panning="true"], .cv-viewport[data-panning="true"] * { cursor: grabbing !important; }
+.cv-viewport[data-dragging="true"], .cv-viewport[data-dragging="true"] * { cursor: grabbing !important; }
+.cv-viewport[data-resizing="true"], .cv-viewport[data-resizing="true"] * { cursor: nwse-resize !important; }
+/* What a node's body says can be selected, once the node has the keys. */
+.cv-node[data-entered="true"] .cv-body { user-select: text; -webkit-user-select: text; }
+
+.cv-world { position: absolute; left: 0; top: 0; width: 0; height: 0; transform-origin: 0 0; will-change: transform; }
+.cv-nodes { position: absolute; left: 0; top: 0; width: 0; height: 0; }
+
+/* A terminal draws its cells for a zoom of 1: at another, the pointer
+   would land on the wrong cells, so it goes to the node (Enter, or a
+   double-click, gives it the keys at its size). */
+.cv-viewport:not([data-unit="true"]) .term-mount { pointer-events: none; }
+
+.cv-marquee {
+  position: absolute;
+  z-index: 8;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  pointer-events: none;
+}
+/* What the board's menus hang from: where the pointer was. */
+.cv-anchor { position: fixed; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
+
+/* ---------------------------------------------------------------- a node */
+
+.cv-node {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: 0 14px 36px -22px rgb(0 0 0 / 0.55);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.cv-node[data-selected="true"] { border-color: var(--accent); outline: calc(1px / var(--cv-zoom, 1)) solid var(--accent); outline-offset: 0; }
+.cv-node[data-entered="true"] { border-color: var(--accent); outline: calc(2px / var(--cv-zoom, 1)) solid var(--accent); box-shadow: 0 0 0 calc(5px / var(--cv-zoom, 1)) var(--accent-soft), 0 14px 36px -22px rgb(0 0 0 / 0.55); }
+.cv-node[data-status="waiting"]:not([data-selected="true"]) { border-color: color-mix(in srgb, var(--warn) 60%, var(--line-2)); }
+.cv-node[data-status="error"]:not([data-selected="true"]) { border-color: color-mix(in srgb, var(--err) 55%, var(--line-2)); }
+
+/* The header: what it is, what it does, how long it has. It is what a
+   node is dragged by. */
+.cv-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 33px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-3);
+  cursor: grab;
+  overflow: hidden;
+  font: 11px/1 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.cv-glyph { flex: none; width: 14px; text-align: center; font: 400 13px/1 var(--mono); color: var(--fg-3); }
+.cv-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 600 12.5px/1.2 var(--sans); color: var(--fg); cursor: text; }
+.cv-kind { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 600 9.5px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-4); }
+/* The agent the user runs in a shell: a tag beside the title, and its
+   glyph in the shell's. */
+.cv-runs {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line-2));
+  font: 700 9.5px/16px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.cv-node[data-agent="true"] .cv-glyph { color: var(--accent); }
+.cv-typing { flex: none; font: 600 10px/1 var(--mono); color: var(--accent); animation: pulse 1s ease-in-out infinite; }
+.cv-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  margin-left: auto;
+  font: 700 9.5px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-4);
+}
+.cv-state i { width: 7px; height: 7px; flex: none; background: var(--fg-4); }
+.cv-state time { font-weight: 500; letter-spacing: 0; color: inherit; }
+.cv-state time:empty { display: none; }
+.cv-more {
+  flex: none;
+  width: 26px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  font: 700 14px/1 var(--mono);
+  color: var(--fg-3);
+}
+.cv-more:hover, .cv-more[aria-expanded="true"] { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
+.cv-rename {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--accent);
+  outline: 0;
+  background: var(--bg);
+  font: 600 12.5px/20px var(--sans);
+  color: var(--fg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Its status, in the header's square and word. */
+.cv-node[data-status="idle"] .cv-state i { background: var(--ok); }
+.cv-node[data-status="idle"] .cv-state { color: var(--fg-3); }
+.cv-node[data-status="busy"] .cv-state,
+.cv-node[data-status="starting"] .cv-state { color: var(--accent); }
+.cv-node[data-status="busy"] .cv-state i { background: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.cv-node[data-status="starting"] .cv-state i { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.cv-node[data-status="busy"] .cv-glyph,
+.cv-node[data-status="starting"] .cv-glyph { color: var(--accent); }
+.cv-node[data-status="waiting"] .cv-state { color: var(--warn); }
+.cv-node[data-status="waiting"] .cv-state i { background: var(--warn); animation: blink 1.6s steps(2, jump-none) infinite; }
+.cv-node[data-status="error"] .cv-state { color: var(--err); }
+.cv-node[data-status="error"] .cv-state i { background: var(--err); }
+.cv-node[data-status="paused"] .cv-state { color: var(--warn); }
+.cv-node[data-status="paused"] .cv-state i { background: none; border: 1.5px solid var(--warn); }
+.cv-node[data-status="exited"] .cv-state { color: var(--fg-3); }
+.cv-node[data-status="exited"] .cv-state i { background: none; border: 1.5px solid var(--fg-3); }
+.cv-node[data-status="stopped"] .cv-state i { background: none; border: 1.5px solid var(--fg-4); }
+/* Running on quietly — a server, a watcher, a program that waits for its
+   input: its square lit, and nothing blinks nor runs under the header. */
+.cv-node[data-status="running"] .cv-state { color: var(--fg-3); }
+.cv-node[data-status="running"] .cv-state i { background: color-mix(in srgb, var(--accent) 55%, var(--fg-4)); }
+/* A note does nothing: it has no status. */
+.cv-node[data-kind="note"] .cv-state { display: none; }
+.cv-node[data-kind="note"] .cv-more { margin-left: auto; }
+/* At work: a line runs under the header. */
+.cv-node[data-status="busy"] .cv-head::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 28%;
+  height: 1px;
+  background: var(--accent);
+  animation: scan 1.6s linear infinite;
+}
+
+.cv-body { position: relative; display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
+.cv-body > * { flex: 1; min-width: 0; min-height: 0; }
+.cv-foot {
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+  font: 10.5px/21px var(--mono);
+  color: var(--fg-4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: grab;
+}
+.cv-no-body { margin: 0; padding: 16px; font: 11.5px/1.6 var(--mono); color: var(--fg-4); }
+
+/* The corner it is resized by: a tick shows once the pointer is near. */
+.cv-resize {
+  position: absolute;
+  right: -1px;
+  bottom: -1px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  opacity: 0;
+  background:
+    linear-gradient(var(--fg-3), var(--fg-3)) right 3px bottom 3px / 9px 1px no-repeat,
+    linear-gradient(var(--fg-3), var(--fg-3)) right 3px bottom 3px / 1px 9px no-repeat;
+  transition: opacity 0.12s;
+}
+.cv-node:hover .cv-resize, .cv-node[data-selected="true"] .cv-resize { opacity: 1; }
+.cv-resize:hover { background:
+    linear-gradient(var(--accent), var(--accent)) right 3px bottom 3px / 9px 1px no-repeat,
+    linear-gradient(var(--accent), var(--accent)) right 3px bottom 3px / 1px 9px no-repeat; }
+
+/* What waits for it, on a tab over its top: what waits for approval
+   first, in the colour of a warning. */
+.cv-pending {
+  position: absolute;
+  right: -1px;
+  bottom: calc(100% + 4px);
+  z-index: 3;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  font: 700 9.5px/18px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.cv-pending:hover { border-color: var(--fg-3); color: var(--fg); }
+.cv-pending[data-approve="true"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, var(--line-2)); background: color-mix(in srgb, var(--warn) 9%, var(--bg-2)); }
+
+/* A node an agent proposed: dashed, faded, and a bar to approve it. */
+.cv-node[data-proposed="true"] { border-style: dashed; border-color: color-mix(in srgb, var(--warn) 60%, var(--line-2)); }
+.cv-node[data-proposed="true"] .cv-body { opacity: 0.55; }
+.cv-node[data-proposed="true"] .cv-body::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(135deg, transparent 0 9px, color-mix(in srgb, var(--warn) 9%, transparent) 9px 10px);
+}
+.cv-proposal {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 7px 8px 7px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  background: color-mix(in srgb, var(--warn) 8%, var(--bg-2));
+  font: 11px/1.3 var(--mono);
+  color: var(--fg-2);
+}
+.cv-proposal > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-proposal .act { border-color: var(--line-2); }
+
+/* Far out, a node is its header, grown to fill it and to stay legible. */
+.cv-node[data-lod="low"] > .cv-body,
+.cv-node[data-lod="low"] > .cv-foot,
+.cv-node[data-lod="low"] > .cv-proposal,
+.cv-node[data-lod="low"] .cv-kind,
+.cv-node[data-lod="low"] .cv-runs,
+.cv-node[data-lod="low"] .cv-typing,
+.cv-node[data-lod="low"] .cv-more,
+.cv-node[data-lod="low"] .cv-state time,
+.cv-node[data-lod="low"] .cv-port b { display: none; }
+.cv-node[data-lod="low"] > .cv-head {
+  flex: 1;
+  height: auto;
+  flex-direction: column;
+  justify-content: center;
+  gap: min(calc(6px / var(--cv-zoom, 1)), 40px);
+  padding: 0 min(calc(8px / var(--cv-zoom, 1)), 48px);
+  border-bottom: 0;
+  cursor: grab;
+}
+.cv-node[data-lod="low"] .cv-glyph { width: auto; font-size: min(calc(16px / var(--cv-zoom, 1)), 120px); }
+.cv-node[data-lod="low"] .cv-title { flex: none; max-width: 100%; text-align: center; font-size: min(calc(13px / var(--cv-zoom, 1)), 96px); cursor: inherit; }
+.cv-node[data-lod="low"] .cv-state { margin: 0; gap: min(calc(5px / var(--cv-zoom, 1)), 36px); font-size: min(calc(9.5px / var(--cv-zoom, 1)), 64px); }
+.cv-node[data-lod="low"] .cv-state i { width: min(calc(7px / var(--cv-zoom, 1)), 48px); height: min(calc(7px / var(--cv-zoom, 1)), 48px); }
+.cv-node[data-lod="low"] .cv-pending { font-size: min(calc(9.5px / var(--cv-zoom, 1)), 64px); height: auto; line-height: 1.8; }
+
+/* ---------------------------------------------------------------- ports */
+
+/* Inputs on the left edge, outputs on the right, each centred on the edge
+   where its wires end; its name shows beside it, outside the node, while
+   the pointer is over the node or a wire is being drawn. */
+.cv-ports { position: absolute; top: -1px; width: 0; height: 0; z-index: 4; }
+.cv-ports[data-dir="in"] { left: -1px; }
+.cv-ports[data-dir="out"] { right: -1px; }
+.cv-port {
+  position: absolute;
+  left: 0;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  cursor: crosshair;
+}
+.cv-port i {
+  width: 10px;
+  height: 10px;
+  background: var(--bg-2);
+  border: 1.5px solid var(--fg-4);
+  transition: background-color 0.12s, border-color 0.12s, transform 0.12s;
+}
+.cv-port:hover i, .cv-port[data-over="true"] i { background: var(--accent); border-color: var(--accent); transform: scale(1.3); }
+.cv-port[data-candidate="true"] i { border-color: var(--accent); }
+.cv-port b {
+  position: absolute;
+  top: 50%;
+  padding: 1px 5px;
+  transform: translateY(-50%);
+  border: 1px solid var(--line);
+  background: var(--bg);
+  font: 600 10px/1.4 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s;
+}
+.cv-ports[data-dir="in"] .cv-port b { right: calc(100% - 2px); }
+.cv-ports[data-dir="out"] .cv-port b { left: calc(100% - 2px); }
+.cv-node:hover .cv-port b,
+.cv-port[data-candidate="true"] b,
+.cv-port[data-over="true"] b { opacity: 1; }
+.cv-port[data-over="true"] b { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+/* While a wire is drawn, the ports it cannot end on step back. */
+.cv-world[data-connecting] .cv-port:not([data-candidate]) { opacity: 0.35; }
+
+/* ---------------------------------------------------------------- edges */
+
+.cv-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.cv-edge-hit { fill: none; stroke: transparent; stroke-width: 14px; vector-effect: non-scaling-stroke; pointer-events: stroke; cursor: pointer; }
+.cv-edge-line {
+  fill: none;
+  stroke: var(--fg-4);
+  stroke-width: 1.5px;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+  transition: stroke 0.12s;
+}
+.cv-arrow { fill: var(--fg-3); fill: context-stroke; }
+.cv-edge:hover .cv-edge-line { stroke: var(--fg-2); }
+.cv-edge[data-mode="approve"] .cv-edge-line { stroke: color-mix(in srgb, var(--warn) 70%, var(--fg-4)); stroke-dasharray: 7 5; }
+.cv-edge[data-mode="off"] .cv-edge-line { stroke-dasharray: 2 6; opacity: 0.55; }
+.cv-edge[data-waiting="true"] .cv-edge-line { stroke: var(--warn); }
+.cv-edge[data-selected="true"] .cv-edge-line { stroke: var(--accent); stroke-width: 2.5px; }
+.cv-edge-label { pointer-events: visiblePainted; cursor: pointer; }
+.cv-edge-box { fill: var(--bg-2); stroke: var(--line-2); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.cv-edge-text { fill: var(--fg-3); font: 600 10px var(--mono); letter-spacing: 0.02em; }
+.cv-edge[data-waiting="true"] .cv-edge-box { stroke: var(--warn); }
+.cv-edge[data-waiting="true"] .cv-edge-text { fill: var(--warn); }
+.cv-edge[data-selected="true"] .cv-edge-box { stroke: var(--accent); }
+.cv-edge[data-selected="true"] .cv-edge-text { fill: var(--accent); }
+.cv-viewport[data-lod="low"] .cv-edge-label { display: none; }
+/* A message going along an edge. */
+.cv-flow { fill: var(--accent); stroke: var(--bg); stroke-width: 1.5px; vector-effect: non-scaling-stroke; }
+/* The wire being drawn. */
+.cv-ghost { fill: none; stroke: var(--accent); stroke-width: 2px; stroke-dasharray: 6 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+/* ---------------------------------------------------------------- a terminal */
+
+.cv-term { position: relative; display: flex; flex-direction: column; background: var(--bg); }
+/* The live terminal covers the body; while it is not live it keeps its
+   size, unseen, so that it measures right the moment it mounts. */
+.cv-term-screen { position: absolute; inset: 6px 8px; }
+.cv-term:not([data-live="true"]) .cv-term-screen { visibility: hidden; pointer-events: none; }
+.cv-term-snap {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  font: 12px/1.35 var(--mono);
+  color: var(--fg-2);
+  white-space: pre;
+  tab-size: 8;
+}
+.cv-term-cover {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 16px;
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  text-align: center;
+}
+.cv-cover-text { max-width: 46ch; font: 12px/1.55 var(--mono); color: var(--fg-2); overflow-wrap: anywhere; }
+.cv-cover-actions { display: flex; gap: 6px; }
+.cv-cover-actions:empty { display: none; }
+.cv-term[data-cover="starting"] .cv-term-cover { background: transparent; }
+.cv-term[data-cover="starting"] .cv-cover-text { color: var(--fg-3); animation: pulse 1.2s ease-in-out infinite; }
+.cv-term[data-cover="error"] .cv-cover-text { color: var(--err); }
+.cv-term[data-cover="paused"] .cv-cover-text { color: var(--warn); }
+.cv-term-send {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 32px;
+  padding: 0 10px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.cv-prompt { flex: none; font: 700 12px/1 var(--mono); color: var(--accent); }
+.cv-term-send input { flex: 1; min-width: 0; height: 100%; border: 0; outline: 0; background: none; font: 12px var(--mono); color: var(--fg); }
+.cv-term-send input::placeholder { color: var(--fg-4); }
+
+/* ---------------------------------------------------------------- a kou agent */
+
+.cv-agent { display: flex; flex-direction: column; background: var(--bg); }
+.cv-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+  padding: 12px 12px 10px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.cv-feed-empty { margin: auto 0; padding: 0 12px; text-align: center; font: 11.5px/1.6 var(--mono); color: var(--fg-4); }
+.cv-e { flex: none; min-width: 0; font-size: 12.5px; line-height: 1.5; }
+.cv-e-user {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--line-2);
+  background: var(--bg-3);
+}
+.cv-e-user .cv-e-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.cv-origin {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line-2));
+  font: 700 9.5px/16px var(--mono);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+}
+.cv-origin.you { border-color: var(--line-2); color: var(--fg-3); text-transform: uppercase; }
+.cv-e-answer .prose { margin: 0; font-size: 13px; line-height: 1.58; }
+.cv-e-answer .prose h3 { font-size: 14.5px; }
+.cv-e-answer .prose h4 { font-size: 13.5px; }
+.cv-e-answer .prose .code pre { padding: 8px 10px; font-size: 11.5px; }
+.cv-e-answer[data-phase="commentary"] .prose { color: var(--fg-2); font-size: 12.5px; }
+.cv-e-thought { font: italic 11px/1.4 var(--mono); color: var(--fg-4); }
+.cv-e-tool { display: flex; align-items: baseline; gap: 8px; font: 11.5px/1.5 var(--mono); color: var(--fg-3); }
+.cv-e-tool .cv-e-name { flex: none; color: var(--fg-2); }
+.cv-e-tool .cv-e-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-e-mark { flex: none; margin-left: auto; color: var(--ok); }
+.cv-e-tool[data-state="running"] .cv-e-mark { color: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.cv-e-tool[data-state="failed"] .cv-e-mark { color: var(--err); }
+.cv-e-error { padding: 6px 8px; border-left: 2px solid var(--err); background: var(--err-soft); font: 11.5px/1.5 var(--mono); color: var(--err); overflow-wrap: anywhere; }
+.cv-e-notice { font: 11px/1.5 var(--mono); color: var(--fg-4); }
+.cv-e-more { display: block; margin-top: 4px; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+.cv-agent-input { display: grid; gap: 6px; flex: none; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--bg-2); }
+.cv-input {
+  width: 100%;
+  min-height: 44px;
+  max-height: 140px;
+  padding: 6px 8px;
+  resize: none;
+  border: 1px solid var(--line-2);
+  outline: 0;
+  background: var(--bg);
+  font: 12.5px/1.45 var(--sans);
+  color: var(--fg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.cv-input:focus { border-color: var(--accent); }
+.cv-input::placeholder { color: var(--fg-4); }
+.cv-input:disabled { opacity: 0.5; }
+.cv-agent-bar { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 22px; }
+.cv-working { display: inline-flex; align-items: center; gap: 7px; min-width: 0; font: 10.5px/1 var(--mono); color: var(--accent); }
+.cv-working-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-chip {
+  min-width: 0;
+  max-width: 55%;
+  height: 22px;
+  padding: 0 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--line-2);
+  font: 10.5px/20px var(--mono);
+  color: var(--fg-3);
+}
+.cv-chip:hover { color: var(--fg); border-color: var(--fg-4); }
+.cv-gap { flex: 1; }
+
+/* ---------------------------------------------------------------- a source */
+
+.cv-source { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--bg); }
+.cv-src-what { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; flex: none; min-width: 0; font: 11.5px/1.5 var(--mono); color: var(--fg-2); }
+.cv-src-label { flex: none; font: 700 9.5px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-4); }
+.cv-hook {
+  flex: 1;
+  min-width: 0;
+  padding: 1px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--line);
+  background: var(--code);
+  font-size: 11px;
+  color: var(--fg);
+  user-select: all;
+  -webkit-user-select: all;
+}
+.cv-warn { color: var(--warn); }
+.cv-fire { display: flex; gap: 6px; flex: none; }
+.cv-fire input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  outline: 0;
+  background: var(--bg-2);
+  font: 12px var(--mono);
+  color: var(--fg);
+}
+.cv-fire input:focus { border-color: var(--accent); }
+.cv-fire input::placeholder { color: var(--fg-4); }
+.cv-fire .act { height: 28px; line-height: 26px; padding: 0 12px; }
+.cv-events { flex: 1; min-height: 0; margin: 0; padding: 0; list-style: none; overflow-y: auto; overscroll-behavior: contain; border-top: 1px solid var(--line); }
+.cv-events li { display: flex; align-items: baseline; gap: 8px; min-width: 0; padding: 5px 0; border-bottom: 1px dashed var(--line); font: 11.5px/1.45 var(--mono); }
+.cv-events time { flex: none; font-size: 10.5px; color: var(--fg-4); }
+.cv-port-tag { flex: none; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); font: 700 9px/14px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent); }
+.cv-ev-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.cv-events li.cv-none { border: 0; color: var(--fg-4); }
+.cv-src-log { flex: none; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font: 11px/1.45 var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.cv-src-log[data-level="error"] { color: var(--err); }
+
+/* ---------------------------------------------------------------- a note */
+
+.cv-node[data-kind="note"] { background: color-mix(in srgb, var(--warn) 5%, var(--bg-2)); }
+.cv-node[data-kind="note"] .cv-head { background: transparent; border-bottom-color: color-mix(in srgb, var(--warn) 18%, var(--line)); }
+.cv-node[data-kind="note"] .cv-glyph { color: var(--warn); }
+.cv-note { display: flex; flex-direction: column; }
+.cv-note-view { flex: 1; min-height: 0; padding: 10px 14px 12px; overflow-y: auto; overscroll-behavior: contain; }
+.cv-note-view .prose { margin: 0; font-size: 13px; line-height: 1.55; }
+.cv-note-empty { margin: 0; font: italic 12px/1.5 var(--sans); color: var(--fg-4); }
+.cv-note-edit {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  padding: 10px 14px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--bg);
+  font: 12.5px/1.55 var(--mono);
+  color: var(--fg);
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* ---------------------------------------------------------------- the agents */
+
+/* The agents on the canvas, in a window over the board (its top left until
+   it is dragged by its header elsewhere): a row each, what it does in its
+   square and word, how long, and what it is under its title. Dragged down
+   to the foreman's field, it stays over it; the inspector, which comes
+   after it, opens over it. */
+.cv-agents {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: calc(100% - 16px);
+  max-height: min(50%, 420px);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: 0 18px 44px -20px rgb(0 0 0 / 0.6);
+  animation: rise 0.14s ease-out;
+}
+.cv-agents[data-dragging="true"] { border-color: var(--fg-4); box-shadow: 0 24px 56px -18px rgb(0 0 0 / 0.7); }
+.cv-ag-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  height: 32px;
+  padding: 0 3px 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-3);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.cv-agents[data-dragging="true"] .cv-ag-head { cursor: grabbing; }
+.cv-agents[data-folded="true"] .cv-ag-head { border-bottom: 0; }
+.cv-agents[data-folded="true"] .cv-ag-list { display: none; }
+.cv-ag-count { flex: none; font: 600 10.5px/1 var(--mono); color: var(--fg-4); }
+.cv-ag-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font: 10.5px/1 var(--mono); color: var(--fg-3); }
+.cv-ag-sum[data-state="busy"] { color: var(--accent); }
+.cv-ag-sum[data-state="waiting"] { color: var(--warn); }
+.cv-ag-head .icon { flex: none; }
+.cv-ag-list { display: grid; align-content: start; min-height: 0; padding: 3px 0; overflow-y: auto; overscroll-behavior: contain; }
+.cv-ag-row {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-areas: "glyph title state" ". meta meta";
+  align-items: center;
+  gap: 3px 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px 6px 6px;
+  border-left: 2px solid transparent;
+  text-align: left;
+}
+.cv-ag-row + .cv-ag-row { border-top: 1px solid var(--line); }
+.cv-ag-row:hover { background: var(--bg-3); }
+.cv-ag-row[aria-current="true"] { background: var(--bg-3); border-left-color: var(--accent); }
+.cv-ag-row:focus-visible { outline-offset: -2px; }
+.cv-ag-glyph { grid-area: glyph; font: 400 12.5px/1 var(--mono); text-align: center; color: var(--fg-3); }
+.cv-ag-title { grid-area: title; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 12.5px/1.3 var(--sans); color: var(--fg); }
+.cv-ag-state { grid-area: state; display: inline-flex; align-items: center; gap: 5px; font: 700 9.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; color: var(--fg-4); }
+.cv-ag-state i { flex: none; width: 6px; height: 6px; background: var(--fg-4); }
+.cv-ag-state time { font-weight: 500; letter-spacing: 0; font-variant-numeric: tabular-nums; }
+.cv-ag-state time:empty { display: none; }
+.cv-ag-meta { grid-area: meta; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px/1.35 var(--mono); color: var(--fg-4); }
+.cv-ag-row[data-how="shell"] .cv-ag-glyph { color: var(--accent); }
+.cv-ag-row[data-state="idle"] .cv-ag-state { color: var(--fg-3); }
+.cv-ag-row[data-state="idle"] .cv-ag-state i { background: var(--ok); }
+.cv-ag-row[data-state="busy"] .cv-ag-state,
+.cv-ag-row[data-state="starting"] .cv-ag-state,
+.cv-ag-row[data-state="busy"] .cv-ag-glyph,
+.cv-ag-row[data-state="starting"] .cv-ag-glyph { color: var(--accent); }
+.cv-ag-row[data-state="busy"] .cv-ag-meta,
+.cv-ag-row[data-state="starting"] .cv-ag-meta { color: var(--fg-3); }
+.cv-ag-row[data-state="busy"] .cv-ag-state i { background: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.cv-ag-row[data-state="starting"] .cv-ag-state i { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.cv-ag-row[data-state="running"] .cv-ag-state { color: var(--fg-3); }
+.cv-ag-row[data-state="running"] .cv-ag-state i { background: color-mix(in srgb, var(--accent) 55%, var(--fg-4)); }
+.cv-ag-row[data-state="waiting"] .cv-ag-state { color: var(--warn); }
+.cv-ag-row[data-state="waiting"] .cv-ag-state i { background: var(--warn); }
+.cv-ag-row[data-state="error"] .cv-ag-state { color: var(--err); }
+.cv-ag-row[data-state="error"] .cv-ag-state i { background: var(--err); }
+.cv-ag-row[data-state="paused"] .cv-ag-state { color: var(--warn); }
+.cv-ag-row[data-state="paused"] .cv-ag-state i { background: none; border: 1.5px solid var(--warn); }
+.cv-ag-row[data-state="exited"] .cv-ag-state i,
+.cv-ag-row[data-state="stopped"] .cv-ag-state i { background: none; border: 1.5px solid var(--fg-4); }
+
+/* ---------------------------------------------------------------- the inspector */
+
+.cv-inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: min(340px, calc(100% - 24px));
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  animation: rise 0.14s ease-out;
+}
+.cv-ins-head { display: flex; align-items: center; gap: 8px; flex: none; height: 44px; padding: 0 6px 0 14px; border-bottom: 1px solid var(--line); }
+.cv-ins-title { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; margin: 0; font: 600 13px/1.2 var(--sans); color: var(--fg); }
+.cv-ins-title > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-ins-title .cv-glyph { color: var(--accent); }
+.cv-ins-body { flex: 1; min-height: 0; padding: 0 14px 16px; overflow-y: auto; overscroll-behavior: contain; }
+.cv-ins-section { display: grid; gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.cv-ins-section:last-child { border-bottom: 0; }
+.cv-ins-section > h3 { margin: 0; }
+.cv-ins-section .ins-actions { margin-top: 0; }
+.cv-ins-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; font: 11.5px/1.7 var(--mono); }
+.cv-ins-row > span:first-child { flex: none; color: var(--fg-3); }
+.cv-ins-row > :last-child:not(:first-child) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font-weight: 500; color: var(--fg); }
+.cv-ins-row code { font-size: 11px; }
+.cv-ins-inline { display: inline-flex; align-items: center; justify-content: flex-end; gap: 6px; min-width: 0; }
+.cv-ins-inline > code, .cv-ins-inline > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cv-ins-inline .act { height: 20px; line-height: 18px; border-color: var(--line-2); }
+.cv-ins-note { margin: 0; font: 11px/1.5 var(--mono); color: var(--fg-3); }
+.cv-ins-kind { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin: 0; font: 11px/1.4 var(--mono); color: var(--fg-3); }
+.cv-ins-kind code { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-4); user-select: all; -webkit-user-select: all; }
+.cv-ins-state { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 0; font: 11px/1.4 var(--mono); color: var(--fg-3); }
+.cv-ins-state i { width: 7px; height: 7px; flex: none; background: var(--fg-4); }
+.cv-ins-state b { font: 700 9.5px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+.cv-ins-state time { color: var(--fg-4); }
+.cv-ins-state span { flex-basis: 100%; color: var(--fg-2); overflow-wrap: anywhere; }
+.cv-ins-state[data-state="idle"] i { background: var(--ok); }
+.cv-ins-state[data-state="busy"] b, .cv-ins-state[data-state="starting"] b { color: var(--accent); }
+.cv-ins-state[data-state="busy"] i, .cv-ins-state[data-state="starting"] i { background: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.cv-ins-state[data-state="waiting"] b, .cv-ins-state[data-state="paused"] b { color: var(--warn); }
+.cv-ins-state[data-state="waiting"] i, .cv-ins-state[data-state="paused"] i { background: var(--warn); }
+.cv-ins-state[data-state="error"] b { color: var(--err); }
+.cv-ins-state[data-state="error"] i { background: var(--err); }
+.cv-ins-state[data-state="running"] i { background: color-mix(in srgb, var(--accent) 55%, var(--fg-4)); }
+.cv-ins-state em { font-style: normal; color: var(--accent); }
+.cv-ins-ends { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 6px; margin: 0; font: 12px/1.5 var(--mono); color: var(--fg-4); }
+.cv-ins-ends b { font: 600 12.5px/1.4 var(--sans); color: var(--fg); }
+.cv-ins-ends code { font-size: 10.5px; color: var(--fg-3); }
+.act.danger { color: var(--err); }
+.act.danger:hover { color: var(--err); border-color: color-mix(in srgb, var(--err) 50%, var(--line-2)); background: var(--err-soft); }
+
+/* Fields, as forms.js makes them from a schema, and the inspector's own. */
+.cv-form { display: grid; gap: 12px; }
+.cv-field { display: grid; gap: 5px; min-width: 0; }
+.cv-field-title { font: 600 10px/1.3 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3); }
+.cv-field-title i { font-style: normal; color: var(--accent); }
+.cv-field small { font: 11px/1.45 var(--mono); color: var(--fg-4); }
+.cv-field input:not([type="checkbox"]),
+.cv-field select,
+.cv-field textarea {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 0;
+  outline: 0;
+  background: var(--bg);
+  font: 12px var(--mono);
+  color: var(--fg);
+}
+.cv-field textarea { height: auto; min-height: 64px; padding: 6px 8px; resize: vertical; line-height: 1.45; }
+.cv-field select { padding-right: 4px; cursor: pointer; }
+.cv-field input:focus, .cv-field select:focus, .cv-field textarea:focus { border-color: var(--accent); }
+.cv-field input::placeholder, .cv-field textarea::placeholder { color: var(--fg-4); }
+.cv-field input:disabled, .cv-field select:disabled, .cv-field textarea:disabled { opacity: 0.55; cursor: default; }
+.cv-field input[type="checkbox"] { justify-self: start; width: 15px; height: 15px; margin: 0; accent-color: var(--accent); }
+.cv-field[data-invalid="true"] input, .cv-field[data-invalid="true"] select, .cv-field[data-invalid="true"] textarea { border-color: var(--err); }
+.cv-field[data-invalid="true"] .cv-field-title { color: var(--err); }
+.cv-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.cv-check .cv-field-title { color: var(--fg-2); }
+
+/* A choice of a few: radios drawn as one segmented row. */
+.cv-seg { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); border: 1px solid var(--line-2); }
+.cv-seg button {
+  height: 28px;
+  padding: 0 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--bg);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  transition: background-color 0.12s, color 0.12s;
+}
+.cv-seg button + button { border-left: 1px solid var(--line-2); }
+.cv-seg button:hover:not(:disabled) { background: var(--bg-3); color: var(--fg); }
+.cv-seg button[aria-checked="true"] { background: var(--accent-soft); color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.cv-seg button:disabled { cursor: default; }
+.cv-seg button:focus-visible { outline-offset: -2px; }
+
+/* Messages: what waits for a node, and what went along an edge. */
+.cv-msgs { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.cv-msg { display: grid; gap: 6px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); background: var(--bg); }
+.cv-msg[data-state="awaiting_approval"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); box-shadow: inset 2px 0 0 var(--warn); }
+.cv-msg[data-state="dropped"] { opacity: 0.6; }
+.cv-msg-head { display: flex; align-items: baseline; gap: 8px; min-width: 0; font: 11px/1.4 var(--mono); color: var(--fg-3); }
+.cv-msg-head b { flex: none; max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
+.cv-msg-head span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-msg-head time { flex: none; margin-left: auto; color: var(--fg-4); }
+.cv-msg[data-state="awaiting_approval"] .cv-msg-head span { color: var(--warn); }
+.cv-msg-text { max-height: 9.5em; margin: 0; overflow: auto; font: 11.5px/1.45 var(--mono); color: var(--fg-2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cv-msg .ins-actions { margin-top: 0; }
+.cv-msg-edit {
+  width: 100%;
+  min-height: 96px;
+  padding: 6px 8px;
+  resize: vertical;
+  border: 1px solid var(--accent);
+  outline: 0;
+  background: var(--bg-2);
+  font: 11.5px/1.45 var(--mono);
+  color: var(--fg);
+}
+.cv-preview {
+  max-height: 168px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--code);
+  font: 11.5px/1.45 var(--mono);
+  color: var(--fg-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------------------------------------------------------------- the foreman */
+
+.cv-foreman {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  z-index: 5;
+  display: grid;
+  gap: 8px;
+  width: min(640px, calc(100% - 32px));
+  transform: translateX(-50%);
+}
+/* With the inspector open, a wide board keeps the field clear of it. */
+@container cv-main (min-width: 1040px) {
+  .cv-main[data-inspector="open"] .cv-foreman { left: calc((100% - 352px) / 2); }
+}
+.cv-foreman-field {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: 0 18px 44px -20px rgb(0 0 0 / 0.6);
+  transition: border-color 0.12s;
+}
+.cv-foreman-field:focus-within { border-color: var(--accent); }
+.cv-foreman-glyph { flex: none; font: 400 14px/30px var(--mono); color: var(--accent); }
+.cv-foreman-input {
+  flex: 1;
+  min-width: 0;
+  height: 30px;
+  max-height: 160px;
+  padding: 5px 0;
+  resize: none;
+  overflow-y: hidden;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: 13px/20px var(--sans);
+  color: var(--fg);
+}
+.cv-foreman-input::placeholder { color: var(--fg-4); }
+.cv-foreman-state { flex: 0 1 auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10.5px/30px var(--mono); color: var(--fg-3); }
+.cv-foreman-state:empty { display: none; }
+.cv-foreman[data-state="busy"] .cv-foreman-state,
+.cv-foreman[data-state="sending"] .cv-foreman-state,
+.cv-foreman[data-state="starting"] .cv-foreman-state { color: var(--accent); }
+.cv-foreman[data-state="error"] .cv-foreman-state { color: var(--err); }
+.cv-foreman[data-state="busy"] .cv-foreman-glyph { animation: blink 1s steps(2, jump-none) infinite; }
+.cv-foreman-field .act { flex: none; height: 30px; line-height: 28px; border-color: var(--line-2); }
+.cv-foreman-send {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 13px/1 var(--mono);
+  transition: background-color 0.12s;
+}
+.cv-foreman-send:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--fg)); }
+.cv-foreman-send:disabled { background: var(--bg-3); color: var(--fg-4); }
+.cv-bubble {
+  display: flex;
+  flex-direction: column;
+  max-height: min(40vh, 320px);
+  border: 1px solid var(--line-2);
+  border-left: 2px solid var(--accent);
+  background: var(--bg-2);
+  box-shadow: 0 18px 44px -20px rgb(0 0 0 / 0.6);
+  animation: rise 0.16s ease-out;
+}
+.cv-bubble-head { display: flex; align-items: center; gap: 4px; flex: none; padding: 4px 4px 4px 12px; border-bottom: 1px solid var(--line); }
+.cv-bubble-head .label { flex: 1; color: var(--accent); }
+.cv-bubble-text { min-height: 0; padding: 8px 12px 10px; overflow-y: auto; overscroll-behavior: contain; }
+.cv-bubble-text .prose { margin: 0; font-size: 13px; line-height: 1.55; }
+
+/* ---------------------------------------------------------------- over the board */
+
+/* The undo of what was just removed, over the foreman's field. */
+.cv-undo {
+  position: absolute;
+  left: 50%;
+  bottom: 76px;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 6px 6px 6px 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  box-shadow: var(--shadow);
+  font: 12px/1.4 var(--mono);
+  color: var(--fg-2);
+  animation: rise 0.14s ease-out;
+}
+.cv-undo > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-main:has(.cv-bubble:not([hidden])) .cv-undo,
+.cv-main:has(.cv-foreman[hidden]) .cv-undo { bottom: auto; top: 12px; animation-name: drop; }
+
+/* Loading, failed, deleted, read only, reconnecting. */
+.cv-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100% - 32px);
+  padding: 7px 8px 7px 14px;
+  transform: translateX(-50%);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  font: 12px/1.45 var(--mono);
+  color: var(--fg-2);
+  animation: drop 0.14s ease-out;
+}
+.cv-banner > span:not(.meter) { min-width: 0; }
+.cv-banner b { flex: none; font: 700 10.5px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; }
+.cv-banner .act { flex: none; border-color: var(--line-2); }
+.cv-banner[data-kind="loading"] { padding-right: 14px; }
+.cv-banner[data-kind="error"] { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); box-shadow: inset 2px 0 0 var(--err), var(--shadow); }
+.cv-banner[data-kind="error"] b { color: var(--err); }
+.cv-banner[data-kind="warn"] { border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); box-shadow: inset 2px 0 0 var(--warn), var(--shadow); }
+.cv-banner[data-kind="warn"] b { color: var(--warn); }
+.cv-banner[data-kind="none"] { top: 40%; }
+.cv-main:has(.cv-banner:not([hidden])):has(.cv-bubble:not([hidden])) .cv-undo,
+.cv-main:has(.cv-banner:not([hidden])):has(.cv-foreman[hidden]) .cv-undo { top: 60px; }
+
+/* An empty canvas: where to start. The board stays under it, to click and
+   double-click; only the cards take the pointer. */
+.cv-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 22px;
+  padding: 24px 24px 128px;
+  pointer-events: none;
+}
+.cv-empty-head { display: grid; justify-items: center; gap: 10px; max-width: 560px; text-align: center; }
+.cv-empty-head p { margin: 0; font-size: 13px; line-height: 1.6; color: var(--fg-3); }
+.cv-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(176px, 216px)); justify-content: center; gap: 10px; width: min(960px, 100%); }
+.cv-card {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  align-content: start;
+  gap: 6px;
+  min-height: 118px;
+  padding: 14px 14px 12px;
+  text-align: left;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  pointer-events: auto;
+  transition: border-color 0.12s, background-color 0.12s, transform 0.12s;
+}
+.cv-card b { font: 600 13.5px/1.3 var(--sans); color: var(--fg); }
+.cv-card span { font-size: 12px; line-height: 1.5; color: var(--fg-3); }
+.cv-card small { font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+.cv-card:hover:not(:disabled) { border-color: var(--accent); background: var(--bg-3); }
+.cv-card:hover:not(:disabled) b { color: var(--accent); }
+.cv-card:active:not(:disabled) { transform: translateY(1px); }
+.cv-card:disabled { opacity: 0.5; cursor: progress; }
+.cv-card-empty { border-style: dashed; background: transparent; }
+
+/* A phone shows the nodes as a list, and one node at a time. */
+.cv-narrow { display: none; }
+.cv-main[data-outline="true"] .cv-narrow {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 112px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: var(--bg);
+}
+.cv-main[data-outline="true"] .cv-viewport { visibility: hidden; }
+.cv-narrow-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 6px 10px 8px; }
+.cv-narrow-head .act { border-color: var(--line-2); height: 26px; line-height: 24px; }
+.cv-narrow .cv-outline-row { min-height: 48px; padding-top: 10px; padding-bottom: 10px; font-size: 13.5px; }
+.cv-outline-back { position: absolute; top: 12px; left: 12px; z-index: 6; height: 28px; line-height: 26px; border-color: var(--line-2); background: var(--bg-2); color: var(--fg-2); }
+
+/* ---------------------------------------------------------------- the rail */
+
+.cv-rail .rail-tools { grid-template-columns: minmax(0, 1fr) auto; }
+.cv-back { border-color: var(--line-2); background: var(--bg); }
+.cv-back:hover { border-color: var(--accent); color: var(--accent); }
+.cv-rail-scroll { flex: 1; min-height: 0; padding-bottom: 14px; overflow-y: auto; }
+.cv-canvases { padding: 0 8px; }
+.cv-canvases .session .n { font-size: 12px; color: var(--fg-3); }
+.cv-outline { display: grid; padding: 0 8px; }
+
+/* A node in the Outline, and in a phone's list. */
+.cv-outline-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 8px 6px 4px;
+  border-left: 2px solid transparent;
+  text-align: left;
+  font: 12.5px/18px var(--sans);
+  color: var(--fg-2);
+}
+.cv-outline-row:hover { background: var(--bg-3); color: var(--fg); }
+.cv-outline-row[aria-current="true"] { background: var(--bg-3); border-left-color: var(--accent); color: var(--fg); }
+.cv-outline-glyph { font: 400 12px/1 var(--mono); text-align: center; color: var(--fg-4); }
+.cv-outline-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cv-outline-state { font: 600 9.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-4); white-space: nowrap; }
+.cv-outline-row[data-state="idle"] .cv-outline-glyph { color: var(--ok); }
+.cv-outline-row[data-state="busy"] .cv-outline-glyph,
+.cv-outline-row[data-state="starting"] .cv-outline-glyph { color: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.cv-outline-row[data-state="busy"] .cv-outline-state,
+.cv-outline-row[data-state="starting"] .cv-outline-state { color: var(--accent); }
+.cv-outline-row[data-state="waiting"] .cv-outline-glyph,
+.cv-outline-row[data-state="waiting"] .cv-outline-state,
+.cv-outline-row[data-state="paused"] .cv-outline-state,
+.cv-outline-state[data-waiting="true"] { color: var(--warn); }
+.cv-outline-row[data-state="error"] .cv-outline-glyph,
+.cv-outline-row[data-state="error"] .cv-outline-state { color: var(--err); }
+.cv-outline-row[data-kind="note"] .cv-outline-glyph { color: var(--warn); }
+
+/* What happened, the latest first. */
+.cv-activity { display: grid; gap: 1px; margin: 0; padding: 0 12px 0 16px; list-style: none; }
+.cv-activity li { display: grid; grid-template-columns: 58px minmax(0, 1fr); align-items: baseline; gap: 6px; padding: 3px 0; font: 11px/1.45 var(--mono); color: var(--fg-3); }
+.cv-activity time { font-size: 10.5px; color: var(--fg-4); }
+.cv-activity-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  text-align: left;
+  color: inherit;
+}
+button.cv-activity-text:hover { color: var(--fg); text-decoration: underline dotted var(--fg-4); text-underline-offset: 3px; }
+.cv-activity li[data-level="warn"] { color: var(--warn); }
+.cv-activity li[data-level="error"] { color: var(--err); }
+.cv-activity li[data-kind="output"] .cv-activity-text { color: var(--fg-2); }
+.cv-activity li.cv-activity-none { display: block; padding: 0; font-size: 11.5px; line-height: 1.6; color: var(--fg-4); }
+
+/* The canvases that run, at the rail's foot: small, for the connection
+   beside it keeps its room. A dot blinks while one of them works. */
+.cv-live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line-2));
+  font: 700 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.cv-live-badge i { display: none; width: 6px; height: 6px; background: currentColor; }
+.cv-live-badge[data-busy="true"] i { display: block; animation: blink 1s steps(2, jump-none) infinite; }
+.cv-live-badge:hover, .cv-live-badge[aria-expanded="true"] { background: var(--accent-soft); border-color: var(--accent); }
+
+/* ---------------------------------------------------------------- in the session's bar */
+
+/* A new session's Chat · Canvas, and the canvas page's own while it is
+   still empty. */
+.cv-mode { display: inline-grid; grid-auto-flow: column; flex: none; align-self: center; border: 1px solid var(--line-2); }
+.cv-mode button {
+  height: 22px;
+  padding: 0 9px;
+  font: 700 10px/20px var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  transition: background-color 0.12s, color 0.12s;
+}
+.cv-mode button + button { border-left: 1px solid var(--line-2); }
+.cv-mode button[aria-checked="true"] { background: var(--accent-soft); color: var(--accent); cursor: default; }
+.cv-mode button:not([aria-checked="true"]):hover { background: var(--bg-3); color: var(--fg); }
+/* An agent's session says whose canvas it works for, and leads back. */
+.cv-crumb {
+  display: inline-block;
+  flex: 0 1 auto;
+  align-self: center;
+  min-width: 0;
+  max-width: 240px;
+  height: 22px;
+  padding: 0 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: 1px solid var(--line-2);
+  font: 600 10.5px/20px var(--mono);
+  color: var(--fg-2);
+  text-decoration: none;
+}
+.cv-crumb:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); color: var(--accent); }
+/* In the stage's bar they follow the title rather than the far end: the
+   crumbs give up the room they would take. */
+.bar:has(> .slot-contents > .cv-mode:not([hidden])) > .slot-contents > .crumbs,
+.bar:has(> .slot-contents > .cv-crumb:not([hidden])) > .slot-contents > .crumbs { flex: 0 1 auto; }
+.bar > .slot-contents > .cv-mode, .bar > .slot-contents > .cv-crumb { margin-right: auto; }
+
+/* The dialog that asks what a node needs. */
+.cv-ask { width: min(480px, 100%); }
+.cv-ask .settings-body { max-height: min(60vh, 520px); overflow-y: auto; }
+
+/* ---------------------------------------------------------------- narrow screens */
+
+@media (max-width: 1100px) {
+  .cv-bar .cv-counts { display: none; }
+}
+
+@media (max-width: 720px) {
+  .cv-bar .cv-zoom, .cv-bar .cv-live b { display: none; }
+  /* A phone lists the nodes, the agents among them. */
+  .cv-agents, .cv-bar .cv-agents-toggle { display: none; }
+  .cv-bar .bar-right { gap: 2px; }
+  .cv-live { padding: 0 8px; }
+  .cv-inspector { top: 0; right: 0; bottom: 0; width: 100%; border-width: 0 0 0 1px; }
+  .cv-foreman { bottom: max(12px, env(safe-area-inset-bottom)); width: calc(100% - 24px); }
+  .cv-gallery { grid-template-columns: minmax(0, 1fr); width: min(420px, 100%); }
+  .cv-card { min-height: 0; }
+  .cv-empty { align-content: start; padding-top: 56px; overflow-y: auto; pointer-events: auto; }
+  .cv-crumb { max-width: 120px; }
+}

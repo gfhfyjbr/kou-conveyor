@@ -110,6 +110,34 @@ func TestRunnerRunsWorkspacePluginTools(t *testing.T) {
 	}
 }
 
+// An agent on a canvas — its runner has the canvas's token — has the
+// canvas's tools, which the built-in canvas-agent plugin gives, besides its
+// instructions: it does not have to find kou-canvas on its own.
+func TestRunnerOffersTheCanvasToolsOnACanvas(t *testing.T) {
+	workspace := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var first llm.Request
+	stdout, stderr, code := runWithPlugins(t, workspace, map[string]string{"KOU_CANVAS_TOKEN": "token"}, `{"prompt":"hi"}`,
+		func(call int, request llm.Request) llm.Response {
+			if call == 1 {
+				first = request
+			}
+			return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
+		})
+	if code != 0 {
+		t.Fatalf("exit %d: %s\n%s", code, stderr, stdout)
+	}
+	if got := toolNames(first); !strings.HasPrefix(got, "Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse,CanvasView,CanvasSpawn,") ||
+		!strings.Contains(got, ",CanvasSend,CanvasRead,") {
+		t.Fatalf("tools = %s", got)
+	}
+	if system := first.Input[0].Data.(llm.Message).Text; !strings.Contains(system, "## canvas-agent plugin") {
+		t.Fatalf("the system prompt lacks the canvas: %s", system)
+	}
+}
+
 func TestRunnerLeavesUntrustedWorkspacePluginsOut(t *testing.T) {
 	workspace := filepath.Join(t.TempDir(), "project")
 	writeWorkspacePlugin(t, workspace)
@@ -146,11 +174,13 @@ func TestRunnerListsPlugins(t *testing.T) {
 	code := RunMain(t.Context(), []string{"-workspace", workspace, "-list-plugins"}, func(string) string { return "" }, func() []string { return nil },
 		strings.NewReader(""), &stdout, &bytes.Buffer{}, testConfig(&fakeClient{}))
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	if code != 0 || len(lines) != 4 ||
+	if code != 0 || len(lines) != 5 ||
 		!strings.Contains(lines[0], `"name":"core"`) || !strings.Contains(lines[0], `"source":"builtin","active":true,"tools":["Bash","ViewImage","SkillUse"]`) ||
-		!strings.Contains(lines[1], `"name":"guide"`) || !strings.Contains(lines[1], `"source":"builtin","active":true,"skills":true`) ||
-		!strings.Contains(lines[2], `"name":"echo"`) || !strings.Contains(lines[2], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"],"skills":true,"instructions":true`) ||
-		!strings.Contains(lines[3], `"error":`) || !strings.Contains(lines[3], "lowercase") {
+		// The canvas's tools are only for agents on a canvas.
+		!strings.Contains(lines[1], `"name":"canvas-agent"`) || !strings.Contains(lines[1], `"source":"builtin","active":false,"reason":"only agents on a canvas have it","tools":["CanvasView",`) ||
+		!strings.Contains(lines[2], `"name":"guide"`) || !strings.Contains(lines[2], `"source":"builtin","active":true,"skills":true`) ||
+		!strings.Contains(lines[3], `"name":"echo"`) || !strings.Contains(lines[3], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"],"skills":true,"instructions":true`) ||
+		!strings.Contains(lines[4], `"error":`) || !strings.Contains(lines[4], "lowercase") {
 		t.Fatalf("exit %d:\n%s", code, stdout.String())
 	}
 }

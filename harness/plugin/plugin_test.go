@@ -117,15 +117,18 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 		return strings.Join(parts, " ")
 	}
 
-	found := Discover(Options{ConfigDirectory: config, Workspace: workspace})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] builtin:guide=on[] user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
+	// Off the canvas, the canvas's tools are not there.
+	noCanvas := func(string) string { return "" }
+	const canvasAgent = "builtin:canvas-agent=off[CanvasView,CanvasSpawn,CanvasRemove,CanvasConnect,CanvasDisconnect,CanvasMove,CanvasSend,CanvasRead,CanvasEmit] "
+	found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: noCanvas})
+	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] "+canvasAgent+"builtin:guide=on[] user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
 		t.Fatalf("untrusted: %s", got)
 	}
 	if len(found.Errors) != 2 || !strings.Contains(found.Errors[0].Error(), "BROKEN") || !strings.Contains(found.Errors[1].Error(), `tool "Bash" is "core"'s already`) {
 		t.Fatalf("errors = %v", found.Errors)
 	}
-	if found.Plugins[4].Reason != "the workspace is not trusted" {
-		t.Fatalf("reason = %q", found.Plugins[4].Reason)
+	if found.Plugins[1].Reason != "only agents on a canvas have it" || found.Plugins[5].Reason != "the workspace is not trusted" {
+		t.Fatalf("reasons = %q, %q", found.Plugins[1].Reason, found.Plugins[5].Reason)
 	}
 
 	var settings Settings
@@ -134,15 +137,25 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 	if err := SaveSettings(config, settings); err != nil {
 		t.Fatal(err)
 	}
-	found = Discover(Options{ConfigDirectory: config, Workspace: workspace})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] builtin:guide=on[] user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
+	found = Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: noCanvas})
+	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] "+canvasAgent+"builtin:guide=on[] user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
 		t.Fatalf("trusted: %s", got)
 	}
-	if found.Plugins[2].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[3].Reason != "turned off" {
-		t.Fatalf("reasons = %q, %q", found.Plugins[2].Reason, found.Plugins[3].Reason)
+	if found.Plugins[3].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[4].Reason != "turned off" {
+		t.Fatalf("reasons = %q, %q", found.Plugins[3].Reason, found.Plugins[4].Reason)
 	}
 	if active := found.Active(); len(active) != 3 || len(active[2].Commands) != 1 {
 		t.Fatalf("active = %+v", active)
+	}
+	// On a canvas, they are.
+	onCanvas := func(name string) string {
+		if name == "KOU_CANVAS_TOKEN" {
+			return "kc1.token"
+		}
+		return ""
+	}
+	if found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: onCanvas}); !found.Plugins[1].Active || found.Plugins[1].Instructions == "" {
+		t.Fatalf("canvas-agent = %+v", found.Plugins[1])
 	}
 
 	found = Discover(Options{ConfigDirectory: config, Workspace: workspace, Disabled: []string{"core"}})
@@ -164,5 +177,24 @@ func TestConfigDirectory(t *testing.T) {
 	})
 	if err != nil || directory != "/tmp/cockpit" {
 		t.Fatalf("directory = %q, %v", directory, err)
+	}
+}
+
+// The repository's example plugins load as they are.
+func TestTheExamplesAreValidPlugins(t *testing.T) {
+	plugins, problems := ReadDirectory(filepath.Join("..", "..", "examples", "plugins"), SourceUser)
+	if len(problems) != 0 {
+		t.Fatal(problems)
+	}
+	var sources []string
+	for _, p := range plugins {
+		if p.Manifest.Canvas != nil {
+			for _, source := range p.Manifest.Canvas.Sources {
+				sources = append(sources, p.Manifest.Name+"/"+source.ID)
+			}
+		}
+	}
+	if len(plugins) < 3 || strings.Join(sources, " ") != "github-events/github-issues" {
+		t.Fatalf("%d plugins, canvas sources %v", len(plugins), sources)
 	}
 }

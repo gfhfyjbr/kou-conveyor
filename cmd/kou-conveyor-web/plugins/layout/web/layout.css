@@ -280,8 +280,9 @@
 .dock { position: relative; padding: 0 24px max(16px, env(safe-area-inset-bottom)); }
 .dock-inner { max-width: calc(var(--measure) - 48px); margin: 0 auto; }
 
-/* Two tabs head the rail: the sessions, and the accounts of the gateway. */
-.rail-tabs { display: grid; grid-template-columns: 1fr 1fr; flex: none; border-bottom: 1px solid var(--line); }
+/* The views' tabs head the rail, sharing its width: the sessions, the
+   canvases, the accounts of the gateway. */
+.rail-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); flex: none; border-bottom: 1px solid var(--line); }
 .rail-tab {
   display: flex;
   align-items: center;

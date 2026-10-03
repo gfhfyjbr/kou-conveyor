@@ -1,0 +1,408 @@
+{
+  "name": "canvas-agent",
+  "description": "The canvas's tools for kou agents on a canvas: see the board, create and wire nodes, send them work and read what they answer. Only agents on a canvas have it. Generated from kou-canvas's tools: go generate ./cmd/internal/canvascli.",
+  "tools": [
+    {
+      "name": "CanvasView",
+      "description": "Show the canvas you are on: every node (its ID, kind, title, status, place and size, ports, worktree), every connection between them, and free places beside your node. Look before you create, connect or remove anything: the canvas changes while you work. To message a node you know the title of, CanvasSend needs no look first.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "detail": {
+            "type": "string",
+            "enum": [
+              "summary",
+              "full"
+            ],
+            "description": "full adds the connections' templates and the notes' texts."
+          }
+        }
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasView"
+      ]
+    },
+    {
+      "name": "CanvasSpawn",
+      "description": "Create a node on the canvas — a terminal running a coding agent or a command, a kou agent, a note — beside your node unless you say where; optionally wire it to other nodes and give it its first prompt. Give each coding agent that writes code a worktree of its own. It answers the node's ID and place.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "preset": {
+            "type": "string",
+            "description": "What the node runs: shell, command (runs command), claude-code, codex, opencode, agent (a kou agent like you), note, or a plugin's preset as plugin/preset."
+          },
+          "title": {
+            "type": "string",
+            "description": "Its title, which the other nodes see: short and telling."
+          },
+          "command": {
+            "type": "string",
+            "description": "For a command node: the command line it runs."
+          },
+          "cwd": {
+            "type": "string",
+            "description": "The directory a terminal starts in, relative to the workspace or to its worktree."
+          },
+          "worktree": {
+            "type": "string",
+            "description": "Work in a git worktree of its own, made when missing: its name, its branch kou/<name>. One writer per worktree. A kou agent's worktree is named after its session, whatever the name."
+          },
+          "base": {
+            "type": "string",
+            "description": "The branch or commit a new worktree starts from; HEAD by default."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Its first prompt, sent once it runs; for a note, its text."
+          },
+          "config": {
+            "type": "object",
+            "description": "More of its configuration, as its preset defines it: model, effort, instructions for an agent; permission_mode for claude-code."
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "none",
+              "observe",
+              "talk",
+              "build"
+            ],
+            "description": "What its program may do on the canvas: talk by default for what an agent makes; build lets it make nodes too."
+          },
+          "near": {
+            "type": "string",
+            "description": "The node to place it beside: yours by default."
+          },
+          "side": {
+            "type": "string",
+            "enum": [
+              "right",
+              "below",
+              "left",
+              "above"
+            ],
+            "description": "Which side of near: the first free one by default."
+          },
+          "x": {
+            "type": "integer",
+            "description": "Where it goes, instead of beside near: its left edge."
+          },
+          "y": {
+            "type": "integer",
+            "description": "Its top edge."
+          },
+          "w": {
+            "type": "integer",
+            "description": "Its width; its preset's by default."
+          },
+          "h": {
+            "type": "integer",
+            "description": "Its height; its preset's by default."
+          },
+          "connect": {
+            "type": "object",
+            "description": "Wire it at once: from's output to its input, its output to to's input. A node is its ID or self, with :port when not out or in.",
+            "properties": {
+              "from": {
+                "type": "string"
+              },
+              "to": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "required": [
+          "preset"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasSpawn"
+      ]
+    },
+    {
+      "name": "CanvasRemove",
+      "description": "Remove a node from the canvas: one you made, or any with admin access. Its program ends; its worktree stays, with its work.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string",
+            "description": "The node's ID."
+          },
+          "keep_session": {
+            "type": "boolean",
+            "description": "Keep a kou agent's session in the session list; it is deleted with the node otherwise."
+          },
+          "keep_worktree": {
+            "type": "boolean",
+            "description": "Worktrees are always kept: only the user removes them."
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasRemove"
+      ]
+    },
+    {
+      "name": "CanvasConnect",
+      "description": "Connect a node's output to another's input: what the first puts out — a command's output, an agent's answer at the end of its turn — goes to the second as a message.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "description": "The output: a node's ID or self, with :port when not out."
+          },
+          "to": {
+            "type": "string",
+            "description": "The input: a node's ID or self, with :port when not in."
+          },
+          "template": {
+            "type": "string",
+            "description": "What the message says: {{text}}, {{title}}, {{data.<path>}}, {{from.title}}, {{from.id}}; the output's text by default."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "approve",
+              "off"
+            ],
+            "description": "approve holds each message until the user lets it go; a connection that closes a loop of agents starts so."
+          },
+          "deliver": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "now"
+            ],
+            "description": "queue (the default) waits until the target is idle; now gives it at once."
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasConnect"
+      ]
+    },
+    {
+      "name": "CanvasDisconnect",
+      "description": "Remove a connection: by its ID, or by the output and input it joins.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "edge": {
+            "type": "string",
+            "description": "The connection's ID (e_…)."
+          },
+          "from": {
+            "type": "string",
+            "description": "Or the output it leaves: node or node:port."
+          },
+          "to": {
+            "type": "string",
+            "description": "And the input it reaches: node or node:port."
+          }
+        }
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasDisconnect"
+      ]
+    },
+    {
+      "name": "CanvasMove",
+      "description": "Move or resize a node, to keep the canvas tidy.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string",
+            "description": "The node's ID, or self."
+          },
+          "x": {
+            "type": "integer"
+          },
+          "y": {
+            "type": "integer"
+          },
+          "w": {
+            "type": "integer"
+          },
+          "h": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasMove"
+      ]
+    },
+    {
+      "name": "CanvasSend",
+      "description": "Message a node — a prompt for an agent, a command for a shell — named by its ID or its title: one call, no need to look it up first. With wait, the call waits for the node's answer and returns it: an agent's answer at the end of its turn, a shell's command output. Without wait, an agent's answer comes to you later as a prompt that starts with [canvas] reply from. The text goes in once the node is idle, and Enter is pressed after it; keys are pressed as tmux send-keys names them.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string",
+            "description": "The node: its ID (n_…) or its title."
+          },
+          "text": {
+            "type": "string",
+            "description": "The message: the prompt, or what to type."
+          },
+          "wait": {
+            "type": "boolean",
+            "description": "Wait for the node's answer to this message, and return it. A node that waits for your answer cannot be waited for in turn."
+          },
+          "timeout_s": {
+            "type": "integer",
+            "description": "With wait: how long to wait at most, in seconds; 600 by default. An answer that comes later comes to you as a reply."
+          },
+          "submit": {
+            "type": "boolean",
+            "description": "Press Enter after the text: true by default."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Keys to press after the text, as tmux names them: Enter, Tab, Escape, BSpace, Up, Down, Left, Right, Home, End, C-c, M-x, F1…"
+          },
+          "when": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "now"
+            ],
+            "description": "idle (the default) waits until the node is idle; now gives it at once: an agent at work reads it after its current step."
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasSend"
+      ]
+    },
+    {
+      "name": "CanvasRead",
+      "description": "Read a node: a terminal's latest lines or screen, the latest output of a node (a command's output, an agent's answer). With wait, wait first — until it is idle, gives its next output, or ends — instead of polling. To ask a node something and have its answer, CanvasSend with wait does it in one call.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "node": {
+            "type": "string",
+            "description": "The node: its ID (n_…), its title, or self."
+          },
+          "what": {
+            "type": "string",
+            "enum": [
+              "screen",
+              "tail",
+              "output",
+              "answer"
+            ],
+            "description": "tail (the default): a terminal's latest lines; screen: what it shows; output or answer: its latest output."
+          },
+          "lines": {
+            "type": "integer",
+            "description": "How many lines of tail: 80 by default."
+          },
+          "wait": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "output",
+              "exit"
+            ],
+            "description": "Wait until the node is idle, gives its next output, or ends, then read."
+          },
+          "after": {
+            "type": "integer",
+            "description": "With wait output: the count of outputs CanvasSend answered, so that an output given meanwhile counts."
+          },
+          "timeout_s": {
+            "type": "integer",
+            "description": "How long to wait at most, in seconds: 600 by default."
+          }
+        },
+        "required": [
+          "node"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasRead"
+      ]
+    },
+    {
+      "name": "CanvasEmit",
+      "description": "Put something out of your node now, as its output: it goes along your edges to the nodes your output is connected to. No need to for your answer to a node's message: the answer you end that turn with goes back to it, and along your edges, by itself. What you answer the user stays with the user, unless you emit it.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "What to put out."
+          },
+          "port": {
+            "type": "string",
+            "description": "The output: out by default."
+          },
+          "title": {
+            "type": "string",
+            "description": "A title for it, which templates read as {{title}}."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured data besides the text, which templates read as {{data.<path>}}."
+          }
+        },
+        "required": [
+          "text"
+        ]
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasEmit"
+      ]
+    }
+  ],
+  "prompt": "prompt.md",
+  "skills": "skills",
+  "requires": {
+    "env": [
+      "KOU_CANVAS_TOKEN"
+    ]
+  }
+}

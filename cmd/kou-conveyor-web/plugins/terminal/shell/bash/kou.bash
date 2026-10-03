@@ -4,7 +4,8 @@
 # would have read — the files a login shell reads — and the user's files
 # are never changed; then it sets the kou-conveyor prompt, and tells the
 # terminal where the shell is (OSC 7), its title (OSC 2) and where each
-# prompt starts (OSC 133):
+# prompt, command and its output start and where the command ended
+# (OSC 133):
 #
 #   ▪ …/Go/kou-conveyor/cmd main ❯
 #
@@ -70,6 +71,12 @@ _kou_branch() {
 
 _kou_prompt() {
   local code=$?
+  # The command before this prompt ended (OSC 133 D), with its code; the
+  # first prompt follows none.
+  if [[ -n ${_kou_prompted-} ]]; then
+    printf '\e]133;D;%s\a' "$code"
+  fi
+  _kou_prompted=1
   local path=${PWD/#$HOME/\~}
   local -a parts
   IFS=/ read -r -a parts <<< "$path"
@@ -110,3 +117,11 @@ unset -f _kou_prompt_commands
 
 PS1=$'\001\e]133;A\a\002\001\e[38;5;208m\002▪\001\e[39m\002 \001\e[1m\002${_kou_short}\001\e[22m\002${_kou_vcs} ${_kou_arrow} \001\e]133;B\a\002'
 PS2=$'\001\e[90m\002…\001\e[39m\002 '
+# Where a command's output starts (OSC 133 C): bash 4.4 and later print PS0
+# once a command is read, before it runs.
+PS0=$'\e]133;C\a'
+
+# A terminal of a canvas finds its kou-canvas first.
+if [[ -n ${KOU_CANVAS_BIN-} ]]; then
+  PATH=$KOU_CANVAS_BIN:$PATH
+fi

@@ -32,6 +32,9 @@
 .menu .lines small { font: 10.5px/1.3 var(--mono); color: var(--fg-4); }
 .menu button:has(.lines) { height: auto; min-height: 44px; }
 #menu { max-width: min(380px, calc(100vw - 16px)); }
+.menu[data-compact="true"] { min-width: 168px; padding: 3px 0; }
+.menu[data-compact="true"] button { height: 26px; gap: 8px; padding: 0 10px; font-size: 12.5px; }
+.menu[data-compact="true"] .sep { margin: 3px 0; }
 .menu button:disabled:hover { background: none; border-left-color: transparent; }
 .menu button.danger { color: var(--err); }
 .menu button.danger .i { color: var(--err); }

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/canvascli"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 )
 
@@ -36,6 +37,8 @@ type options struct {
 	// rebuild has a server that runs from a checkout build itself anew as
 	// its Go code changes, and take the new build up in place (rebuild.go).
 	rebuild bool
+	// canvas runs the canvases (canvas.go).
+	canvas bool
 }
 
 func parseOptions(args []string, output io.Writer) (options, error) {
@@ -60,11 +63,20 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 		"run from a checkout, build the server anew when its Go code changes and take the build up in place, once no agent runs (also KOU_CONVEYOR_WEB_REBUILD=0)")
 	f.StringVar(&assetsFlag, "assets", envOr("KOU_CONVEYOR_WEB_ASSETS", assetsAuto),
 		"the page and built-in plugins: auto (live from the checkout the program was built from, while it is there, else compiled in), embedded, or a directory holding static/ and plugins/ (also KOU_CONVEYOR_WEB_ASSETS)")
+	canvasFlag := f.String("canvas", envOr("KOU_CONVEYOR_CANVAS", "on"),
+		"the canvases: boards of terminals and agents wired together, which agents may build too: on or off (also KOU_CONVEYOR_CANVAS)")
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
 	if f.NArg() != 0 {
 		return o, errors.New("unexpected arguments")
+	}
+	switch strings.ToLower(strings.TrimSpace(*canvasFlag)) {
+	case "on", "1", "true":
+		o.canvas = true
+	case "off", "0", "false":
+	default:
+		return o, errors.New("canvas must be on or off")
 	}
 	if o.Heartbeat < 0 {
 		return o, errors.New("tool-heartbeat-interval must not be negative")
@@ -118,7 +130,16 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 	return o, nil
 }
 
-func main() { os.Exit(runMain(os.Args[1:])) }
+func main() {
+	// Called kou-canvas — the link the server puts on the PATH of the
+	// canvases' nodes, to itself when kou-conveyor-canvas is not beside
+	// it — it is kou-canvas.
+	switch filepath.Base(os.Args[0]) {
+	case "kou-canvas", "kou-conveyor-canvas":
+		os.Exit(canvascli.Main(os.Args[1:]))
+	}
+	os.Exit(runMain(os.Args[1:]))
+}
 
 func runMain(args []string) int {
 	o, err := parseOptions(args, os.Stderr)

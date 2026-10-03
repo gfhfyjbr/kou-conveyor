@@ -33,6 +33,10 @@ type SessionInfo struct {
 	// PinOrder places a pinned session among the pinned ones, by the user's
 	// choosing; those pinned before there was one have none.
 	PinOrder int `json:"pin_order,omitempty"`
+	// Canvas and Node name the canvas and its node whose agent the session
+	// is, for a session a canvas made.
+	Canvas string `json:"canvas,omitempty"`
+	Node   string `json:"node,omitempty"`
 }
 
 // ValidSessionID reports whether the runner's session store accepts id.
@@ -91,6 +95,8 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			Size:       info.Size(),
 			Pinned:     meta.Pinned,
 			PinOrder:   meta.PinOrder,
+			Canvas:     meta.Canvas,
+			Node:       meta.Node,
 		})
 	}
 	slices.SortFunc(sessions, func(a, b SessionInfo) int {

@@ -163,6 +163,9 @@ type Options struct {
 	// Builtins are built-in plugins the program brings besides the
 	// harness's own, such as the browser cockpit's.
 	Builtins []Plugin
+	// Getenv reads the environment a plugin's requires.env is checked
+	// against; nil reads the process's.
+	Getenv func(string) string
 }
 
 // Found is what Discover found.
@@ -214,14 +217,21 @@ func Discover(options Options) Found {
 		workspace, problems := ReadDirectory(WorkspaceDirectory(options.Workspace), SourceWorkspace)
 		plugins, found.Errors = append(plugins, workspace...), append(found.Errors, problems...)
 	}
+	getenv := options.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
 	for index := range plugins {
 		current := &plugins[index]
 		current.Active = true
+		missing := current.missingEnv(getenv)
 		switch {
 		case slices.Contains(disabled, current.Name):
 			current.Active, current.Reason = false, "turned off"
 		case current.Source == SourceWorkspace && !found.Trusted:
 			current.Active, current.Reason = false, "the workspace is not trusted"
+		case len(missing) > 0:
+			current.Active, current.Reason = false, requiresReason(missing)
 		}
 		// A later plugin of the same name that runs replaces an earlier one.
 		for later := index + 1; later < len(plugins); later++ {

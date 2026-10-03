@@ -9,7 +9,7 @@ set -eu
 
 REPO=gfhfyjbr/kou-conveyor
 MODULE=github.com/$REPO
-ALL="kou-conveyor-runner kou-conveyor-tui kou-conveyor-web"
+ALL="kou-conveyor-runner kou-conveyor-tui kou-conveyor-web kou-conveyor-canvas"
 
 dir=${KOU_CONVEYOR_INSTALL_DIR:-$HOME/.local/bin}
 version=latest
@@ -20,7 +20,8 @@ usage() {
 	cat <<EOF
 Usage: install.sh [options]
 
-Installs kou-conveyor-runner, kou-conveyor-tui and kou-conveyor-web.
+Installs kou-conveyor-runner, kou-conveyor-tui and kou-conveyor-web, with
+kou-conveyor-canvas, which the browser cockpit's canvases call kou-canvas.
 
 Options:
   --dir DIR         install into DIR (default: \$KOU_CONVEYOR_INSTALL_DIR or ~/.local/bin)

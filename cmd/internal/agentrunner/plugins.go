@@ -27,6 +27,7 @@ func pluginOptions(config Config, getenv func(string) string, workspace string) 
 	options := plugin.Options{
 		Workspace:      workspace,
 		TrustWorkspace: strings.TrimSpace(getenv(plugin.TrustEnvironment)) == "1",
+		Getenv:         getenv,
 	}
 	for _, name := range strings.Split(getenv(plugin.DisabledEnvironment), ",") {
 		if name = strings.TrimSpace(name); name != "" {

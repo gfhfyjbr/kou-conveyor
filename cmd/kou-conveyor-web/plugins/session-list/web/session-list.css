@@ -54,6 +54,21 @@
 .session-row[data-pinned] .session[data-running] .n::before { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
 .session[data-running] .m { color: var(--accent); }
 .sessions-empty { margin: 8px; color: var(--fg-4); font: 11.5px/1.6 var(--mono); }
+/* A row of another plugin's (a canvas): its glyph in place of a number. */
+.session[data-row]:not([data-running]) .n { font-size: 12px; color: var(--fg-3); }
+.session[data-row][aria-current="true"]:not([data-running]) .n { color: var(--accent); }
+/* Showing the sessions the list keeps out: the canvases' agents. */
+.sessions-toggle {
+  display: block;
+  width: calc(100% - 12px);
+  margin: 10px 6px 0;
+  padding: 7px 8px;
+  border: 1px dashed var(--line-2);
+  text-align: left;
+  font: 11px/1.4 var(--mono);
+  color: var(--fg-4);
+}
+.sessions-toggle:hover { border-color: var(--fg-4); color: var(--fg-2); }
 
 .session .queued { color: var(--accent); }
 .session .queued[data-paused] { color: var(--warn); }

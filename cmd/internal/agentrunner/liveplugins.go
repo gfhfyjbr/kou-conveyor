@@ -119,8 +119,8 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 	active := map[string]bool{}
 	var commandTools []codevm.CommandTool
 	for _, current := range found.Active() {
-		if current.Source == plugin.SourceBuiltin {
-			continue // built-in tools come with the registry
+		if ownTools(current) {
+			continue // core's tools come with the registry
 		}
 		for _, definition := range current.Tools {
 			if slices.Contains(live.parsed.DisallowedTools, definition.Name) {
@@ -171,6 +171,13 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 	}
 	live.builder.SetSystemPrompt(systemPrompt)
 	return problems, skillProblems
+}
+
+// ownTools reports whether a plugin's tools are the runner's own, which
+// the registry has from the start: core's. The other built-in plugins'
+// tools — the canvas's, canvas-agent — run as any plugin's do.
+func ownTools(current plugin.Plugin) bool {
+	return current.Source == plugin.SourceBuiltin && current.Name == plugin.CoreName
 }
 
 // skillPaths are the skills by name, for the code's skill().
@@ -263,7 +270,7 @@ func (live *livePlugins) describe(found plugin.Found) string {
 	for _, current := range found.Active() {
 		var adds []string
 		for _, definition := range current.Tools {
-			if current.Source != plugin.SourceBuiltin && !slices.Contains(live.parsed.DisallowedTools, definition.Name) {
+			if !ownTools(current) && !slices.Contains(live.parsed.DisallowedTools, definition.Name) {
 				adds = append(adds, definition.Name)
 			}
 		}

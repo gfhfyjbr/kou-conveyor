@@ -35,6 +35,8 @@ type handedOver struct {
 	Output []byte `json:"output,omitzero"`
 	// ClosingAt is when the shell of a tab closed ends.
 	ClosingAt time.Time `json:"closing_at,omitzero"`
+	// Owner is what the shell belongs to besides the tabs (Spec.Owner).
+	Owner string `json:"owner,omitzero"`
 }
 
 // Handover readies the shells that run to live on in the program that
@@ -57,7 +59,7 @@ func (m *Manager) Handover() (string, error) {
 		record := handedOver{
 			ID: s.id, Workspace: s.workspace, Shell: s.shell, Theme: s.theme, Started: s.started, PID: s.pid,
 			Cols: s.cols, Rows: s.rows, Title: s.scan.title, Dir: s.scan.dir,
-			Modes: s.base.setModes(), Output: s.ring.bytes(), ClosingAt: s.closeAt,
+			Modes: s.base.setModes(), Output: s.ring.bytes(), ClosingAt: s.closeAt, Owner: s.Owner(),
 		}
 		s.mu.Unlock()
 		fd := int(s.master.Fd())
@@ -157,6 +159,7 @@ func (m *Manager) Adopt(path string) (int, error) {
 			started: record.Started, pid: record.PID, master: master, proc: proc, manager: m,
 			cols: max(record.Cols, 1), rows: max(record.Rows, 1),
 		}
+		s.owner.Store(record.Owner)
 		s.init(record)
 		if !m.add(s) {
 			s.hangUp()

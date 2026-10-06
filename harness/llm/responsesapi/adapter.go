@@ -28,6 +28,10 @@ type APIError struct {
 	Message    string
 	Param      string
 	Type       string
+	// ResetsAt is when a usage limit that refused the request lifts, as
+	// the ChatGPT subscription endpoint says in resets_at or
+	// resets_in_seconds; zero when the error does not say.
+	ResetsAt time.Time
 }
 
 func (err *APIError) Error() string {
@@ -195,10 +199,12 @@ func (adapter *adapter) remoteRequest(body []byte, cacheKey string) primitives.R
 func providerError(statusCode int, body []byte) *APIError {
 	var envelope struct {
 		Error struct {
-			Code    *string `json:"code"`
-			Message string  `json:"message"`
-			Param   *string `json:"param"`
-			Type    string  `json:"type"`
+			Code            *string        `json:"code"`
+			Message         string         `json:"message"`
+			Param           *string        `json:"param"`
+			Type            string         `json:"type"`
+			ResetsAt        jsontext.Value `json:"resets_at"`
+			ResetsInSeconds jsontext.Value `json:"resets_in_seconds"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &envelope); err == nil && (envelope.Error.Message != "" || dereference(envelope.Error.Code) != "") {
@@ -208,6 +214,7 @@ func providerError(statusCode int, body []byte) *APIError {
 			Message:    envelope.Error.Message,
 			Param:      dereference(envelope.Error.Param),
 			Type:       envelope.Error.Type,
+			ResetsAt:   resetTime(envelope.Error.ResetsAt, envelope.Error.ResetsInSeconds, time.Now()),
 		}
 	}
 

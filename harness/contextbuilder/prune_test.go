@@ -21,14 +21,14 @@ func resultText(t *testing.T, result Result, callID string) string {
 
 func TestPruneCutsTheOldestResultsPastTheBudget(t *testing.T) {
 	current := NewBuilder().(*builder)
-	current.SetPruning(PruneOptions{Budget: 400, Keep: 2, Bytes: 40})
-	big := strings.Repeat("output line\n", 40) // ~120 tokens
+	current.SetPruning(PruneOptions{Budget: 12_000, Keep: 2, Bytes: 40})
+	big := strings.Repeat("output line\n", 1330) // ~4,000 tokens
 	for index := range 6 {
 		id := fmt.Sprintf("call-%d", index)
 		current.AddModelResponse(llm.Response{Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: "Bash", Arguments: "{}"}}}})
 		text := big
 		if index == 3 {
-			text = "head...500 bytes truncated; complete output in /ops/3/out...tail\n"
+			text = "head...500 bytes truncated; complete output in /ops/3/out...\n" + big
 		}
 		current.AddToolResult(id, []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: text}}, false)
 		current.Commit()
@@ -37,8 +37,9 @@ func TestPruneCutsTheOldestResultsPastTheBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// ~720 tokens of results: the oldest go until half the budget (200)
-	// is left, but the two latest stay.
+	// ~24,000 tokens of results and the system prompt: the oldest go until
+	// the conversation is a quarter of the budget under it (9,000), but the
+	// two latest stay.
 	pruned := 0
 	for index := range 6 {
 		text := resultText(t, result, fmt.Sprintf("call-%d", index))
@@ -96,6 +97,31 @@ func TestPruneLeavesImagesAsNotesAndSkipsRunningCalls(t *testing.T) {
 	}
 	if text := resultText(t, result, "late"); strings.Contains(text, prunedNote) {
 		t.Fatal("the latest result was pruned while older ones would do")
+	}
+}
+
+func TestPruneWaitsForABatchWorthCutting(t *testing.T) {
+	current := NewBuilder().(*builder)
+	current.SetPruning(PruneOptions{Budget: 4000, Keep: 1})
+	addResults := func(from, to int) {
+		for index := from; index < to; index++ {
+			id := fmt.Sprintf("call-%d", index)
+			current.AddModelResponse(llm.Response{Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: "Bash", Arguments: "{}"}}}})
+			current.AddToolResult(id, []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: strings.Repeat("x", 1200)}}, false)
+			current.Commit()
+		}
+	}
+	// The model's own text takes the conversation past the budget; the one
+	// result that may go would save too little to change the cached prefix.
+	current.AddModelResponse(answer(strings.Repeat("thinking out loud ", 1000)))
+	addResults(0, 2)
+	if current.estimate() <= 4000 || current.prune() != 0 {
+		t.Fatalf("pruned a batch of one at %d tokens", current.estimate())
+	}
+	// Five results that may go save enough.
+	addResults(2, 6)
+	if pruned := current.prune(); pruned != 5 {
+		t.Fatalf("pruned %d results", pruned)
 	}
 }
 

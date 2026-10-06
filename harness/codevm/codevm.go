@@ -72,6 +72,10 @@ type Config struct {
 	// Tools are the plugins' tools, run as commands with their arguments on
 	// standard input.
 	Tools []CommandTool `json:",omitzero"`
+	// CallID is the ID of the tool call that runs the code: a plugin's tool
+	// the code calls gets "<CallID>-<index of its call>" as
+	// KOU_CONVEYOR_TOOL_CALL_ID, unique as the command tool's is.
+	CallID string `json:",omitzero"`
 	// ViewImage reads images for viewImage(); nil leaves it out.
 	ViewImage func(ctx context.Context, path string) (ImageResult, error) `json:"-"`
 }
@@ -559,7 +563,9 @@ func (current *runtime) install() {
 		command := current.stringArgument(call, 0, "bash", "the command")
 		options := current.options(call, 1, "bash", "timeout", "maxOutputLength")
 		timeout := seconds(current.config.CommandTimeout)
-		if value, ok := numberOf(options, "timeout"); ok && value > 0 {
+		// As for the Bash tool, a timeout of 0 sets none: the run's own
+		// still bounds the command.
+		if value, ok := numberOf(options, "timeout"); ok && value >= 0 {
 			timeout = seconds(value)
 		}
 		limit := current.config.MaxOutputLength
@@ -703,9 +709,17 @@ func (current *runtime) install() {
 				}
 				arguments = encoded.String()
 			}
+			// The code's calls are made here, one at a time: this one is
+			// the next of the record.
+			callID := ""
+			if current.config.CallID != "" {
+				current.mu.Lock()
+				callID = fmt.Sprintf("%s-%d", current.config.CallID, len(current.result.Calls))
+				current.mu.Unlock()
+			}
 			return current.async(definition.Name, arguments, func(ctx context.Context) (string, *int, string, error) {
 				result, err := runCommand(ctx, "/bin/sh", cmpOr(definition.Directory, current.config.Directory),
-					commandScript(definition, arguments), commandEnvironment(current.config.Environment, definition), current.config.MaxOutputLength, seconds(current.config.CommandTimeout))
+					commandScript(definition, arguments), commandEnvironment(current.config.Environment, definition, callID), current.config.MaxOutputLength, seconds(current.config.CommandTimeout))
 				if err != nil {
 					return "", nil, "", err
 				}

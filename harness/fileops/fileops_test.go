@@ -69,8 +69,13 @@ func TestReadCutsLongLinesAndBoundsText(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.To != 1 || !result.Truncated {
+	if result.To != 1 || !result.Truncated || !strings.HasSuffix(result.Text, "\n[Lines 1-1 of 2 shown, about 10 bytes, the most one read shows; read on with offset=2, or find what you need with rg -n.]") {
 		t.Fatalf("result = %#v", result)
+	}
+	// By default a read shows about 40,000 bytes.
+	name = write(t, filepath.Join(t.TempDir(), "large.txt"), strings.Repeat(strings.Repeat("y", 99)+"\n", 1000))
+	if result, err = Read(name, ReadOptions{}); err != nil || result.To >= 1000 || len(result.Text) > DefaultMaxReadBytes+1000 || !strings.Contains(result.Text, "rg -n") {
+		t.Fatalf("result to %d of %d bytes, %v", result.To, len(result.Text), err)
 	}
 }
 

@@ -179,7 +179,8 @@ A tool runs a command. For each call:
 - The environment is the runner's, with `KOU_CONVEYOR_PLUGIN_NAME`,
   `KOU_CONVEYOR_PLUGIN_DIR`, `KOU_CONVEYOR_WORKSPACE`,
   `KOU_CONVEYOR_SESSION_ID`, `KOU_CONVEYOR_TOOL_NAME` and
-  `KOU_CONVEYOR_TOOL_CALL_ID`.
+  `KOU_CONVEYOR_TOOL_CALL_ID` (called from the Code tool's JavaScript, the
+  Code call's ID and the number of the code's call, `<id>-<n>`).
 - A call is a durable operation, as a `Bash` command is: it runs in the
   background while the agent goes on, and stops with the run. A request's
   `disallowed_tools` leave plugin tools out too.

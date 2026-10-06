@@ -66,6 +66,9 @@ type Builder interface {
 	// SetTranscript names the file that keeps the whole conversation; the
 	// message that stands in for a compacted conversation points to it.
 	SetTranscript(path string)
+	// SetMemory says where what a compaction keeps besides the summary is:
+	// the notes the model keeps, the earlier summaries (Memory).
+	SetMemory(Memory)
 	// SetPruning says when the oldest tool results of the conversation
 	// are cut down to notes, to keep the context small between
 	// compactions (PruneOptions).

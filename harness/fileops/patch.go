@@ -126,6 +126,16 @@ func ApplyPatch(patch, root string) (PatchResult, error) {
 		}
 		return filepath.Join(root, name)
 	}
+	// Every file the patch names stays as the patch reads it until the patch
+	// is written.
+	var named []string
+	for _, change := range files {
+		named = append(named, resolve(change.path))
+		if change.moveTo != "" {
+			named = append(named, resolve(change.moveTo))
+		}
+	}
+	defer lockFiles(named...)()
 	// The patch works on a view of the files it touches, so that a section
 	// sees what the ones before it did (a file the patch added, or updated
 	// already); the view is written once every section applied.

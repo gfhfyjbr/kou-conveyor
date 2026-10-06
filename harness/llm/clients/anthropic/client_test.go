@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -226,19 +227,21 @@ func TestRespondStreamsAToolTurn(t *testing.T) {
 		sent.header.Get("Anthropic-Version") == "" {
 		t.Fatalf("headers = %v", sent.header)
 	}
-	if beta := sent.header.Get("Anthropic-Beta"); beta != "" {
-		t.Fatalf("fallbacks were requested from a gateway: %q", beta)
+	// Old thinking is cleared; fallbacks are not requested from a gateway.
+	if beta := sent.header.Get("Anthropic-Beta"); beta != "context-management-2025-06-27" {
+		t.Fatalf("beta = %q", beta)
 	}
 	body := sent.body
 	for field, want := range map[string]string{
-		"model":         `"claude-opus-5"`,
-		"max_tokens":    `64000`,
-		"stream":        `true`,
-		"thinking":      `{"display":"summarized","type":"adaptive"}`,
-		"output_config": `{"effort":"high"}`,
-		"system":        `[{"cache_control":{"type":"ephemeral"},"text":"You are careful.","type":"text"}]`,
-		"messages":      `[{"content":[{"cache_control":{"type":"ephemeral"},"text":"List the files.","type":"text"}],"role":"user"}]`,
-		"tools":         `[{"description":"Run a command.","input_schema":{"additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"],"type":"object"},"name":"Bash"}]`,
+		"model":              `"claude-opus-5"`,
+		"max_tokens":         `64000`,
+		"stream":             `true`,
+		"thinking":           `{"display":"summarized","type":"adaptive"}`,
+		"context_management": `{"edits":[{"keep":{"type":"thinking_turns","value":2},"type":"clear_thinking_20251015"}]}`,
+		"output_config":      `{"effort":"high"}`,
+		"system":             `[{"cache_control":{"type":"ephemeral"},"text":"You are careful.","type":"text"}]`,
+		"messages":           `[{"content":[{"cache_control":{"type":"ephemeral"},"text":"List the files.","type":"text"}],"role":"user"}]`,
+		"tools":              `[{"description":"Run a command.","input_schema":{"additionalProperties":false,"properties":{"command":{"type":"string"}},"required":["command"],"type":"object"},"name":"Bash"}]`,
 	} {
 		if got := encode(t, body[field]); got != want {
 			t.Errorf("%s = %s, want %s", field, got, want)
@@ -298,7 +301,7 @@ func TestConversationAnswersEveryCallOnce(t *testing.T) {
 		`{"text":"Also run tests.","type":"text"}],"role":"user"},` +
 		`{"content":[{"id":"c","input":{},"name":"Bash","type":"tool_use"}],"role":"assistant"},` +
 		`{"content":[{"content":[{"text":"No result was recorded for this tool call.","type":"text"}],"is_error":true,"tool_use_id":"c","type":"tool_result"},` +
-		`{"text":"Result of tool call a:","type":"text"},{"text":"a done","type":"text"},` +
+		`{"text":"Result of tool call a (Bash {\"z\":1,\"a\":2}):","type":"text"},{"text":"a done","type":"text"},` +
 		`{"source":{"data":"iVBORw0KGgo=","media_type":"image/png","type":"base64"},"type":"image"},` +
 		`{"text":"Status?","type":"text"}],"role":"user"}]`
 	if got := encodeSDK(t, messages); got != want {
@@ -524,7 +527,7 @@ func TestMidOutputFallbackKeepsOnlyText(t *testing.T) {
 		block(4, `{"type":"text","text":"Part two."}`), stop(4),
 		block(5, `{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}`), stop(5),
 	}, finish("tool_use"))...))
-	config := Config{ServerFallbacks: new(true)}
+	config := Config{ServerFallbacks: new(true), ThinkingTurns: new(0)}
 	response, err := newTestClient(t, s, config).Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -555,7 +558,7 @@ func TestRejectedFallbacksAreNotRequestedAgain(t *testing.T) {
 		textResponse("One."),
 		textResponse("Two."),
 	)
-	client := newTestClient(t, s, Config{ServerFallbacks: new(true)})
+	client := newTestClient(t, s, Config{ServerFallbacks: new(true), ThinkingTurns: new(0)})
 	for range 2 {
 		if _, err := client.Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{}); err != nil {
 			t.Fatal(err)
@@ -565,6 +568,108 @@ func TestRejectedFallbacksAreNotRequestedAgain(t *testing.T) {
 		if sent := s.request(index); sent.header.Get("Anthropic-Beta") != "" || sent.body["fallbacks"] != nil {
 			t.Fatalf("request %d still asks for fallbacks", index)
 		}
+	}
+}
+
+func TestContextEditingKeepsTheLatestThinking(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		model  string
+		effort llm.ReasoningEffort
+		turns  *int
+		want   string
+	}{
+		{"default", "claude-opus-5", llm.ReasoningEffortHigh, nil, `{"edits":[{"keep":{"type":"thinking_turns","value":2},"type":"clear_thinking_20251015"}]}`},
+		{"configured", "claude-opus-4-1", llm.ReasoningEffortHigh, new(5), `{"edits":[{"keep":{"type":"thinking_turns","value":5},"type":"clear_thinking_20251015"}]}`},
+		{"all thinking kept", "claude-opus-5", llm.ReasoningEffortHigh, new(0), ""},
+		// The API rejects the edit in a request that does not think.
+		{"no thinking", "claude-haiku-4-5", "", nil, ""},
+		{"not Claude", "glm-4.6", llm.ReasoningEffortHigh, nil, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := newServer(t, textResponse("ok"))
+			request := conversationRequest(test.model)
+			request.Model.ReasoningEffort = test.effort
+			if _, err := newTestClient(t, s, Config{ThinkingTurns: test.turns}).Respond(t.Context(), request, llm.RequestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			sent := s.request(0)
+			got, beta := "", sent.header.Get("Anthropic-Beta")
+			if edits, ok := sent.body["context_management"]; ok {
+				got = encode(t, edits)
+			}
+			if got != test.want || (beta == "context-management-2025-06-27") != (test.want != "") {
+				t.Fatalf("context_management = %s, beta = %q", got, beta)
+			}
+		})
+	}
+	if _, err := NewClient(Config{APIKey: "key", ThinkingTurns: new(-1)}); err == nil {
+		t.Fatal("negative thinking turns were accepted")
+	}
+}
+
+func TestRejectedContextEditingIsNotRequestedAgain(t *testing.T) {
+	s := newServer(t,
+		apiError(400, "invalid_request_error", "context_management: Extra inputs are not permitted"),
+		textResponse("One."),
+		textResponse("Two."),
+	)
+	client := newTestClient(t, s, Config{})
+	for range 2 {
+		if _, err := client.Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.request(0).body["context_management"] == nil {
+		t.Fatal("context editing was not requested")
+	}
+	for index := 1; index < 3; index++ {
+		if sent := s.request(index); sent.header.Get("Anthropic-Beta") != "" || sent.body["context_management"] != nil {
+			t.Fatalf("request %d still asks for context editing", index)
+		}
+	}
+}
+
+func rateLimited(header map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		for name, value := range header {
+			w.Header().Set(name, value)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"type":"error","error":{"type":"rate_limit_error","message":"limit reached"}}`)
+	}
+}
+
+func TestLongRateLimitsAreLeftToTheHarness(t *testing.T) {
+	reset := time.Now().Add(2 * time.Hour).Unix()
+	for _, test := range []struct {
+		name     string
+		header   map[string]string
+		requests int
+		min, max time.Duration
+	}{
+		// A gateway that cools the account down says for how long.
+		{"retry after", map[string]string{"Retry-After": "3600"}, 1, time.Hour, time.Hour},
+		// A subscription's exhausted window says when it resets.
+		{"usage window", map[string]string{
+			"anthropic-ratelimit-unified-status": "rejected", "anthropic-ratelimit-unified-reset": strconv.FormatInt(reset, 10),
+		}, 1, 2*time.Hour - time.Minute, 2 * time.Hour},
+		// A short limit is retried, and handed on once it outlasts the attempts.
+		{"short", map[string]string{"retry-after-ms": "1"}, 2, time.Millisecond, time.Millisecond},
+		{"unknown", nil, 2, 0, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			s := newServer(t, rateLimited(test.header), rateLimited(test.header))
+			_, err := newTestClient(t, s, Config{MaxAttempts: new(2)}).Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{})
+			limit, ok := errors.AsType[*llm.RateLimitError](err)
+			if !ok || limit.RetryAfter < test.min || limit.RetryAfter > test.max || !strings.Contains(err.Error(), "limit reached") {
+				t.Fatalf("err = %v (%#v)", err, limit)
+			}
+			if s.count() != test.requests {
+				t.Fatalf("requests = %d, want %d", s.count(), test.requests)
+			}
+		})
 	}
 }
 

@@ -220,6 +220,18 @@ func (h *History) uptime(accounts []*accountHistory, span time.Duration, slots i
 	return u
 }
 
+// LastUsed is when an account's latest request started, the account found
+// by its auth ID or, failing that, its index; zero when it made none.
+func (h *History) LastUsed(id, index string) time.Time {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	account := h.find(id, index)
+	if account == nil {
+		return time.Time{}
+	}
+	return later(account.LastOK, account.LastFail)
+}
+
 // Errors returns an account's latest errors, newest first.
 func (h *History) Errors(id, index string, n int) []ErrorSample {
 	h.mu.Lock()

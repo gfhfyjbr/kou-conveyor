@@ -207,7 +207,7 @@ func TestCoordinatorImmediateToolStatusBypassesGrace(t *testing.T) {
 				}
 				want := ""
 				if name == "unavailable" {
-					want = `tool "unavailable" is not available`
+					want = `tool "unavailable" is not available; the tools are Bash, ViewImage`
 				}
 				assertStopResult(t, run.calls[1].request, "immediate", want)
 				assertStopResult(t, run.calls[1].request, "A", contextbuilder.ToolCallRunningPayload)

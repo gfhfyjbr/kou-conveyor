@@ -381,7 +381,7 @@ func TestCompactedMessagePointsToTheTranscript(t *testing.T) {
 		if !strings.Contains(text, "<summary>\nThe work so far.\n</summary>") || strings.Contains(text, "notes") || !strings.HasSuffix(text, compactedResume) {
 			t.Fatalf("compacted message:\n%s", text)
 		}
-		if mentions := strings.Contains(text, "full transcript at "+transcript+" "); mentions != (transcript != "") {
+		if mentions := strings.Contains(text, "search the session's transcript at "+transcript+" with rg"); mentions != (transcript != "") {
 			t.Fatalf("transcript %q mentioned: %v\n%s", transcript, mentions, text)
 		}
 	}

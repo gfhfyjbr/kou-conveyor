@@ -50,6 +50,7 @@ const (
 	llmProviderEnvironment    = "KOU_CONVEYOR_LLM_PROVIDER"
 	llmMaxAttemptsEnvironment = "KOU_CONVEYOR_LLM_MAX_ATTEMPTS"
 	llmMaxTokensEnvironment   = "KOU_CONVEYOR_LLM_MAX_TOKENS"
+	thinkingTurnsEnvironment  = "KOU_CONVEYOR_THINKING_TURNS"
 	contextWindowEnvironment  = "KOU_CONVEYOR_CONTEXT_WINDOW"
 	autoCompactEnvironment    = "KOU_CONVEYOR_AUTO_COMPACT"
 	// recoveryEnvironment set to off leaves the model's answers as they
@@ -72,15 +73,15 @@ const (
 	// the next turn. A small window keeps a quarter of itself free instead.
 	autoCompactReserve = 33_000
 	// autoCompactCeiling is the most a conversation grows before it is
-	// compacted, whatever the window: past a few hundred thousand tokens a
-	// model reasons worse and every turn costs more, long before the window
-	// is full.
-	autoCompactCeiling = 300_000
-	// pruneShare is the share of the compaction threshold the tool results
-	// may take before the oldest are pruned; pruneKeep is how many of the
-	// latest results are never pruned, and pruneBytes what a pruned result
-	// keeps of its head.
-	pruneShare = 40
+	// compacted, whatever the window: past a couple of hundred thousand
+	// tokens a model reasons worse and every turn costs more, long before
+	// the window is full. What a compaction loses, the model's notes keep.
+	autoCompactCeiling = 200_000
+	// pruneShare is the share of the compaction threshold the conversation
+	// may take before the oldest tool results are pruned; pruneKeep is how
+	// many of the latest results are never pruned, and pruneBytes what a
+	// pruned result keeps of its head.
+	pruneShare = 70
 	pruneKeep  = 12
 	pruneBytes = 600
 )
@@ -311,7 +312,7 @@ func Run(
 	})
 	sessionDirectory := flags.String("session-directory", defaultSessionDirectory, "directory containing session files")
 	workspaceDirectory := flags.String("workspace", ".", "agent workspace and Bash working directory")
-	logDirectory := flags.String("log-directory", "", "session JSONL log directory; defaults to <workspace>/logs")
+	logDirectory := flags.String("log-directory", "", "directory to write a JSONL log of the run's output to, one file a run; none is written unless set (the session file keeps the same)")
 	toolHeartbeatInterval := flags.Duration("tool-heartbeat-interval", 10*time.Minute, "tool-wait heartbeat interval (0 disables)")
 	listProviders := flags.Bool("providers", false, "print the providers this runner supports, one per line, and exit")
 	listPluginsFlag := flags.Bool("list-plugins", false, "print the plugins a run in the workspace would find, one JSON object per line, and exit")
@@ -460,6 +461,10 @@ func Run(
 	if err != nil {
 		return err
 	}
+	bounds, err := readRunBounds(getenv)
+	if err != nil {
+		return err
+	}
 	var apiKey string
 	if selected.APIKeyEnvironment != "" {
 		apiKey = getenv(llmAPIKeyEnvironment)
@@ -502,16 +507,21 @@ func Run(
 	if err != nil {
 		return err
 	}
-	logFile, err := openDatetimeLog(resolveLogDirectory(workspace, *logDirectory), time.Now())
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := logFile.Close(); err != nil {
-			runErr = errors.Join(runErr, fmt.Errorf("close session log: %w", err))
+	// The session file keeps everything the log would: the log is written
+	// only when asked for.
+	observedOutput := output
+	if directory := strings.TrimSpace(*logDirectory); directory != "" {
+		logFile, err := openDatetimeLog(directory, time.Now())
+		if err != nil {
+			return err
 		}
-	}()
-	observedOutput := io.MultiWriter(logFile, output)
+		defer func() {
+			if err := logFile.Close(); err != nil {
+				runErr = errors.Join(runErr, fmt.Errorf("close session log: %w", err))
+			}
+		}()
+		observedOutput = io.MultiWriter(logFile, output)
+	}
 
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -691,8 +701,13 @@ func Run(
 		systemPrompt = *parsed.SystemPrompt
 	}
 	systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + environmentBlock(workspace, shell, profile, box.Description(), time.Now())
-	// A compaction points the model to the whole conversation.
+	// A compaction points the model to the whole conversation, shows the
+	// notes it keeps and lists the files it touched (longrun.go).
 	builder.SetTranscript(transcriptPath)
+	memory := newSessionMemory(storeDirectory, sessionID, slices.ContainsFunc(names, func(name string) bool {
+		return name == tool.EditName || name == tool.WriteName || name == tool.ApplyPatchName
+	}))
+	builder.SetMemory(memory.builder())
 	// Between compactions, the oldest tool results are pruned to notes.
 	if autoCompact > 0 {
 		builder.SetPruning(contextbuilder.PruneOptions{Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes})
@@ -753,6 +768,18 @@ func Run(
 		Tools:                 registry,
 		Operations:            operations,
 		NoRecovery:            strings.EqualFold(strings.TrimSpace(getenv(recoveryEnvironment)), "off"),
+		MaxTurns:              bounds.maxTurns,
+		MaxDuration:           bounds.maxDuration,
+		MaxCompactions:        bounds.maxCompactions,
+		ReportEvery:           bounds.reportEvery,
+		CompactionReminder:    memory.reminder(),
+		Compacted: func(compaction coordinator.Compaction) string {
+			note, err := memory.compacted(compaction, time.Now())
+			if err != nil {
+				fmt.Fprintf(flagOutput, "compaction> the summary could not be kept in %s: %v\n", memory.summaries, err)
+			}
+			return note
+		},
 	}
 	if checks != nil {
 		dependencies.Verifier = checks
@@ -828,14 +855,6 @@ func DecodeRequest(input io.Reader, destination any) error {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return nil
-}
-
-func resolveLogDirectory(workspace, configured string) string {
-	configured = strings.TrimSpace(configured)
-	if configured == "" {
-		return filepath.Join(workspace, "logs")
-	}
-	return configured
 }
 
 func openDatetimeLog(directory string, now time.Time) (*os.File, error) {

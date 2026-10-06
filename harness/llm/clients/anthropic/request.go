@@ -149,9 +149,22 @@ func (client *Client) params(request llm.Request, keepThinking bool, room int64)
 			marked++
 		}
 	}
+	thinking := params.Thinking.OfAdaptive != nil || params.Thinking.OfEnabled != nil
+	if thinking && client.thinkingTurns > 0 && !client.noContextManagement.Load() {
+		// The API clears the thinking of older turns before the model reads
+		// them; it rejects the edit in a request that does not think.
+		// CLIProxyAPI, which adds an edit keeping all thinking to requests
+		// without one, leaves this one as it is.
+		params.ContextManagement.Edits = []sdk.BetaContextManagementConfigEditUnionParam{{
+			OfClearThinking20251015: &sdk.BetaClearThinking20251015EditParam{Keep: sdk.BetaClearThinking20251015EditKeepUnionParam{
+				OfThinkingTurns: &sdk.BetaThinkingTurnsParam{Value: client.thinkingTurns},
+			}},
+		}}
+		params.Betas = append(params.Betas, sdk.AnthropicBetaContextManagement2025_06_27)
+	}
 	if described.fallbacks && client.fallbacks && !client.noFallbacks.Load() {
 		params.Fallbacks.OfDefault = constant.ValueOf[constant.Default]()
-		params.Betas = []sdk.AnthropicBeta{sdk.AnthropicBetaServerSideFallback2026_07_01}
+		params.Betas = append(params.Betas, sdk.AnthropicBetaServerSideFallback2026_07_01)
 	}
 	return params, nil
 }
@@ -290,6 +303,8 @@ type turnBuilder struct {
 	calls   []string
 	results map[string]sdk.BetaContentBlockParamUnion
 	user    []sdk.BetaContentBlockParamUnion
+	// made are all the calls so far, which a result that arrives late names.
+	made map[string]llm.ToolCall
 }
 
 func (turns *turnBuilder) add(item llm.Item, keepThinking bool) error {
@@ -335,6 +350,10 @@ func (turns *turnBuilder) add(item llm.Item, keepThinking bool) error {
 			ID: call.CallID, Name: call.Name, Input: toolInput(call.Arguments),
 		}}, true)
 		turns.calls = append(turns.calls, call.CallID)
+		if turns.made == nil {
+			turns.made = map[string]llm.ToolCall{}
+		}
+		turns.made[call.CallID] = call
 	case llm.ItemToolResult:
 		result, ok := item.Data.(llm.ToolResult)
 		if !ok {
@@ -401,7 +420,13 @@ func (turns *turnBuilder) addResult(result llm.ToolResult) {
 		}}
 		return
 	}
-	header, _ := textBlock(fmt.Sprintf("Result of tool call %s:", result.CallID))
+	// The model reads the result long after it made the call, by which time
+	// an ID alone says nothing of what the call was.
+	described := result.CallID
+	if call, ok := turns.made[result.CallID]; ok {
+		described = describeCall(call)
+	}
+	header, _ := textBlock(fmt.Sprintf("Result of tool call %s:", described))
 	turns.user = append(turns.user, header)
 	for _, part := range content {
 		switch {
@@ -411,6 +436,16 @@ func (turns *turnBuilder) addResult(result llm.ToolResult) {
 			turns.user = append(turns.user, sdk.BetaContentBlockParamUnion{OfImage: part.OfImage})
 		}
 	}
+}
+
+// describeCall names a call by its ID, its tool and its arguments on one
+// line, as the harness's summaries do.
+func describeCall(call llm.ToolCall) string {
+	arguments := strings.Join(strings.Fields(call.Arguments), " ")
+	if runes := []rune(arguments); len(runes) > 300 {
+		arguments = string(runes[:299]) + "…"
+	}
+	return fmt.Sprintf("%s (%s %s)", call.CallID, call.Name, arguments)
 }
 
 func (turns *turnBuilder) closeAssistant() {

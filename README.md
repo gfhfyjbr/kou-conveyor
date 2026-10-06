@@ -433,18 +433,24 @@ take, and earlier prompts then show no changes.
 
 A long session outgrows the model's context window. Before a turn whose
 request would come within 33,000 tokens of the window (a quarter of a window
-under 132,000 tokens), the runner **compacts** the conversation: the model
-summarizes it in a turn of its own (the user's requests, what was done and
-found, the files and code involved, the errors and their fixes, the current
-state and the next step), the summary replaces everything before it, and the
-turn that was due goes on from the summary, so a task in progress continues
-on its own. Prompts the model has not answered yet follow the summary word
-for word, as do the user's earlier prompts as far as they fit; tool calls
-still running are listed, and their results arrive as messages. The message
-with the summary also names the session file, where the model can look up
-details the summary left out. The compaction is part of the session, so
-resuming, branching and editing prompts after it all start from the summary,
-and both cockpits show it as a notice that opens the summary.
+under 132,000 tokens), or past 200,000 tokens, the runner **compacts** the
+conversation: the model summarizes it in a turn of its own (the user's
+requests, what was done and found, the files and code involved, the errors
+and their fixes, the hypotheses with the evidence for and against them, the
+current state and the next step), the summary replaces everything before it,
+and the turn that was due goes on from the summary, so a task in progress
+continues on its own. Prompts the model has not answered yet follow the
+summary word for word, as do the user's earlier prompts as far as they fit;
+tool calls still running are listed, and their results arrive as messages.
+After the summary, the message shows the notes the model keeps for itself in
+a file no compaction changes, the files the conversation read and changed,
+and where to find what the summary left out: `TranscriptSearch`, which
+searches the whole conversation, and a file with the summary of every
+compaction. When the session's [changes](#changes) are recorded, the model
+also learns the snapshot of the workspace the compaction came at. The
+compaction is part of the session, so resuming, branching and editing
+prompts after it all start from the summary, and both cockpits show it as a
+notice that opens the summary.
 
 Automatic compaction backs off where it cannot help: after three compactions
 in a row without a summary, and when the context fills up again within three
@@ -619,7 +625,11 @@ Below come the accounts and the endpoints, each with:
   windows and credits, Antigravity's model groups, Kimi's request limits,
   Grok's credits — asked of the provider with the account's own token, and
   otherwise read from the rate-limit headers of the account's latest
-  response.
+  response. Every 15 minutes, the cockpit writes down the limits of each
+  account that served requests since it last did, a line of JSON each, in
+  `quota-history.jsonl` (2 MB of them, and the 2 MB before in
+  `quota-history.1.jsonl`), so what a long run spends of a window can be
+  measured.
 - **Models**: those the gateway serves with it. An account lists them a
   moment after it signs in or is imported, once the gateway has taken it
   up; an endpoint lists those it was given, or serves its provider's known
@@ -712,8 +722,9 @@ dialog say it is out, but moving to it takes changes to the code.
 ### Where it lives
 
 The gateway keeps its `config.yaml`, where the endpoints live too, the
-credentials (`auths/`), its log, the history, the usage (`usage.json`) and
-your prices (`prices.json`) in `cliproxy/` beside the
+credentials (`auths/`), its log, the history, the usage (`usage.json`), the
+quota history (`quota-history.jsonl`) and your prices (`prices.json`) in
+`cliproxy/` beside the
 connection settings (`-accounts-dir` moves it). The cockpit keeps the listen
 address, the credentials folder, an API key for runs and a management secret
 in the file and leaves everything else to the user; its management API

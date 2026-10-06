@@ -174,6 +174,7 @@ func (h *Host) run(ctx context.Context) error {
 	keepers.Go(func() { h.history.keep(runCtx, 30*time.Second) })
 	keepers.Go(func() { h.ledger.keep(runCtx, time.Minute) })
 	keepers.Go(func() { h.market.keep(runCtx) })
+	keepers.Go(func() { h.keepQuotas(runCtx, quotaHistoryInterval) })
 
 	client := newClient("http://"+loopback(h.host, h.port), h.password)
 	deadline := time.Now().Add(30 * time.Second)

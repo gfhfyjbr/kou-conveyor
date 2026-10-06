@@ -103,3 +103,36 @@ func TestTranslateResultReadsTheOperation(t *testing.T) {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
 }
+
+func TestReadSaysWhenTheSameLinesAreReadAgain(t *testing.T) {
+	translator := file.New(file.KindRead, "Read", file.Config{})
+	read := func(callID, path, text string) string {
+		t.Helper()
+		encoded, _ := json.Marshal(operation.FileState{Action: operation.FileRead, Path: path, Result: &operation.FileResult{Text: text}})
+		completed := operation.Operation{ID: operation.ID(callID), Type: operation.TypeFile, Version: operation.VersionFile, Status: operation.StatusCompleted, State: encoded}
+		result, err := translator.TranslateResult(callID, tool.CallStatus{WaitingFor: []operation.ID{completed.ID}}, []operation.Operation{completed})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.Output[0].Value
+	}
+	note := "[harness] These lines of /a.go have now been read 3 times, unchanged since the first."
+	for index, call := range []struct{ id, path, text string }{
+		{"c1", "/a.go", "     1\tx"}, {"c2", "/b.go", "     1\tx"}, {"c3", "/a.go", "     1\tx"},
+	} {
+		if text := read(call.id, call.path, call.text); text != call.text {
+			t.Fatalf("read %d = %q", index+1, text)
+		}
+	}
+	if text := read("c4", "/a.go", "     1\tx"); !strings.HasPrefix(text, "     1\tx\n\n"+note) {
+		t.Fatalf("third read = %q", text)
+	}
+	// The result of a call reads the same however often it is translated.
+	if text := read("c4", "/a.go", "     1\tx"); !strings.Contains(text, note) {
+		t.Fatalf("third read again = %q", text)
+	}
+	// A change to the lines starts the count over.
+	if text := read("c5", "/a.go", "     1\ty"); text != "     1\ty" {
+		t.Fatalf("changed read = %q", text)
+	}
+}

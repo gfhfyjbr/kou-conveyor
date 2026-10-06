@@ -117,7 +117,8 @@ func (current *verifier) Report(check operation.Operation) (string, bool) {
 	}
 	switch check.Status {
 	case operation.StatusCanceled:
-		return "The verification was canceled.", true
+		// A check that did not finish passed nothing.
+		return "The verification was canceled before it finished, so the work is not checked: run the checks yourself.", false
 	case operation.StatusFailed:
 		return "The verification could not run: " + state.TerminalError, false
 	}

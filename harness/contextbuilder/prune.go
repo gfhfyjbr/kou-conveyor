@@ -19,8 +19,8 @@ import (
 
 // PruneOptions say when and how the conversation is pruned.
 type PruneOptions struct {
-	// Budget is the estimated tokens the tool results of the conversation
-	// may take together before the oldest are pruned; zero prunes nothing.
+	// Budget is the estimated tokens the conversation may take before the
+	// oldest tool results are pruned; zero prunes nothing.
 	Budget int64
 	// Keep is how many of the latest tool results are never pruned.
 	Keep int
@@ -63,16 +63,24 @@ func (current *builder) SetPruning(options PruneOptions) {
 }
 
 // prune cuts the oldest tool results of the committed conversation down
-// once, together, they take more than the budget: from the oldest on,
-// until what is left fits in half the budget, leaving the latest results
-// alone. It reports how many results it pruned.
+// once the whole conversation is estimated at more than the budget: the
+// model's own text and reasoning grow it too, and only the results can be
+// cut. From the oldest on, results are cut until the estimate is a quarter
+// of the budget lower, leaving the latest results alone. A batch that would
+// save less than an eighth of the budget waits until there is more to cut:
+// otherwise every turn would cut the one result that left the latest ones,
+// and the prefix the provider caches would change every turn. It reports
+// how many results it pruned.
 func (current *builder) prune() int {
 	options := current.pruning
 	if options.Budget <= 0 {
 		return 0
 	}
+	estimated := current.estimate()
+	if estimated <= options.Budget {
+		return 0
+	}
 	var results []int
-	var total int64
 	for index, item := range current.committedPrefix {
 		if item.Type != llm.ItemToolResult {
 			continue
@@ -82,29 +90,32 @@ func (current *builder) prune() int {
 			continue
 		}
 		results = append(results, index)
-		total += estimateItem(item)
 	}
-	if total <= options.Budget {
-		return 0
-	}
-	target := options.Budget / 2
-	pruned := 0
+	results = results[:max(len(results)-options.Keep, 0)]
+	target := options.Budget - options.Budget/4
+	cut := make(map[int]llm.Item)
+	var saved int64
 	for _, index := range results {
-		if total <= target || len(results)-pruned <= options.Keep {
+		if estimated-saved <= target {
 			break
 		}
 		item := current.committedPrefix[index]
-		before := estimateItem(item)
-		current.committedPrefix[index] = pruneItem(item, options.Bytes)
-		total -= before - estimateItem(current.committedPrefix[index])
-		pruned++
+		pruned := pruneItem(item, options.Bytes)
+		if saving := estimateItem(item) - estimateItem(pruned); saving > 0 {
+			cut[index] = pruned
+			saved += saving
+		}
 	}
-	if pruned > 0 {
-		// The provider's count of the request no longer holds.
-		current.usage, current.usageMark = 0, 0
-		current.pruned += pruned
+	if saved < options.Budget/8 {
+		return 0
 	}
-	return pruned
+	for index, item := range cut {
+		current.committedPrefix[index] = item
+	}
+	// The provider's count of the request no longer holds.
+	current.usage, current.usageMark = 0, 0
+	current.pruned += len(cut)
+	return len(cut)
 }
 
 // pruneItem cuts a result to its note: its images go, its texts are cut to

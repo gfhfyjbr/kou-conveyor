@@ -145,7 +145,7 @@ func TestRunContinuesAfterUnavailableToolCall(t *testing.T) {
 			}
 			<-requests
 			corrective := <-requests
-			wantError := fmt.Sprintf("tool %q is not available", name)
+			wantError := fmt.Sprintf("tool %q is not available; the tools are Read, apply_patch, ViewImage, TranscriptSearch, SkillUse", name)
 			found := false
 			for _, item := range corrective.Input {
 				if item.Type == llm.ItemToolResult {

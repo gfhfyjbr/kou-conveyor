@@ -43,12 +43,18 @@ type translator struct {
 	kind   Kind
 	name   string
 	config Config
+	// reads is Read's journal (journal.go).
+	reads *journal
 }
 
 // New returns the translator of one of the file tools; name is what the
 // model calls it.
 func New(kind Kind, name string, config Config) tool.Translator {
-	return &translator{kind: kind, name: name, config: config}
+	current := &translator{kind: kind, name: name, config: config}
+	if kind == KindRead {
+		current.reads = newJournal()
+	}
+	return current
 }
 
 type arguments struct {
@@ -179,6 +185,9 @@ func (translator *translator) TranslateResult(callID string, status tool.CallSta
 	output, err := FormatResult(translator.name, callID, operations[0])
 	if err != nil {
 		return llm.ToolResult{}, err
+	}
+	if translator.reads != nil {
+		output += translator.reads.note(callID, operations[0])
 	}
 	return text(output), nil
 }

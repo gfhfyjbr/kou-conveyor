@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -30,11 +31,11 @@ func TestCompactionLimits(t *testing.T) {
 	}{
 		// Automatic compaction comes no later than the ceiling, however
 		// large the window.
-		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 300_000},
+		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 200_000},
 		{name: "unknown model", model: "other", provider: knows, wantWindow: 128_000, want: 96_000},
 		{name: "provider without models", model: "known", wantWindow: 128_000, want: 96_000},
-		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 300_000},
-		{name: "window under the ceiling", model: "known", provider: knows, window: "320k", wantWindow: 320_000, want: 287_000},
+		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 200_000},
+		{name: "window under the ceiling", model: "known", provider: knows, window: "220k", wantWindow: 220_000, want: 187_000},
 		{name: "small window", model: "known", provider: knows, window: "32k", wantWindow: 32_000, want: 24_000},
 		{name: "share of the window", model: "known", provider: knows, setting: "50%", wantWindow: 400_000, want: 200_000},
 		{name: "fractional share", model: "known", provider: knows, setting: " 62.5 % ", wantWindow: 400_000, want: 250_000},
@@ -186,9 +187,17 @@ func TestRunnerCompactsSessionOnRequest(t *testing.T) {
 		t.Fatalf("second run exited %d: %s", code, output)
 	}
 	last := run.requests[len(run.requests)-1]
+	// The summary comes with what the session keeps besides it: where the
+	// model's notes go, and where the summaries are.
+	notes, summaries := filepath.Join(run.sessions, "compact-me.notes.md"), filepath.Join(run.sessions, "compact-me.summaries.md")
 	if summary := summaryOf(last); !strings.Contains(summary, "<summary>\nSummary of the first task.\n</summary>") || len(last.Input) != 3 ||
-		!strings.Contains(summary, "full transcript at "+filepath.Join(run.sessions, "compact-me.session.jsonl")+" ") {
+		!strings.Contains(summary, "search the session's transcript with TranscriptSearch") ||
+		!strings.Contains(summary, "You keep notes across compactions in "+notes+", which is empty so far.") ||
+		!strings.Contains(summary, "oldest first, are in "+summaries+".") {
 		t.Fatalf("request after the compaction = %#v", last.Input)
+	}
+	if kept, err := os.ReadFile(summaries); err != nil || !strings.HasPrefix(string(kept), "## Compaction at ") || !strings.HasSuffix(string(kept), "\n\nSummary of the first task.\n\n") {
+		t.Fatalf("summaries %q, %v", kept, err)
 	}
 }
 
@@ -250,7 +259,7 @@ func TestRunnerCompactsARequestTheWindowCannotHold(t *testing.T) {
 	run.answer = func(request llm.Request) llm.Response {
 		text := "Answer."
 		if compactionPromptOf(request) != "" {
-			text = "<analysis>notes</analysis>\n<summary>Summary so far.</summary>"
+			text = "<analysis>scratch work</analysis>\n<summary>Summary so far.</summary>"
 		}
 		return llm.Response{
 			Stop:   llm.StopComplete,
@@ -284,7 +293,7 @@ func TestRunnerCompactsARequestTheWindowCannotHold(t *testing.T) {
 		t.Fatalf("turns %v after %d requests", types, len(run.requests))
 	}
 	last := run.requests[3]
-	if !strings.Contains(summaryOf(last), "<summary>\nSummary so far.\n</summary>") || strings.Contains(summaryOf(last), "notes") {
+	if !strings.Contains(summaryOf(last), "<summary>\nSummary so far.\n</summary>") || strings.Contains(summaryOf(last), "scratch work") {
 		t.Fatalf("continuation lacks the summary: %#v", last.Input)
 	}
 	if message, _ := last.Input[len(last.Input)-1].Data.(llm.Message); message.Text != "second task" {

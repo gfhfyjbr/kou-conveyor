@@ -357,7 +357,7 @@ export default function activate(cockpit) {
         kv('Endpoint', link?.source === 'gateway' ? `accounts gateway${state.config?.accounts?.url ? ` · ${host(state.config.accounts.url)}` : ''}`
           : link?.base_url ? (via ? `accounts gateway · ${host(link.base_url)}` : host(link.base_url)) : 'provider default'),
         runPrefs.profiles.length ? choice('Tools', 'tool_profile', runPrefs.profile, runPrefs.profiles,
-          'The built-in tools the next runs work with: edit (Read/Edit/Write) for Claude, patch (apply_patch) for GPT, code (one Code tool: JavaScript that calls the tools), shell (Bash only)') : null,
+          'The built-in tools the next runs work with: edit (Read/Edit/Write) for Claude, patch (apply_patch) for GPT, code (one Code tool: JavaScript that calls the tools), shell (Bash only); all but code have TranscriptSearch, which finds what compaction took out of the context, and code has transcriptSearch()') : null,
         runPrefs.sandboxes.length ? choice('Sandbox', 'sandbox', runPrefs.sandbox, runPrefs.sandboxes,
           'Where the next runs work: the workspace, a git worktree of its own, or a worktree with the commands in the workspace\'s container') : null,
         cockpit.has('connection') ? connectionActions : null);

@@ -48,8 +48,18 @@ func DefaultProviders() []Provider {
 					}
 					maxTokens = parsed
 				}
+				// How many of the latest turns keep their thinking in the
+				// context (anthropic.DefaultThinkingTurns); 0 keeps all.
+				var thinkingTurns *int
+				if value := strings.TrimSpace(getenv(thinkingTurnsEnvironment)); value != "" {
+					parsed, err := strconv.Atoi(value)
+					if err != nil || parsed < 0 {
+						return nil, fmt.Errorf("%s must be a whole number, or 0 to keep the thinking of every turn", thinkingTurnsEnvironment)
+					}
+					thinkingTurns = &parsed
+				}
 				return anthropic.NewClient(anthropic.Config{
-					APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, MaxTokens: maxTokens,
+					APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, MaxTokens: maxTokens, ThinkingTurns: thinkingTurns,
 				})
 			},
 		},

@@ -48,6 +48,22 @@ const (
 	// VerificationMarker is the idempotency of a verification's operation,
 	// which the cockpits show as the harness's own check.
 	VerificationMarker = `{"harness":"verification"}`
+	// reminderPrefix starts the reminder that the conversation will be
+	// compacted soon (Dependencies.CompactionReminder), sent once
+	// reminderTokens before AutoCompactTokens, or a fifth of it before
+	// when that is less.
+	reminderPrefix = harnessPrefix + " The conversation will be compacted soon."
+	reminderTokens = 30_000
+)
+
+// A request refused for a usage limit (llm.RateLimitError) is sent again
+// once the limit lifts, as the provider said or after defaultQuotaWait when
+// it did not, waiting maxQuotaWait at most; maxQuotaWaits times in a row,
+// after which the error stands.
+const (
+	maxQuotaWaits    = 2
+	defaultQuotaWait = 5 * time.Minute
+	maxQuotaWait     = 6 * time.Hour
 )
 
 // Automatic compaction backs off where it cannot help, as Claude Code's
@@ -148,6 +164,25 @@ type loopState struct {
 	// runningDetail is what the tool last said of each running call, so
 	// the call's placeholder is refreshed only when that changes.
 	runningDetail map[toolCallKey]string
+	// quotaWait fires when a usage limit that refused the latest request
+	// is expected to lift; no turn starts until then. quotaWaits counts the
+	// waits in a row, which a response resets.
+	quotaWait  <-chan time.Time
+	quotaWaits int
+	// turns and compactions count the ordinary responses and the
+	// compactions of this run, for its bounds, and reportedAt the turns
+	// at the latest progress report. wrapUp, once a bound is spent, is the
+	// input count with the request for the final report: the response of
+	// a turn that saw it stops the run.
+	turns       int
+	compactions int
+	reportedAt  int
+	wrapUp      int
+	// reminded is set once the model was told that the conversation will
+	// be compacted soon, until it is; fileChanges counts the calls of the
+	// tools that change files since the latest compaction.
+	reminded    bool
+	fileChanges int
 }
 
 type compactRequest struct {
@@ -232,7 +267,13 @@ func (current *coordinator) Run(ctx context.Context) error {
 		}
 	}
 
-	var heartbeat <-chan time.Time
+	var heartbeat, deadline, report <-chan time.Time
+	if limit := current.dependencies.MaxDuration; limit > 0 {
+		deadline = time.After(limit)
+	}
+	if every := current.dependencies.ReportEvery; every > 0 {
+		report = time.After(every)
+	}
 	for {
 		if !current.isWaitingForOnlyToolCalls() {
 			heartbeat = nil
@@ -242,6 +283,21 @@ func (current *coordinator) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+
+		case <-deadline:
+			deadline = nil
+			if err := current.budgetSpent(ctx, "running time, "+current.dependencies.MaxDuration.String()); err != nil {
+				return err
+			}
+
+		case <-report:
+			report = time.After(current.dependencies.ReportEvery)
+			if err := current.askForReport(ctx); err != nil {
+				return err
+			}
+
+		case <-current.state.quotaWait:
+			current.state.quotaWait = nil
 
 		case received, open := <-inboxOutput:
 			if !open {
@@ -357,7 +413,8 @@ func (current *coordinator) processEvents(ctx context.Context) (bool, error) {
 			current.state.toolWait = time.After(current.dependencies.ToolWaitLimit)
 		}
 	}
-	return due, nil
+	// A turn that is due waits for the usage limit to lift.
+	return due && current.state.quotaWait == nil, nil
 }
 
 // midStep reports that the model is writing a response or that tool calls of
@@ -402,13 +459,24 @@ func (current *coordinator) processModelResponse(ctx context.Context, modelRespo
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if current.waitForQuota(ctx, modelResponse) {
+			return nil
+		}
 		return fmt.Errorf("call model for turn %q: %w", modelResponse.turnID, modelResponse.err)
 	}
+	current.state.quotaWaits = 0
 	statuses, err := current.handleModelResponse(ctx, sessionstore.ModelResponse{
 		TurnID:   modelResponse.turnID,
 		Response: modelResponse.response,
 	})
 	if err != nil {
+		return err
+	}
+	if current.isCompactionTurn(modelResponse.turnID) {
+		if err := current.compactedLive(ctx, modelResponse.response); err != nil {
+			return err
+		}
+	} else if err := current.countTurn(ctx); err != nil {
 		return err
 	}
 	if !current.isCompactionTurn(modelResponse.turnID) {
@@ -533,6 +601,121 @@ func (current *coordinator) nudge(ctx context.Context, reason string) error {
 	}})
 }
 
+// waitForQuota answers a request refused for a usage limit that the
+// adapter did not wait out (llm.RateLimitError): the turn is requested again
+// once the limit lifts, maxQuotaWaits times in a row at most. The wait is
+// told as a retry, which the cockpits show. It reports false when the error
+// stands.
+func (current *coordinator) waitForQuota(ctx context.Context, received modelResponseResult) bool {
+	state := &current.state
+	limit, ok := errors.AsType[*llm.RateLimitError](received.err)
+	if !ok || current.dependencies.NoRecovery || state.quotaWaits >= maxQuotaWaits || current.stop.request.Mode == inbox.StopHard {
+		return false
+	}
+	state.quotaWaits++
+	delay := limit.RetryAfter
+	if delay <= 0 {
+		delay = defaultQuotaWait
+	}
+	delay = min(delay, maxQuotaWait)
+	llm.ReportRetry(ctx, llm.Retry{Attempt: state.quotaWaits, MaxAttempts: maxQuotaWaits + 1, Delay: delay, Err: received.err})
+	state.quotaWait = time.After(delay)
+	if current.isCompactionTurn(received.turnID) {
+		// The compaction is made once the limit lifts, before the turn
+		// that waits for it.
+		state.compactRequest = &compactRequest{focus: state.sent.focus}
+	} else {
+		state.callModel = true
+	}
+	return true
+}
+
+// countTurn counts an ordinary response toward MaxTurns. The response of a
+// turn that saw the request for the final report stops the run.
+func (current *coordinator) countTurn(ctx context.Context) error {
+	state := &current.state
+	state.turns++
+	if state.wrapUp > 0 && state.currentTurnInputs >= state.wrapUp {
+		current.acceptStop(inbox.ControlMessage{Mode: inbox.StopHard, Reason: "the run's budget is spent"})
+		return nil
+	}
+	if limit := current.dependencies.MaxTurns; limit > 0 && state.turns >= limit {
+		return current.budgetSpent(ctx, fmt.Sprintf("%d model turns", limit))
+	}
+	return nil
+}
+
+// compactedLive follows a compaction that replaced the conversation while
+// the run goes on: it counts toward MaxCompactions, and the runner hears of
+// it (Dependencies.Compacted); what the runner answers goes to the model with
+// the turn that follows, if one does.
+func (current *coordinator) compactedLive(ctx context.Context, response llm.Response) error {
+	summary := contextbuilder.Summary(response)
+	if summary == "" {
+		return nil
+	}
+	state := &current.state
+	state.compactions++
+	changes := state.fileChanges
+	state.fileChanges = 0
+	if compacted := current.dependencies.Compacted; compacted != nil {
+		note := strings.TrimSpace(compacted(Compaction{Summary: summary, Number: state.compactions, FileChanges: changes}))
+		if note != "" && current.stop.request.Mode != inbox.StopHard && (state.callModel || current.pendingInputs() > 0) {
+			if err := current.nudge(ctx, harnessPrefix+" "+note); err != nil {
+				return err
+			}
+		}
+	}
+	if limit := current.dependencies.MaxCompactions; limit > 0 && state.compactions >= limit {
+		return current.budgetSpent(ctx, fmt.Sprintf("%d compactions", limit))
+	}
+	return nil
+}
+
+// budgetSpent asks the model for its final report once a bound of the run
+// is spent; the response that answers it stops the run (countTurn).
+func (current *coordinator) budgetSpent(ctx context.Context, bound string) error {
+	state := &current.state
+	if state.wrapUp > 0 || current.stop.request.Mode == inbox.StopHard {
+		return nil
+	}
+	if err := current.nudge(ctx, harnessPrefix+" The run has reached its limit of "+bound+
+		". Stop the work here and start nothing new: write the final report for the user, saying what was done, what was not and what is left, and end your turn. The run stops after this answer, and tool calls still running are canceled."); err != nil {
+		return err
+	}
+	state.wrapUp = state.availableInputs
+	return nil
+}
+
+// askForReport has the model tell the user how the work goes, when it
+// worked since it last did.
+func (current *coordinator) askForReport(ctx context.Context) error {
+	state := &current.state
+	if state.turns == state.reportedAt || state.wrapUp > 0 || current.stop.request.Mode == inbox.StopHard {
+		return nil
+	}
+	state.reportedAt = state.turns
+	return current.nudge(ctx, harnessPrefix+" Progress report: in a few lines, tell the user what you have done since your last report, what you are doing now and what is left, then carry on with the work.")
+}
+
+// compactionNear reports an ordinary request close enough to
+// AutoCompactTokens for the reminder that the conversation will be
+// compacted soon, which has not been sent since the latest compaction.
+func (current *coordinator) compactionNear(built contextbuilder.Result) bool {
+	limit := current.dependencies.AutoCompactTokens
+	if current.dependencies.CompactionReminder == "" || current.state.reminded || !built.Compactable || !current.autoCompactionAllowed() {
+		return false
+	}
+	return built.EstimatedTokens >= limit-min(reminderTokens, limit/5)
+}
+
+// changesFiles reports a call of a tool that changes files, by any name a
+// gateway gave it.
+func changesFiles(name string) bool {
+	names := []string{tool.EditName, tool.WriteName, tool.ApplyPatchName}
+	return slices.Contains(names, name) || len(tool.Aliases(name, names)) == 1
+}
+
 // verify runs the verifier's checks once the model finished a prompt, if
 // there are checks, the model did something since they last ran, and they
 // have not run too often for this prompt. Their failures reach the model
@@ -620,7 +803,8 @@ func (current *coordinator) isCompactionTurn(id session.TurnID) bool {
 // compactionRequested reports a Compact control that can start its turn:
 // the model is free and no tool call is in its grace period.
 func (current *coordinator) compactionRequested() bool {
-	return current.state.compactRequest != nil && current.cancelModel == nil && len(current.state.graceToolCalls) == 0
+	return current.state.compactRequest != nil && current.cancelModel == nil && len(current.state.graceToolCalls) == 0 &&
+		current.state.quotaWait == nil
 }
 
 // compactionBudget is what a compaction request may take of the context
@@ -745,7 +929,7 @@ func (current *coordinator) refilledRapidly() bool {
 
 func (current *coordinator) isIdle() bool {
 	return current.cancelModel == nil && current.pendingInputs() == 0 && len(current.state.deferred) == 0 &&
-		len(current.state.toolCalls) == 0 && !current.hasPendingOperations()
+		len(current.state.toolCalls) == 0 && !current.hasPendingOperations() && current.state.quotaWait == nil
 }
 
 func (current *coordinator) isWaitingForOnlyToolCalls() bool {
@@ -856,6 +1040,16 @@ func (current *coordinator) startTurn(
 		sent = sentRequest{estimate: built.EstimatedTokens, focus: focus, budget: budget}
 	} else if !ordinary {
 		return nil
+	} else if current.compactionNear(built) {
+		// The model hears that the conversation will be compacted soon
+		// with this turn, while there is room to act on it.
+		if err := current.nudge(ctx, reminderPrefix+" "+strings.TrimSpace(current.dependencies.CompactionReminder)); err != nil {
+			return err
+		}
+		if built, err = current.dependencies.ContextBuilder.Build(); err != nil {
+			return fmt.Errorf("build model request: %w", err)
+		}
+		sent = sentRequest{estimate: built.EstimatedTokens}
 	}
 	turn := session.Turn{
 		ID:             session.TurnID(uuid.New().String()),
@@ -1072,6 +1266,8 @@ func (current *coordinator) restore(ctx context.Context) error {
 			current.state.verifying = value.ID
 		}
 	}
+	// The run counts the changes it makes.
+	current.state.fileChanges = 0
 	return nil
 }
 
@@ -1172,6 +1368,9 @@ func (current *coordinator) addItemToLocalState(
 				if strings.HasPrefix(request.Reason, verificationPrefix) {
 					current.state.verifications++
 				}
+				if strings.HasPrefix(request.Reason, reminderPrefix) {
+					current.state.reminded = true
+				}
 			}
 			if request.Mode == inbox.Compact {
 				current.state.compactionAsked = true
@@ -1221,6 +1420,7 @@ func (current *coordinator) addItemToLocalState(
 				if current.dependencies.ContextBuilder.Compact(response.Response) {
 					current.state.compactionFailures = 0
 					current.state.turnsSinceCompaction = 0
+					current.state.reminded = false
 				} else {
 					current.state.compactionFailures++
 				}
@@ -1389,6 +1589,11 @@ func (current *coordinator) addToolResultToLocalState(
 		running,
 	)
 	if !running {
+		if status.Status.Error == "" && changesFiles(call.toolCall.Name) && !slices.ContainsFunc(operations, func(value operation.Operation) bool {
+			return value.Status != operation.StatusCompleted
+		}) {
+			current.state.fileChanges++
+		}
 		current.finishToolCall(status.TurnID, status.CallID)
 	}
 	return nil
@@ -1429,7 +1634,7 @@ func (current *coordinator) scheduleToolCall(
 	if exists {
 		status = translator.Translate(toolContext, call)
 	} else {
-		status = tool.ErrorStatus(fmt.Sprintf("tool %q is not available", call.Name), 0)
+		status = tool.ErrorStatus(tool.Unavailable(current.dependencies.Tools, call.Name), 0)
 	}
 	operations := make([]operation.Operation, 0, len(toolContext.operations))
 	for _, value := range toolContext.operations {

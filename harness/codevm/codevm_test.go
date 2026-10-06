@@ -263,8 +263,9 @@ func TestRunChecksTheArguments(t *testing.T) {
 func TestRunPluginToolsInheritTheEnvironmentAndRejectFailures(t *testing.T) {
 	t.Setenv("KOU_CODEVM_TEST", "inherited")
 	config := testConfig(t)
+	config.CallID = "call-7"
 	config.Tools = []CommandTool{
-		{Name: "env_tool", Command: []string{"sh", "-c", "echo $KOU_CODEVM_TEST $KOU_CONVEYOR_TOOL_NAME"}},
+		{Name: "env_tool", Command: []string{"sh", "-c", "echo $KOU_CODEVM_TEST $KOU_CONVEYOR_TOOL_NAME $KOU_CONVEYOR_TOOL_CALL_ID"}},
 		{Name: "failing", Command: []string{"sh", "-c", "echo out; exit 4"}},
 		{Name: "read", Command: []string{"cat"}},
 		{Name: "delete", Command: []string{"cat"}},
@@ -277,7 +278,7 @@ func TestRunPluginToolsInheritTheEnvironmentAndRejectFailures(t *testing.T) {
 		const echoed = await tools.read({ a: 1 });
 		return [env.trim(), failure, echoed.trim(), await read('a.txt'), typeof tools.delete].join('|');
 	`, nil)
-	if result.Error != "" || result.Value != "inherited env_tool|failing failed:\nout\n\nExit code: 4|{\"a\":1}|     1\tone|function" {
+	if result.Error != "" || result.Value != "inherited env_tool call-7-0|failing failed:\nout\n\nExit code: 4|{\"a\":1}|     1\tone|function" {
 		t.Fatalf("result = %+v", result)
 	}
 	if code := result.Calls[1].ExitCode; code == nil || *code != 4 || !strings.Contains(result.Calls[1].Error, "failing failed") {

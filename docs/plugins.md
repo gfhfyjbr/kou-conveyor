@@ -154,7 +154,8 @@ With the `code` tool profile a plugin tool is a function of the Code tool's
 JavaScript instead: `name(args)`, or `tools["name"](args)` for a name the code
 cannot call as it is (one with a `-`, a reserved word, or a name the runtime's
 functions or JavaScript's globals have). It runs as above, within the Code
-call and without `KOU_CONVEYOR_TOOL_CALL_ID`; it resolves to what the command
+call, with `KOU_CONVEYOR_TOOL_CALL_ID` set to the Code call's ID and the
+number of the code's call, `<id>-<n>`; it resolves to what the command
 prints and rejects when the command exits with a nonzero code.
 
 ```sh

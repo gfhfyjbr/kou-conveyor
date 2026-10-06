@@ -26,8 +26,10 @@ const (
 	MaxReadLimit = 20_000
 	// DefaultMaxLineBytes is where a line is cut short.
 	DefaultMaxLineBytes = 2000
-	// DefaultMaxReadBytes bounds the text one Read returns.
-	DefaultMaxReadBytes = 400_000
+	// DefaultMaxReadBytes bounds the text one Read returns, about 10,000
+	// tokens: every turn after it sends the text again, so a larger file is
+	// read in parts or searched.
+	DefaultMaxReadBytes = 40_000
 	// MaxEditBytes bounds the files Edit rewrites: it holds the whole file.
 	MaxEditBytes = 32 << 20
 )
@@ -158,9 +160,14 @@ func Read(name string, options ReadOptions) (ReadResult, error) {
 	}
 	result.Truncated = result.To < number
 	body := strings.TrimSuffix(text.String(), "\n")
-	if result.Truncated {
+	switch {
+	case result.Truncated && shown < limit:
+		// The bytes ran out before the lines did: a file this large is
+		// better searched than read through.
+		body += fmt.Sprintf("\n[Lines %d-%d of %d shown, about %d bytes, the most one read shows; read on with offset=%d, or find what you need with rg -n.]", result.From, result.To, number, maxBytes, result.To+1)
+	case result.Truncated:
 		body += fmt.Sprintf("\n[Lines %d-%d of %d shown; read on with offset=%d.]", result.From, result.To, number, result.To+1)
-	} else if result.From > 1 {
+	case result.From > 1:
 		body += fmt.Sprintf("\n[Lines %d-%d of %d shown.]", result.From, result.To, number)
 	}
 	result.Text = body
@@ -191,6 +198,7 @@ func Edit(name, old, replacement string, options EditOptions) (EditResult, error
 	if old == replacement {
 		return EditResult{}, errors.New("old_string and new_string are the same; nothing to change")
 	}
+	defer lockFiles(name)()
 	info, err := os.Stat(name)
 	if err != nil {
 		return EditResult{}, describe(err, name)
@@ -292,6 +300,7 @@ type WriteResult struct {
 func Write(name, content string) (WriteResult, error) {
 	result := WriteResult{Bytes: len(content), Lines: lineCount(content), Created: true}
 	mode := os.FileMode(0o644)
+	defer lockFiles(name)()
 	info, err := os.Stat(name)
 	switch {
 	case err == nil && info.IsDir():

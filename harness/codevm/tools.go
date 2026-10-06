@@ -35,8 +35,8 @@ func commandScript(definition CommandTool, arguments string) string {
 
 // commandEnvironment is the environment a plugin's tool runs with: the
 // run's (the process's when the run has none of its own), and the tool's
-// own variables.
-func commandEnvironment(base []string, definition CommandTool) []string {
+// own variables, with the call's ID when there is one.
+func commandEnvironment(base []string, definition CommandTool, callID string) []string {
 	if base == nil {
 		base = os.Environ()
 	}
@@ -46,6 +46,9 @@ func commandEnvironment(base []string, definition CommandTool) []string {
 		variables = map[string]string{}
 	}
 	variables["KOU_CONVEYOR_TOOL_NAME"] = definition.Name
+	if callID != "" {
+		variables["KOU_CONVEYOR_TOOL_CALL_ID"] = callID
+	}
 	names := make([]string, 0, len(variables))
 	for name := range variables {
 		names = append(names, name)

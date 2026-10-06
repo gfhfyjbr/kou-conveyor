@@ -91,8 +91,10 @@ func (translator *translator) Translate(ctx tool.Context, call llm.ToolCall) too
 	if strings.TrimSpace(arguments.Code) == "" {
 		return tool.ErrorStatus(`Code argument "code" must be set`, 0)
 	}
+	config := translator.VMConfig()
+	config.CallID = call.CallID
 	spec, err := operation.NewCodeSpec(operation.CodeState{
-		Code: arguments.Code, Config: translator.VMConfig(), Image: translator.config.Image,
+		Code: arguments.Code, Config: config, Image: translator.config.Image,
 	}, translator.config.MaxOutputLength)
 	if err != nil {
 		return tool.ErrorStatus(fmt.Sprintf("build Code operation: %v", err), 0)

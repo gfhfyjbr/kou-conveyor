@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -33,6 +34,9 @@ const (
 	DefaultModel = "claude-opus-5"
 	// DefaultMaxAttempts matches the other clients' retry budget.
 	DefaultMaxAttempts = primitives.DefaultRemoteMaxAttempts
+	// DefaultThinkingTurns is how many of the latest assistant turns keep
+	// their thinking in the model's context unless Config says otherwise.
+	DefaultThinkingTurns = 2
 
 	// Streams carry pings; this long without any event means the connection is gone.
 	streamIdleTimeout = 10 * time.Minute
@@ -55,18 +59,29 @@ type Config struct {
 	// ServerFallbacks lets the API re-run a refused request on Anthropic's
 	// recommended fallback model. Nil enables it on Anthropic's API only.
 	ServerFallbacks *bool
+	// ThinkingTurns is how many of the latest assistant turns keep their
+	// thinking in a thinking Claude model's context. Recent models keep the
+	// thinking of every turn otherwise, where it fills the context window
+	// and is read again on every request; the API clears it from older
+	// turns before the model reads them (context editing), and the history
+	// the harness keeps is unchanged. Nil is DefaultThinkingTurns; 0 keeps
+	// all thinking.
+	ThinkingTurns *int
 }
 
 type Client struct {
-	api         sdk.Client
-	official    bool
-	maxAttempts int
-	maxTokens   int64
-	fallbacks   bool
-	// noFallbacks remembers that the endpoint rejected refusal fallbacks.
-	noFallbacks atomic.Bool
-	idleTimeout time.Duration
-	backoff     func(attempt int, overloaded bool) time.Duration
+	api           sdk.Client
+	official      bool
+	maxAttempts   int
+	maxTokens     int64
+	fallbacks     bool
+	thinkingTurns int64
+	// noFallbacks remembers that the endpoint rejected refusal fallbacks,
+	// noContextManagement that it rejected context editing.
+	noFallbacks         atomic.Bool
+	noContextManagement atomic.Bool
+	idleTimeout         time.Duration
+	backoff             func(attempt int, overloaded bool) time.Duration
 }
 
 var _ llm.Adapter = (*Client)(nil)
@@ -90,6 +105,13 @@ func NewClient(config Config) (*Client, error) {
 	if config.MaxTokens < 0 {
 		return nil, errors.New("max tokens must not be negative")
 	}
+	thinkingTurns := DefaultThinkingTurns
+	if config.ThinkingTurns != nil {
+		thinkingTurns = *config.ThinkingTurns
+	}
+	if thinkingTurns < 0 {
+		return nil, errors.New("thinking turns must not be negative")
+	}
 	// The runner resolves credentials itself, and retries are ours: the SDK
 	// cannot retry a stream that fails midway.
 	options := []option.RequestOption{
@@ -108,13 +130,14 @@ func NewClient(config Config) (*Client, error) {
 		fallbacks = *config.ServerFallbacks
 	}
 	return &Client{
-		api:         sdk.NewClient(options...),
-		official:    official,
-		maxAttempts: maxAttempts,
-		maxTokens:   config.MaxTokens,
-		fallbacks:   fallbacks,
-		idleTimeout: streamIdleTimeout,
-		backoff:     defaultBackoff,
+		api:           sdk.NewClient(options...),
+		official:      official,
+		maxAttempts:   maxAttempts,
+		maxTokens:     config.MaxTokens,
+		fallbacks:     fallbacks,
+		thinkingTurns: int64(thinkingTurns),
+		idleTimeout:   streamIdleTimeout,
+		backoff:       defaultBackoff,
 	}, nil
 }
 
@@ -193,7 +216,12 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 			keepThinking = false
 			attempt--
 			continue
-		case len(params.Betas) != 0 && fallbacksRejected(err):
+		case len(params.ContextManagement.Edits) != 0 && contextManagementRejected(err):
+			// An endpoint without context editing keeps all thinking.
+			client.noContextManagement.Store(true)
+			attempt--
+			continue
+		case slices.Contains(params.Betas, sdk.AnthropicBetaServerSideFallback2026_07_01) && fallbacksRejected(err):
 			client.noFallbacks.Store(true)
 			attempt--
 			continue
@@ -207,6 +235,11 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 		}
 		if overflow, ok := contextOverflow(err); ok {
 			return llm.Response{}, overflow
+		}
+		if limit, ok := rateLimit(err, time.Now()); ok && (limit.RetryAfter > time.Minute || attempt >= client.maxAttempts) {
+			// The limit lifts later than retries wait, or outlasted them: the
+			// harness waits for it instead.
+			return llm.Response{}, limit
 		}
 		delay, retry := client.retryDelay(err, attempt)
 		if !retry || attempt >= client.maxAttempts {
@@ -343,6 +376,37 @@ func retryAfter(header http.Header) time.Duration {
 	return 0
 }
 
+// rateLimit reports a request refused for a rate or usage limit, and how
+// long until the limit lifts when the response says: Retry-After, which
+// gateways that cool an account down set to the time left, or the reset of a
+// subscription's exhausted usage window, which Anthropic's API gives OAuth
+// clients in its anthropic-ratelimit-unified headers.
+func rateLimit(err error, now time.Time) (*llm.RateLimitError, bool) {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) || (apiErr.StatusCode != http.StatusTooManyRequests && string(apiErr.Type()) != "rate_limit_error") {
+		return nil, false
+	}
+	limit := &llm.RateLimitError{Err: describe(err)}
+	if apiErr.Response != nil {
+		limit.RetryAfter = max(retryAfter(apiErr.Response.Header), unifiedReset(apiErr.Response.Header, now))
+	}
+	return limit, true
+}
+
+func unifiedReset(header http.Header, now time.Time) time.Duration {
+	if !strings.EqualFold(strings.TrimSpace(header.Get("anthropic-ratelimit-unified-status")), "rejected") {
+		return 0
+	}
+	value := strings.TrimSpace(header.Get("anthropic-ratelimit-unified-reset"))
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		return max(0, time.Unix(seconds, 0).Sub(now))
+	}
+	if deadline, err := time.Parse(time.RFC3339, value); err == nil {
+		return max(0, deadline.Sub(now))
+	}
+	return 0
+}
+
 func thinkingRejected(err error) bool {
 	var apiErr *sdk.Error
 	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
@@ -416,6 +480,16 @@ func fallbacksRejected(err error) bool {
 	var apiErr *sdk.Error
 	return errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
 		strings.Contains(strings.ToLower(errorMessage(apiErr)), "fallback")
+}
+
+func contextManagementRejected(err error) bool {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	message := strings.ToLower(errorMessage(apiErr))
+	return strings.Contains(message, "context_management") || strings.Contains(message, "context-management") ||
+		strings.Contains(message, "clear_thinking")
 }
 
 // describe turns SDK errors into one line that names the API's own message.

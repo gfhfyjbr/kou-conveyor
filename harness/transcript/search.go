@@ -2,7 +2,8 @@
 // the session store keeps, read as text so that nothing of it is needed
 // here but the shape of its records. What the user wrote, what the model
 // wrote, the tool calls it made and what the tools returned are searched;
-// images and skills, which the tools show again, are not.
+// images and skills, which the tools show again, are not, nor the searches
+// themselves.
 package transcript
 
 import (
@@ -29,6 +30,22 @@ const (
 	// carries an image or the like.
 	maxLine = 64 << 20
 )
+
+// The searches are not searched: a search's query would find itself, and
+// what it found is in the transcript already. They are the calls of the
+// TranscriptSearch tool, by any name a gateway gave it, the file operations
+// that ran them, and the transcriptSearch() calls of the Code tool.
+const (
+	searchName     = "TranscriptSearch"
+	searchAction   = "transcript_search"
+	codeSearchName = "transcriptSearch"
+)
+
+// searches reports a call of TranscriptSearch: a gateway may show the model
+// the tool as "mcp__<server>__<word>_TranscriptSearch".
+func searches(name string) bool {
+	return name == searchName || strings.HasSuffix(name, "_"+searchName)
+}
 
 // entry is what a record of the transcript says, as text.
 type entry struct {
@@ -218,7 +235,7 @@ func entries(line []byte) []entry {
 						Name      string `json:"Name"`
 						Arguments string `json:"Arguments"`
 					}
-					if json.Unmarshal(output.Data, &call) == nil {
+					if json.Unmarshal(output.Data, &call) == nil && !searches(call.Name) {
 						found = append(found, entry{kind: "tool call " + call.Name, sequence: item.Sequence, text: call.Arguments})
 					}
 				}
@@ -241,7 +258,7 @@ func entries(line []byte) []entry {
 			return nil
 		}
 		var state map[string]any
-		if json.Unmarshal(operation.State, &state) != nil {
+		if json.Unmarshal(operation.State, &state) != nil || state["Action"] == searchAction {
 			return nil
 		}
 		var parts []string
@@ -278,6 +295,9 @@ func stringsOf(value any, depth int) []string {
 		}
 		if calls, ok := value["Calls"].([]any); ok {
 			for _, call := range calls {
+				if fields, ok := call.(map[string]any); ok && fields["Name"] == codeSearchName {
+					continue
+				}
 				found = append(found, stringsOf(call, depth+1)...)
 			}
 		}

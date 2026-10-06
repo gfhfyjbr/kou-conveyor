@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"uuid"
@@ -98,7 +99,73 @@ func (current *registry) StaticDefinitions() []Definition {
 	return definitions
 }
 
+// Resolve finds the translator of the tool a call names. A gateway between
+// the harness and the model may show the model the tools under names of its
+// own and turn them back when the model calls them: CLIProxyAPI shows Claude
+// Read as "mcp__<server>__<word>_Read". A model that shortens such a name
+// sends one the gateway passes on as it is, and which no tool has; it
+// resolves to the one tool its end names, if exactly one does (Aliases).
 func (current *registry) Resolve(name string) (Translator, bool) {
+	if translator, exists := current.resolve(name); exists {
+		return translator, true
+	}
+	if matches := Aliases(name, current.names()); len(matches) == 1 {
+		return current.resolve(matches[0])
+	}
+	return nil, false
+}
+
+// names are the names of the enabled tools.
+func (current *registry) names() []string {
+	var names []string
+	for name := range current.staticTranslators {
+		if _, enabled := current.enabled[name]; enabled {
+			names = append(names, name)
+		}
+	}
+	current.mu.RLock()
+	defer current.mu.RUnlock()
+	for _, registered := range current.registered {
+		names = append(names, registered.definition.Tool.Name)
+	}
+	return names
+}
+
+// Aliases returns the tools of names that name, which none of them has, may
+// stand for: the ends of name that follow an underscore, such as Read for
+// "mcp__server__grace_Read", "server__grace_Read" or "grace_Read", and
+// apply_patch for "grace_apply_patch". They come sorted, each once.
+func Aliases(name string, names []string) []string {
+	var matches []string
+	for index := 1; index < len(name)-1; index++ {
+		if name[index] != '_' || name[index+1] == '_' {
+			continue
+		}
+		if end := name[index+1:]; slices.Contains(names, end) && !slices.Contains(matches, end) {
+			matches = append(matches, end)
+		}
+	}
+	slices.Sort(matches)
+	return matches
+}
+
+// Unavailable is the error of a call to a tool no name resolves: which tools
+// there are, or which of them the name may stand for.
+func Unavailable(registry Registry, name string) string {
+	var names []string
+	for _, definition := range registry.StaticDefinitions() {
+		names = append(names, definition.Tool.Name)
+	}
+	if matches := Aliases(name, names); len(matches) > 1 {
+		return fmt.Sprintf("tool %q is not available: it may stand for any of %s; call the one you mean by its exact name", name, strings.Join(matches, ", "))
+	}
+	if len(names) == 0 {
+		return fmt.Sprintf("tool %q is not available", name)
+	}
+	return fmt.Sprintf("tool %q is not available; the tools are %s", name, strings.Join(names, ", "))
+}
+
+func (current *registry) resolve(name string) (Translator, bool) {
 	if translator, exists := current.staticTranslators[name]; exists {
 		if _, enabled := current.enabled[name]; enabled {
 			return translator, true

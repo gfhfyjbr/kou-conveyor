@@ -61,9 +61,45 @@ type Dependencies struct {
 	MaxVerifications int
 	// NoRecovery leaves the model's answers as they come: without it, the
 	// coordinator asks the model to go on after an answer the output limit
-	// cut, asks again after a refusal or an empty answer, and sends a
-	// request again after a response that failed, a few times each.
+	// cut, asks again after a refusal or an empty answer, sends a request
+	// again after a response that failed, a few times each, and waits for a
+	// usage limit to lift (llm.RateLimitError) before it sends the request
+	// again, twice in a row at most.
 	NoRecovery bool
+	// MaxTurns, MaxDuration and MaxCompactions bound the run: its ordinary
+	// turns, the time since Run began and its compactions; zero sets no
+	// bound. Once one is spent, the harness asks the model for its final
+	// report, and the run stops after the response that answers it, the
+	// tool calls still running canceled.
+	MaxTurns       int
+	MaxDuration    time.Duration
+	MaxCompactions int
+	// ReportEvery, when set, has the harness ask the model for a short
+	// progress report this often while it works.
+	ReportEvery time.Duration
+	// CompactionReminder, when set, is what the harness tells the model
+	// once the conversation nears AutoCompactTokens, once between
+	// compactions: to bring its notes up to date before the summary
+	// replaces the conversation, say.
+	CompactionReminder string
+	// Compacted, when set, is called after a compaction replaced the
+	// conversation while the run goes on. What it returns, if anything, the
+	// harness tells the model with the turn that follows.
+	Compacted func(Compaction) string
+}
+
+// Compaction is a compaction that replaced the conversation while the run
+// went on.
+type Compaction struct {
+	// Summary is what replaced the conversation.
+	Summary string
+	// Number counts the compactions of the run, from 1.
+	Number int
+	// FileChanges counts the calls of the tools that change files — Edit,
+	// Write and apply_patch, under any name a gateway gave them — that
+	// succeeded since the compaction before, or since the run began.
+	// Commands change files too, which only the workspace can tell.
+	FileChanges int
 }
 
 // Verifier checks the work the model did for a prompt before the run goes

@@ -54,3 +54,22 @@ func TestSearchFindsTextInEveryKindOfRecord(t *testing.T) {
 		t.Fatal("a missing transcript was accepted")
 	}
 }
+
+func TestSearchLeavesOutTheSearches(t *testing.T) {
+	searches := `{"type":"item","data":{"Item":{"Sequence":5,"RecordedAt":"2026-08-27T10:02:00Z","Kind":"model_response","Data":{"TurnID":"t2","Response":{"ID":"r2","Stop":"complete","Output":[{"Type":"tool_call","Data":{"CallID":"c2","Name":"TranscriptSearch","Arguments":"{\"query\":\"TestRetry\"}"}},{"Type":"tool_call","Data":{"CallID":"c3","Name":"mcp__kou__mistake_TranscriptSearch","Arguments":"{\"query\":\"TestRetry\"}"}}]}}}}}
+{"type":"operation","data":{"Operation":{"ID":"op3","Type":"file","Version":1,"Status":"completed","State":{"Action":"transcript_search","Path":"s.session.jsonl","Query":"TestRetry","Result":{"Text":"4 matches for \"TestRetry\" in the transcript"}}}}}
+{"type":"operation","data":{"Operation":{"ID":"op4","Type":"code","Version":1,"Status":"completed","State":{"Code":"x","Result":{"Calls":[{"Index":0,"Name":"transcriptSearch","Arguments":"TestRetry","Output":"found TestRetry"},{"Index":1,"Name":"bash","Arguments":"echo","Output":"TestRetry in bash"}]}}}}}
+`
+	path := filepath.Join(t.TempDir(), "s.session.jsonl")
+	if err := os.WriteFile(path, []byte(sample+searches), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Search(path, "testretry", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "5 matches for \"testretry\"") || !strings.Contains(result, "TestRetry in bash") ||
+		strings.Contains(result, "TranscriptSearch") || strings.Contains(result, "4 matches") || strings.Contains(result, "found TestRetry") {
+		t.Fatalf("result:\n%s", result)
+	}
+}

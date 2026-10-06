@@ -179,7 +179,7 @@ func staticDefinitions() []Definition {
 // The descriptions of the file tools, the code tool and the transcript
 // search: what the model reads about them.
 const (
-	ReadDescription = "Read a text file: its lines, numbered, from `offset` (a line number, 1 by default) up to `limit` lines (2000 by default). Long lines are cut at 2000 bytes. Prefer it to cat, sed -n or head in Bash: it is cheaper and its line numbers can be quoted. ViewImage shows images."
+	ReadDescription = "Read a text file: its lines, numbered, from `offset` (a line number, 1 by default) up to `limit` lines (2000 by default) and about 40,000 bytes; search a larger file with rg -n and read the parts you need. Long lines are cut at 2000 bytes. Prefer it to cat, sed -n or head in Bash: it is cheaper and its line numbers can be quoted. ViewImage shows images."
 
 	EditDescription = "Replace text in a file. `old_string` must match the file exactly, whitespace and indentation included and without the line numbers Read shows, and appear exactly once unless `replace_all` is set: include enough surrounding lines to make it unique. Read the file before editing it. The result shows the lines around the change. Use it instead of sed, python or heredocs for changes to existing files."
 

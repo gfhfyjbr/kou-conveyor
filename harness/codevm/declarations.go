@@ -12,9 +12,9 @@ import (
 func Declarations(config Config) string {
 	var text strings.Builder
 	text.WriteString(`// Run a shell command (bash -c) in the workspace. Resolves when it exits, whatever the exit code: check exitCode.
-// options.timeout is in seconds (default 600); options.maxOutputLength bounds each stream (default 40000).
+// options.timeout is in seconds (default 600; 0 for none but the run's own); options.maxOutputLength bounds each stream (default 40000).
 declare function bash(command: string, options?: { timeout?: number; maxOutputLength?: number }): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean }>;
-// A file's lines numbered like cat -n, from line offset (1) up to limit lines (2000): what you would quote.
+// A file's lines numbered like cat -n, from line offset (1) up to limit lines (2000) and about 40000 bytes: what you would quote.
 declare function read(path: string, options?: { offset?: number; limit?: number }): Promise<string>;
 // A file's whole text, as it is, to process in code (up to 4 MB).
 declare function readText(path: string): Promise<string>;

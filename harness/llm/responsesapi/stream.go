@@ -27,6 +27,10 @@ func (adapter *adapter) exchange(ctx context.Context, body []byte, cacheKey stri
 		request := adapter.remoteRequest(body, cacheKey)
 		result := adapter.exchangeAttempt(ctx, request, events)
 		if !result.retry || attempt >= adapter.maxAttempts {
+			if limit := usageLimit(result, time.Now()); limit != nil {
+				// The harness waits for the limit to lift.
+				return result.status, nil, limit
+			}
 			return result.status, result.body, result.err
 		}
 		if err := ctx.Err(); err != nil {
@@ -168,11 +172,15 @@ func (state *responseState) observe(data []byte) error {
 		Message     string         `json:"message"`
 		Param       string         `json:"param"`
 		Error       *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-			Param   string `json:"param"`
-			Type    string `json:"type"`
+			Code            string         `json:"code"`
+			Message         string         `json:"message"`
+			Param           string         `json:"param"`
+			Type            string         `json:"type"`
+			ResetsAt        jsontext.Value `json:"resets_at"`
+			ResetsInSeconds jsontext.Value `json:"resets_in_seconds"`
 		} `json:"error"`
+		ResetsAt        jsontext.Value `json:"resets_at"`
+		ResetsInSeconds jsontext.Value `json:"resets_in_seconds"`
 	}
 	if err := json.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("invalid Responses stream event JSON: %w", err)
@@ -200,7 +208,11 @@ func (state *responseState) observe(data []byte) error {
 		// failure). Read both so the surfaced error is diagnosable and classifiable
 		// instead of an opaque empty "status 200:".
 		code, message, param, kind := event.Code, event.Message, event.Param, ""
+		resetsAt := resetTime(event.ResetsAt, event.ResetsInSeconds, time.Now())
 		if event.Error != nil {
+			if resetsAt.IsZero() {
+				resetsAt = resetTime(event.Error.ResetsAt, event.Error.ResetsInSeconds, time.Now())
+			}
 			if code == "" {
 				code = event.Error.Code
 			}
@@ -215,7 +227,7 @@ func (state *responseState) observe(data []byte) error {
 		if kind == "" {
 			kind = "error"
 		}
-		state.err = &APIError{StatusCode: http.StatusOK, Code: code, Message: message, Param: param, Type: kind}
+		state.err = &APIError{StatusCode: http.StatusOK, Code: code, Message: message, Param: param, Type: kind, ResetsAt: resetsAt}
 	}
 	return nil
 }

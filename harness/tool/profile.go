@@ -107,13 +107,13 @@ func (profile Profile) Description() string {
 	case ProfileAuto:
 		return "By the model: edit for Claude, patch for GPT"
 	case ProfileEdit:
-		return "Bash, Read, Edit, Write, ViewImage"
+		return "Bash, Read, Edit, Write, ViewImage, TranscriptSearch"
 	case ProfilePatch:
-		return "Bash, Read, apply_patch, ViewImage"
+		return "Bash, Read, apply_patch, ViewImage, TranscriptSearch"
 	case ProfileCode:
-		return "Code only: JavaScript that calls the tools"
+		return "Code only: JavaScript that calls the tools, transcriptSearch() among them"
 	case ProfileShell:
-		return "Bash and ViewImage: files through the shell"
+		return "Bash, ViewImage and TranscriptSearch: files through the shell"
 	}
 	return ""
 }

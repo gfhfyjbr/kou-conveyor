@@ -44,12 +44,18 @@ type builder struct {
 	usage      int64
 	usageMark  int
 	toolTokens int64
-	// transcript is the file that keeps the whole conversation.
+	// transcript is the file that keeps the whole conversation; memory
+	// is what a compaction keeps besides the summary, and touched the
+	// files the compacted conversation read or changed.
 	transcript string
+	memory     Memory
+	touched    []touchedFile
 	// pruning says when the oldest tool results are cut down; pruned
-	// counts those cut so far.
-	pruning PruneOptions
-	pruned  int
+	// counts those cut so far, and imagesLeftOut the images left out
+	// (images.go).
+	pruning       PruneOptions
+	pruned        int
+	imagesLeftOut int
 }
 
 var _ Builder = (*builder)(nil)
@@ -227,6 +233,7 @@ func (current *builder) Commit() {
 }
 
 func (current *builder) Build() (Result, error) {
+	current.boundImages()
 	current.prune()
 	request := current.request
 	input := make([]llm.Item, 0, len(current.committedPrefix)+len(current.stagedSuffix))
@@ -250,6 +257,13 @@ func (current *builder) Build() (Result, error) {
 			Kind:   ChangeTruncated,
 			Source: "tool results",
 			Reason: fmt.Sprintf("%d older tool results were pruned to save context", current.pruned),
+		})
+	}
+	if current.imagesLeftOut > 0 {
+		result.Report.Changes = append(result.Report.Changes, Change{
+			Kind:   ChangeOmitted,
+			Source: "images",
+			Reason: fmt.Sprintf("%d older images were left out to keep the requests within the provider's limits", current.imagesLeftOut),
 		})
 	}
 	return result, nil

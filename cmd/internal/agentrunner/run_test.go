@@ -55,7 +55,7 @@ description: Review code.
 	var stdout, stderr bytes.Buffer
 	code := RunMain(
 		t.Context(),
-		[]string{"-workspace", workspace, "-session-directory", sessions},
+		[]string{"-workspace", workspace, "-session-directory", sessions, "-log-directory", filepath.Join(workspace, "logs")},
 		func(name string) string {
 			switch name {
 			case "OPENAI_API_KEY":
@@ -578,11 +578,16 @@ func TestReasoningEffortMapsEveryThinkingLevel(t *testing.T) {
 	}
 }
 
-func TestResolveLogDirectoryDefaultsToWorkspaceLogs(t *testing.T) {
-	if got := resolveLogDirectory("/work", ""); got != filepath.Join("/work", "logs") {
-		t.Fatalf("resolveLogDirectory default = %q", got)
+func TestRunWritesNoLogUnlessAsked(t *testing.T) {
+	run := newCompactionRun(t)
+	run.answer = func(llm.Request) llm.Response {
+		return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
 	}
-	if got := resolveLogDirectory("/work", " /elsewhere "); got != "/elsewhere" {
-		t.Fatalf("resolveLogDirectory configured = %q", got)
+	if output, code := run.do(`{"prompt":"hi"}`); code != 0 {
+		t.Fatalf("exit %d: %s", code, output)
+	}
+	entries, err := os.ReadDir(run.workspace)
+	if err != nil || slices.ContainsFunc(entries, func(entry os.DirEntry) bool { return entry.Name() == "logs" }) {
+		t.Fatalf("workspace holds %v, %v", entries, err)
 	}
 }

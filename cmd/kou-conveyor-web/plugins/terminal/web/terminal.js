@@ -32,6 +32,15 @@ const FONTS = [
   ['JetBrainsMonoNL-Italic.ttf', 'JetBrains Mono NL Italic', 400, 'italic'],
   ['JetBrainsMonoNL-BoldItalic.ttf', 'JetBrains Mono NL Bold Italic', 700, 'italic'],
 ];
+const FALLBACKS = [
+  // macOS's Apple logo, U+F8FF, is in Apple's fonts alone: the Nerd Font's
+  // apple (U+F179) stands for it (fonts/KouAppleLogo.ttf, made from
+  // SymbolsNerdFontMono).
+  ['KouAppleLogo.ttf', 'Kou Apple Logo'],
+  ['NotoSansSymbols2-Regular.ttf', 'Noto Sans Symbols 2'],
+  ['NotoSansSymbols-Regular.ttf', 'Noto Sans Symbols'],
+  ['NotoSansMath-Regular.ttf', 'Noto Sans Math'],
+];
 
 export default function activate(cockpit) {
   const { h, prefs } = cockpit;
@@ -70,6 +79,10 @@ export default function activate(cockpit) {
     }
     for (const [file, name, weight, style] of FONTS) list.push({ url: fontURL(file), name, weight, style });
     list.push({ url: fontURL('SymbolsNerdFontMono-Regular.ttf'), name: 'Symbols Nerd Font Mono' });
+    // restty draws only from these, with no font of the page's to fall back
+    // on: the symbols agents draw with (⏺ ✻ ⎿, braille spinners, ✔ ★ ⧉)
+    // come from Noto, the Apple logo from a font of its own.
+    for (const [file, name] of FALLBACKS) list.push({ url: fontURL(file), name });
     if (family) list.push({ family: 'Apple Color Emoji', local: 'prefer', name: 'Apple Color Emoji' });
     return list;
   };

@@ -79,7 +79,7 @@ func TestCoordinatorSchedulesAvailableCallAlongsideUnavailableCall(t *testing.T)
 	for _, status := range store.appendedStatuses {
 		switch status.CallID {
 		case "unknown":
-			if status.Status.Error != `tool "unknown-tool" is not available` || len(status.Operations) != 0 || len(status.Status.WaitingFor) != 0 {
+			if status.Status.Error != `tool "unknown-tool" is not available; the tools are Bash` || len(status.Operations) != 0 || len(status.Status.WaitingFor) != 0 {
 				t.Fatalf("unavailable call status = %#v", status)
 			}
 		case "valid":

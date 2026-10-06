@@ -51,8 +51,9 @@ const (
 	trimmedResultBytes = 2000
 
 	// Token estimates: the providers' tokenizers average close to four bytes
-	// per token of English text and code, and bill an image by its size,
-	// which a reference does not tell.
+	// per token of English text and code, and bill an image by its size
+	// (images.go); imageTokens is an image whose size cannot be told, such
+	// as a reference.
 	bytesPerToken = 4
 	itemTokens    = 4
 	imageTokens   = 1600
@@ -162,13 +163,14 @@ func (current *builder) Compact(response llm.Response) bool {
 	if summary == "" {
 		return false
 	}
+	current.touched = touchedFiles(current.committedPrefix, current.touched)
 	message := current.compactedMessage(summary)
 	current.compacted = len(current.committedPrefix) - 1 - len(current.unanswered)
 	prefix := make([]llm.Item, 0, 2+len(current.unanswered))
 	prefix = append(prefix, current.committedPrefix[0], message)
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
-	current.pruned = 0
+	current.pruned, current.imagesLeftOut = 0, 0
 	current.usage, current.usageMark = 0, 0
 	return true
 }
@@ -231,9 +233,7 @@ func (current *builder) compactedMessage(summary string) llm.Item {
 		text.WriteString("</running_tool_calls>")
 	}
 	text.WriteString("\n\nThe summary:\n<summary>\n" + summary + "\n</summary>")
-	if current.transcript != "" {
-		fmt.Fprintf(&text, "\n\nIf you need details from before the compaction, such as exact code, error messages, command output or what you wrote, read them from the session's full transcript at %s (JSON Lines, one session record per line).", current.transcript)
-	}
+	text.WriteString(current.memoryText())
 	text.WriteString("\n\n" + compactedResume)
 	return userMessage(text.String())
 }
@@ -379,13 +379,16 @@ func estimateItem(item llm.Item) int64 {
 	tokens := int64(itemTokens)
 	switch data := item.Data.(type) {
 	case llm.Message:
-		tokens += estimateText(data.Text) + int64(len(data.Images))*imageTokens
+		tokens += estimateText(data.Text)
+		for _, image := range data.Images {
+			tokens += imageTokensOf(image.URL)
+		}
 	case llm.ToolCall:
 		tokens += estimateText(data.Name) + estimateText(data.Arguments)
 	case llm.ToolResult:
 		for _, part := range data.Output {
 			if part.Kind == llm.ToolResultImage {
-				tokens += imageTokens
+				tokens += imageTokensOf(part.Value)
 			} else {
 				tokens += estimateText(part.Value)
 			}

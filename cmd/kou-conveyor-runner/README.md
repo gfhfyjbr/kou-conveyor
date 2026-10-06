@@ -123,7 +123,15 @@ generation, and older models get a thinking budget instead), thinking
 summaries appear in the timeline, and the system prompt and conversation are
 cached between turns. Responses are streamed and capped at 64,000 tokens, or
 128,000 at `xhigh` and `max`; set `KOU_CONVEYOR_LLM_MAX_TOKENS` to change
-that. Transient API errors, overloads and stalled streams are retried.
+that. Transient API errors, overloads and stalled streams are retried; a rate
+limit that lifts only after more than a minute is left to the harness, which
+waits for it (see [Long runs](#long-runs)).
+
+The context keeps the thinking of the latest two turns: the API clears older
+thinking before the model reads the request (context editing's
+`clear_thinking`), so a long session does not carry, and pay for, reasoning
+long done with. `KOU_CONVEYOR_THINKING_TURNS` sets how many turns keep
+theirs, and `0` keeps all of it, as an endpoint without context editing does.
 
 On Anthropic's API, Claude Opus 5 and Fable requests opt into server-side
 refusal fallbacks: if a safety classifier declines a request, Anthropic
@@ -137,29 +145,66 @@ model get a plain request without thinking or cache controls.
 ### Compaction
 
 Before a turn whose request would come within 33,000 tokens of the model's
-context window, the runner compacts the conversation: the model writes a
-summary of it in a turn of the `compaction` type, the summary replaces the
-conversation, and the turn that was due continues from it. The model is asked
-to think the conversation through in an `<analysis>` block first and then
-write a `<summary>` in nine sections (the requests and intent, key concepts,
-files and code, errors and fixes, problem solving, all the user's messages,
-pending tasks, current work, and the next step, with quotes); only the
-summary is kept. Unanswered prompts stay as they were after the summary, the
-user's earlier prompts are kept word for word as far as 40,000 characters
-allow, and tool calls still running are listed; a result that arrives after
-its call was summarized reaches the model as a message. The message with the
-summary names the session file, whose JSON lines keep the full conversation
-for details the summary left out. The session file records the compaction,
-so a resumed or branched session starts from the summary.
+context window, or past 200,000 tokens, the runner compacts the
+conversation: the model writes a summary of it in a turn of the `compaction`
+type, the summary replaces the conversation, and the turn that was due
+continues from it. The model is asked to think the conversation through in
+an `<analysis>` block first and then write a `<summary>` in nine sections
+(the requests and intent, key concepts, files and code, errors and fixes,
+hypotheses and evidence, all the user's messages, pending tasks, current
+work, and the next step, with quotes); only the summary is kept. The
+hypotheses — each with the evidence for and against it and its status — the
+negative results and what was deferred carry over from one summary to the
+next word for word until they are closed, so a long investigation does not
+try again what failed. Unanswered prompts stay as they were after the
+summary, the user's earlier prompts are kept word for word as far as 40,000
+characters allow, and tool calls still running are listed; a result that
+arrives after its call was summarized reaches the model as a message. The
+session file records the compaction, so a resumed or branched session starts
+from the summary.
+
+Each summary summarizes the one before it, so what one compaction leaves
+out no later one gets back. After the summary, the message therefore shows:
+
+- the model's notes, which it keeps in `<id>.notes.md` beside the session
+  file, up to 16,000 bytes of them: no compaction changes them. When the
+  conversation nears the threshold, 30,000 tokens before it or a fifth of it
+  if that is less, the harness reminds the model, once, to bring them up to
+  date;
+- the 20 files the conversation read or changed last, the latest first;
+- where to find what the summary left out: `TranscriptSearch`, which
+  searches the whole conversation, compacted parts included
+  (`transcriptSearch()` in `Code`, or `rg` on the session file when neither
+  is offered), and `<id>.summaries.md`, where the runner appends the summary
+  of every compaction, oldest first.
+
+When a cockpit records how the session changes the workspace (see the
+repository's [README](../../README.md#changes)), the turn after a compaction
+tells the model the snapshot of the workspace the compaction came at, and the
+`git diff --stat` that shows what changed since the compaction before. Three
+compactions in a row with no file changed (no call of `Edit`, `Write` or
+`apply_patch`, and no new snapshot) have the harness ask the model whether
+the work goes round in circles.
 
 The runner knows the context windows of the OpenAI and Claude models;
 `KOU_CONVEYOR_CONTEXT_WINDOW` sets it for others (default `128000`, and
 `200k` or `1m` work too). `KOU_CONVEYOR_AUTO_COMPACT` sets when to compact:
 a number of tokens (`150000`, `150k`), a share of the window (`80%`), or
-`off`. By default it is 33,000 tokens short of the window (167k of 200k, 967k
-of 1M), or a quarter short of a window under 132,000 tokens (96k of 128k).
-The window counts the request's input; the size is the provider's count for
-the latest turn plus an estimate of what came after it.
+`off`. By default it is 33,000 tokens short of the window (167k of 200k), or
+a quarter short of a window under 132,000 tokens (96k of 128k), and 200,000
+tokens at most (200k of 1M): past that a model reasons worse and every turn
+costs more, long before the window is full. The window counts the request's
+input; the size is the provider's count for the latest turn plus an estimate
+of what came after it, images by their pixels, as providers bill them.
+
+Between compactions, once the conversation reaches 70% of the threshold,
+the oldest tool results are cut, in one batch, to their first 600 bytes and
+a note that says where the whole output is (`TranscriptSearch` finds it
+too), until the conversation is back to about half the threshold; the latest
+12 results stay whole. Cutting a batch at a time changes the prefix the
+provider caches once a batch rather than every turn. The conversation keeps
+40 images and 16 MB of them at most: past either, the oldest are left out,
+down to three quarters of the bound, a note in place of each.
 
 Automatic compaction backs off where it cannot help. After three compactions
 in a row that produced no summary it stops until a compaction succeeds (a
@@ -197,6 +242,31 @@ times.
 Claude models count `max_tokens` against the context window, so when a long
 conversation leaves less room than the usual maximum, the request asks for a
 shorter response instead of failing.
+
+### Long runs
+
+A run can be bounded: `KOU_CONVEYOR_MAX_TURNS` and
+`KOU_CONVEYOR_MAX_COMPACTIONS` bound its model turns and compactions, and
+`KOU_CONVEYOR_MAX_DURATION` (`90m`, `8h`) the time it works; none is set by
+default. Once one is reached, the model is asked for its final report — what
+was done, what was not and what is left — and the run stops after it,
+canceling the tool calls still running. Every 30 minutes of work
+(`KOU_CONVEYOR_REPORT_EVERY`, `0` for never) the model is asked to tell the
+user in a few lines how the work goes.
+
+A request refused for a usage limit that the retries do not outlast — a
+subscription's five-hour or weekly window, an account the gateway cools
+down, a rate limit that held through every attempt — is sent again once the
+limit lifts: when the provider says it does, or after 5 minutes when it does
+not say, waiting 6 hours at most and twice in a row; the wait shows as a
+retry. A compaction refused so is made once the limit lifts. A quota that
+only billing lifts ends the run.
+
+The third time the model reads the same lines of a file, unchanged since it
+first read them, the result says so.
+
+The runner writes a JSONL log of its output, a file a run, only to the
+directory `-log-directory` names; the session file keeps the same.
 
 ### Plugins
 

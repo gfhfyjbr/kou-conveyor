@@ -80,7 +80,7 @@ take any part's place (`ui.mount(slot, { id, order, node })`), hide it
 
 | Slot | Offered by | Holds, by order |
 | --- | --- | --- |
-| `rail.head` | layout | the mark (`mark`) |
+| `rail.head` | layout | the mark (`mark`); beside it, while the cockpit is carried through its relay, the planet that says "tunnelling" (`tunnel`, 10) |
 | `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`, 10) and the canvases that run (`canvas-live`, 20); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20) and help (`help-open`, 30) |
 | `bar.crumbs` | layout | the workspace and the title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
 | `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
@@ -197,6 +197,7 @@ off.
 | `plugins`, `skills` | plugins, skills | `show()`, `trust(trusted)`, `enable(name, enabled)`, `reload()`; `show()` |
 | `changes`, `palette`, `help`, `theme` | the plugins of those names | `toggle()`, `open()`; `open()`, `close()`; `open()`, `close()`; `current()`, `set(theme)`, `toggle()` |
 | `accounts`, `connection`, `workspaces`, `session-list` | the plugins of those names | `show()`, `showUsage(range)`, …; `open()`, `viaGateway(url)`, …; `openMenu(anchor)`, `command(query)`, …; `rename(ws, id)`, … |
+| `tunnel` | tunnel | `status()` — what `GET /api/tunnel` said last: `{ state, wanted, configured, url, host, error, remote, … }`, `state` one of `off`, `setup`, `connecting`, `up`, `retrying`, `unavailable` —, `open()`, `close()`, `start()`, `stop()`, `setup()` (hands the setting up of the relay to the agent, in a session of its own), `refresh()` |
 
 ## Events
 

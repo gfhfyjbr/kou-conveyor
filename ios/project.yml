@@ -1,0 +1,82 @@
+# The iPhone app that reaches the cockpit through its relay (kou-conveyor-web
+# tunnel). The Xcode project is made from this file:
+#
+#   cd ios && xcodegen generate && open KouConveyor.xcodeproj
+#
+# See README.md.
+name: KouConveyor
+options:
+  bundleIdPrefix: io.github.gfhfyjbr
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    # Simulator builds are signed to run locally, which the keychain needs;
+    # a device build takes the team chosen in Xcode.
+    CODE_SIGN_STYLE: Automatic
+    "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": "-"
+targets:
+  KouConveyor:
+    type: application
+    platform: iOS
+    sources:
+      - path: KouConveyor
+    info:
+      path: KouConveyor/Info.plist
+      properties:
+        CFBundleDisplayName: kou-conveyor
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSRequiresIPhoneOS: true
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        # kouconveyor://pair?url=…&token=…&fp=… — the link /tunnel shows,
+        # which the Camera app opens here when it reads the pairing code.
+        CFBundleURLTypes:
+          - CFBundleURLName: io.github.gfhfyjbr.kouconveyor.pair
+            CFBundleURLSchemes:
+              - kouconveyor
+        NSCameraUsageDescription: Scan the pairing code that /tunnel shows in the cockpit.
+        NSLocalNetworkUsageDescription: Reach a kou-conveyor relay on your local network.
+        # A relay pins its own certificate (https with a fingerprint), which
+        # the app checks itself; one started with -tls off, on a tailnet,
+        # speaks plain http.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.gfhfyjbr.kouconveyor
+        PRODUCT_NAME: KouConveyor
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        GENERATE_INFOPLIST_FILE: NO
+        ENABLE_PREVIEWS: YES
+schemes:
+  KouConveyor:
+    build:
+      targets:
+        KouConveyor: all
+    run:
+      config: Debug
+    archive:
+      config: Release

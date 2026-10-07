@@ -78,12 +78,13 @@ in the order built in, system-wide, workspace (a workspace's only once it
 is trusted): a workspace can bring its own version of a user's plugin, and
 a plugin named `composer` replaces the cockpit's composer. So name yours
 apart from the built-in ones unless you mean to replace one: `core`,
-`guide`, `canvas-agent` (the canvas's tools, for agents on a canvas), and
-the browser cockpit's `accounts`, `canvas`, `changes`, `commands`,
-`composer`, `connection`, `edit`, `effort`, `explorer`, `files`, `header`,
-`help`, `images`, `inspector`, `layout`, `markdown`, `models`, `palette`,
-`plugins`, `queue`, `session`, `session-list`, `sidebar`, `skills`,
-`terminal`, `theme`, `timeline`, `ui` and `workspaces`
+`guide`, `canvas-agent` (the canvas's tools, for agents on a canvas),
+`tunnel-agent` (how to set up the cockpit's tunnel, for agents the browser
+cockpit runs), and the browser cockpit's `accounts`, `canvas`, `changes`,
+`commands`, `composer`, `connection`, `edit`, `effort`, `explorer`, `files`,
+`header`, `help`, `images`, `inspector`, `layout`, `markdown`, `models`,
+`palette`, `plugins`, `queue`, `session`, `session-list`, `sidebar`,
+`skills`, `terminal`, `theme`, `timeline`, `tunnel`, `ui` and `workspaces`
 (`kou-conveyor-runner -list-plugins` lists what is there now). Two active
 plugins cannot share a tool or a command: the first keeps it and the other's
 is left out, with an error.

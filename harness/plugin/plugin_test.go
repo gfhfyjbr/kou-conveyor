@@ -120,15 +120,17 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 	// Off the canvas, the canvas's tools are not there.
 	noCanvas := func(string) string { return "" }
 	const canvasAgent = "builtin:canvas-agent=off[CanvasView,CanvasSpawn,CanvasRemove,CanvasConnect,CanvasDisconnect,CanvasMove,CanvasSend,CanvasRead,CanvasEmit] "
+	// Nor, outside the browser cockpit, the skill that sets up its tunnel.
+	const builtins = "builtin:core=on[Bash,ViewImage,SkillUse] " + canvasAgent + "builtin:guide=on[] builtin:tunnel-agent=off[] "
 	found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: noCanvas})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] "+canvasAgent+"builtin:guide=on[] user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
+	if got := names(found); got != builtins+"user:shared=on[UserTool] user:other=on[OtherTool] workspace:shared=off[WorkspaceTool]" || found.Trusted {
 		t.Fatalf("untrusted: %s", got)
 	}
 	if len(found.Errors) != 2 || !strings.Contains(found.Errors[0].Error(), "BROKEN") || !strings.Contains(found.Errors[1].Error(), `tool "Bash" is "core"'s already`) {
 		t.Fatalf("errors = %v", found.Errors)
 	}
-	if found.Plugins[1].Reason != "only agents on a canvas have it" || found.Plugins[5].Reason != "the workspace is not trusted" {
-		t.Fatalf("reasons = %q, %q", found.Plugins[1].Reason, found.Plugins[5].Reason)
+	if found.Plugins[1].Reason != "only agents on a canvas have it" || found.Plugins[6].Reason != "the workspace is not trusted" {
+		t.Fatalf("reasons = %q, %q", found.Plugins[1].Reason, found.Plugins[6].Reason)
 	}
 
 	var settings Settings
@@ -138,11 +140,11 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	found = Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: noCanvas})
-	if got := names(found); got != "builtin:core=on[Bash,ViewImage,SkillUse] "+canvasAgent+"builtin:guide=on[] user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
+	if got := names(found); got != builtins+"user:shared=off[UserTool] user:other=off[Bash,OtherTool] workspace:shared=on[WorkspaceTool]" || !found.Trusted {
 		t.Fatalf("trusted: %s", got)
 	}
-	if found.Plugins[3].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[4].Reason != "turned off" {
-		t.Fatalf("reasons = %q, %q", found.Plugins[3].Reason, found.Plugins[4].Reason)
+	if found.Plugins[4].Reason != "replaced by the workspace plugin of the same name" || found.Plugins[5].Reason != "turned off" {
+		t.Fatalf("reasons = %q, %q", found.Plugins[4].Reason, found.Plugins[5].Reason)
 	}
 	if active := found.Active(); len(active) != 3 || len(active[2].Commands) != 1 {
 		t.Fatalf("active = %+v", active)
@@ -156,6 +158,17 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 	}
 	if found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: onCanvas}); !found.Plugins[1].Active || found.Plugins[1].Instructions == "" {
 		t.Fatalf("canvas-agent = %+v", found.Plugins[1])
+	}
+	// Run by the browser cockpit, which keeps the tunnel's config, the agent
+	// has the skill that sets the tunnel up.
+	inCockpit := func(name string) string {
+		if name == "KOU_CONVEYOR_TUNNEL_CONFIG" {
+			return "/tmp/tunnel.json"
+		}
+		return ""
+	}
+	if found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: inCockpit}); found.Plugins[3].Name != "tunnel-agent" || !found.Plugins[3].Active || found.Plugins[3].Skills == "" {
+		t.Fatalf("tunnel-agent = %+v", found.Plugins[3])
 	}
 
 	found = Discover(Options{ConfigDirectory: config, Workspace: workspace, Disabled: []string{"core"}})

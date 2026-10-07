@@ -356,8 +356,9 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		SessionID: req.SessionID, MessageID: req.MessageID, Prompt: req.Prompt, Model: req.Model, Thinking: req.Thinking,
 		Resume: req.Resume, Rewind: req.Rewind, Compact: req.Compact, Instructions: req.Instructions,
 		Images: req.Images,
-		// The agent of a canvas's node is given the canvas's variables.
-		Env: s.canvas.RunEnv(ws.ID, req.SessionID),
+		// The agent of a canvas's node is given the canvas's variables; every
+		// agent, where the tunnel's configuration is (tunnel.go).
+		Env: append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...),
 	})
 	if err != nil {
 		if tracker != nil {

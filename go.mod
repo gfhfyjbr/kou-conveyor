@@ -16,7 +16,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/muesli/termenv v0.16.0
 	github.com/oapi-codegen/runtime v1.6.0
-	github.com/router-for-me/CLIProxyAPI/v8 v8.0.15
+	github.com/router-for-me/CLIProxyAPI/v8 v8.0.16
 	github.com/sirupsen/logrus v1.9.3
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.46.0
@@ -56,6 +56,7 @@ require (
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.17.7 // indirect
@@ -113,4 +114,5 @@ require (
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 	google.golang.org/protobuf v1.34.2 // indirect
+	rsc.io/qr v0.2.0 // indirect
 )

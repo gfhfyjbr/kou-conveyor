@@ -39,6 +39,9 @@ type options struct {
 	rebuild bool
 	// canvas runs the canvases (canvas.go).
 	canvas bool
+	// tunnel is whether the cockpit is carried through its relay from the
+	// start (tunnel.go): on, off, or auto, as it was when it last ran.
+	tunnel string
 }
 
 func parseOptions(args []string, output io.Writer) (options, error) {
@@ -65,11 +68,22 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 		"the page and built-in plugins: auto (live from the checkout the program was built from, while it is there, else compiled in), embedded, or a directory holding static/ and plugins/ (also KOU_CONVEYOR_WEB_ASSETS)")
 	canvasFlag := f.String("canvas", envOr("KOU_CONVEYOR_CANVAS", "on"),
 		"the canvases: boards of terminals and agents wired together, which agents may build too: on or off (also KOU_CONVEYOR_CANVAS)")
+	f.StringVar(&o.tunnel, "tunnel", envOr("KOU_CONVEYOR_TUNNEL", "auto"),
+		"carry the cockpit through a relay on another host to the iPhone app and browsers elsewhere: on (from the start), off (until /tunnel starts it) or auto (as it was when the cockpit last ran) (also KOU_CONVEYOR_TUNNEL); /tunnel in the cockpit, or kou-conveyor-web tunnel, sets the relay up")
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
 	if f.NArg() != 0 {
 		return o, errors.New("unexpected arguments")
+	}
+	switch o.tunnel = strings.ToLower(strings.TrimSpace(o.tunnel)); o.tunnel {
+	case "on", "off", "auto":
+	case "1", "true":
+		o.tunnel = "on"
+	case "0", "false":
+		o.tunnel = "off"
+	default:
+		return o, errors.New("tunnel must be on, off or auto")
 	}
 	switch strings.ToLower(strings.TrimSpace(*canvasFlag)) {
 	case "on", "1", "true":
@@ -142,6 +156,9 @@ func main() {
 }
 
 func runMain(args []string) int {
+	if len(args) > 0 && args[0] == "tunnel" {
+		return tunnelMain(args[1:], os.Stdout, os.Stderr)
+	}
 	o, err := parseOptions(args, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -171,8 +188,9 @@ func runMain(args []string) int {
 		return 1
 	}
 	s := newServer(ctx, o, listener.Addr())
+	handler := s.handler()
 	server := &http.Server{
-		Handler:           s.handler(),
+		Handler:           handler,
 		BaseContext:       func(net.Listener) context.Context { return ctx },
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -202,6 +220,15 @@ func runMain(args []string) int {
 	}
 	if s.anyHost {
 		fmt.Println("warning: listening on all interfaces; anyone who can reach this port can run commands in the workspace")
+	}
+	// The tunnel serves what the pages here are served, through its relay.
+	s.tunnel.start(ctx, handler)
+	if status := s.tunnel.view(false); status.Wanted {
+		where := status.URL
+		if where == "" {
+			where = "waiting for a relay to be set up (/tunnel)"
+		}
+		fmt.Printf("tunnel            %s\n", where)
 	}
 
 	select {

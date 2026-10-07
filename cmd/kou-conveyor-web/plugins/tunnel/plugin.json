@@ -1,0 +1,5 @@
+{
+  "name": "tunnel",
+  "description": "The cockpit carried through a relay on another host, to the iPhone app and to browsers elsewhere: the planet beside the mark while it is on, /tunnel, which starts it or has the agent set the relay up, and its dialog with the pairing code.",
+  "web": {"script": "web/tunnel.js", "style": "web/tunnel.css", "after": ["layout", "ui", "session"]}
+}

@@ -50,6 +50,9 @@ type server struct {
 	// models is the model list an endpoint gave last (models.go).
 	models catalogCache
 
+	// tunnel carries the cockpit through a relay elsewhere (tunnel.go).
+	tunnel *tunnelManager
+
 	// assets are the page and the built-in plugins (assets.go); watch
 	// follows plugins for the pages open (pluginevents.go).
 	assets *assets
@@ -104,6 +107,7 @@ func newServer(ctx context.Context, o options, addr net.Addr) *server {
 		s.rebuild = newRebuilder(s.assets)
 	}
 	s.explorer = newExplorer()
+	s.tunnel = newTunnelManager(tunnelConfigPath(o.SettingsFile), o.tunnel)
 	s.startTerminals()
 	s.startCanvas(addr)
 	// A page on another site can resolve its own name to this address (DNS
@@ -135,6 +139,9 @@ func (s *server) handler() http.Handler {
 		files.ServeHTTP(w, r)
 	}))
 	mux.HandleFunc("GET /api/config", s.handleConfig)
+	mux.HandleFunc("GET /api/tunnel", s.handleTunnel)
+	mux.HandleFunc("POST /api/tunnel", s.handleTunnelAction)
+	mux.HandleFunc("GET /api/tunnel/qr", s.handleTunnelQR)
 	mux.HandleFunc("GET /api/settings", s.handleSettings)
 	mux.HandleFunc("PUT /api/settings", s.handleSaveSettings)
 	mux.HandleFunc("POST /api/settings/check", s.handleCheckSettings)
@@ -253,7 +260,9 @@ func (s *server) secure(next http.Handler) http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
-		if !s.hostAllowed(r.Host) {
+		// What comes through the tunnel names the relay's host; the relay
+		// took it with its token, which no page of another site has.
+		if !s.hostAllowed(r.Host) && !viaTunnel(r) {
 			writeError(w, http.StatusForbidden, "unexpected Host header")
 			return
 		}

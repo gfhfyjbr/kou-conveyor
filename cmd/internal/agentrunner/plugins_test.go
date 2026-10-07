@@ -174,13 +174,15 @@ func TestRunnerListsPlugins(t *testing.T) {
 	code := RunMain(t.Context(), []string{"-workspace", workspace, "-list-plugins"}, func(string) string { return "" }, func() []string { return nil },
 		strings.NewReader(""), &stdout, &bytes.Buffer{}, testConfig(&fakeClient{}))
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-	if code != 0 || len(lines) != 5 ||
+	if code != 0 || len(lines) != 6 ||
 		!strings.Contains(lines[0], `"name":"core"`) || !strings.Contains(lines[0], `"source":"builtin","active":true,"tools":["Bash","ViewImage","SkillUse"]`) ||
 		// The canvas's tools are only for agents on a canvas.
 		!strings.Contains(lines[1], `"name":"canvas-agent"`) || !strings.Contains(lines[1], `"source":"builtin","active":false,"reason":"only agents on a canvas have it","tools":["CanvasView",`) ||
 		!strings.Contains(lines[2], `"name":"guide"`) || !strings.Contains(lines[2], `"source":"builtin","active":true,"skills":true`) ||
-		!strings.Contains(lines[3], `"name":"echo"`) || !strings.Contains(lines[3], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"],"skills":true,"instructions":true`) ||
-		!strings.Contains(lines[4], `"error":`) || !strings.Contains(lines[4], "lowercase") {
+		// The tunnel's skill, for agents the browser cockpit runs.
+		!strings.Contains(lines[3], `"name":"tunnel-agent"`) || !strings.Contains(lines[3], `"source":"builtin","active":false,"reason":"it needs KOU_CONVEYOR_TUNNEL_CONFIG set","skills":true`) ||
+		!strings.Contains(lines[4], `"name":"echo"`) || !strings.Contains(lines[4], `"active":false,"reason":"the workspace is not trusted","tools":["Echo"],"commands":["/shout"],"skills":true,"instructions":true`) ||
+		!strings.Contains(lines[5], `"error":`) || !strings.Contains(lines[5], "lowercase") {
 		t.Fatalf("exit %d:\n%s", code, stdout.String())
 	}
 }

@@ -1,0 +1,7 @@
+# Made by `xcodegen generate` from project.yml.
+/KouConveyor.xcodeproj/
+/KouConveyor/Info.plist
+# xcodebuild -derivedDataPath
+/build/
+/DerivedData/
+xcuserdata/

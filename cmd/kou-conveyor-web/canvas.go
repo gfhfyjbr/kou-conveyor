@@ -77,7 +77,7 @@ func (h canvasHost) StopRun(ws canvas.Workspace, session string) bool {
 	if current == nil {
 		return false
 	}
-	current.stop()
+	current.stop("the user stopped the node's run on the canvas")
 	return true
 }
 

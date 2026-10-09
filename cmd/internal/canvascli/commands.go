@@ -334,7 +334,7 @@ var commands = map[string]command{
 	"wait": {
 		flags: map[string]flagKind{"until": valueFlag, "after": valueFlag, "timeout": valueFlag},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]"); err != nil {
+			if err := p.need(0, -1, "kou-canvas wait [<node>…] [--until idle|output|exit|answer|any] [--after N|cursor] [--timeout 600]"); err != nil {
 				return result{}, err
 			}
 			timeout := 600 * time.Second
@@ -345,11 +345,19 @@ var commands = map[string]command{
 				}
 				timeout = time.Duration(seconds) * time.Second
 			}
-			after, err := p.number("after")
-			if err != nil {
-				return result{}, err
+			// One node, waited for as before; several, or your children
+			// (none named), as CanvasWait does.
+			until, cursor := p.value("until"), p.value("after")
+			_, numeric := strconv.Atoi(strings.TrimSpace(cursor))
+			if len(p.args) == 1 && until != "answer" && until != "any" && (cursor == "" || numeric == nil) {
+				after, err := p.number("after")
+				if err != nil {
+					return result{}, err
+				}
+				return c.wait(ctx, p.args[0], until, intOf(after), timeout)
 			}
-			return c.wait(ctx, p.args[0], p.value("until"), intOf(after), timeout)
+			seconds := toolarg.Number(timeout.Seconds())
+			return c.waitAny(ctx, waitArgs{Nodes: p.args, Until: until, After: cursor, TimeoutS: &seconds})
 		},
 	},
 	"emit": {

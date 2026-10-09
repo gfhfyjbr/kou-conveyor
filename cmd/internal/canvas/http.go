@@ -105,6 +105,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/canvas/nodes/{node}/send", e.agentRoute(ScopeTalk, e.handleAgentSend))
 	mux.HandleFunc("GET /api/canvas/nodes/{node}/read", e.agentRoute(ScopeObserve, e.handleAgentRead))
 	mux.HandleFunc("GET /api/canvas/nodes/{node}/wait", e.agentRoute(ScopeObserve, e.handleAgentWait))
+	mux.HandleFunc("GET /api/canvas/wait", e.agentRoute(ScopeObserve, e.handleAgentWaitAny))
 	mux.HandleFunc("POST /api/canvas/emit", e.agentRoute("", e.handleEmit))
 	mux.HandleFunc("POST /api/canvas/hooks/{hook}", e.handleHook)
 }
@@ -1111,6 +1112,39 @@ func (e *Engine) handleAgentWait(w http.ResponseWriter, r *http.Request, a *agen
 		until = "idle"
 	}
 	result, err := a.c.wait(r.Context(), a.resolve(r.PathValue("node")), until, after, parseTimeout(q.Get("timeout"), 10*time.Minute))
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+// handleAgentWaitAny waits for any of several nodes (nodes=a,b — IDs or
+// titles — or children, the default: those the caller made or is wired
+// to), until answer, idle, exit or any; after is the cursor the last wait
+// gave as next.
+func (e *Engine) handleAgentWaitAny(w http.ResponseWriter, r *http.Request, a *agentCall) {
+	q := r.URL.Query()
+	var ids []string
+	switch nodes := strings.TrimSpace(q.Get("nodes")); nodes {
+	case "", "children":
+		if ids = a.c.children(a.node.ID); len(ids) == 0 {
+			writeErr(w, errInvalid("you have no children on the canvas — nodes you made or are wired to: name the nodes to wait for"))
+			return
+		}
+	default:
+		seen := map[string]bool{}
+		for _, ref := range strings.Split(nodes, ",") {
+			if ref = strings.TrimSpace(ref); ref == "" {
+				continue
+			}
+			if id := a.resolve(ref); !seen[id] {
+				seen[id] = true
+				ids = append(ids, id)
+			}
+		}
+	}
+	result, err := a.c.waitAny(r.Context(), ids, q.Get("until"), q.Get("after"), parseTimeout(q.Get("timeout"), 10*time.Minute))
 	if err != nil {
 		writeErr(w, err)
 		return

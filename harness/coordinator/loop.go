@@ -147,7 +147,9 @@ type loopState struct {
 	graceStarted time.Time
 	// heartbeats counts the heartbeats posted in a row while the same
 	// tool calls run: each waits longer than the one before.
-	heartbeats int
+	// heartbeatWait is how long the heartbeat set last waits, to tell.
+	heartbeats    int
+	heartbeatWait time.Duration
 	// continues, retries and failures count what the harness asked of the
 	// model in a row: answers to go on with after the output limit cut
 	// one, answers again after refusals and empty answers, and requests
@@ -287,11 +289,20 @@ func (current *coordinator) Run(ctx context.Context) error {
 	if every := current.dependencies.ReportEvery; every > 0 {
 		report = time.After(every)
 	}
+	// reportHeld is set while a progress report waits for the end of
+	// calls that wait for others (onlyWaits).
+	reportHeld := false
 	for {
 		if !current.isWaitingForOnlyToolCalls() {
 			heartbeat = nil
 		} else if heartbeat == nil && current.dependencies.ToolHeartbeatInterval > 0 {
-			heartbeat = time.After(current.heartbeatInterval())
+			current.state.heartbeatWait = current.heartbeatInterval()
+			heartbeat = time.After(current.state.heartbeatWait)
+		}
+		if reportHeld && !current.onlyWaits() {
+			// The report held while the run waited for others is asked
+			// for a whole period after the wait: waiting is no work.
+			reportHeld, report = false, time.After(current.dependencies.ReportEvery)
 		}
 		select {
 		case <-ctx.Done():
@@ -304,9 +315,15 @@ func (current *coordinator) Run(ctx context.Context) error {
 			}
 
 		case <-report:
-			report = time.After(current.dependencies.ReportEvery)
-			if err := current.askForReport(ctx); err != nil {
-				return err
+			if current.onlyWaits() {
+				// A report asked for now would wake the run while it
+				// waits for others, with nothing done to report.
+				reportHeld, report = true, nil
+			} else {
+				report = time.After(current.dependencies.ReportEvery)
+				if err := current.askForReport(ctx); err != nil {
+					return err
+				}
 			}
 
 		case <-current.state.quotaWait:
@@ -555,9 +572,29 @@ func (current *coordinator) extendToolGrace() {
 
 // heartbeatInterval is how long the next heartbeat waits: the configured
 // interval, doubled for each heartbeat already posted for the same calls,
-// up to four times as long.
+// up to four times as long — four times at once for calls that wait for
+// others (onlyWaits), which end by their own timeouts.
 func (current *coordinator) heartbeatInterval() time.Duration {
+	if current.onlyWaits() {
+		return current.dependencies.ToolHeartbeatInterval << 2
+	}
 	return current.dependencies.ToolHeartbeatInterval << min(current.state.heartbeats, 2)
+}
+
+// onlyWaits reports a run that waits for tool calls alone, each of which
+// waits for something outside the agent, such as another agent's answer
+// (tool.Waiter).
+func (current *coordinator) onlyWaits() bool {
+	if !current.isWaitingForOnlyToolCalls() {
+		return false
+	}
+	for _, call := range current.state.toolCalls {
+		translator, exists := current.dependencies.Tools.Resolve(call.toolCall.Name)
+		if !exists || !tool.Waits(translator) {
+			return false
+		}
+	}
+	return true
 }
 
 // answerStop acts on how the model's response ended, where it did not end
@@ -1006,7 +1043,10 @@ func (current *coordinator) postHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode heartbeat tool calls: %w", err)
 	}
-	waited := current.heartbeatInterval()
+	waited := current.state.heartbeatWait
+	if waited <= 0 {
+		waited = current.heartbeatInterval()
+	}
 	current.state.heartbeats++
 	payload, err := json.Marshal(inbox.ControlMessage{
 		Mode:   inbox.Heartbeat,

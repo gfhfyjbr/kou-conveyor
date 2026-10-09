@@ -1134,6 +1134,9 @@ func (a *applier) commitLocked() []func() {
 		c.dropPendingLocked(id, "its node was removed")
 		if st == nil {
 			st = newState(StateStopped, "")
+		} else {
+			// What waits for the node learns that it is gone.
+			st.wake()
 		}
 		g := &grave{node: r.node, edges: r.edges, state: st, keep: r.keep}
 		if old := c.graves[id]; old != nil {

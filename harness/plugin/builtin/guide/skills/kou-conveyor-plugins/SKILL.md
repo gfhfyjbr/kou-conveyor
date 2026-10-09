@@ -199,6 +199,11 @@ Declaring one:
   calls it: say what it does, what it returns, and when to use it.
 - `parameters`: a JSON schema of `"type": "object"`; without it the tool
   takes none.
+- `waits`: `true` for a tool whose calls wait for something outside the
+  agent — another agent's answer, an event — and do nothing else meanwhile.
+  While all that runs of an agent is such calls, the harness does not ask it
+  for progress reports, and checks in on it four times less often. Off by
+  default.
 
 ```sh
 #!/bin/sh

@@ -39,6 +39,21 @@ type RunningDescriber interface {
 	DescribeRunning(operations []operation.Operation) string
 }
 
+// Waiter is a translator whose calls wait for something outside the agent
+// — another agent's answer, an event — and do nothing else meanwhile:
+// while every call that runs is one, the harness asks for no progress
+// report and checks in less often (coordinator). A translator without it
+// does not wait.
+type Waiter interface {
+	Waits() bool
+}
+
+// Waits reports whether a translator's calls wait (Waiter).
+func Waits(translator Translator) bool {
+	waiter, ok := translator.(Waiter)
+	return ok && waiter.Waits()
+}
+
 type Definition struct {
 	Tool     llm.Tool
 	Metadata jsontext.Value

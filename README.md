@@ -528,6 +528,18 @@ completion as you type. Each workspace keeps its own sessions in
 offers them, and removing one from the list never touches the folder. Links
 name the workspace: `#/w/<workspace>/s/<session>`.
 
+The sessions of every workspace are found in one place too: while it runs,
+the server keeps `sessions/` beside the connection settings
+(`~/Library/Application Support/kou-conveyor/sessions` on macOS). It holds
+a link to the sessions folder of each workspace, and of each git worktree of
+one that has sessions of its own, named by the workspace's ID
+(`joroweave-ab893e`), and `index.json`, which lists every session by ID with
+its workspace, file, title, canvas and node, times, size and whether it runs.
+The server makes them again as workspaces and runs change, and removes only
+the links it made; folders, files and links of your own there stay as they
+are. The links are for finding sessions, not for keeping them: backups such as
+Time Machine do not follow them.
+
 `make build-tui` and `make build-web` rebuild the runner next to the cockpit,
 and `go run ./cmd/kou-conveyor-web` builds it from the same sources, so a
 cockpit never drives an older runner by accident.

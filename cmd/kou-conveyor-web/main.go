@@ -212,6 +212,10 @@ func runMain(args []string) int {
 	if n := len(s.workspaces.all()) - 1; n > 0 {
 		fmt.Printf("                  and %d more added in the browser\n", n)
 	}
+	if dir := sessionLinksDir(o.SettingsFile); dir != "" {
+		fmt.Printf("sessions          %s (every workspace's, linked, with index.json)\n", display(dir))
+		go s.keepSessionLinks(ctx, &sessionLinks{dir: dir})
+	}
 	if s.gateway != nil {
 		status := s.gateway.Status()
 		fmt.Printf("accounts          %s  (CLIProxyAPI %s, %s)\n", status.URL, status.Version, display(status.Dir))

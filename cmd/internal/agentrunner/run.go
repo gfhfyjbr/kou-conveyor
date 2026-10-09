@@ -804,9 +804,12 @@ func Run(
 	// diagnostic output: its tries can take minutes, which would otherwise
 	// look like the model thinking.
 	retries := &lockedWriter{w: flagOutput}
-	coordinatorErr := current.Run(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
+	// What each request began with is logged beside the tool output, to
+	// tell what cost a request its cache (prefixlog.go).
+	prefixes := &prefixLog{path: filepath.Join(operationDirectory, prefixLogFile)}
+	coordinatorErr := current.Run(llm.WithPrefixReporter(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
 		fmt.Fprintln(retries, RetryLine(retry))
-	}))
+	}), prefixes.report))
 	retries.Close()
 	// Tools run in their own process groups. Canceling the run makes the
 	// operation manager terminate them (TERM, then KILL after a grace period)

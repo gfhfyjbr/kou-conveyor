@@ -150,6 +150,13 @@ background while the agent goes on, is resumed if the runner restarts, and
 is stopped with the run. A request's `disallowed_tools` leave plugin tools out
 as well.
 
+`"waits": true` marks a tool whose calls wait for something outside the agent
+— another agent's answer, an event — and do nothing else meanwhile, such as
+the canvas's `CanvasWait`. While every call that runs is of such tools, the
+harness asks for no progress report (the report due is asked for a whole
+period after the wait ends) and its heartbeat waits four times its interval
+from the start. Off by default.
+
 With the `code` tool profile a plugin tool is a function of the Code tool's
 JavaScript instead: `name(args)`, or `tools["name"](args)` for a name the code
 cannot call as it is (one with a `-`, a reserved word, or a name the runtime's

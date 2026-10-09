@@ -70,6 +70,9 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
   kou-canvas read <node> [--screen|--tail N|--output|--answer] [--wait idle|output|exit]
                   [--after N] [--timeout 600]
   kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]
+  kou-canvas wait [<node> <node>…] [--until answer|idle|exit|any] [--after cursor]
+                                                    any of several nodes, your children when
+                                                    none is named; it prints the next cursor
   kou-canvas emit [--port out] [--title T] "text" [--data JSON]
   kou-canvas launch [--resume]                      start the harness of this terminal node
   kou-canvas hook claude|codex                      the hooks of Claude Code and Codex

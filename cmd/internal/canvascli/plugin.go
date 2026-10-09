@@ -18,6 +18,7 @@ func PluginManifest() ([]byte, error) {
 		Description string         `json:"description"`
 		Parameters  jsontext.Value `json:"parameters"`
 		Run         []string       `json:"run"`
+		Waits       bool           `json:"waits,omitzero"`
 	}
 	manifest := struct {
 		Name        string `json:"name"`
@@ -39,7 +40,8 @@ func PluginManifest() ([]byte, error) {
 	for _, t := range tools {
 		manifest.Tools = append(manifest.Tools, tool{
 			Name: t.Name, Description: t.Description, Parameters: jsontext.Value(t.Schema),
-			Run: []string{"kou-canvas", "tool", t.Name},
+			Run:   []string{"kou-canvas", "tool", t.Name},
+			Waits: t.Waits,
 		})
 	}
 	data, err := json.Marshal(manifest, jsontext.WithIndent("  "))

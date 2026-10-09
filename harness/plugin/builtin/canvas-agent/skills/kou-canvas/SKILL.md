@@ -33,6 +33,7 @@ A message is delivered when its target is idle, by default: typed into a termina
 - **CanvasConnect** `{from: "node:port", to: "node:port", template?, mode?}` — wire an output to an input; ports default to `out` and `in`. `mode: "approve"` holds each message for the user; a connection that closes a loop of agents starts that way.
 - **CanvasDisconnect** `{edge}` or `{from, to}`, **CanvasMove** `{node, x, y, w, h}`, **CanvasRemove** `{node}`.
 - **CanvasRead** `{node, what?, wait?, after?, timeout_s?}` — read a terminal's tail or screen, or a node's latest output; with `wait` (`idle`, `output`, `exit`) it waits first.
+- **CanvasWait** `{nodes?, until?, after?, timeout_s?}` — wait for any of several nodes (your children — the nodes you made and those you are wired to — when none are named): `until` `answer` (the default), `idle` (all of them), `exit` or `any`. It answers which node it was and the state of each, with the `next` cursor to pass as `after`.
 - **CanvasEmit** `{text, port?, data?}` — put something out of your own node now; your answer to a node's message needs none.
 
 Nodes are named by ID (`n_…`) — or, to send, read and wait, by a title no other node has; `self` is you.
@@ -57,8 +58,8 @@ To spread independent tasks over workers and gather what they say:
 
 1. Spawn a collector, or use yourself: the workers' outputs go to it.
 2. For each task: `CanvasSpawn {"preset": "claude-code", "title": "mig-a", "worktree": "mig-a", "prompt": "…", "connect": {"to": "self"}}` — with `connect.to: "self"`, each worker's answer comes back to you as a message.
-3. Wait for each: `CanvasRead {"node": "<id>", "wait": "idle"}`, or just end your turn: the answers arrive as prompts.
-4. When all are in, write the summary.
+3. End your turn: the answers arrive as prompts, one by one. To wait within a turn instead, `CanvasWait {}` returns at the first answer of any of your children, with the state of each; pass its `next` as `after` to the next `CanvasWait`, so that an answer given in between is not missed. `CanvasWait {"until": "idle"}` returns once they are all idle.
+4. When all are in, write the summary. Whenever you are woken, look at every worker, not just the one that answered: one may be stuck without a word.
 
 ### A review loop
 

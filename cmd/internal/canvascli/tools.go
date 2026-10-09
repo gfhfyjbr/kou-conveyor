@@ -22,7 +22,11 @@ type Tool struct {
 	Description string
 	// Schema is the JSON schema of its arguments, an object.
 	Schema string
-	run    func(ctx context.Context, c *client, args jsontext.Value) (result, error)
+	// Waits says that its calls may wait for other nodes: while all that
+	// runs of an agent is such calls, the harness does not ask the agent
+	// for progress reports (plugin.Tool's waits).
+	Waits bool
+	run   func(ctx context.Context, c *client, args jsontext.Value) (result, error)
 }
 
 // result is what a tool answers: text for the agent, and what the server
@@ -193,6 +197,7 @@ var tools = []Tool{
 			`"keys":{"type":"array","items":{"type":"string"},"description":"Keys to press after the text, as tmux names them: Enter, Tab, Escape, BSpace, Up, Down, Left, Right, Home, End, C-c, M-x, F1…"},` +
 			`"when":{"type":"string","enum":["idle","now"],"description":"idle (the default) waits until the node is idle; now gives it at once: an agent at work reads it after its current step."}` +
 			`},"required":["node"]}`,
+		Waits: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a sendArgs
 			if err := decodeArgs("CanvasSend", args, &a); err != nil {
@@ -214,12 +219,34 @@ var tools = []Tool{
 			`"after":{"type":"integer","description":"With wait output: the count of outputs CanvasSend answered, so that an output given meanwhile counts."},` +
 			`"timeout_s":{"type":"integer","description":"How long to wait at most, in seconds: 600 by default."}` +
 			`},"required":["node"]}`,
+		Waits: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a readArgs
 			if err := decodeArgs("CanvasRead", args, &a); err != nil {
 				return result{}, err
 			}
 			return c.read(ctx, a)
+		},
+	},
+	{
+		Name: "CanvasWait",
+		Description: "Wait for any of several nodes — your children by default: the nodes you made and those you are wired to — instead of polling or sleeping. " +
+			"until answer (the default): one of them gives an output, an agent's answer; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. " +
+			"It answers which node it was, with the state of each; pass its next as after to the next wait, so that nothing given meanwhile is missed. " +
+			"No need to wait at all for an answer to come back: end your turn, and the answer wakes you as a message.",
+		Schema: `{"type":"object","properties":{` +
+			`"nodes":{"type":"array","items":{"type":"string"},"description":"The nodes: their IDs (n_…) or titles. Your children when not given."},` +
+			`"until":{"type":"string","enum":["answer","idle","exit","any"],"description":"What ends the wait: answer (the default), idle, exit or any."},` +
+			`"after":{"type":"string","description":"The next the last wait answered: outputs given since count, those before do not."},` +
+			`"timeout_s":{"type":"integer","description":"How long to wait at most, in seconds: 600 by default, 1800 at most."}` +
+			`}}`,
+		Waits: true,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a waitArgs
+			if err := decodeArgs("CanvasWait", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.waitAny(ctx, a)
 		},
 	},
 	{
@@ -343,6 +370,31 @@ type readArgs struct {
 	Wait     string `json:"wait"`
 	After    number `json:"after"`
 	TimeoutS number `json:"timeout_s"`
+}
+
+type waitArgs struct {
+	Nodes    nodeList `json:"nodes"`
+	Until    string   `json:"until"`
+	After    string   `json:"after"`
+	TimeoutS number   `json:"timeout_s"`
+}
+
+// nodeList is the nodes of a tool's arguments, which models write as a
+// list or as one string, "a, b".
+type nodeList []string
+
+func (l *nodeList) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		*l = list
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(data, &one); err != nil {
+		return errors.New("it is a list of nodes")
+	}
+	*l = strings.Split(one, ",")
+	return nil
 }
 
 type emitArgs struct {
@@ -978,6 +1030,76 @@ func (c *client) emit(ctx context.Context, a emitArgs) (result, error) {
 		port = "out"
 	}
 	return result{text: "put out on " + port, raw: raw}, nil
+}
+
+// waitAny waits for any of several nodes (CanvasWait).
+func (c *client) waitAny(ctx context.Context, a waitArgs) (result, error) {
+	q := url.Values{}
+	var nodes []string
+	for _, n := range a.Nodes {
+		if n = strings.TrimSpace(n); n != "" {
+			nodes = append(nodes, n)
+		}
+	}
+	if len(nodes) > 0 {
+		q.Set("nodes", strings.Join(nodes, ","))
+	}
+	if a.Until != "" {
+		q.Set("until", a.Until)
+	}
+	if a.After != "" {
+		q.Set("after", a.After)
+	}
+	timeout := 600 * time.Second
+	if v := intOf(a.TimeoutS); v != nil && *v > 0 {
+		timeout = time.Duration(*v) * time.Second
+	}
+	q.Set("timeout", strconv.Itoa(int(timeout/time.Second)))
+	ctx, cancel := timeoutOf(ctx, timeout)
+	defer cancel()
+	var answer struct {
+		Fired string `json:"fired"`
+		Until string `json:"until"`
+		Nodes []struct {
+			Node    string `json:"node"`
+			Title   string `json:"title"`
+			Status  status `json:"status"`
+			Outputs int    `json:"outputs"`
+			Gone    bool   `json:"gone"`
+		} `json:"nodes"`
+		Next     string `json:"next"`
+		TimedOut bool   `json:"timed_out"`
+	}
+	raw, err := c.call(ctx, "GET", "/api/canvas/wait", q, nil, &answer)
+	if err != nil {
+		return result{}, err
+	}
+	var b strings.Builder
+	switch {
+	case answer.TimedOut:
+		fmt.Fprintf(&b, "Timed out after %s waiting for %s.", timeout, answer.Until)
+	case answer.Fired != "":
+		title := answer.Fired
+		for _, n := range answer.Nodes {
+			if n.Node == answer.Fired && n.Title != "" {
+				title = n.Node + " «" + n.Title + "»"
+			}
+		}
+		fmt.Fprintf(&b, "%s: %s.", answer.Until, title)
+	default:
+		fmt.Fprintf(&b, "%s: already so, nothing to wait for.", answer.Until)
+	}
+	for _, n := range answer.Nodes {
+		if n.Gone {
+			fmt.Fprintf(&b, "\n%s · removed", n.Node)
+			continue
+		}
+		fmt.Fprintf(&b, "\n%s «%s» · %s · %d outputs", n.Node, n.Title, describeStatus(n.Status), n.Outputs)
+	}
+	if answer.Next != "" {
+		fmt.Fprintf(&b, "\nnext: %s", answer.Next)
+	}
+	return result{text: b.String(), raw: raw}, nil
 }
 
 // describeStatus says a node's status in a few words.

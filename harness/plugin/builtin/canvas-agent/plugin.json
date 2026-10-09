@@ -310,7 +310,8 @@
         "kou-canvas",
         "tool",
         "CanvasSend"
-      ]
+      ],
+      "waits": true
     },
     {
       "name": "CanvasRead",
@@ -362,7 +363,48 @@
         "kou-canvas",
         "tool",
         "CanvasRead"
-      ]
+      ],
+      "waits": true
+    },
+    {
+      "name": "CanvasWait",
+      "description": "Wait for any of several nodes — your children by default: the nodes you made and those you are wired to — instead of polling or sleeping. until answer (the default): one of them gives an output, an agent's answer; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. It answers which node it was, with the state of each; pass its next as after to the next wait, so that nothing given meanwhile is missed. No need to wait at all for an answer to come back: end your turn, and the answer wakes you as a message.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The nodes: their IDs (n_…) or titles. Your children when not given."
+          },
+          "until": {
+            "type": "string",
+            "enum": [
+              "answer",
+              "idle",
+              "exit",
+              "any"
+            ],
+            "description": "What ends the wait: answer (the default), idle, exit or any."
+          },
+          "after": {
+            "type": "string",
+            "description": "The next the last wait answered: outputs given since count, those before do not."
+          },
+          "timeout_s": {
+            "type": "integer",
+            "description": "How long to wait at most, in seconds: 600 by default, 1800 at most."
+          }
+        }
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasWait"
+      ],
+      "waits": true
     },
     {
       "name": "CanvasEmit",

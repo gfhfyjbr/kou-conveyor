@@ -96,6 +96,8 @@ var tools = []Tool{
 			`"cwd":{"type":"string","description":"The directory a terminal starts in, relative to the workspace or to its worktree."},` +
 			`"worktree":{"type":"string","description":"Work in a git worktree of its own, made when missing: its name, its branch kou/<name>. One writer per worktree. A kou agent's worktree is named after its session, whatever the name."},` +
 			`"base":{"type":"string","description":"The branch or commit a new worktree starts from; HEAD by default."},` +
+			`"include":{"type":"array","items":{"type":"string"},"description":"Paths of the workspace git does not carry (vendor/, a tool's folder, fonts) to copy into its worktree, which gets the submodules of the user's checkout by itself."},` +
+			`"link":{"type":"array","items":{"type":"string"},"description":"Such paths to link into its worktree instead of copying: shared with the user's checkout, for big things nobody writes."},` +
 			`"prompt":{"type":"string","description":"Its first prompt, sent once it runs; for a note, its text."},` +
 			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: model, effort, instructions for an agent; permission_mode for claude-code."},` +
 			`"access":{"type":"string","enum":["none","observe","talk","build"],"description":"What its program may do on the canvas: talk by default for what an agent makes; build lets it make nodes too."},` +
@@ -294,6 +296,8 @@ type spawnArgs struct {
 	Cwd      string         `json:"cwd"`
 	Worktree jsontext.Value `json:"worktree"`
 	Base     string         `json:"base"`
+	Include  nodeList       `json:"include"`
+	Link     nodeList       `json:"link"`
 	Prompt   string         `json:"prompt"`
 	Config   jsontext.Value `json:"config"`
 	Access   string         `json:"access"`
@@ -562,19 +566,33 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		config["cwd"] = cwd
 	}
 	agent := kind == "agent" || preset == "foreman"
+	include, link := paths(a.Include), paths(a.Link)
 	if name, wanted, err := worktreeOf(a.Worktree); err != nil {
 		return result{}, err
-	} else if wanted {
+	} else if wanted || len(include) > 0 || len(link) > 0 {
+		// What config says of the worktree stays, but for what the
+		// arguments say.
+		spec, _ := config["worktree"].(map[string]any)
+		if spec == nil {
+			spec = map[string]any{}
+		}
 		if agent {
 			config["sandbox"] = "worktree"
 		} else {
-			spec := map[string]any{}
 			if name != "" {
 				spec["name"] = name
 			}
 			if base := strings.TrimSpace(a.Base); base != "" {
 				spec["base"] = base
 			}
+		}
+		if len(include) > 0 {
+			spec["include"] = include
+		}
+		if len(link) > 0 {
+			spec["link"] = link
+		}
+		if !agent || len(spec) > 0 {
 			config["worktree"] = spec
 		}
 	}
@@ -655,6 +673,17 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		b.WriteString("\nits first prompt is sent once it runs")
 	}
 	return result{text: b.String(), raw: raw}, nil
+}
+
+// paths are the paths of a list, trimmed, without the empty ones.
+func paths(list nodeList) []string {
+	var out []string
+	for _, p := range list {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // worktreeOf reads CanvasSpawn's worktree: a name, true for one named

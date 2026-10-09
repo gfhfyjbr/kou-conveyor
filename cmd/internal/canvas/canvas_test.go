@@ -616,8 +616,19 @@ func TestOutputsGoAlongEdgesFromHopToHop(t *testing.T) {
 	}
 	claims, err := parseToken(te.secret, values["KOU_CANVAS_TOKEN"])
 	if err != nil || claims.Node != alpha || claims.Scope != ScopeBuild || values["KOU_CANVAS_ID"] != id ||
-		values["KOU_CANVAS_URL"] != te.srv.URL || values[runconfig.SandboxEnvironment] != runconfig.SandboxWorktree {
+		values["KOU_CANVAS_URL"] != te.srv.URL || values[runconfig.SandboxEnvironment] != runconfig.SandboxWorktree ||
+		values[runconfig.WorktreeEnvironment] != "" {
 		t.Fatalf("env %v (%v)", env, err)
+	}
+	// What its worktree gets beside git's files goes with it.
+	te.ops(t, id, `[{"op":"node.update","id":"`+alpha+`","set":{"config":{"sandbox":"worktree","worktree":{"include":["vendor","tools/oracle"],"link":"fonts","submodules":false}}}}]`)
+	values = map[string]string{}
+	for _, entry := range te.RunEnv("w1", sa) {
+		name, value, _ := strings.Cut(entry, "=")
+		values[name] = value
+	}
+	if got := values[runconfig.WorktreeEnvironment]; got != `{"include":["vendor","tools/oracle"],"link":["fonts"],"no_submodules":true}` {
+		t.Fatalf("%s=%s", runconfig.WorktreeEnvironment, got)
 	}
 	if env := te.RunEnv("w1", "not-a-canvas-session"); env != nil {
 		t.Fatalf("a session of no canvas: %v", env)

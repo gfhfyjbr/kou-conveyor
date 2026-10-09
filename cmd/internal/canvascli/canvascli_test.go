@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -127,7 +128,7 @@ func TestToolSchemasAreObjects(t *testing.T) {
 
 func TestSpawnFromTheCommandLine(t *testing.T) {
 	f := newFakeCanvas(t)
-	code, out, errOut := f.run(t, "", "spawn", "codex", "--title", "worker", "--worktree", "fix-a", "--right-of", "self", "--prompt", "Fix it", "--connect-to", "self")
+	code, out, errOut := f.run(t, "", "spawn", "codex", "--title", "worker", "--worktree", "fix-a", "--include", "vendor, tools/oracle", "--right-of", "self", "--prompt", "Fix it", "--connect-to", "self")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -142,7 +143,8 @@ func TestSpawnFromTheCommandLine(t *testing.T) {
 	node := op["node"].(map[string]any)
 	config := node["config"].(map[string]any)
 	if op["op"] != "node.add" || node["preset"] != "codex" || node["title"] != "worker" || node["near"] != "self" || node["side"] != "right" ||
-		node["prompt"] != "Fix it" || config["worktree"].(map[string]any)["name"] != "fix-a" || node["connect"].(map[string]any)["to"] != "self" {
+		node["prompt"] != "Fix it" || config["worktree"].(map[string]any)["name"] != "fix-a" || node["connect"].(map[string]any)["to"] != "self" ||
+		fmt.Sprint(config["worktree"].(map[string]any)["include"]) != "[vendor tools/oracle]" || config["worktree"].(map[string]any)["link"] != nil {
 		t.Fatalf("node = %v", node)
 	}
 }
@@ -155,7 +157,18 @@ func TestSpawnAnAgentInAWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
-	if node["kind"] != "agent" || node["preset"] != nil || node["config"].(map[string]any)["sandbox"] != "worktree" || node["x"] != 100.0 || node["y"] != -40.0 {
+	if node["kind"] != "agent" || node["preset"] != nil || node["config"].(map[string]any)["sandbox"] != "worktree" || node["x"] != 100.0 || node["y"] != -40.0 ||
+		node["config"].(map[string]any)["worktree"] != nil {
+		t.Fatalf("node = %v", node)
+	}
+	// What its worktree gets beside git's files: a list, or one string.
+	if _, err := tool.call(context.Background(), c, []byte(`{"preset":"agent","title":"builder","include":["vendor/"],"link":"fonts,tools/oracle"}`)); err != nil {
+		t.Fatal(err)
+	}
+	node = f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
+	config := node["config"].(map[string]any)
+	spec, _ := config["worktree"].(map[string]any)
+	if config["sandbox"] != "worktree" || fmt.Sprint(spec["include"]) != "[vendor/]" || fmt.Sprint(spec["link"]) != "[fonts tools/oracle]" || spec["name"] != nil {
 		t.Fatalf("node = %v", node)
 	}
 	if _, err := tool.call(context.Background(), c, []byte(`{"title":"x"}`)); err == nil {

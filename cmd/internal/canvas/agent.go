@@ -273,6 +273,10 @@ func (c *Canvas) agentEnv(id string) []string {
 	env := c.e.env(c, id, scope, n.Runtime.Epoch)
 	if strings.TrimSpace(n.configString("sandbox")) == runconfig.SandboxWorktree {
 		env = append(env, runconfig.SandboxEnvironment+"="+runconfig.SandboxWorktree)
+		spec, _ := n.configValue("worktree").(map[string]any)
+		if options := worktreeOptions(spec); !options.IsZero() {
+			env = append(env, runconfig.WorktreeEnvironment+"="+options.Encode())
+		}
 	}
 	return env
 }

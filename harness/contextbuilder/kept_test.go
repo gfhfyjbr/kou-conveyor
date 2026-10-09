@@ -1,6 +1,7 @@
 package contextbuilder
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -99,5 +100,12 @@ func TestLongNotesSayWhatIsLeftOut(t *testing.T) {
 	}
 	if short := ShownNotes("  - short\n", "/work/n.md"); short != "- short" {
 		t.Fatalf("short = %q", short)
+	}
+}
+
+// The compaction prompt says how much of the notes the harness shows.
+func TestCompactionPromptSaysHowMuchOfTheNotesIsShown(t *testing.T) {
+	if want := fmt.Sprintf("up to %d KB", NotesLimit/1000); !strings.Contains(compactionPrompt, want) {
+		t.Fatalf("compaction prompt lacks %q", want)
 	}
 }

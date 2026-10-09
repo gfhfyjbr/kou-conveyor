@@ -88,3 +88,43 @@ func TestSessionMemoryWithoutFileToolsOrRecordsCannotTellProgress(t *testing.T) 
 		}
 	}
 }
+
+// Notes that outgrew what a compaction shows get the model asked to rewrite
+// them shorter, two compactions in a row at most; notes that fit again
+// start the count over.
+func TestSessionMemoryAsksToRewriteNotesThatOutgrewTheCompaction(t *testing.T) {
+	directory := t.TempDir()
+	memory := newSessionMemory(directory, "abc", false)
+	write := func(size int) {
+		t.Helper()
+		if err := os.WriteFile(memory.notes, []byte(strings.Repeat("n", size)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	compact := func() string {
+		t.Helper()
+		note, err := memory.compacted(coordinator.Compaction{Summary: "S.", Number: 1}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return note
+	}
+	write(175_000)
+	if note := compact(); !strings.Contains(note, "abc.notes.md are 175 KB, more than the 32 KB a compaction shows") || !strings.Contains(note, "Rewrite them shorter now, under 32 KB") {
+		t.Fatalf("first: %q", note)
+	}
+	if note := compact(); !strings.Contains(note, "Rewrite them shorter") {
+		t.Fatalf("second: %q", note)
+	}
+	if note := compact(); note != "" {
+		t.Fatalf("third asks again: %q", note)
+	}
+	write(1000)
+	if note := compact(); note != "" {
+		t.Fatalf("notes that fit: %q", note)
+	}
+	write(40_000)
+	if note := compact(); !strings.Contains(note, "are 40 KB") {
+		t.Fatalf("after they fit again: %q", note)
+	}
+}

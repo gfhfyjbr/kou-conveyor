@@ -183,6 +183,9 @@ type loopState struct {
 	// tools that change files since the latest compaction.
 	reminded    bool
 	fileChanges int
+	// notesChecked is set once the run's first ordinary turn was told what
+	// changed in the notes since the conversation showed them (notesUpdate).
+	notesChecked bool
 }
 
 type compactRequest struct {
@@ -698,6 +701,19 @@ func (current *coordinator) askForReport(ctx context.Context) error {
 	return current.nudge(ctx, harnessPrefix+" Progress report: in a few lines, tell the user what you have done since your last report, what you are doing now and what is left, then carry on with the work.")
 }
 
+// notesUpdate is the message that shows the notes as they are now, once a
+// run, for its first ordinary turn, when they changed since the
+// conversation showed them: the compaction a run restores shows the notes
+// as they were (contextbuilder.Compacted), so the start of the request, and
+// what the provider cached of it, stays the same.
+func (current *coordinator) notesUpdate() (string, bool) {
+	if current.state.notesChecked {
+		return "", false
+	}
+	current.state.notesChecked = true
+	return current.dependencies.ContextBuilder.NotesUpdate()
+}
+
 // compactionNear reports an ordinary request close enough to
 // AutoCompactTokens for the reminder that the conversation will be
 // compacted soon, which has not been sent since the latest compaction.
@@ -1040,7 +1056,18 @@ func (current *coordinator) startTurn(
 		sent = sentRequest{estimate: built.EstimatedTokens, focus: focus, budget: budget}
 	} else if !ordinary {
 		return nil
-	} else if current.compactionNear(built) {
+	} else if notes, changed := current.notesUpdate(); changed {
+		// The run's first turn hears what changed in the notes since the
+		// conversation showed them, after what the provider has cached.
+		if err := current.nudge(ctx, notes); err != nil {
+			return err
+		}
+		if built, err = current.dependencies.ContextBuilder.Build(); err != nil {
+			return fmt.Errorf("build model request: %w", err)
+		}
+		sent = sentRequest{estimate: built.EstimatedTokens}
+	}
+	if turnType == session.TurnRegular && current.compactionNear(built) {
 		// The model hears that the conversation will be compacted soon
 		// with this turn, while there is room to act on it.
 		if err := current.nudge(ctx, reminderPrefix+" "+strings.TrimSpace(current.dependencies.CompactionReminder)); err != nil {
@@ -1417,7 +1444,18 @@ func (current *coordinator) addItemToLocalState(
 			// The summary stands in for what its turn saw. A later turn saw
 			// more, so the summary of an earlier one would lose that.
 			if response.TurnID == current.state.currentTurnID {
-				if current.dependencies.ContextBuilder.Compact(response.Response) {
+				// The message that stands in for the conversation is kept
+				// with the compaction, so that a run that restores the
+				// session shows it as it was (contextbuilder.Compacted).
+				var kept *contextbuilder.Compacted
+				if response.Compacted != nil {
+					kept = (*contextbuilder.Compacted)(response.Compacted)
+				}
+				if made, ok := current.dependencies.ContextBuilder.Compact(response.Response, kept); ok {
+					if response.Compacted == nil {
+						response.Compacted = (*sessionstore.Compacted)(&made)
+						item.Data = response
+					}
 					current.state.compactionFailures = 0
 					current.state.turnsSinceCompaction = 0
 					current.state.reminded = false

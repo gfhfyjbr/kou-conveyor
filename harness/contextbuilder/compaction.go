@@ -158,21 +158,27 @@ func messageText(item llm.Item) string {
 	return message.Text
 }
 
-func (current *builder) Compact(response llm.Response) bool {
+func (current *builder) Compact(response llm.Response, kept *Compacted) (Compacted, bool) {
 	summary := Summary(response)
 	if summary == "" {
-		return false
+		return Compacted{}, false
 	}
 	current.touched = touchedFiles(current.committedPrefix, current.touched)
-	message := current.compactedMessage(summary)
+	made := Compacted{}
+	if kept != nil && kept.Message != "" {
+		made = *kept
+	} else {
+		made = current.compactedMessage(summary)
+	}
+	current.shownNotes = made.Notes
 	current.compacted = len(current.committedPrefix) - 1 - len(current.unanswered)
 	prefix := make([]llm.Item, 0, 2+len(current.unanswered))
-	prefix = append(prefix, current.committedPrefix[0], message)
+	prefix = append(prefix, current.committedPrefix[0], userMessage(made.Message))
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
 	current.pruned, current.imagesLeftOut = 0, 0
 	current.usage, current.usageMark = 0, 0
-	return true
+	return made, true
 }
 
 var (
@@ -210,8 +216,9 @@ func Summary(response llm.Response) string {
 }
 
 // compactedMessage is the message that stands in for the conversation a
-// compaction summarized.
-func (current *builder) compactedMessage(summary string) llm.Item {
+// compaction summarized, with the notes as they are now.
+func (current *builder) compactedMessage(summary string) Compacted {
+	notes := current.readNotes()
 	var text strings.Builder
 	text.WriteString(compactedPreface)
 	if kept, omitted := keptInputs(current.answered); len(kept) != 0 {
@@ -233,9 +240,9 @@ func (current *builder) compactedMessage(summary string) llm.Item {
 		text.WriteString("</running_tool_calls>")
 	}
 	text.WriteString("\n\nThe summary:\n<summary>\n" + summary + "\n</summary>")
-	text.WriteString(current.memoryText())
+	text.WriteString(current.memoryText(notes))
 	text.WriteString("\n\n" + compactedResume)
-	return userMessage(text.String())
+	return Compacted{Message: text.String(), Notes: notes}
 }
 
 // SetTranscript names the file that keeps the whole conversation, which a

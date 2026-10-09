@@ -14,7 +14,7 @@ import (
 func compactedText(t *testing.T, current Builder) string {
 	t.Helper()
 	current.Commit()
-	if !current.Compact(answer("<summary>The work so far.</summary>")) {
+	if _, ok := current.Compact(answer("<summary>The work so far.</summary>"), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	built, err := current.Build()

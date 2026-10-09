@@ -76,7 +76,15 @@ type Builder interface {
 	// Compact replaces the conversation a compaction turn summarized with the
 	// summary its response holds. Messages the model has not answered yet and
 	// everything that arrived during the compaction stay as they are. It
-	// reports false, leaving the context unchanged, for a response without a
+	// returns the message that stands in for the conversation, which the
+	// record of the compaction keeps: given back as kept, by a run that
+	// restores the session, it stands in as it was (Compacted). It reports
+	// false, leaving the context unchanged, for a response without a
 	// summary.
-	Compact(llm.Response) bool
+	Compact(response llm.Response, kept *Compacted) (Compacted, bool)
+	// NotesUpdate is a message that shows the notes as they are now, when
+	// they changed since the conversation last showed them; false when they
+	// did not, or no compaction showed them yet. Sent as a heartbeat, the
+	// message counts as shown.
+	NotesUpdate() (string, bool)
 }

@@ -15,6 +15,14 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/bash"
 )
 
+func TestOutputLengthIsReadAsModelsWriteIt(t *testing.T) {
+	for _, value := range []string{`20000`, `"20000"`, `20000.0`} {
+		if limit, err := tool.ParseMaxOutputLength(jsontext.Value(value)); err != nil || limit != 20000 {
+			t.Errorf("%s: %d, %v", value, limit, err)
+		}
+	}
+}
+
 func TestOutputLengthMaximumMatchesToolSchemas(t *testing.T) {
 	limit, err := tool.ParseMaxOutputLength(jsontext.Value(fmt.Sprint(operation.MaxOutputLength)))
 	if err != nil || limit != operation.MaxOutputLength {
@@ -95,7 +103,7 @@ func TestToolsRejectInvalidOutputLengthsBeforeSubmission(t *testing.T) {
 	}{
 		{"Bash", bash.New(bash.Config{Shell: "/bin/sh", BaseDirectory: "/operations"}), `{"command":"pwd","max_output_length":`},
 	} {
-		for _, value := range []string{"0", "-1", fmt.Sprint(operation.MaxOutputLength + 1), "1000000000", "1.5", `"10"`, "true", "null", "[]", "{}", "999999999999999999999999"} {
+		for _, value := range []string{"0", "-1", fmt.Sprint(operation.MaxOutputLength + 1), "1000000000", "1.5", `"1.5"`, `"ten"`, "true", "null", "[]", "{}", "999999999999999999999999"} {
 			t.Run(test.name+"/"+value, func(t *testing.T) {
 				status := test.translator.Translate(nil, llm.ToolCall{Arguments: test.arguments + value + "}"})
 				if !strings.Contains(status.Error, "max_output_length") || len(status.WaitingFor) != 0 {

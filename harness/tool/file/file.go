@@ -16,6 +16,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 type Config struct {
@@ -58,17 +59,18 @@ func New(kind Kind, name string, config Config) tool.Translator {
 }
 
 type arguments struct {
-	Path       string  `json:"path"`
-	FilePath   string  `json:"file_path"`
-	Offset     int     `json:"offset"`
-	Limit      int     `json:"limit"`
-	Content    string  `json:"content"`
-	OldString  *string `json:"old_string"`
-	NewString  *string `json:"new_string"`
-	ReplaceAll bool    `json:"replace_all"`
-	Input      string  `json:"input"`
-	Patch      string  `json:"patch"`
-	Query      string  `json:"query"`
+	Path     string `json:"path"`
+	FilePath string `json:"file_path"`
+	// Offset and Limit are numbers models write as 100 or "100" alike.
+	Offset     *toolarg.Number `json:"offset"`
+	Limit      *toolarg.Number `json:"limit"`
+	Content    string          `json:"content"`
+	OldString  *string         `json:"old_string"`
+	NewString  *string         `json:"new_string"`
+	ReplaceAll bool            `json:"replace_all"`
+	Input      string          `json:"input"`
+	Patch      string          `json:"patch"`
+	Query      string          `json:"query"`
 }
 
 func (translator *translator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {
@@ -96,6 +98,14 @@ func (translator *translator) state(encoded string) (operation.FileState, error)
 	if err := json.Unmarshal([]byte(encoded), &parsed); err != nil {
 		return operation.FileState{}, fmt.Errorf("decode %s arguments: %v", translator.name, err)
 	}
+	offset, err := toolarg.Count("offset", parsed.Offset)
+	if err != nil {
+		return operation.FileState{}, fmt.Errorf("%s %v", translator.name, err)
+	}
+	limit, err := toolarg.Count("limit", parsed.Limit)
+	if err != nil {
+		return operation.FileState{}, fmt.Errorf("%s %v", translator.name, err)
+	}
 	path := strings.TrimSpace(parsed.Path)
 	if path == "" {
 		path = strings.TrimSpace(parsed.FilePath)
@@ -115,10 +125,7 @@ func (translator *translator) state(encoded string) (operation.FileState, error)
 		if err != nil {
 			return operation.FileState{}, err
 		}
-		if parsed.Offset < 0 || parsed.Limit < 0 {
-			return operation.FileState{}, fmt.Errorf(`%s arguments "offset" and "limit" must not be negative`, translator.name)
-		}
-		return operation.FileState{Action: operation.FileRead, Path: resolved, Offset: parsed.Offset, Limit: parsed.Limit}, nil
+		return operation.FileState{Action: operation.FileRead, Path: resolved, Offset: offset, Limit: limit}, nil
 	case KindEdit:
 		resolved, err := needPath()
 		if err != nil {
@@ -153,10 +160,7 @@ func (translator *translator) state(encoded string) (operation.FileState, error)
 		if translator.config.Transcript == "" {
 			return operation.FileState{}, errors.New("no transcript is available in this run")
 		}
-		if parsed.Limit < 0 {
-			return operation.FileState{}, fmt.Errorf(`%s argument "limit" must not be negative`, translator.name)
-		}
-		return operation.FileState{Action: operation.FileTranscriptSearch, Path: translator.config.Transcript, Query: parsed.Query, Limit: parsed.Limit}, nil
+		return operation.FileState{Action: operation.FileTranscriptSearch, Path: translator.config.Transcript, Query: parsed.Query, Limit: limit}, nil
 	}
 	return operation.FileState{}, fmt.Errorf("unsupported file tool kind %q", translator.kind)
 }

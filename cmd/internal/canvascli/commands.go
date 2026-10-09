@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 // The command line's commands are the tools' calls: each makes the
@@ -43,7 +45,8 @@ func (p parsed) number(name string) (number, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--%s is a number", name)
 	}
-	return &n, nil
+	read := toolarg.Number(n)
+	return &read, nil
 }
 
 // isNumber reports whether an argument is a number, such as -100: not a
@@ -268,7 +271,8 @@ var commands = map[string]command{
 				if err != nil {
 					return result{}, err
 				}
-				a.TimeoutS = &seconds
+				timeout := toolarg.Number(seconds)
+				a.TimeoutS = &timeout
 			}
 			return c.send(ctx, a)
 		},
@@ -321,7 +325,8 @@ var commands = map[string]command{
 				if err != nil {
 					return result{}, err
 				}
-				a.TimeoutS = &seconds
+				timeout := toolarg.Number(seconds)
+				a.TimeoutS = &timeout
 			}
 			return c.read(ctx, a)
 		},

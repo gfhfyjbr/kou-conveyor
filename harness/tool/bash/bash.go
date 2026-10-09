@@ -11,6 +11,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 type Config struct {
@@ -202,9 +203,12 @@ func validateArguments(encoded string) (string, int, float64, error) {
 	}
 	timeout := -1.0
 	if encodedTimeout, exists := arguments["timeout"]; exists && len(encodedTimeout) != 0 && string(encodedTimeout) != "null" {
-		if err := json.Unmarshal(encodedTimeout, &timeout); err != nil {
+		// Models write the seconds as 600 or "600" alike.
+		var seconds toolarg.Number
+		if err := json.Unmarshal(encodedTimeout, &seconds); err != nil {
 			return "", limit, -1, fmt.Errorf(`decode Bash argument "timeout": %w`, err)
 		}
+		timeout = float64(seconds)
 		if timeout < 0 || timeout > operation.MaxShellTimeout {
 			return "", limit, -1, fmt.Errorf(`bash argument "timeout" must be between 0 and %d seconds`, operation.MaxShellTimeout)
 		}

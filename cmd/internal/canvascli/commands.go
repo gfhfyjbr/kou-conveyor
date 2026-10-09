@@ -146,19 +146,20 @@ var commands = map[string]command{
 	},
 	"spawn": {
 		flags: map[string]flagKind{
-			"title": valueFlag, "cmd": valueFlag, "command": valueFlag, "cwd": valueFlag, "worktree": optionalFlag, "base": valueFlag,
+			"title": valueFlag, "cmd": valueFlag, "command": valueFlag, "cwd": valueFlag, "worktree": optionalFlag, "base": valueFlag, "include": valueFlag, "link": valueFlag,
 			"prompt": valueFlag, "config": valueFlag, "access": valueFlag, "near": valueFlag, "side": valueFlag,
 			"right-of": valueFlag, "below": valueFlag, "left-of": valueFlag, "above": valueFlag,
 			"x": valueFlag, "y": valueFlag, "w": valueFlag, "h": valueFlag,
 			"connect-to": valueFlag, "connect-from": valueFlag,
 		},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas spawn <preset> [--title T] [--cmd C] [--worktree [name]] [--prompt P] [--right-of N] …"); err != nil {
+			if err := p.need(1, 1, "kou-canvas spawn <preset> [--title T] [--cmd C] [--worktree [name]] [--include a,b] [--link c] [--prompt P] [--right-of N] …"); err != nil {
 				return result{}, err
 			}
 			a := spawnArgs{
 				Preset: p.args[0], Title: p.value("title"), Command: p.value("cmd"), Cwd: p.value("cwd"),
 				Base: p.value("base"), Prompt: p.value("prompt"), Access: p.value("access"), Near: p.value("near"), Side: p.value("side"),
+				Include: strings.Split(p.value("include"), ","), Link: strings.Split(p.value("link"), ","),
 			}
 			if a.Command == "" {
 				a.Command = p.value("command")

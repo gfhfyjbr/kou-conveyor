@@ -56,6 +56,7 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
   kou-canvas self                                   who you are: node, canvas, access, brief
   kou-canvas view [--full] [--json]                 the nodes, where they are, how they are wired
   kou-canvas spawn <preset> [--title T] [--cmd C] [--cwd D] [--worktree [name]] [--base B]
+                   [--include a,b] [--link c]
                    [--prompt P] [--right-of|--below|--left-of|--above <node|self>]
                    [--x X --y Y --w W --h H] [--connect-to N] [--connect-from N] [--access A]
                                                     presets: shell, command, claude-code, codex,

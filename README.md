@@ -154,7 +154,10 @@ the session list (◧) and in the rail's Canvas tab, and links name them:
   coding agent in a terminal — Claude Code, Codex, OpenCode, or a harness a
   plugin adds. Their shells run on the server, as the sidebar's do, and
   outlive reloads and the server's restarts. A terminal can work in a git
-  worktree of its own (`.harness/worktrees/<name>`, on branch `kou/<name>`).
+  worktree of its own (`.harness/worktrees/<name>`, on branch `kou/<name>`),
+  which gets the submodules of the user's checkout and, as its `worktree`
+  configuration says, untracked paths copied in (`include`) or linked
+  (`link`).
 - **kou agents**: agents of this cockpit, each with a session of its own,
   which the session list leaves out until asked to show them; **Open
   session** shows the whole of one.

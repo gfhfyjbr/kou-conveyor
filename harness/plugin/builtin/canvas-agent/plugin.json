@@ -54,6 +54,20 @@
             "type": "string",
             "description": "The branch or commit a new worktree starts from; HEAD by default."
           },
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Paths of the workspace git does not carry (vendor/, a tool's folder, fonts) to copy into its worktree, which gets the submodules of the user's checkout by itself."
+          },
+          "link": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Such paths to link into its worktree instead of copying: shared with the user's checkout, for big things nobody writes."
+          },
           "prompt": {
             "type": "string",
             "description": "Its first prompt, sent once it runs; for a note, its text."

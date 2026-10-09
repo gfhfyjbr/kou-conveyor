@@ -263,6 +263,17 @@ cockpits work with the same files:
 A running session can be followed from anywhere but not deleted, branched or
 edited.
 
+`kou-conveyor-web metrics SESSION...` measures sessions from their logs:
+what their requests cost, how much of it went to writing the provider's cache
+anew and why (a new run, the thinking window, pruning), the requests that only
+waited, the cold starts, messages, compactions, heartbeats, stops and tool
+calls that failed to start. `-since` counts from a time on, `-json` prints
+JSON, `-list` lists the requests that rewrote the cache.
+
+```sh
+bin/kou-conveyor-web metrics -since 2026-10-08T22:16 78844fda   # an ID of the workspace here, or a log's path
+```
+
 ### Models
 
 Every prompt runs with a model of its own choosing: any model the connection

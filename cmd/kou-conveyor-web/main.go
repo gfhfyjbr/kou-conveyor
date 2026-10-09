@@ -159,6 +159,9 @@ func runMain(args []string) int {
 	if len(args) > 0 && args[0] == "tunnel" {
 		return tunnelMain(args[1:], os.Stdout, os.Stderr)
 	}
+	if len(args) > 0 && args[0] == "metrics" {
+		return metricsMain(args[1:], os.Stdout, os.Stderr)
+	}
 	o, err := parseOptions(args, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0

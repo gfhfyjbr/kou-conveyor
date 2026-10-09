@@ -5,6 +5,7 @@ import (
 	"encoding/json/jsontext"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -339,14 +340,46 @@ func TestCoordinatorHardStopPreservesPendingInputsOnReplay(t *testing.T) {
 		resumed := newStopTestRun(t, 0)
 		restoreTestRun(t, resumed, store)
 		resumed.start(t)
-		if len(resumed.calls) != 1 || !reflect.DeepEqual(resumed.calls[0].request, want) || len(resumed.operations.adds) != 0 || len(resumed.operations.cancels) != 0 {
-			t.Fatal("resume changed stop history, lost late input, or repeated operations")
+		if len(resumed.calls) != 1 || len(resumed.operations.adds) != 0 || len(resumed.operations.cancels) != 0 {
+			t.Fatal("resume repeated operations or did not start one request")
+		}
+		// The resumed run's first request is the stop history and, after it,
+		// the harness's note of the stop that ended the run before.
+		got := resumed.calls[0].request
+		if len(got.Input) != len(want.Input)+1 {
+			t.Fatalf("resumed request has %d items, want %d and the resume note", len(got.Input), len(want.Input))
+		}
+		note, ok := got.Input[len(want.Input)].Data.(llm.Message)
+		got.Input = got.Input[:len(want.Input)]
+		if !reflect.DeepEqual(got, want) {
+			t.Fatal("resume changed stop history or lost late input")
+		}
+		if !ok || note.Role != llm.RoleUser || !strings.HasPrefix(note.Text, harnessPrefix+" The previous run was stopped at ") || !strings.Contains(note.Text, ": user requested stop. The tool calls it was making were canceled") {
+			t.Fatalf("resume note = %#v", note)
 		}
 		resumed.input(t, stopInput(t, "idle", inbox.StopWhenIdle))
 		resumed.respond(t, 0, textResponse("Follow-up received."))
 		resumed.assertStopped(t)
 		if resumed.current.pendingInputs() != 0 || len(resumed.calls) != 1 {
 			t.Fatal("resumed stop history did not settle in one response")
+		}
+		// The note is given once: the run after the resumed one is not told
+		// of the stop again.
+		again := newStopTestRun(t, 0)
+		restoreTestRun(t, again, store)
+		again.start(t)
+		again.input(t, externalEvent(t, 2, "next", "next question"))
+		if len(again.calls) != 1 {
+			t.Fatalf("run after the resumed one made %d requests, want 1", len(again.calls))
+		}
+		notes := 0
+		for _, item := range again.calls[0].request.Input {
+			if message, ok := item.Data.(llm.Message); ok && strings.Contains(message.Text, "The previous run was stopped") {
+				notes++
+			}
+		}
+		if notes != 1 {
+			t.Fatalf("the conversation tells of the stop %d times, want once", notes)
 		}
 	})
 }

@@ -224,13 +224,17 @@ type Line struct {
 type Job struct {
 	lines  chan Line
 	done   chan struct{}
-	cancel context.CancelFunc
+	cancel context.CancelCauseFunc
 	err    error
 
 	// steer takes the messages Steer hands to the runner's stdin; nil when
 	// the runner cannot take any. fed is closed once stdin takes no more.
 	steer chan []byte
 	fed   chan struct{}
+	// stopLine takes the line that tells the runner why it is stopped
+	// (sayWhy), when it takes one; stopFed is closed once stdin took it.
+	stopLine chan []byte
+	stopFed  chan struct{}
 	// workspace is where the files a message links are; links says the
 	// runner takes them.
 	workspace string
@@ -307,9 +311,60 @@ func (j *Job) feed(stdin io.WriteCloser, request []byte) {
 			if _, err := stdin.Write(line); err != nil {
 				return
 			}
+		case line := <-j.stopLine:
+			if _, err := stdin.Write(line); err != nil {
+				return
+			}
+			close(j.stopFed)
 		case <-j.done:
 			return
 		}
+	}
+}
+
+// stopReason is why Stop stops a run.
+type stopReason string
+
+func (r stopReason) Error() string { return string(r) }
+
+// why says why a run is stopped: what Stop was told, or that the context it
+// was started in ended, which is the cockpit's shutting down.
+func why(parent, run context.Context) string {
+	var reason stopReason
+	if errors.As(context.Cause(run), &reason) {
+		return string(reason)
+	}
+	if parent.Err() != nil {
+		return fmt.Sprintf("the cockpit stopped its runs as it shut down (%v)", context.Cause(parent))
+	}
+	return "the cockpit stopped the run without saying why"
+}
+
+// stopLineWait is how long the interrupt waits for the line that says why
+// to reach the runner's stdin.
+const stopLineWait = time.Second
+
+// sayWhy tells the runner why it is stopped, before it is interrupted: the
+// runner records the reason in the session, and the next run tells the agent.
+func (j *Job) sayWhy(reason string) {
+	type stop struct {
+		Reason string `json:"reason"`
+	}
+	line, err := json.Marshal(struct {
+		Stop stop `json:"stop"`
+	}{stop{reason}})
+	if err != nil {
+		return
+	}
+	select {
+	case j.stopLine <- append(line, '\n'):
+	default:
+		return
+	}
+	select {
+	case <-j.stopFed:
+	case <-j.fed:
+	case <-time.After(stopLineWait):
 	}
 }
 
@@ -323,6 +378,9 @@ type runnerFeatures struct {
 	// links: its messages link files. One built before turns a request
 	// with files away; its prompts go without them.
 	links bool
+	// stop: it takes a line that stops it and says why, which it records.
+	// One built before is only interrupted.
+	stop bool
 }
 
 var runnerSteering = struct {
@@ -354,6 +412,7 @@ func featuresOf(runner string) runnerFeatures {
 	features = runnerFeatures{
 		steer: bytes.Contains(usage.Bytes(), []byte("-steer")),
 		links: bytes.Contains(usage.Bytes(), []byte("files: array of {path")),
+		stop:  bytes.Contains(usage.Bytes(), []byte(`{"stop": {"reason"`)),
 	}
 	runnerSteering.Lock()
 	runnerSteering.byBinary[key] = features
@@ -369,7 +428,19 @@ func (j *Job) Lines() <-chan Line { return j.lines }
 func (j *Job) Done() <-chan struct{} { return j.done }
 
 // Cancel interrupts the runner. It is safe to call more than once.
-func (j *Job) Cancel() { j.cancel() }
+func (j *Job) Cancel() { j.cancel(nil) }
+
+// Stop interrupts the runner, as Cancel does, and tells it why first: the
+// session records the reason, and the run after it tells the agent. Only the
+// first Stop or Cancel counts.
+func (j *Job) Stop(reason string) {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		j.cancel(nil)
+		return
+	}
+	j.cancel(stopReason(reason))
+}
 
 // Err reports how the runner ended once Done is closed: nil on success and
 // context.Canceled when the job or its parent context was canceled.
@@ -505,7 +576,8 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		}
 	}
 
-	runContext, cancel := context.WithCancel(ctx)
+	runContext, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(nil) }
 	args := []string{"-workspace", o.Workspace, "-session-directory", o.SessionDir, "-tool-heartbeat-interval", o.Heartbeat.String()}
 	if o.LogDir != "" {
 		args = append(args, "-log-directory", o.LogDir)
@@ -533,8 +605,17 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	cmd.WaitDelay = stopTimeout
 
 	job := &Job{
-		lines: make(chan Line, 64), done: make(chan struct{}), cancel: cancel, fed: make(chan struct{}),
+		lines: make(chan Line, 64), done: make(chan struct{}), cancel: cancelCause, fed: make(chan struct{}),
 		workspace: o.Workspace, links: features.links,
+	}
+	if steers && features.stop {
+		// The runner hears why it is stopped before the interrupt.
+		job.stopLine, job.stopFed = make(chan []byte, 1), make(chan struct{})
+		interrupt := cmd.Cancel
+		cmd.Cancel = func() error {
+			job.sayWhy(why(ctx, runContext))
+			return interrupt()
+		}
 	}
 	emit := func(line Line) {
 		select {

@@ -186,6 +186,16 @@ type loopState struct {
 	// notesChecked is set once the run's first ordinary turn was told what
 	// changed in the notes since the conversation showed them (notesUpdate).
 	notesChecked bool
+	// stopped is the stop the session records last with no ordinary turn
+	// after it: the stop that ended the run before this one, which the
+	// model is told of (resumeNote).
+	stopped *recordedStop
+}
+
+// recordedStop is a hard stop the session records: when, and why.
+type recordedStop struct {
+	at     time.Time
+	reason string
 }
 
 type compactRequest struct {
@@ -714,6 +724,37 @@ func (current *coordinator) notesUpdate() (string, bool) {
 	return current.dependencies.ContextBuilder.NotesUpdate()
 }
 
+// firstTurnNotes are the messages a run's first ordinary turn hears from the
+// harness before it starts: why the run before it stopped (resumeNote), and
+// the notes as they are now (notesUpdate).
+func (current *coordinator) firstTurnNotes() []string {
+	var notes []string
+	if note, ok := current.resumeNote(); ok {
+		notes = append(notes, note)
+	}
+	if note, changed := current.notesUpdate(); changed {
+		notes = append(notes, note)
+	}
+	return notes
+}
+
+// resumeNote tells the model that the run before this one was stopped, when
+// and why, as the session recorded it: the conversation shows only the tool
+// calls the stop cut short. The note is given once; the ordinary turn it
+// goes with clears the stop.
+func (current *coordinator) resumeNote() (string, bool) {
+	stopped := current.state.stopped
+	if stopped == nil {
+		return "", false
+	}
+	current.state.stopped = nil
+	at := ""
+	if !stopped.at.IsZero() {
+		at = " at " + stopped.at.Local().Format("2006-01-02 15:04:05 MST")
+	}
+	return fmt.Sprintf("%s The previous run was stopped%s: %s. The tool calls it was making were canceled and the commands they ran were ended; what they started that outlives them (servers, containers, detached jobs) may or may not still run. Check what they left before relying on it.", harnessPrefix, at, strings.TrimSuffix(stopped.reason, ".")), true
+}
+
 // compactionNear reports an ordinary request close enough to
 // AutoCompactTokens for the reminder that the conversation will be
 // compacted soon, which has not been sent since the latest compaction.
@@ -1056,11 +1097,14 @@ func (current *coordinator) startTurn(
 		sent = sentRequest{estimate: built.EstimatedTokens, focus: focus, budget: budget}
 	} else if !ordinary {
 		return nil
-	} else if notes, changed := current.notesUpdate(); changed {
-		// The run's first turn hears what changed in the notes since the
-		// conversation showed them, after what the provider has cached.
-		if err := current.nudge(ctx, notes); err != nil {
-			return err
+	} else if notes := current.firstTurnNotes(); len(notes) != 0 {
+		// The run's first turn hears why the run before it stopped, and what
+		// changed in the notes since the conversation showed them, after
+		// what the provider has cached.
+		for _, note := range notes {
+			if err := current.nudge(ctx, note); err != nil {
+				return err
+			}
 		}
 		if built, err = current.dependencies.ContextBuilder.Build(); err != nil {
 			return fmt.Errorf("build model request: %w", err)
@@ -1402,6 +1446,9 @@ func (current *coordinator) addItemToLocalState(
 			if request.Mode == inbox.Compact {
 				current.state.compactionAsked = true
 			}
+			if request.Mode == inbox.StopHard && request.Reason != "" {
+				current.state.stopped = &recordedStop{at: item.RecordedAt, reason: request.Reason}
+			}
 		}
 
 	case sessionstore.ItemTurn:
@@ -1427,6 +1474,9 @@ func (current *coordinator) addItemToLocalState(
 			}
 		} else {
 			delete(current.state.compactionTurns, turn.ID)
+			// An ordinary turn after a stop was told of it, or was no
+			// run's first.
+			current.state.stopped = nil
 		}
 		current.state.compactionAsked = false
 		current.state.currentTurnInputs = current.state.availableInputs

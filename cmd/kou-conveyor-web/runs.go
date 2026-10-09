@@ -149,14 +149,15 @@ func (r *run) summary() *runSummary {
 	return &runSummary{ID: r.id, Started: r.started, Stopping: r.stopping, Compact: r.compact, Activity: r.activity, Events: len(r.events.index)}
 }
 
-func (r *run) stop() {
+// stop stops the run; the session records why (cockpit.Job.Stop).
+func (r *run) stop(reason string) {
 	r.mu.Lock()
 	first := !r.stopping && !r.done
 	r.stopping = true
 	r.mu.Unlock()
 	if first {
 		r.publish(event{Type: "status", Stopping: true, Activity: "Stopping"})
-		r.job.Cancel()
+		r.job.Stop(reason)
 	}
 }
 
@@ -542,7 +543,7 @@ func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
-	current.stop()
+	current.stop("the user stopped the run from the cockpit")
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 

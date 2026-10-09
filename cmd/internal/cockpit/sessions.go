@@ -34,9 +34,11 @@ type SessionInfo struct {
 	// choosing; those pinned before there was one have none.
 	PinOrder int `json:"pin_order,omitempty"`
 	// Canvas and Node name the canvas and its node whose agent the session
-	// is, for a session a canvas made.
-	Canvas string `json:"canvas,omitempty"`
-	Node   string `json:"node,omitempty"`
+	// is, for a session a canvas made — or adopted, one of the user's that
+	// they put on a canvas.
+	Canvas  string `json:"canvas,omitempty"`
+	Node    string `json:"node,omitempty"`
+	Adopted bool   `json:"adopted,omitempty"`
 }
 
 // ValidSessionID reports whether the runner's session store accepts id.
@@ -97,6 +99,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			PinOrder:   meta.PinOrder,
 			Canvas:     meta.Canvas,
 			Node:       meta.Node,
+			Adopted:    meta.Adopted,
 		})
 	}
 	slices.SortFunc(sessions, func(a, b SessionInfo) int {
@@ -195,6 +198,16 @@ func SessionTitle(dir, id string, t *Transcript) string {
 		return title
 	}
 	return t.Title()
+}
+
+// ListedTitle is the title the session list shows a session under, read
+// as the list does: the user's, or the first prompt at the head of its
+// file.
+func ListedTitle(dir, id string) string {
+	if title := LoadMeta(dir, id).Title; title != "" {
+		return title
+	}
+	return sessionTitle(SessionPath(dir, id), nil)
 }
 
 // LoadSession reads a persisted session into a transcript. A trailing record

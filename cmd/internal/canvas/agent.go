@@ -65,6 +65,17 @@ func (c *Canvas) startAgent(n *Node, start bool) {
 			return
 		}
 		c.setRuntime(n.ID, func(r *Runtime) { r.Session = session })
+	} else if n.Runtime.Adopted {
+		// A session the user put on the canvas names its node too: the
+		// canvas is found by it after a restart, and the session list
+		// keeps it.
+		dir := c.ws.SessionDir
+		if meta := cockpit.LoadMeta(dir, session); meta.Canvas != c.id || meta.Node != n.ID || !meta.Adopted {
+			if err := cockpit.AdoptSession(dir, session, c.id, n.ID); err != nil {
+				c.setStatus(n.ID, StateError, "cannot take its session: "+err.Error())
+				return
+			}
+		}
 	}
 	c.e.indexSession(c, n.ID, session)
 	inst := &agentInstance{c: c, id: n.ID, session: session}
@@ -325,7 +336,7 @@ func (c *Canvas) bury(id string, g *grave) {
 	}
 	if session := g.node.Runtime.Session; session != "" {
 		c.e.unindexSession(c, session)
-		c.dropSession(session, !g.keep.Session)
+		c.dropSession(session, !g.keep.Session && !g.node.Runtime.Adopted)
 	}
 	if g.node.Kind == KindSource {
 		_ = removeAll(stateDir(c.ws.Path, c.id, id))

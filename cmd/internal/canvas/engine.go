@@ -79,6 +79,10 @@ type Engine struct {
 	sessions map[string]sessionRef // agents' sessions, by sessionKey
 	presets  map[string]presetCache
 	closed   bool
+
+	// adopting holds the batches that put sessions the user has on a
+	// canvas one at a time; it is taken before any canvas's lock.
+	adopting sync.Mutex
 }
 
 type sessionRef struct {

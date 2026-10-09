@@ -185,8 +185,11 @@ type Node struct {
 type Runtime struct {
 	// Terminal is the shell of a terminal node.
 	Terminal string `json:"terminal,omitzero"`
-	// Session is the kou session of an agent node.
+	// Session is the kou session of an agent node; Adopted, it is a session
+	// the user had before and put on the canvas (NodeSpec.Session), which
+	// removing the node or the canvas never deletes.
 	Session string `json:"session,omitzero"`
+	Adopted bool   `json:"adopted,omitzero"`
 	// AgentSession is the session of the program a terminal runs: Claude
 	// Code's or Codex's, to resume it.
 	AgentSession string `json:"agent_session,omitzero"`

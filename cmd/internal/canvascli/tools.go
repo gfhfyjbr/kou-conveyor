@@ -7,11 +7,12 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 // Tool is a tool of the canvas: one model for the agents' plugin
@@ -242,15 +243,15 @@ var tools = []Tool{
 	},
 }
 
-// number is a number of a tool's arguments, which models write as 100 or
-// 100.0 alike.
-type number = *float64
+// number is a number of a tool's arguments, which models write as 100,
+// 100.0 or "100" alike; nil when it is not given.
+type number = *toolarg.Number
 
 func intOf(n number) *int {
 	if n == nil {
 		return nil
 	}
-	v := int(math.Round(*n))
+	v := n.Rounded()
 	return &v
 }
 

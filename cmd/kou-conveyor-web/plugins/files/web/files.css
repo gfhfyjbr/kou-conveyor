@@ -1,0 +1,110 @@
+/* files: files in prompts. */
+
+/* ---------------------------------------------------------------- completing */
+
+/* What a $ being typed completes to floats over the composer, as the
+   command suggestions do, and over them. */
+.files-suggest {
+  position: absolute;
+  left: -1px;
+  right: -1px;
+  bottom: calc(100% + 6px);
+  z-index: 31;
+  background: var(--bg-2);
+  border: 1px solid var(--line-2);
+  box-shadow: var(--shadow);
+  animation: rise 0.1s ease-out;
+}
+.files-suggest.below { top: calc(100% + 6px); bottom: auto; }
+.files-suggest ul { list-style: none; margin: 0; padding: 4px 0; max-height: min(320px, 44vh); overflow-y: auto; }
+.files-suggest li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 14px 5px 12px;
+  border-left: 2px solid transparent;
+  font: 12.5px/1.45 var(--mono);
+  cursor: pointer;
+}
+.files-suggest li[aria-selected="true"] { background: var(--bg-3); border-left-color: var(--accent); }
+.files-suggest li small { margin-left: auto; font-size: 11px; color: var(--fg-4); }
+.file-glyph { flex: none; color: var(--fg-4); }
+.files-suggest li[aria-selected="true"] .file-glyph { color: var(--accent); }
+.file-path { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.file-dir { color: var(--fg-3); }
+.file-path b { font-weight: 600; color: var(--fg); }
+.files-suggest li[aria-selected="true"] .file-path b { color: var(--accent); }
+.files-suggest footer { display: flex; gap: 16px; align-items: center; height: 30px; padding: 0 14px; border-top: 1px solid var(--line); font: 10.5px var(--mono); color: var(--fg-4); }
+.files-suggest footer > span { flex: none; white-space: nowrap; }
+.files-suggest footer kbd { margin-right: 4px; }
+.files-suggest footer kbd + kbd { margin-left: 0; }
+.files-suggest footer > .files-note { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+/* A touch screen: no keys to hint at, and rows a finger hits. */
+@media (hover: none) and (pointer: coarse) {
+  .files-suggest footer > span:not(.files-note) { display: none; }
+  .files-suggest footer > .files-note { text-align: left; }
+  .files-suggest li { padding-top: 11px; padding-bottom: 11px; }
+}
+/* A prompt being edited completes too; its list floats over it. */
+.edit { position: relative; }
+
+/* ---------------------------------------------------------------- the strip */
+
+.links { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 10px; }
+.link-chip, .prompt-file {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  height: auto;
+  padding: 3px 9px 3px 7px;
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  font: 11.5px/1.4 var(--mono);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: border-color 0.12s, color 0.12s;
+}
+.link-chip:hover, .prompt-file:hover { border-color: var(--fg-4); color: var(--fg); }
+.link-label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; color: var(--fg); }
+.link-chip small, .prompt-file small { flex: none; font-size: 10.5px; color: var(--fg-4); }
+.link-chip .file-glyph, .prompt-file .file-glyph { color: var(--accent); }
+
+/* ---------------------------------------------------------------- sent prompts */
+
+.prompt-files { display: grid; gap: 8px; margin-top: 8px; }
+.prompt-file-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.prompt-file[aria-expanded="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.prompt-file[data-failed="true"] .file-glyph, .prompt-file[data-failed="true"] small { color: var(--err); }
+.prompt-file-open { border: 1px solid var(--line-2); background: var(--bg-2); }
+.prompt-file-open > header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px 4px 10px;
+  border-bottom: 1px solid var(--line);
+  font: 11.5px var(--mono);
+}
+.prompt-file-open > header b { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 600; }
+.prompt-file-open > header small { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--fg-4); }
+.file-view pre {
+  margin: 0;
+  max-height: min(420px, 50vh);
+  overflow: auto;
+  padding: 8px 0;
+  background: var(--code);
+  font: 12px/1.55 var(--mono);
+  tab-size: 4;
+}
+.file-line { display: block; padding: 0 12px; white-space: pre; }
+.file-line i {
+  display: inline-block;
+  margin-right: 14px;
+  font-style: normal;
+  color: var(--fg-4);
+  user-select: none;
+}
+.file-view footer { padding: 6px 12px; border-top: 1px solid var(--line); font: 10.5px var(--mono); color: var(--fg-4); }
+.file-view.empty { padding: 10px 12px; font: 11.5px var(--mono); color: var(--fg-3); }

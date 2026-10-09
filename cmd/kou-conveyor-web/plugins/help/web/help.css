@@ -1,0 +1,13 @@
+/* help: the keyboard sheet. */
+
+.sheet { width: min(540px, 100%); }
+.sheet header { justify-content: space-between; height: 44px; padding-right: 8px; border-bottom: 1px solid var(--line); }
+.sheet dl { display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; margin: 0; padding: 18px 20px 20px; align-items: center; }
+.sheet dt { white-space: nowrap; }
+.sheet dd { margin: 0; color: var(--fg-2); font-size: 13px; }
+.sheet { max-height: 80vh; overflow-y: auto; }
+.sheet-sub { display: flex; align-items: center; gap: 12px; padding: 12px 20px 0; border-top: 1px solid var(--line); font: 11px var(--mono); color: var(--fg-4); }
+.sheet-sub kbd { margin: 0 2px; }
+.sheet .sheet-commands { gap: 8px 16px; padding-top: 12px; }
+.sheet-commands code { font-size: 12px; color: var(--fg); }
+.sheet-commands .args { font: 11.5px var(--mono); color: var(--fg-3); }

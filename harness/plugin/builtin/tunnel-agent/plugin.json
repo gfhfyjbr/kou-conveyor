@@ -1,0 +1,10 @@
+{
+  "name": "tunnel-agent",
+  "description": "How to set up the browser cockpit's tunnel, for the agents the cockpit runs: install kou-conveyor-relay on a host over ssh, so that the kou-conveyor iPhone app and browsers elsewhere reach the cockpit through it, and fix it when it does not come up. Only agents the browser cockpit runs have it.",
+  "skills": "skills",
+  "requires": {
+    "env": [
+      "KOU_CONVEYOR_TUNNEL_CONFIG"
+    ]
+  }
+}

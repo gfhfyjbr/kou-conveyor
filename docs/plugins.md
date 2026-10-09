@@ -1,0 +1,656 @@
+# Plugins
+
+Everything the project adds is a plugin. A plugin is a directory with a
+`plugin.json`: it can give the agent **tools** it calls, **skills** and
+**instructions** for its system prompt, give the cockpits **slash
+commands**, and give the browser cockpit a **script and a style sheet** that
+build its interface.
+
+The project's own features come the same way:
+
+- The agent's `Bash`, `ViewImage` and `SkillUse` tools are the built-in
+  **core** plugin, which can be turned off like any other.
+- The agent knows how to write plugins: the built-in **guide** plugin gives
+  it a skill, `kou-conveyor-plugins`, with what this document says — the
+  manifest, tools, skills, commands, the browser cockpit's API — and the
+  scopes plugins and skills live in. Ask the agent for a plugin and it
+  loads the skill.
+- The browser cockpit is nothing but plugins. Its page is a small plugin
+  host (the *kernel*, [`static/kernel`](../cmd/kou-conveyor-web/static/kernel))
+  that builds nothing itself: the layout, the sessions, the transcript, the
+  composer, the model picker, the accounts, the inspector, the palette, even
+  the colours are built-in plugins
+  ([`cmd/kou-conveyor-web/plugins`](../cmd/kou-conveyor-web/plugins)),
+  written against the same API as yours. A plugin of yours can add to any of
+  them, take any part's place, or replace a whole built-in plugin.
+
+**Changes show at once.** A plugin whose files change is loaded anew while
+the page stays open — its new version in, the old one taken away, the rest
+untouched — and a running agent takes up changed tools, instructions and
+skills at its next turn. Nothing needs a reload or a restart: not a user's
+plugin, not a workspace's, not a built-in one (see [Changes while things
+run](#changes-while-things-run)).
+
+[`examples/plugins/git-glance`](../examples/plugins/git-glance) uses every
+part of a plugin; [`examples/plugins/scratchpad`](../examples/plugins/scratchpad)
+adds a view of its own to the cockpit, with a page, a panel and a hook.
+
+## Where plugins live
+
+| Source | Directory | Runs |
+| --- | --- | --- |
+| built in | compiled into the programs (the web cockpit's are also served from a checkout, live) | always, unless turned off |
+| user | `plugins/` in the configuration directory: `~/Library/Application Support/kou-conveyor/plugins` on macOS, `~/.config/kou-conveyor/plugins` on Linux, or beside `KOU_CONVEYOR_CONFIG` | always, unless turned off |
+| workspace | `.harness/plugins/` in the workspace | once the workspace is trusted |
+
+Each plugin is a subdirectory with a `plugin.json`; a plugin being worked on
+elsewhere can be linked in. A workspace's plugins — the project's — come from
+its `.harness/plugins` alone, and load only in that workspace: in the
+browser cockpit while the workspace is in view, and in the runs there. A
+later source's plugin replaces an earlier one
+of the same name: a workspace can bring its own version of a user plugin,
+and a user plugin named `core` replaces the built-in tools — or one named
+`composer` the cockpit's composer. Two active plugins cannot share a tool or
+a command: the first keeps it and the conflict is reported.
+
+The built-in plugins are `core` (the agent's tools), `guide` (its skill for
+writing plugins), `canvas-agent` (the canvas's tools, for agents on a
+canvas: see [Canvas](#canvas)) and the browser cockpit's `accounts`,
+`canvas`, `changes`, `commands`, `composer`, `connection`,
+`edit`, `effort`, `explorer`, `files`, `header`, `help`, `images`, `inspector`,
+`layout`, `markdown`, `models`, `palette`, `plugins`, `queue`, `session`,
+`session-list`, `sidebar`, `skills`, `terminal`, `theme`, `timeline`, `ui`
+and `workspaces`. Give a plugin a
+name of its own unless you mean it to replace the built-in one of that name
+— a plugin named `theme` that only sets colours takes the whole theme's
+place.
+
+**Trust.** A workspace's plugins run code from wherever the workspace came
+from, so they stay off until you trust the workspace: the **Trust this
+workspace** button in the Project bar of the browser cockpit's Plugins
+panel (or `/plugins trust` in either cockpit). Trust is kept per folder in
+`plugins.json` in the configuration directory, which the runner reads too;
+`KOU_CONVEYOR_TRUST_WORKSPACE_PLUGINS=1` trusts the workspace for one run.
+
+**Turning plugins off.** The Plugins panel's **Turn off**, which writes the
+plugin's name under `disabled` in `plugins.json`, or
+`KOU_CONVEYOR_DISABLED_PLUGINS=name,other` for one run. Built-in plugins
+turn off too, but for those the Plugins panel itself needs (`layout`,
+`session`, `ui`, `inspector`, `plugins`, `theme`), which only `plugins.json`
+turns off. A page no plugin builds says so and offers them back, and
+`/?safe` opens the cockpit with its built-in plugins only.
+
+`kou-conveyor-runner -list-plugins -workspace .` prints what a run would find,
+one JSON object per plugin, with the reason for each that does not run, and
+the manifests that could not be read. The runner reports those on stderr as
+`plugin error>` lines too.
+
+## plugin.json
+
+```json
+{
+  "name": "git-glance",
+  "version": "1.0.0",
+  "description": "Git at a glance",
+  "tools": [
+    {
+      "name": "GitGlance",
+      "description": "Show the branch, the changed files and the latest commits, as JSON.",
+      "parameters": {"type": "object", "properties": {"commits": {"type": "integer"}}},
+      "run": ["/bin/sh", "./glance.sh"],
+      "max_output_length": 40000
+    }
+  ],
+  "skills": "skills",
+  "prompt": "prompt.md",
+  "commands": [
+    {"name": "review", "args": "[focus]", "description": "Review the uncommitted changes",
+     "prompt": "Review the uncommitted changes. Focus: {{args}}"}
+  ],
+  "web": {"script": "web/plugin.js", "style": "web/plugin.css", "after": ["timeline"]}
+}
+```
+
+Unknown fields are errors. Paths are relative to the plugin's directory and
+may not leave it.
+
+| Field | |
+| --- | --- |
+| `name` | required: lowercase letters, digits and dashes |
+| `version`, `description` | shown in the cockpits |
+| `tools` | tools the agent can call (below) |
+| `skills` | a directory of skills, one per subdirectory with a `SKILL.md`, as in `.harness/skills`: a workspace's plugin's are the project's skills, another's system-wide ones (see [Skills](#skills)) |
+| `prompt` | a file, up to 64 KiB, whose text joins the system prompt under `## <name> plugin` |
+| `commands` | slash commands for both cockpits (below) |
+| `web` | `script`, an ES module, and `style`, a style sheet, for the browser cockpit; `after`, plugins to start before this one when they are there (below) |
+| `canvas` | what the plugin adds to the browser cockpit's canvas: `harnesses`, presets of terminal nodes; `sources`, nodes that bring events; `templates`, a directory of canvases to start from (see [Canvas](#canvas)) |
+| `requires` | what the plugin needs to run: `env`, variables that must be set. Without them it is not active, and `-list-plugins` says why: the built-in `canvas-agent` requires `KOU_CANVAS_TOKEN`, so only the agents of a canvas have its tools |
+
+## Tools
+
+A tool runs a command. Its `name` is what the model calls (letters, digits,
+`_` and `-`, starting with a letter), `description` tells the model what it
+does, and `parameters` is the JSON schema of its arguments, an object.
+
+`run` is the program and its arguments, without a shell. Arguments that start
+with `./` or `../` are paths in the plugin's directory. For a call:
+
+- The command runs in the workspace, like `Bash`.
+- The call's arguments arrive on standard input as one line of JSON.
+- What it prints on standard output is the result the model reads. Standard
+  error follows it under `Stderr:`, and a nonzero exit code is reported.
+  Each stream is cut to `max_output_length` characters (40,000 by default),
+  keeping its beginning and end and the path of the complete output.
+- `KOU_CONVEYOR_PLUGIN_NAME`, `KOU_CONVEYOR_PLUGIN_DIR`, `KOU_CONVEYOR_WORKSPACE`,
+  `KOU_CONVEYOR_SESSION_ID`, `KOU_CONVEYOR_TOOL_NAME` and `KOU_CONVEYOR_TOOL_CALL_ID` are set,
+  besides the runner's environment.
+
+A call is a durable operation, like a `Bash` command: it runs in the
+background while the agent goes on, is resumed if the runner restarts, and
+is stopped with the run. A request's `disallowed_tools` leave plugin tools out
+as well.
+
+With the `code` tool profile a plugin tool is a function of the Code tool's
+JavaScript instead: `name(args)`, or `tools["name"](args)` for a name the code
+cannot call as it is (one with a `-`, a reserved word, or a name the runtime's
+functions or JavaScript's globals have). It runs as above, within the Code
+call, with `KOU_CONVEYOR_TOOL_CALL_ID` set to the Code call's ID and the
+number of the code's call, `<id>-<n>`; it resolves to what the command
+prints and rejects when the command exits with a nonzero code.
+
+```sh
+#!/bin/sh
+arguments=$(cat)      # {"commits":3}
+git status --short
+```
+
+## Commands
+
+A command is typed in either cockpit's composer: `/review the error
+handling`. `prompt` is what it asks the agent; `{{args}}` stands for the text
+after the command, which is otherwise added at the end. `args` documents it,
+as `[optional]` or `<required>`. Commands appear in the `/` suggestions, the
+command palette and the keyboard sheet.
+
+A web plugin can register commands with logic of their own (below).
+
+## Skills
+
+A skill is a directory with a `SKILL.md`, whose frontmatter (`name`,
+`description`, and `disable-model-invocation`, which keeps the model from
+loading it on its own) says when it helps. Besides the skills plugins
+bring, a run has those of these directories, the first to name a skill
+winning:
+
+| Scope | Directory |
+| --- | --- |
+| project | `.harness/skills` in the workspace, then `.agents/skills` in the workspace, then the workspace's plugins' |
+| system-wide | `skills/` in the configuration directory, beside `plugins/`, then `~/.agents/skills`, then the user's plugins', then the built-in plugins' |
+
+So a project's skill replaces a system-wide one of the same name, and any
+skill of yours a built-in one. The skills of a plugin compiled into the
+program — the guide's `kou-conveyor-plugins` — are written out to
+`builtin/<plugin>-<hash>/` in the configuration directory, where the agent
+reads them and the files beside them; edits there are undone, so to change
+a built-in skill put one of the same name in `skills/`, or turn the plugin
+off. The
+Skills bar of the browser cockpit's inspector lists both scopes, with the
+skills another replaces; the plugin listing (`/api/w/<workspace>/plugins`)
+carries them as `skills`, and changes with the skill directories.
+
+## Canvas
+
+The browser cockpit's canvas is a board of terminals, agents and sources of
+events, wired output to input (see the [README](../README.md#canvas)). A
+plugin adds to it with `canvas`: presets of terminal nodes (`harnesses`),
+nodes that bring events (`sources`) and canvases to start from
+(`templates`). The canvas's own come the same way, from the manifest of the
+built-in `canvas` plugin: the Shell, Command, Claude Code, Codex and
+OpenCode presets, and the Manual, Timer, Files and Webhook sources.
+
+```json
+"canvas": {
+  "sources": [{
+    "id": "github-issues", "title": "GitHub issues", "icon": "⊙",
+    "run": ["python3", "./bin/github-issues"], "mode": "poll", "interval": "60s",
+    "config": {"type": "object", "required": ["repo"],
+               "properties": {"repo": {"type": "string", "title": "Repository"}}},
+    "outputs": [{"id": "opened", "title": "Issue opened"}, {"id": "updated", "title": "Issue updated"}],
+    "template": "Issue #{{data.number}}: {{data.title}}\n{{data.url}}"
+  }],
+  "harnesses": [{
+    "id": "aider", "title": "Aider", "icon": "◇", "command": ["aider"],
+    "args": ["--model", "{{config.model}}"],
+    "status": ["idle"], "idle_ms": 4000, "output": "screen",
+    "config": {"type": "object", "properties": {"model": {"type": "string", "title": "Model"}}}
+  }],
+  "templates": "templates"
+}
+```
+
+What a plugin adds shows in a canvas's **+ Add** menu, and the nodes of its
+presets name it: `plugin/id`. Ids are lowercase letters, digits and dashes.
+A workspace's plugin adds to the canvas once the workspace is trusted, as
+its tools do; a plugin turned off takes its presets away, and its sources
+stop until it is back.
+
+### Sources
+
+A source runs a program as a tool does: `run` is the program and its
+arguments, without a shell, with `./` and `../` paths in the plugin's
+directory, and it runs in the workspace. Its standard input is a line of
+JSON — `{"config": {…}, "node": "n_…", "canvas": "…", "first_run": true}`,
+where `config` is what the node's form holds — and each line it prints is
+one of:
+
+| Line | |
+| --- | --- |
+| `{"type": "event", "port": "opened", "key": "42:2026-10-02T12:00:00Z", "title": "…", "text": "…", "data": {…}}` | an event on one of its `outputs` (`out` when it names none); one whose `key` the node had before is dropped |
+| `{"type": "status", "state": "ok", "text": "…"}` | what the node says it does; `"state": "error"` shows the node failing, and counts the run as failed |
+| `{"type": "log", "text": "…"}` | a line of the node's log, where its standard error goes too |
+
+- In `poll` mode, the default, the program runs every `interval` (a
+  duration of `10s` or more, a minute when none is given; the node's
+  settings may give a longer `interval`) and exits; a run is stopped after
+  5 minutes. In `stream` mode it runs on, and its standard input closes
+  when it should stop.
+- A program that fails runs again a second later, then later and later, up
+  to a minute apart; three failures in a row show the node failing.
+- `first_run` is true until the node's program has run once, so a source
+  can start from now rather than from the beginning of history.
+  `KOU_CANVAS_STATE_DIR` is a directory of the node's own for what it keeps
+  between runs, such as a cursor; the keys of its events (the latest
+  10,000) are kept there too.
+- Its environment is the server's, with `KOU_CANVAS_STATE_DIR`,
+  `KOU_CONVEYOR_PLUGIN_DIR`, `KOU_CONVEYOR_WORKSPACE`, `KOU_CANVAS_URL`,
+  `KOU_CANVAS_ID`, `KOU_CANVAS_NODE` and `KOU_CANVAS_TOKEN`, a token that
+  lets it emit its own node's events (`kou-canvas emit`) and nothing more.
+- `template` is how an edge from the source words its events, unless the
+  edge has a template of its own: `{{text}}`, `{{title}}`,
+  `{{data.<path>}}` (`{{data.labels.0.name}}`), `{{from.title}}`,
+  `{{from.id}}`, `{{edge.id}}`, `{{now}}`.
+- A source runs while its canvas is live: pausing the canvas, removing the
+  node or turning its plugin off stops it.
+
+[`examples/plugins/github-events`](../examples/plugins/github-events) is a
+source: the issues of a repository, through `gh`.
+
+### Harnesses
+
+A harness is a preset of a terminal node: a program that runs in the
+node's shell — a coding agent, a REPL, any program of a terminal — told of
+the canvas and followed by it.
+
+| Field | |
+| --- | --- |
+| `id`, `title`, `icon`, `description` | how the + Add menu shows it |
+| `command`, `args` | the program with its fixed arguments, and arguments that are templates: `{{brief}}`, what the node is told of the canvas (its name and ID, the nodes it can message and how, where its answers go, its access); `{{files.<name>}}`, the path of a file of `files`; `{{node.title}}`, `{{node.id}}`, `{{canvas.id}}`; `{{runtime.agent_session}}`, a session ID the canvas keeps for the program; `{{config.<key>}}`, a value of the node's settings or its default. An argument whose values are all missing is left out, and the flag before it with it |
+| `files` | written for the program before it starts, in a directory of the node's: an object or an array as `<name>.json`, a string — a template — as `<name>.txt` |
+| `env` | variables for the program, templates too |
+| `launch` | `launcher`, the default: the shell runs `kou-canvas launch`, which asks the canvas for the program's arguments, variables and folder and runs it, so leaving the program gives the shell back; `type`: the command is typed at the shell's first prompt; `shell`: the shell alone |
+| `input` | how a message is typed into it: `paste` (`bracketed`, as a paste where the program asked for that, or `type`), `newline` (`cr` or `lf`), `submit` (what follows the text, `\r` by default) and `submit_delay_ms` |
+| `status` | how the canvas learns whether it works or waits: `hooks` (it calls `kou-canvas hook claude`, as Claude Code's hooks do), `notify` (`kou-canvas hook codex`, Codex's notify program), `osc133` (a shell's marks of its prompts and commands, as for the Shell and Command presets), `idle` (quiet for `idle_ms`, 4 seconds by default); `ready` is a pattern its screen shows when it waits |
+| `output` | what it gives on `out`: what its `hooks` or `notify` program say it answered (`kou-canvas emit` with `"answer": true`, as `kou-canvas hook` does), a command's output (`osc133`), its `screen` once it falls idle, or `none`. An answer goes where the message it answers came from: along the node's edges and back to the node that sent it, when it came from the canvas; nowhere, when the user typed it — unless the node's `output` setting is `all` (or `explicit`: only what it emits) |
+| `session_arg`, `resume` | the arguments that start the program on the session the canvas names for it (`{{runtime.agent_session}}`), and those that take it up again — **Resume** on the node |
+| `config` | the JSON schema of the node's settings |
+| `check` | the command that shows the harness is installed (`["claude", "--version"]`): the + Add menu marks the preset as not installed when its program — or the `command`'s — is not on the server's `PATH` |
+
+A program does more on the canvas itself: the terminals of a canvas have
+`kou-canvas` on their `PATH` and their node's token in `KOU_CANVAS_TOKEN`,
+and `kou-canvas mcp` serves the canvas's tools over MCP, which the Claude
+Code and Codex presets give their programs.
+
+### Settings and templates
+
+`config` is a JSON schema of `"type": "object"` whose properties are
+strings, numbers, integers, booleans, enums and arrays of strings, with
+`title`, `description`, `default`, `enum`, `pattern` and `required`: the
+canvas makes the node's form of it, and asks for what is required when the
+node is added.
+
+`templates` is a directory of canvases, one per `*.json` file, offered when
+a canvas is empty; ⋯ → **Save as template…** writes one of a canvas,
+without what runs, to `.harness/canvas-templates` in the workspace.
+
+### Nodes in the browser
+
+A web plugin draws nodes its own way (`canvas.node`), adds items to a
+canvas's + Add menu (`canvas.add`), canvases to start from
+(`canvas.template`) and sections to a node's inspector (`canvas.inspector`),
+and the `canvas` service opens canvases and adds nodes (see [Contribution
+points](#contribution-points) and [Services](#services)). A node's body is
+what `create(node, ctx)` returns: `{ node, update(node), status(),
+lod(level, live), shown(), hidden(), focus(), blur(), resized(),
+zoomed(zoom), contains(element), menu(), dispose() }` — `node`, the
+element, and the rest optional. `lod` says how much the zoom shows (`low`,
+`mid`, `full`) and whether a terminal may draw live, `focus` gives the node
+the keys (true if it took them), and `menu` returns items of the node's ⋯.
+`ctx` has `cockpit`, `h`, `fmt`, `model` (the canvas: `doc`, `status` —
+a node's `{ state, detail, since, activity, agent, quiet }`, where `agent`
+is the agent a terminal runs, its preset's or one found in its shell
+(`detected`), and `quiet` says a command at work has shown nothing for a
+while —, `send(node, { text, submit, keys, deliver })`, `read(node, what)`,
+`apply(ops)`, `on(event, fn)`…), `kinds`, `zoom()`, `touch()`,
+`toast(text, kind)`, `update(set, label)`, which changes the node so that
+it can be undone, `apply(ops, options)`, `markdown(text)`, `inspect()`,
+`select()`, `focus()` and `center()`.
+
+## Changes while things run
+
+Plugins are followed wherever they are used:
+
+- **The browser cockpit.** The server looks at the plugins' files (a stat per
+  file, a few times a second, only while pages are open) and streams the
+  workspace's plugin listing to every page
+  (`/api/w/<workspace>/plugins/events`). Each plugin's files are served under
+  a fingerprint of them, so a changed plugin comes from new addresses, its
+  modules' own `import`s included. The kernel compares the listing with what
+  runs and loads what changed: the new version's module and style sheet are
+  fetched first, then the old version is stopped — everything it added taken
+  away — and the new one started, in one go. A plugin whose style sheets
+  alone changed keeps running and gets its new style sheet. A plugin added
+  starts; one removed, turned off or no longer trusted goes. A version that
+  does not load (a syntax error) leaves the running one in place, and the
+  Plugins panel says why. The page itself is loaded again only when the
+  kernel's own files change.
+- **Built-in plugins.** A web server built from a checkout — by `make
+  build`, or by `install.sh` run from the checkout, wherever it installs —
+  serves its page and its built-in plugins from that checkout, as long as it
+  is there, rather than the copies compiled in, and follows them like any
+  plugin:
+  edit `cmd/kou-conveyor-web/plugins/composer/web/composer.js` and open pages
+  have the new composer. `-assets embedded` serves the compiled-in ones,
+  `-assets <dir>` those of a directory holding `static/` and `plugins/`
+  (also `KOU_CONVEYOR_WEB_ASSETS`). The Plugins panel marks plugins read
+  from disk *live*.
+- **The server's own Go code.** A web server built from a checkout follows
+  its Go code too: when a `.go` file of the checkout changes (or `go.mod`,
+  `go.sum`), it builds itself anew, with the runner and the terminal cockpit
+  installed beside it, and — once no agent runs and nothing waits in a queue
+  — takes the new build up in place: the same process, the same port, whose
+  socket the new build inherits. Open pages reconnect by themselves and say
+  *The server runs the new build*; a build that fails leaves the server as
+  it was, and the Plugins panel shows the compiler's errors. New runs use
+  the new runner. `-rebuild=false` (or `KOU_CONVEYOR_WEB_REBUILD=0`) turns
+  this off.
+- **The runner.** Before every turn a run looks at where its plugins and
+  its skills come from, and reads them again if anything changed: a tool
+  added, changed or removed, other instructions, a skill added, edited or
+  removed, a plugin turned on or off reach the agent in its next request,
+  and the run goes on. Calls already made
+  keep running and bring their results back; a removed tool's new calls are
+  turned away. The runner says so on stderr (`plugin> …`), which the browser
+  cockpit shows in the runner log. `KOU_CONVEYOR_WATCH_PLUGINS=0` keeps a
+  run's plugins as they were when it started. Turning the core plugin off
+  takes its tools away at once; turning it on brings them from the next run.
+- **The terminal cockpit** takes up plugin commands that came, changed or
+  went within a couple of seconds, and says so.
+
+Writing a web plugin that reloads well takes little: add things through the
+API (they are taken away for you), keep state that should outlive a version
+in `cockpit.hot.data`, and return a function (or export `deactivate`) for
+anything else to undo.
+
+In the browser's console, `cockpitKernel` shows what runs:
+`cockpitKernel.instances()` the plugins loaded and their versions,
+`services()`, `slots()`, `contributions('keys')`, `failures()`, and
+`use('session')` any service.
+
+## Web
+
+The browser cockpit imports the `script` module of every active plugin of
+the workspace in view, and calls its default export, or `activate`, with the
+cockpit API. The plugins start in the order of the listing — built-in, then
+the user's, then the workspace's — except that a plugin starts after those
+its `web.after` names. Style sheets cascade in the same order, so a later
+plugin's rules win over an earlier one's. Everything a plugin adds through
+the API belongs to it: when it is loaded anew, turned off, or its workspace
+is left, the kernel calls the function `activate` returned, or the module's
+`deactivate`, and takes the rest away. Code that throws is reported in a
+toast and in the runner log of the inspector, and the cockpit goes on.
+
+Files are served from `/api/w/<workspace>/plugins/<name>/v/<version>/<path>`,
+so a module can import its neighbours (`import './lib.js'`), and a plugin's
+modules may import the kernel's helpers from `/kernel/dom.js` (`h`, `svg`,
+`fmt`, `kv`, `uuid`, `typingIn`). Scripts, styles, JSON, images, fonts and
+text are served; hidden files, other files and paths that leave the plugin
+are not, nor is anything of a plugin that does not run.
+
+```js
+export default function activate(cockpit) {
+  const { h } = cockpit;
+  // A button in the bar over the transcript, left of the palette's.
+  cockpit.ui.mount('bar.end', { id: 'standup', order: 45,
+    node: h('button', { class: 'act', text: 'Standup', onclick: () => cockpit.prompt('Summarize what changed today.') }) });
+  // How a tool's calls look in the timeline.
+  cockpit.tools.register('GitGlance', { summary: (entry) => 'main · 2 changes' });
+  // A section of the inspector, a command, a key, an item of the palette.
+  cockpit.inspector.register({ id: 'git', title: 'Git', render: (view) => h('p', { text: view.title }) });
+  cockpit.commands.register({ name: 'standup', args: '[days]', help: 'Summarize the recent work',
+    run: (arg) => cockpit.prompt(`Summarize the commits of the last ${arg || 1} days.`) });
+  cockpit.keys.register({ key: 'Mod+j', global: true, run: () => cockpit.prompt('Standup, please.') });
+  cockpit.contribute('help.keys', { keys: ['⌘', 'J'], text: 'Standup', order: 300 }); // its line in the keyboard sheet
+  cockpit.palette.register({ icon: '±', label: 'Review the changes', run: () => cockpit.prompt('Review the changes.') });
+  // Every prompt that runs passes through a hook.
+  cockpit.hooks.tap('run.request', (body) => ({ ...body, prompt: `${body.prompt}\n\nAnswer in English.` }));
+  const off = cockpit.on('finish', ({ kind }) => cockpit.inspector.refresh());
+  return () => off(); // runs when the plugin goes; what the API added goes by itself
+}
+```
+
+### The API
+
+| API | |
+| --- | --- |
+| `version` | the API's version: 2 |
+| `plugin` | this plugin's listing: `name`, `version`, `source`, `script`, `code_version`… |
+| `h(tag, attrs, ...children)`, `svg(markup)`, `fmt`, `uuid()` | DOM (`{ class, text, data: {...}, onclick, ... }`; `svg` for icons of your own), the cockpit's formats (`tokens`, `ago`, `duration`, `clock`, `bytes`…) |
+| `api(path, options)` | the cockpit's HTTP API; a path without `/api/` is the workspace's, such as `/sessions` |
+| `prefs.get(key, fallback)`, `prefs.set(key, value)` | small preferences in the browser |
+| `hot.data`, `hot.reloaded` | an object kept across this plugin's versions; whether this is a version loaded anew |
+| `onDispose(fn)`, `listen(target, type, fn, options)`, `timeout(fn, ms)`, `interval(fn, ms)` | cleanups, event listeners and timers that go with the plugin |
+| `ui.slot(name, element)` | offers a slot: a place in the page other plugins mount into |
+| `ui.mount(slot, { id, order, node })` | puts a node in a slot; the `id` of another plugin's item takes its place, and gives it back when this plugin goes |
+| `ui.hide(slot, id)` | takes an item out of a slot, for as long as this plugin runs |
+| `ui.slots()`, `ui.items(slot)` | the slots there are, and what is in one |
+| `ui.kv(key, value)`, `ui.button(label, run, title)` | the inspector's rows and buttons |
+| `contribute(point, item)`, `contributions(point, { unique })` | adds to a contribution point, and reads one (below) |
+| `provide(name, service)`, `use(name)`, `has(name)` | offers a service; a stand-in that always reaches the latest provider of the name; whether one is there |
+| `on(event, fn)`, `emit(event, ...args)` | listens to events (below), and sends them |
+| `hooks.tap(name, fn, { order })`, `hooks.run(name, value, ...)`, `hooks.runAsync(...)`, `hooks.first(name, ...)` | takes part in what a plugin does (below) |
+| `keys.register({ key, run, when, global, priority, views, repeat })`, `keys.guard(fn)` | keys: `"n"`, `"E"`, `"?"`, `"Escape"`, `"Mod+k"`, `"Alt+ArrowUp"`; a key not `global` does nothing while the user types or a dialog is open; `run` returning `false` passes the key on |
+| `routes.register({ match(hash), enter(match), priority })`, `route()` | addresses the plugin answers |
+| `styles.add(css)`, `styles.link(href)` | style sheets beside the manifest's |
+| `store.get(key)`, `store.set(key, value)`, `store.watch(key, fn)` | small shared state, such as `view`, the view shown |
+| `render()`, `renderNow()` | asks every plugin to redraw: `render` fires on the next frame |
+| `safely(fn)` | runs code of the plugin's, reporting what it throws |
+| `host.listing()`, `host.loaded()`, `host.reload({ force })`, `host.setWorkspace(id)`, `host.safe` | the plugins |
+| `commands.register({ name, aliases, args, help, order, shown(view), complete(view), run(arg) })` | a slash command; `complete` returns `{ value, label, detail, current }` choices for the argument, `shown` hides it where it does not apply. A command replaces another plugin's of the same name |
+| `palette.register({ group, icon, label, hint, detail, order, shown(view), run() })` | a command palette item |
+| `inspector.register({ id, title, order, shown(view), render(view), fold, open, meta(view) })`, `inspector.refresh()` | an inspector section; `render` returns a node, a list of nodes or text and runs whenever the cockpit redraws — a node it returns again stays where it is, so a control it keeps (a select with its menu open, a button being clicked) is not replaced under the user; the `id` of another takes its place. With `fold` the section is a bar — its title and what `meta` says (text, or parts `{ text, tone }`) — that opens, animated, onto its body; it starts closed (open with `open`), stays as the user leaves it, and `render` runs only while it is open |
+| `tools.register(name, { summary(entry), render(entry, ui) })` | how a tool's calls look; `ui` has `h`, `fmt`, `stream(label, text)` and `copy` |
+| `view()` | the session in view: `id`, `ws`, `fresh`, `title`, `running`, `interrupted`, `external`, `activity`, `usage`, `prompts`, `entries`, `queued`, `paused`, `pinned` |
+| `entries()` | its entries: `{ id, kind, text, at, files, tool: { call_id, name, input, state, output, stderr, error, exit_code, image } }`; `image` describes the picture a `ViewImage` call read (`{ label, media_type, width, height, size }`), and a prompt's `files` what the model saw of the files it linked (`{ label, path, directory, from, to, lines, size, binary, error }`) |
+| `sessions()`, `workspaces()`, `effort()`, `models()`, `plugins()` | the session list, the workspaces, the effort and its levels, the models (`{ current, default, list }`), the plugin listing |
+| `prompt(text)`, `toast(text, kind, key)`, `copy(text, label)` | runs a prompt in the session in view; a message; the clipboard |
+| `actions` | what the cockpit's own commands do: `compact(focus)`, `continueRun()`, `stop()`, `editPrompt(n)`, `newSession()`, `openSession(id)`, `resume(query)`, `rename(title)`, `pin()`, `fork(n)`, `exportSession()`, `deleteSession()`, `effort(level)`, `model(id)`, `openSettings()`, `openAccounts()`, `openUsage(range)`, `addAccount(provider)`, `addEndpoint(kind)`, `workspace(query)`, `copyAnswer()`, `expandAll(open)`, `toggleChanges()`, `toggleInspector()`, `toggleTheme()`, `openHelp()`, `showPlugins()`, `trustPlugins(trusted)`, `enablePlugin(name, enabled)`, `reloadPlugins()`, `queue(action)` — each the service of a built-in plugin, which says so if that plugin is off |
+
+### Slots
+
+The built-in plugins offer these slots. Every part they put in them has an
+`id` (the element's own), so a plugin can take any part's place, hide it, or
+put its own before or after it by `order`.
+
+| Slot | Offered by | Holds |
+| --- | --- | --- |
+| `rail.head` | layout | the mark (`mark`) |
+| `rail.foot`, `rail.actions` | layout | the connection's summary (`connection`) and the canvases that run (`canvas-live`, 20); the buttons for settings (`settings-open`, 10), the theme (`theme-toggle`, 20), help (`help-open`, 30) |
+| `bar.crumbs` | layout | the workspace and title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
+| `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
+| `stage.main` | layout | the transcript (`timeline`) |
+| `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
+| `stage.overlay`, `overlays` | layout | the image shown large; dialogs, menus, toasts |
+| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), what a `$` completes to (`file-suggestions` 12), the images (`attachments` 20) and the files the text links (`links` 22); the model (`model` 10) and the effort (`effort` 20) |
+| `sessions.tools` | session-list | `ws-switch` 10, `new-session` 20, `session-filter` 30 |
+
+### Contribution points
+
+A contribution point is a list any plugin adds to (`contribute(point,
+item)`) and any plugin reads (`contributions(point)`, and the event
+`point:<name>` when it changes). Points need no declaring; the built-in
+plugins read these:
+
+| Point | Item | Read by |
+| --- | --- | --- |
+| `layout.view` | `{ id, title, order, badge, rail, page, select(), shown(), hidden() }`: a view with a tab in the rail; `rail` shows in the rail while it is the view, `page`, if any, in the stage in place of the session | layout |
+| `layout.panel` | `{ id, order, width, minWidth, node, opened(), closed() }`: a side panel; one is open at a time. `width` (a CSS length) is what it starts as; the user drags its edge to make it wider or narrower, down to `minWidth` pixels (260 by default), and the width is kept | layout |
+| `timeline.renderer` | `{ kind, order, render(entry, ctx) }`: draws a kind of entry (`user`, `assistant`, `reasoning`, `tool`, `notice`, `error`); the latest that returns a node wins | timeline |
+| `timeline.action` | `{ id, kinds, label, title, order, shown(entry, ctx), run(entry, ctx) }`: a button in an entry's header | timeline |
+| `timeline.decoration` | `{ kinds, order, render(entry, ctx) }`: drawn under an entry | timeline |
+| `timeline.editor` | `{ editor(entry, ctx) }`: a node in a prompt's place while it is edited | timeline |
+| `tool.view` | what `tools.register` adds | timeline |
+| `inspector.section` | what `inspector.register` adds | inspector |
+| `sidebar.tab` | `{ id, title, icon, description, order, multiple, hello, key, create(tab) }`: a kind of tab of the sidebar (below) | sidebar |
+| `sidebar.hello` | `{ id, order, render(tab) }`: a section of Hello, the tab the sidebar shows with no other | sidebar |
+| `settings.section` | `{ id, title, order, render() }`: a section of the sidebar's Settings tab | sidebar |
+| `commands`, `palette` | what `commands.register` and `palette.register` add | commands, palette |
+| `palette.provider` | `{ id, order, items(view) }`: palette items that change | palette |
+| `session.menu` | `{ items(ws, id, view) }`: more items for a session's menu | session |
+| `overlay` | `{ id, order, modal, isOpen(), close() }`: Esc closes the first open one; while a modal one is open, keys that are not global do nothing | ui |
+| `help.keys` | `{ keys: ['⌘', 'K'], text, order }`: a line of the keyboard sheet | help |
+| `session-list.rows` | `{ id, order, rows(ws) }`: rows of the session list, among the sessions not pinned by when they changed; `rows` returns `{ id, glyph, title, meta, at, href, current, running, open(), menu() }` — `menu` returns menu items (the canvases are such rows) | session-list |
+| `canvas.node` | `{ kind, preset, order, create(node, ctx) }`: what a canvas node shows (see [Canvas](#canvas)); a `preset` (`"id"` or `"plugin/id"`) is matched before a `kind` | canvas |
+| `canvas.add` | `{ id, group, title, icon, order, shown(canvas), create(at) }`: an item of a canvas's + Add menu; `at` is the point of the board it was asked at | canvas |
+| `canvas.template` | `{ id, title, description, build() }`: a canvas an empty one can start from; `build` returns the operations that make it (`{ op: 'node.add', node }`, `{ op: 'edge.add', edge }`…) | canvas |
+| `canvas.inspector` | `{ kinds, order, title, render(node, ctx) }`: a section of a canvas node's inspector, for nodes of the `kinds` (kinds, presets or `plugin/preset`; all when empty) | canvas |
+| `keys`, `routes` | what `keys.register` and `routes.register` add | the kernel |
+
+The renderers' `ctx` has `h`, `fmt`, `view`, `summary`, `live`,
+`index(id)`, `expanded(entry)`, `toggle(id, open)`, `copy`, `markdown(text)`,
+`button(label, run, title)`, `actions(entry)` and `stream(label, text)`.
+The timeline draws only the entries in view and about a screen around it:
+a renderer, a decoration or an editor runs as its entry comes into view,
+and again each time it comes back into it.
+
+### Services
+
+`use(name)` returns a stand-in for a service that reaches whichever plugin
+provides it now: a plugin that holds it keeps working when the provider is
+loaded anew, and a plugin that provides a service of a built-in's name
+replaces it (for as long as it runs). The built-in plugins provide:
+
+| Service | Plugin | Some of what it does |
+| --- | --- | --- |
+| `session` | session | `view()`, `summary()`, `state`, `submit(text, options)`, `prompt(text)`, `compact(focus)`, `stop()`, `newSession()`, `openSession(id)`, `branch(ws, id, message)`, `rename(ws, id, title)`, `menuItems(ws, id)`, `runBlocked(v)`, `switchWorkspace(id)`, `refreshSessions()` |
+| `layout` | layout | `view()`, `show(id)`, `openPanel(id)`, `closePanel(id)`, `togglePanel(id)`, `panelOpen(id)`, `rail(open)`, `scroller()`, `width(id)` and `setWidth(id, px)` for the rail (`'rail'`) and the panels (`null` gives the default back) |
+| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`; `open(anchor, items, { compact })`, `toggle(anchor, items, { compact })`, `close()` — an item is `{ icon, label, detail, title, hint, danger, confirm, disabled, run }` or `{ separator: true }`, and a compact menu has denser rows that say their `detail` in a tooltip; `copy(text, label)`; `closeTop()` |
+| `timeline` | timeline | `schedule(id)`, `flushNow()`, `reveal(id)`, `scrollToBottom()`, `promptInView(v)`, `setAllTools(open)` |
+| `composer` | composer | `value()`, `set(text, { focus, end })`, `focus()`, `clear()`, `submit({ force })`, `input`, `form` |
+| `commands` | commands | `list()`, `named(name)`, `parse(text)`, `run(parsed)` |
+| `models` | models | `next(v)`, `default()`, `catalog()`, `load()`, `set(v, id)`, `openPicker(options)`, `title(id)` |
+| `effort` | effort | `current()`, `levels()`, `set(level)`, `cycle(step)` |
+| `images` | images | `take(text)`, `encode(list)`, `attach({ input })`, `imageURL(v, entry, n)`, `toolImageURL(v, entry)`, `openToolImage(v, entry)` |
+| `files` | files | `attach({ input, container })` completes `$` in another textarea, `complete(query)`, `links(text)`, `query(before)`, `label(path)` |
+| `terminal` | terminal | `mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady })` draws a shell of the server's that runs (by its `id`) in an element, and returns `{ focus(), blur(), resize(), dispose(), connected() }`; `open(fresh)`, a terminal tab; `settings()` |
+| `canvas` | canvas | `open(id, ws)`, `create({ template, title })`, `current()` — `{ ws, id, title, exists, live, nodes, selected }` —, `addNode(spec, at)`, `select(ids)`, `focusNode(id)`, `fit()` |
+| `queue`, `edit` | queue, edit | `enqueue(text, { force })`, `command(arg)`; `begin(id)`, `editLast()` |
+| `markdown` | markdown | `render(text, { onCopy })`, `inline(text)`, `codeBlock(text, language)` |
+| `inspector` | inspector | `toggle()`, `open()`, `show()`, `expand(id, open)` opens a section's bar, `fold({ id, title, hint, meta, level, beforeOpen })` makes a bar for a section to hold — `{ node, body, isOpen(), set(open), meta(parts) }` — as Plugins and Skills hold one for the project's and one for the system-wide ones |
+| `changes`, `palette`, `help`, `theme`, `skills` | the plugins of those names | `toggle()`, `open()`, `show()`, … |
+| `accounts`, `connection`, `workspaces`, `session-list`, `plugins` | the plugins of those names | `show()`, `showConnection()`, `showUsage(range)`, `open()`, `openMenu(anchor)`, `rename(ws, id)`, `reload()`, … |
+
+### Events
+
+| Event | Arguments |
+| --- | --- |
+| `render` | none: redraw what you show |
+| `entry`, `session`, `finish`, `plugins` | an entry and the view; the view; `{ kind, compact, view }`; the plugin listing |
+| `session:view`, `session:leave`, `session:entry`, `session:dirty`, `session:loaded`, `session:finish`, `session:changes`, `session:queue`, `session:gone`, `session:before-run`, `session:sessions`, `session:workspaces`, `session:workspace`, `session:config` | the session plugin's model, as it changes (see its source) |
+| `composer:input`, `composer:focus`, `composer:blur`, `composer:ready` | the composer |
+| `timeline:flush`, `timeline:scroll`, `layout:view`, `layout:panel`, `layout:resize`, `models`, `theme` | the timeline; the layout (`layout:resize` is the stage's new width, as the window, the rail or a panel changes it); the models, the theme |
+| `service`, `point:<name>`, `store:<key>`, `slots` | a service came or went; a contribution point changed; a stored key; a slot |
+| `plugin-reloaded`, `plugin-restyled`, `plugin-error`, `online`, `ready` | the kernel |
+
+### Hooks
+
+| Hook | |
+| --- | --- |
+| `composer.submit` | `({ raw, text, force, view })`, first to return true takes what was written: the commands plugin takes `/commands`, the queue a message while the agent works |
+| `composer.key` | `(event)`, first to return true takes a key pressed in the composer |
+| `run.request` | `(body, view)`, async: every prompt's request passes through, and may be changed on its way |
+
+### Changing the interface
+
+Every part of the page is a plugin's, so any can be changed:
+
+- **Restyle** with a plugin that has only a style sheet: the cockpit's
+  colours are tokens (`--bg`, `--bg-2`…`--bg-4`, `--fg`, `--fg-2`…`--fg-4`,
+  `--line`, `--line-2`, `--accent`, `--ok`, `--warn`, `--err`, `--mono`,
+  `--sans`), and its classes work in plugins too: `act` for buttons, `label`
+  for small capitals, `none` for empty states, `ins-actions` for a row of
+  buttons.
+- **Take a part's place** by mounting a node with its id in its slot:
+  `cockpit.ui.mount('bar.end', { id: 'palette-open', order: 50, node })`;
+  `cockpit.ui.hide('bar.end', 'run-state')` takes one away.
+- **Draw entries your way** with `timeline.renderer`, or a service your way
+  by providing its name (`cockpit.provide('markdown', …)`).
+- **Add a view** (a tab of the rail with a page) with `layout.view`, a side
+  panel with `layout.panel`, keys, routes and commands of its own.
+- **Replace a whole built-in plugin**: copy its directory from
+  `cmd/kou-conveyor-web/plugins` into your plugins directory and change it;
+  yours runs in its place, and is followed as you edit it.
+
+### The sidebar and its tabs
+
+The side panel of the page is the `sidebar` plugin's: a strip of tabs, each
+of a *kind* some plugin gives. The inspector, the terminal (`terminal`) and
+the workspace's files (`explorer`) are kinds like any plugin's; with no tab
+open the sidebar says **Hello**, which lists the kinds, and `+` opens Hello
+as a tab that becomes the kind picked. Tabs are kept per workspace, with
+what each saves, and come back after a reload. `S` shows or hides the
+sidebar, `[` and `]` go through its tabs.
+
+A kind is a contribution to `sidebar.tab`:
+
+```js
+cockpit.contribute('sidebar.tab', {
+  id: 'notes', title: 'Notes', icon: '<svg …>', key: 'N', order: 50,
+  description: 'Notes of the workspace',
+  multiple: false,            // one tab of the kind at most
+  create(tab) {               // when a tab of the kind first shows
+    const area = cockpit.h('textarea', { value: tab.state?.text || '' });
+    area.addEventListener('input', () => tab.save({ text: area.value }));
+    return {
+      node: area,             // what the tab shows
+      shown() {}, hidden() {}, resized() {}, focus: () => area.focus(),
+      close: () => true,      // false keeps the tab open
+      dispose() {},           // the view goes: tab closed, plugin reloaded, workspace left
+    };
+  },
+});
+```
+
+`tab` is `{ id, kind, state, save(state), setTitle(text), setBadge(text),
+close(), activate(), visible() }`. The `sidebar` service opens tabs:
+`open(kind, { state, reuse, focus })`, `close(id)`, `activate(id)`,
+`toggle(kind)`, `show()`, `hide()`, `tabs()`, `active()`, `view(id)`.
+
+**Terminals** run their shells on the server and outlive the page: `` ` ``
+opens one, ⌘D splits a pane right and ⌘⇧D down (Ctrl+Alt+D and
+Ctrl+Alt+Shift+D elsewhere), ⌘⌥ and an arrow goes to the pane beside, ⌘K
+clears, ⌘F finds, ⌘⌫ deletes a word; ⌃W closes a pane and ⌃⇧T brings it
+back, to the same shell, within 15 seconds; ⌘+ and ⌘− size the text. A part of the page marked `data-keys="own"`, as a
+terminal is, takes its keys itself: only bindings registered with
+`own: true` run there, so `Esc Esc` or `Ctrl-K` reach the shell. Shells
+start with kou-conveyor's prompt theme — the terminal plugin's `shell/`
+files, which run the user's own startup files unchanged (zsh through
+`ZDOTDIR`, bash through `--rcfile`, fish through `--init-command`) and then
+set the prompt; nothing is written to the user's files. Settings → Terminal
+→ *Your shell's own* starts shells without any of it.
+
+## The runner and the terminal cockpit
+
+The runner and the terminal cockpit read the plugins at every start, and
+follow them as they change (see [above](#changes-while-things-run)). The
+terminal cockpit's `/plugins` lists them and trusts the workspace's;
+`/plugins reload` reads them again at once.

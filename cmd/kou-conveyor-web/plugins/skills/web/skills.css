@@ -1,0 +1,85 @@
+/* skills: the Skills section of the inspector. */
+
+.skills { display: grid; gap: 10px; }
+.skills-note:empty { display: none; }
+.skills-foot { display: grid; gap: 8px; }
+.skills .ins-fold-inner { display: grid; gap: 12px; }
+.skill-scope { margin: 6px 0; font: 600 10px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-3); }
+.skills-off { margin: 0; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--line)); border-left: 2px solid var(--warn); color: var(--warn); font: 11px/1.45 var(--mono); }
+.skills-errors { margin: 0; padding-left: 16px; font: 11px/1.4 var(--mono); color: var(--err); overflow-wrap: anywhere; }
+.skills-where { margin: 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+
+/* A directory the skills come from, and its skills. */
+.skill-group { display: grid; gap: 6px; }
+.skill-dir {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px dotted var(--line-2);
+  font: 600 10.5px/1.3 var(--mono);
+  color: var(--fg-2);
+}
+.skill-dir-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-dir-count { flex: none; margin-left: auto; font-weight: 500; color: var(--fg-4); }
+.skill-dir-errors { flex: none; margin-left: auto; font-weight: 500; color: var(--err); }
+.skill-dir-errors + .skill-dir-count { margin-left: 0; }
+.skill-group[data-exists="false"] .skill-dir { color: var(--fg-4); border-bottom-style: dashed; }
+.skill-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
+
+.skill-row { background: var(--bg-2); border: 1px solid var(--line); border-left: 2px solid var(--accent); transition: border-color 0.15s; }
+.skill-row[data-active="false"] { border-left-color: var(--line-2); }
+.skill-row[data-open="true"] { border-color: var(--line-2); border-left-color: var(--accent); }
+.skill-row[data-active="false"][data-open="true"] { border-left-color: var(--fg-4); }
+.skill-head { display: grid; gap: 3px; width: 100%; padding: 7px 8px; text-align: left; transition: background-color 0.15s; }
+.skill-head:hover { background: var(--bg-3); }
+.skill-head:focus-visible { outline-offset: -1px; }
+.skill-line { display: flex; align-items: center; gap: 6px; min-width: 0; font: 12px/1.3 var(--mono); }
+.skill-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: var(--fg); }
+.skill-row[data-active="false"] .skill-name { color: var(--fg-3); text-decoration: line-through; text-decoration-color: var(--fg-4); }
+.skill-tag {
+  flex: none;
+  padding: 2px 4px;
+  border: 1px solid var(--line-2);
+  font: 600 9px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.skill-tag[data-tag="manual"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.skill-tag[data-tag="replaced"] { color: var(--fg-4); }
+.skill-text {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-2);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.skill-row[data-active="false"] .skill-text { color: var(--fg-3); }
+.skill-row[data-open="true"] .skill-text { -webkit-line-clamp: unset; line-clamp: unset; }
+
+/* Where a skill is and what to do with it, which opens as the bars do. */
+.skill-more {
+  display: grid;
+  grid-template-rows: 0fr;
+  visibility: hidden;
+  transition: grid-template-rows 0.2s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 0.2s;
+}
+.skill-row[data-open="true"] > .skill-more {
+  grid-template-rows: 1fr;
+  visibility: visible;
+  transition: grid-template-rows 0.28s cubic-bezier(0.22, 1, 0.36, 1), visibility 0s;
+}
+.skill-more-clip { min-height: 0; overflow: hidden; }
+.skill-reason, .skill-path { margin: 0; padding: 0 8px 4px; font: 10.5px/1.45 var(--mono); overflow-wrap: anywhere; }
+.skill-reason { color: var(--warn); }
+.skill-path { color: var(--fg-4); }
+.skill-actions { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 8px 8px; }
+.skill-actions .act { border-color: var(--line-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .skill-more, .skill-row, .skill-head { transition: none !important; }
+}

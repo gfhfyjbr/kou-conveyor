@@ -1,0 +1,10 @@
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/**
+!harness/
+!harness/**
+!internal/
+!internal/**
+!LICENSE

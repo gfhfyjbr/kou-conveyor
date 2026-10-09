@@ -1,0 +1,5 @@
+{
+  "name": "session-list",
+  "description": "The Sessions view of the rail: the workspace's sessions, pinned first, with a filter, and renaming them in place.",
+  "web": {"script": "web/session-list.js", "style": "web/session-list.css", "after": ["layout", "session"]}
+}

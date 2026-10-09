@@ -1,0 +1,14 @@
+/* git-glance draws with the cockpit's tokens, so it follows the theme. */
+.git-card { display: grid; gap: 8px; font-size: 12px; }
+.git-branch { display: flex; align-items: center; gap: 10px; }
+.git-branch code { color: var(--accent); font-weight: 600; }
+.git-changes, .git-commits { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; font: 11.5px/1.5 var(--mono); }
+.git-changes li, .git-commits li { display: flex; gap: 8px; min-width: 0; }
+.git-changes code, .git-commits span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.git-status { flex: none; min-width: 2ch; color: var(--warn); }
+.git-status.s-A, .git-status.s-\? { color: var(--ok); }
+.git-status.s-D { color: var(--err); }
+.git-commits code { flex: none; color: var(--fg-4); }
+.git-clean { margin: 0; color: var(--ok); font: 11.5px var(--mono); }
+.git-glance .ins-actions { margin-top: 10px; }
+.git-chip { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }

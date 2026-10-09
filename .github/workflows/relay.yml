@@ -1,0 +1,163 @@
+name: Relay
+
+# Builds kou-conveyor-relay whenever what it is built from changes — its own
+# packages, the modules they use, the Go release — and publishes the builds
+# to the relay-latest prerelease, with manifest.json naming them. The relays
+# read the manifest and update themselves (cmd/kou-conveyor-relay/update.go).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.go'
+      - go.mod
+      - go.sum
+      - .github/workflows/relay.yml
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish even when the relay is built from what was published
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: relay-latest
+  cancel-in-progress: false
+
+jobs:
+  relay:
+    if: github.repository == 'gfhfyjbr/kou-conveyor'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: relay-latest
+      TARGETS: linux/amd64 linux/arm64 linux/arm linux/386 darwin/amd64 darwin/arm64 freebsd/amd64 freebsd/arm64
+      GH_TOKEN: ${{ github.token }}
+      GOFLAGS: -mod=readonly
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Hash what the relay is built from
+        id: source
+        env:
+          FORCE: ${{ inputs.force }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          # shellcheck disable=SC2016 # go list's templates, not the shell's
+          {
+            echo "recipe $(sha256sum .github/workflows/relay.yml | cut -d' ' -f1)"
+            go env GOVERSION
+            for target in $TARGETS; do
+              echo "target $target"
+              export GOOS="${target%/*}" GOARCH="${target#*/}" GOARM=6 CGO_ENABLED=0
+              go list -deps -f '{{if not .Standard}}{{.ImportPath}}{{with .Module}} {{.Path}} {{.Version}}{{with .Replace}} => {{.Path}} {{.Version}}{{end}}{{end}}{{end}}' ./cmd/kou-conveyor-relay | grep -v '^$'
+              go list -f 'godebug {{.DefaultGODEBUG}}' ./cmd/kou-conveyor-relay
+              go list -deps -f '{{if and (not .Standard) .Module .Module.Main}}{{$dir := .Dir}}{{range .GoFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{range .EmbedFiles}}{{$dir}}/{{.}}{{"\n"}}{{end}}{{end}}' ./cmd/kou-conveyor-relay \
+                | grep -v '^$' | sed "s|^$PWD/||" | sort | xargs sha256sum
+              unset GOOS GOARCH GOARM CGO_ENABLED
+            done
+          } > "$RUNNER_TEMP/source.txt"
+          source=$(sha256sum "$RUNNER_TEMP/source.txt" | cut -d' ' -f1)
+          published=$(gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern manifest.json --output - 2>/dev/null | jq -r '.source // empty' || true)
+          echo "source $source, published ${published:-none}"
+          echo "source=$source" >> "$GITHUB_OUTPUT"
+          if [[ "$source" == "$published" && "${FORCE:-}" != "true" ]]; then
+            echo "The relay is built from what was published: nothing to do." >> "$GITHUB_STEP_SUMMARY"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Test
+        if: steps.source.outputs.publish == 'true'
+        run: |
+          go vet ./cmd/kou-conveyor-relay ./cmd/internal/tunnel
+          go test -race -count=1 ./cmd/kou-conveyor-relay ./cmd/internal/tunnel
+
+      - name: Build
+        if: steps.source.outputs.publish == 'true'
+        id: build
+        env:
+          SOURCE: ${{ steps.source.outputs.source }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          stamp=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y%m%d%H%M%S)
+          built=$(TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
+          version="v0.0.0-$stamp-${GITHUB_SHA:0:12}"
+          mkdir -p dist
+          echo '{}' > "$RUNNER_TEMP/assets.json"
+          for target in $TARGETS; do
+            goos="${target%/*}" goarch="${target#*/}"
+            name="kou-conveyor-relay_${version}_${goos}_${goarch}"
+            GOOS="$goos" GOARCH="$goarch" GOARM=6 CGO_ENABLED=0 go build -trimpath \
+              -ldflags "-s -w -X main.version=$version -X main.builtCommit=$GITHUB_SHA -X main.builtTime=$built" \
+              -o "dist/$name" ./cmd/kou-conveyor-relay
+            jq --arg target "$target" --arg url "$name" \
+              --arg sum "$(sha256sum "dist/$name" | cut -d' ' -f1)" --argjson size "$(wc -c < "dist/$name")" \
+              '.[$target] = {url: $url, sha256: $sum, size: $size}' "$RUNNER_TEMP/assets.json" > "$RUNNER_TEMP/assets.next"
+            mv "$RUNNER_TEMP/assets.next" "$RUNNER_TEMP/assets.json"
+          done
+
+          # The build must say the version the manifest gives it, and serve.
+          relay="dist/kou-conveyor-relay_${version}_linux_amd64"
+          read -r name said _ protocol < <("$relay" -version)
+          [[ "$name" == kou-conveyor-relay && "$said" == "$version" && "$protocol" =~ ^[0-9]+$ ]] \
+            || { echo "the build says: $name $said protocol $protocol" >&2; exit 1; }
+          "$relay" -listen 127.0.0.1:18420 -tls off -dir "$RUNNER_TEMP/relay" -update off &
+          pid=$! served=
+          for _ in $(seq 50); do
+            if curl -fsS http://127.0.0.1:18420/_relay/health 2>/dev/null | jq -e '.relay == "kou-conveyor-relay"' >/dev/null; then
+              served=yes
+              break
+            fi
+            sleep 0.2
+          done
+          kill "$pid"
+          wait "$pid" || true
+          [[ -n "$served" ]] || { echo "the build did not serve" >&2; exit 1; }
+
+          jq -n --arg version "$version" --arg commit "$GITHUB_SHA" --arg time "$built" --arg source "$SOURCE" \
+            --argjson protocol "$protocol" --slurpfile assets "$RUNNER_TEMP/assets.json" \
+            '{version: $version, commit: $commit, time: $time, source: $source, protocol: $protocol, assets: $assets[0]}' \
+            > dist/manifest.json
+          cat dist/manifest.json
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Publish
+        if: steps.source.outputs.publish == 'true'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes="kou-conveyor-relay $VERSION, built from $GITHUB_SHA. The relays read manifest.json here and update themselves; this prerelease always holds the newest build only."
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "kou-conveyor-relay (latest)" --notes "$notes"
+          fi
+          # The builds first, then the manifest that names them; then the
+          # builds no manifest names any more go.
+          gh release upload "$RELEASE_TAG" dist/kou-conveyor-relay_* --repo "$GITHUB_REPOSITORY" --clobber
+          gh release upload "$RELEASE_TAG" dist/manifest.json --repo "$GITHUB_REPOSITORY" --clobber
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
+            while read -r asset; do
+              case "$asset" in
+                manifest.json | "kou-conveyor-relay_${VERSION}_"*) ;;
+                *) gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes ;;
+              esac
+            done
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --notes "$notes"
+          echo "Published kou-conveyor-relay $VERSION." >> "$GITHUB_STEP_SUMMARY"

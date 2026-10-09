@@ -1,0 +1,33 @@
+{
+  "name": "github-events",
+  "version": "1.0.0",
+  "description": "GitHub events for the canvas: issues opened or updated, through the gh CLI.",
+  "canvas": {
+    "sources": [
+      {
+        "id": "github-issues",
+        "title": "GitHub issues",
+        "description": "An event for every issue that matches a search, as it is opened or updated",
+        "icon": "⊙",
+        "run": ["python3", "./bin/github-issues"],
+        "mode": "poll",
+        "interval": "60s",
+        "config": {
+          "type": "object",
+          "required": ["repo"],
+          "properties": {
+            "repo": {"type": "string", "title": "Repository", "description": "owner/name", "pattern": "^[^/\\s]+/[^/\\s]+$"},
+            "search": {"type": "string", "title": "Search", "description": "GitHub's search of issues, such as label:bug", "default": "is:open"},
+            "events": {"type": "array", "title": "Events", "items": {"type": "string", "enum": ["opened", "updated"]}, "default": ["opened"]},
+            "backfill": {"type": "boolean", "title": "Backfill", "description": "The first run gives the issues of the last day too, not only those that come after it", "default": false}
+          }
+        },
+        "outputs": [
+          {"id": "opened", "title": "Issue opened"},
+          {"id": "updated", "title": "Issue updated"}
+        ],
+        "template": "Issue #{{data.number}}: {{data.title}}\n{{data.url}}\n\n{{data.body}}"
+      }
+    ]
+  }
+}

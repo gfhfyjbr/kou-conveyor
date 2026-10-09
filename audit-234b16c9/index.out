@@ -1,0 +1,107 @@
+turns 4209 first 2026-09-30 19:29:09.566980+00:00 last 2026-10-01 17:40:19.136526+00:00
+inputs:
+  2026-09-30 19:29:09.551254+00:00 control {"Mode": "settings", "Reason": "", "Parameters": {"ReasoningEffort": "max"}}
+  2026-09-30 19:29:09.556846+00:00 external "Map this repository: its architecture, entry points, and how to build and test it."
+  2026-09-30 19:29:09.561368+00:00 control {"Mode": "when_idle", "Reason": ""}
+  2026-09-30 20:24:03.933533+00:00 control {"Mode": "settings", "Reason": "", "Parameters": {"ReasoningEffort": "max"}}
+  2026-09-30 20:24:03.941290+00:00 external "подняти meno от этого же дева из https://git.sisya.cc/Hirasawa69/muno\n\nа также спидер манке https://git.sisya.cc/Hirasawa69/spidermonkey\n\nсначала сделай потом думай"
+  2026-09-30 20:24:03.945866+00:00 control {"Mode": "when_idle", "Reason": ""}
+  2026-09-30 20:39:28.681293+00:00 control {"Mode": "settings", "Reason": "", "Parameters": {"ReasoningEffort": "max"}}
+  2026-09-30 20:39:28.688181+00:00 external "портируй под макос"
+  2026-09-30 20:39:28.692882+00:00 control {"Mode": "when_idle", "Reason": ""}
+  2026-09-30 21:26:52.267482+00:00 control {"Mode": "settings", "Reason": "", "Parameters": {"ReasoningEffort": "max"}}
+  2026-09-30 21:26:52.274437+00:00 external "доведи до того момента пока отпечатки из этого нашего хедлес браузера не будут походить на те что выдает сам фаерфокс\n\nделаем мы это для того чтобы агенты могли отправлять запросы без необходимости иметь открытый браузер ВОВСЕ! \n\nкак показатель - https://jw.echidna.one/managed-probe + https://www.cloudflare.com/cdn-cgi/trace"
+  2026-09-30 21:26:52.278831+00:00 control {"Mode": "when_idle", "Reason": ""}
+
+compactions 57
+#1 09-30 20:51 dur=86s in=308265 out=10602 think=0 summary_chars=15496 since_prev=Nonemin
+#2 09-30 21:38 dur=83s in=303057 out=9981 think=0 summary_chars=14481 since_prev=47.2min
+#3 09-30 21:55 dur=66s in=305898 out=7834 think=0 summary_chars=12131 since_prev=17.3min
+#4 09-30 22:23 dur=79s in=307708 out=9183 think=0 summary_chars=15696 since_prev=27.8min
+#5 09-30 22:49 dur=104s in=302917 out=13181 think=0 summary_chars=18674 since_prev=25.3min
+#6 09-30 23:11 dur=80s in=303883 out=9862 think=0 summary_chars=16975 since_prev=22.2min
+#7 09-30 23:32 dur=88s in=310695 out=10665 think=0 summary_chars=13714 since_prev=21.0min
+#8 09-30 23:53 dur=94s in=302548 out=11761 think=0 summary_chars=19165 since_prev=21.3min
+#9 10-01 00:10 dur=94s in=303131 out=11638 think=0 summary_chars=19852 since_prev=16.4min
+#10 10-01 00:36 dur=99s in=307504 out=12197 think=0 summary_chars=18875 since_prev=25.9min
+#11 10-01 01:05 dur=91s in=304726 out=11142 think=0 summary_chars=19968 since_prev=29.9min
+#12 10-01 01:26 dur=126s in=310870 out=15033 think=0 summary_chars=24699 since_prev=20.8min
+#13 10-01 01:45 dur=237s in=307258 out=29244 think=12244 summary_chars=30346 since_prev=18.5min
+#14 10-01 02:01 dur=302s in=308063 out=37630 think=11851 summary_chars=47619 since_prev=16.7min
+#15 10-01 02:20 dur=191s in=302404 out=24472 think=0 summary_chars=41790 since_prev=18.6min
+#16 10-01 02:36 dur=183s in=302723 out=23595 think=0 summary_chars=36971 since_prev=16.0min
+#17 10-01 02:57 dur=175s in=303054 out=22072 think=0 summary_chars=39041 since_prev=21.3min
+#18 10-01 03:14 dur=215s in=308385 out=27673 think=0 summary_chars=34477 since_prev=16.4min
+#19 10-01 03:31 dur=233s in=310260 out=30367 think=0 summary_chars=44204 since_prev=17.8min
+#20 10-01 03:50 dur=215s in=307405 out=27606 think=0 summary_chars=48088 since_prev=18.3min
+#21 10-01 04:10 dur=185s in=308867 out=24227 think=0 summary_chars=36367 since_prev=20.0min
+#22 10-01 04:28 dur=231s in=316070 out=30264 think=0 summary_chars=46343 since_prev=17.8min
+#23 10-01 04:47 dur=274s in=303488 out=36211 think=0 summary_chars=62912 since_prev=19.1min
+#24 10-01 05:03 dur=326s in=304176 out=43111 think=0 summary_chars=74043 since_prev=16.6min
+#25 10-01 05:27 dur=191s in=302955 out=24620 think=0 summary_chars=42577 since_prev=23.5min
+#26 10-01 05:47 dur=219s in=302334 out=29212 think=0 summary_chars=52547 since_prev=20.6min
+#27 10-01 06:07 dur=167s in=314212 out=22437 think=0 summary_chars=37119 since_prev=19.5min
+#28 10-01 06:31 dur=142s in=334846 out=17560 think=0 summary_chars=31891 since_prev=24.3min
+#29 10-01 06:54 dur=100s in=303870 out=12868 think=0 summary_chars=22388 since_prev=23.0min
+#30 10-01 07:16 dur=88s in=303593 out=11378 think=0 summary_chars=19985 since_prev=22.1min
+#31 10-01 07:43 dur=114s in=314857 out=13926 think=0 summary_chars=22271 since_prev=27.0min
+#32 10-01 08:04 dur=90s in=302584 out=10429 think=0 summary_chars=19533 since_prev=21.2min
+#33 10-01 08:30 dur=135s in=302575 out=15570 think=0 summary_chars=22779 since_prev=25.2min
+#34 10-01 08:53 dur=171s in=309080 out=20940 think=7500 summary_chars=27111 since_prev=23.3min
+#35 10-01 09:13 dur=177s in=302103 out=21827 think=7918 summary_chars=28264 since_prev=19.7min
+#36 10-01 09:37 dur=87s in=301464 out=11145 think=0 summary_chars=19960 since_prev=24.3min
+#37 10-01 09:54 dur=97s in=302033 out=11423 think=0 summary_chars=16709 since_prev=17.4min
+#38 10-01 10:11 dur=99s in=307662 out=11972 think=0 summary_chars=18829 since_prev=16.8min
+#39 10-01 10:38 dur=95s in=301771 out=11081 think=0 summary_chars=19809 since_prev=26.4min
+#40 10-01 10:58 dur=107s in=301139 out=12634 think=0 summary_chars=19788 since_prev=20.2min
+#41 10-01 11:27 dur=144s in=312846 out=17205 think=0 summary_chars=31443 since_prev=29.7min
+#42 10-01 11:55 dur=131s in=303243 out=16579 think=0 summary_chars=30309 since_prev=27.7min
+#43 10-01 12:20 dur=124s in=306580 out=16136 think=0 summary_chars=28611 since_prev=25.0min
+#44 10-01 12:40 dur=71s in=305356 out=8801 think=0 summary_chars=12986 since_prev=20.2min
+#45 10-01 13:03 dur=113s in=303360 out=13360 think=0 summary_chars=15108 since_prev=22.6min
+#46 10-01 13:34 dur=98s in=302675 out=11947 think=0 summary_chars=17810 since_prev=31.2min
+#47 10-01 13:54 dur=89s in=309618 out=10492 think=0 summary_chars=17151 since_prev=20.0min
+#48 10-01 14:18 dur=81s in=303876 out=9892 think=0 summary_chars=17159 since_prev=24.1min
+#49 10-01 14:39 dur=76s in=303205 out=8932 think=0 summary_chars=14410 since_prev=21.1min
+#50 10-01 15:06 dur=86s in=307976 out=10487 think=0 summary_chars=18078 since_prev=27.0min
+#51 10-01 15:27 dur=78s in=315249 out=9576 think=0 summary_chars=16291 since_prev=20.6min
+#52 10-01 16:02 dur=76s in=302385 out=9185 think=0 summary_chars=15518 since_prev=34.8min
+#53 10-01 16:21 dur=100s in=304237 out=12083 think=0 summary_chars=16729 since_prev=19.5min
+#54 10-01 16:47 dur=100s in=303109 out=11956 think=0 summary_chars=20606 since_prev=25.7min
+#55 10-01 17:02 dur=121s in=303824 out=15256 think=0 summary_chars=24311 since_prev=15.0min
+#56 10-01 17:19 dur=246s in=302991 out=31973 think=14372 summary_chars=34090 since_prev=17.5min
+#57 10-01 17:40 dur=Nones in=None out=None think=None summary_chars=0 since_prev=20.3min
+
+regular turns 4152 calls total 5359 mean 1.29 single-call share 0.792 zero-call 3
+calls/turn hist [(0, 3), (1, 3290), (2, 626), (3, 160), (4, 52), (5, 11), (6, 5), (7, 2), (8, 3)]
+latency s: median 6.5 p90 30.0 max 548 sum h 17.1
+compaction latency: median 106 max 326 sum h 2.13
+think tokens: sum 4357830 median 200.0 p90 2523 max 68747 >10k 71
+output tokens sum 6080980 input sum (incl cached) 725669429 cached sum 706724402 cache write sum 18936467
+input tokens per turn: median 181171.0 p90 276675 max 310995
+
+largest gaps between response and next turn (s, at):
+  2800 2026-09-30 19:37:23.500147+00:00
+  516 2026-10-01 15:42:29.238794+00:00
+  432 2026-10-01 15:34:44.994371+00:00
+  402 2026-09-30 20:32:46.430912+00:00
+  233 2026-09-30 21:16:49.833278+00:00
+  200 2026-09-30 21:34:48.821197+00:00
+  195 2026-10-01 00:50:50.536624+00:00
+  138 2026-09-30 21:07:35.023263+00:00
+  117 2026-09-30 21:23:56.553405+00:00
+  113 2026-09-30 23:04:51.152483+00:00
+  112 2026-10-01 07:23:18.831085+00:00
+  110 2026-09-30 21:05:39.769816+00:00
+  105 2026-09-30 21:20:53.740799+00:00
+  97 2026-09-30 23:01:49.116315+00:00
+  93 2026-10-01 00:11:56.642058+00:00
+sum gaps h 2.95
+
+tool names Counter({'Bash': 3099, 'Read': 1294, 'Edit': 722, 'TranscriptSearch': 98, 'Write': 97, 'grace_Read': 37, 'away_Bash': 6, 'ViewImage': 4, 'SkillUse': 1, 'brain_Write': 1})
+
+validation errors 44
+44 tool "…" is not available | 2026-09-30 22:07:29.405332+00:00
+
+visible messages 147 median len 74 max 7700
+ops 5315 Counter({('shell', 'completed'): 3099, ('file', 'completed'): 2204, ('file', 'failed'): 7, ('view_image', 'completed'): 4, ('skill_use', 'completed'): 1})

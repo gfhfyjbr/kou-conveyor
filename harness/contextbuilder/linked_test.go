@@ -179,7 +179,7 @@ func TestCompactionKeepsTheLabelsOfAnsweredLinkedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	current.Commit()
-	if !current.Compact(answer("<summary>Summary.</summary>")) {
+	if _, ok := current.Compact(answer("<summary>Summary.</summary>"), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	built, err := current.Build()

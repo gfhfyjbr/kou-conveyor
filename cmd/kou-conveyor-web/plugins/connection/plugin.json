@@ -1,0 +1,5 @@
+{
+  "name": "connection",
+  "description": "Where runs connect: the summary at the foot of the rail, and the settings of a connection around the gateway (, and /settings).",
+  "web": {"script": "web/connection.js", "style": "web/connection.css", "after": ["layout", "ui", "session"]}
+}

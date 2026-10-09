@@ -1,0 +1,120 @@
+/* tunnel: the planet beside the mark while the cockpit is carried through
+   its relay, and the tunnel's dialog. The planet's disc is filled with what
+   is behind it (--planet-bg), which hides the back of its ring. */
+
+.tunnel-chip {
+  --planet-bg: var(--bg-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-width: 0;
+  height: 20px;
+  margin-left: 12px;
+  padding: 0 6px 0 4px;
+  border: 1px solid var(--line-2);
+  background: var(--planet-bg);
+  color: var(--fg-3);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.tunnel-chip[hidden] { display: none; }
+.tunnel-chip svg { width: 13px; height: 13px; flex: none; }
+.tunnel-chip:hover { color: var(--fg); border-color: var(--fg-4); }
+.tunnel-chip:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.tunnel-planet { fill: var(--planet-bg); }
+
+.tunnel-chip[data-state="up"] {
+  --planet-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2));
+}
+.tunnel-chip[data-state="up"]:hover { --planet-bg: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); border-color: var(--accent); }
+.tunnel-chip[data-state="retrying"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+.tunnel-chip:is([data-state="setup"], [data-state="connecting"], [data-state="retrying"]) svg { animation: pulse 1.4s ease-in-out infinite; }
+/* It lights up once as the tunnel comes up; the ring alone, so the planet's
+   disc stays the colour of the chip. */
+.tunnel-chip.lit { animation: tunnel-lit 0.9s ease-out; }
+@keyframes tunnel-lit { from { box-shadow: 0 0 0 5px var(--accent-soft); } to { box-shadow: 0 0 0 5px transparent; } }
+
+/* A rail too narrow for the word keeps the planet (tunnel.js says when). */
+.tunnel-chip.compact { padding: 0 4px; }
+.tunnel-chip.compact .tunnel-word { display: none; }
+
+/* ---------------------------------------------------------------- the dialog */
+
+.tunnel .settings-body { gap: 14px; }
+.tunnel-state { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 14px; align-items: start; }
+.tunnel-state .settings-note { margin: 0; overflow-wrap: anywhere; }
+.tunnel-orb {
+  --planet-bg: var(--bg-2);
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid var(--line-2);
+  background: var(--planet-bg);
+  color: var(--fg-3);
+}
+.tunnel-orb svg { width: 26px; height: 26px; }
+.tunnel-headline { display: block; margin: 3px 0 6px; font: 700 12px/1.2 var(--mono); letter-spacing: 0.12em; text-transform: uppercase; }
+#tunnel[data-state="up"] .tunnel-orb {
+  --planet-bg: color-mix(in srgb, var(--accent) 9%, var(--bg-2));
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2));
+}
+#tunnel[data-state="up"] .tunnel-headline { color: var(--accent); }
+#tunnel[data-state="retrying"] .tunnel-orb, #tunnel[data-state="retrying"] .tunnel-headline { color: var(--warn); }
+#tunnel:is([data-state="setup"], [data-state="connecting"], [data-state="retrying"]) .tunnel-orb svg { animation: pulse 1.4s ease-in-out infinite; }
+
+.tunnel-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.tunnel-facts[hidden] { display: none; }
+.tunnel-facts dt { align-self: center; color: var(--fg-4); }
+.tunnel-facts dd { margin: 0; font: 12px/1.4 var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.tunnel-remote { margin: 0; padding: 8px 12px; border-left: 2px solid var(--warn); background: var(--bg); font-size: 12.5px; line-height: 1.5; color: var(--fg-2); }
+.tunnel-remote[hidden] { display: none; }
+
+.tunnel-pair { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: 16px; align-items: start; }
+.tunnel-pair[hidden] { display: none; }
+.tunnel-pair-text { display: grid; gap: 8px; align-content: start; }
+.tunnel-pair-text .settings-note { margin: 0; }
+.tunnel-copies { display: flex; flex-wrap: wrap; gap: 6px; }
+.tunnel-copies .act { height: 26px; line-height: 24px; border-color: var(--line-2); }
+
+.tunnel-qr {
+  --planet-bg: var(--bg);
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 148px;
+  height: 148px;
+  padding: 0;
+  border: 1px solid var(--line-2);
+  background: repeating-linear-gradient(-45deg, var(--bg) 0 5px, var(--bg-3) 5px 6px);
+  cursor: pointer;
+}
+.tunnel-qr:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
+.tunnel-qr-veil { display: grid; place-items: center; width: 44px; height: 44px; border: 1px solid var(--line-2); background: var(--bg); color: var(--fg-4); }
+.tunnel-qr-veil svg { width: 26px; height: 26px; }
+.tunnel-qr:hover .tunnel-qr-veil { color: var(--accent); }
+.tunnel-qr-image { display: none; width: 100%; height: 100%; background: #fff; image-rendering: pixelated; }
+.tunnel-pair[data-shown="true"] .tunnel-qr { background: #fff; border-color: #fff; }
+.tunnel-pair[data-shown="true"] .tunnel-qr-veil { display: none; }
+.tunnel-pair[data-shown="true"] .tunnel-qr-image { display: block; animation: fade 0.18s ease-out; }
+
+@media (max-width: 560px) {
+  .tunnel-pair { grid-template-columns: minmax(0, 1fr); }
+}

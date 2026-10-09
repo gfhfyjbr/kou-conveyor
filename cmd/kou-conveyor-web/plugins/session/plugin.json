@@ -1,0 +1,5 @@
+{
+  "name": "session",
+  "description": "Sessions and runs: the session in view, its runs and their live events, the session list, the workspaces, the address. The others show what it holds.",
+  "web": {"script": "web/session.js", "after": ["layout", "ui"]}
+}

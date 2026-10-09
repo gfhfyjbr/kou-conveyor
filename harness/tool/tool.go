@@ -1,0 +1,70 @@
+// Package tool defines model-visible tool selection and pure translation
+// between model tool calls and durable operations.
+package tool
+
+import (
+	"encoding/json/jsontext"
+	"uuid"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
+	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
+)
+
+type CallStatus struct {
+	Error          string
+	ErrorTruncated bool           `json:",omitzero"`
+	WaitingFor     []operation.ID `json:",omitzero"`
+}
+
+// Context is turn-local and coordinator-owned. Submit allocates an ID and
+// records inert data without performing I/O or handing work to another queue.
+type Context interface {
+	Submit(operation.Spec) operation.ID
+}
+
+type ResultTranslator interface {
+	TranslateResult(string, CallStatus, []operation.Operation) (llm.ToolResult, error)
+}
+
+type Translator interface {
+	ResultTranslator
+	Translate(Context, llm.ToolCall) CallStatus
+}
+
+// RunningDescriber is a translator that says what the model reads of a
+// call still running, after the harness's own note that it runs: where its
+// output so far is, how to stop it, what it has done. A translator without
+// it shows the note alone.
+type RunningDescriber interface {
+	DescribeRunning(operations []operation.Operation) string
+}
+
+type Definition struct {
+	Tool     llm.Tool
+	Metadata jsontext.Value
+}
+
+type RegistrationID = uuid.UUID
+
+type Registry interface {
+	// StaticDefinitions returns the definitions of the enabled tools: the
+	// built-in ones, then those registered.
+	StaticDefinitions() []Definition
+	Resolve(string) (Translator, bool)
+	// RegisterTool adds a tool beside the built-in ones, such as a plugin's.
+	// Its name may not be taken by an enabled tool.
+	RegisterTool(Definition, Translator) error
+	RegisterSkill(Skill) (RegistrationID, error)
+	UnregisterSkill(RegistrationID)
+	Skills() []Skill
+}
+
+type Skill struct {
+	Name        string
+	Description string
+	Path        string
+	// Manual is set for a skill whose frontmatter keeps the model from
+	// loading it on its own (disable-model-invocation): the model loads it
+	// when the user asks for it by name.
+	Manual bool
+}

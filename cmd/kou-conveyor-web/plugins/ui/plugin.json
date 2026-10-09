@@ -1,0 +1,5 @@
+{
+  "name": "ui",
+  "description": "What every plugin shows with: toasts, menus, the clipboard, and dialogs that Esc closes.",
+  "web": {"script": "web/ui.js", "style": "web/ui.css", "after": ["layout"]}
+}

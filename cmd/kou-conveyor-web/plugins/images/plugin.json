@@ -1,0 +1,5 @@
+{
+  "name": "images",
+  "description": "Images in prompts: ⌘V or a drop puts one in, named by a label the text refers to; sent prompts show theirs, and the calls that read a picture show it.",
+  "web": {"script": "web/images.js", "style": "web/images.css", "after": ["composer", "timeline"]}
+}

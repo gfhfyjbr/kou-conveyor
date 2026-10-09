@@ -1,0 +1,5 @@
+{
+  "name": "queue",
+  "description": "What is written while the agent works waits in the session's queue: Enter queues it, ⌘Enter forces it in after the running tools; edit, reorder, pause or drop it.",
+  "web": {"script": "web/queue.js", "style": "web/queue.css", "after": ["composer"]}
+}

@@ -1,0 +1,5 @@
+{
+  "name": "help",
+  "description": "The keyboard sheet (?): the keys and commands the plugins in use give the cockpit.",
+  "web": {"script": "web/help.js", "style": "web/help.css", "after": ["layout", "ui"]}
+}

@@ -1,0 +1,5 @@
+{
+  "name": "skills",
+  "description": "The Skills section of the inspector and /skills: the project's skills, from the workspace's .harness/skills and .agents/skills, and the system-wide ones, from ~/.agents/skills and kou-conveyor's skills/, as a run in the workspace has them.",
+  "web": {"script": "web/skills.js", "style": "web/skills.css", "after": ["inspector", "ui", "plugins"]}
+}

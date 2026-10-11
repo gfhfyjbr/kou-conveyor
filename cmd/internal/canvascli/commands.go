@@ -332,6 +332,53 @@ var commands = map[string]command{
 			return c.read(ctx, a)
 		},
 	},
+	"transcript": {
+		flags: map[string]flagKind{
+			"after": valueFlag, "limit": valueFlag, "kinds": valueFlag, "tools": valueFlag,
+			"since": valueFlag, "until": valueFlag, "message-limit": valueFlag, "output-limit": valueFlag,
+			"include": valueFlag,
+		},
+		run: func(ctx context.Context, c *client, p parsed) (result, error) {
+			if err := p.need(1, 1, "kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b] [--since RFC3339] [--until RFC3339] [--message-limit N] [--output-limit N] [--include notes,summaries]"); err != nil {
+				return result{}, err
+			}
+			a := transcriptArgs{Node: p.args[0], After: transcriptCursor(p.value("after")), Since: p.value("since"), Until: p.value("until")}
+			a.Kinds, a.Tools, a.Include = nodeList(strings.Split(p.value("kinds"), ",")), nodeList(strings.Split(p.value("tools"), ",")), nodeList(strings.Split(p.value("include"), ","))
+			var err error
+			if a.Limit, err = p.number("limit"); err != nil {
+				return result{}, err
+			}
+			if a.MessageLimit, err = p.number("message-limit"); err != nil {
+				return result{}, err
+			}
+			if a.OutputLimit, err = p.number("output-limit"); err != nil {
+				return result{}, err
+			}
+			return c.transcript(ctx, a)
+		},
+	},
+	"search": {
+		flags: map[string]flagKind{"children": boolFlag, "limit": valueFlag},
+		run: func(ctx context.Context, c *client, p parsed) (result, error) {
+			if err := p.need(1, 2, "kou-canvas search [<node>] <query> [--children] [--limit N]"); err != nil {
+				return result{}, err
+			}
+			a := searchArgs{}
+			if len(p.args) == 1 {
+				a.Query = p.args[0]
+			} else {
+				a.Node, a.Query = p.args[0], p.args[1]
+			}
+			if p.bool("children") {
+				a.Nodes = "children"
+			}
+			var err error
+			if a.Limit, err = p.number("limit"); err != nil {
+				return result{}, err
+			}
+			return c.search(ctx, a)
+		},
+	},
 	"wait": {
 		flags: map[string]flagKind{"until": valueFlag, "after": valueFlag, "timeout": valueFlag},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {

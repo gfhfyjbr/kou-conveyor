@@ -9,6 +9,7 @@ The Canvas tools act on it. Their etiquette:
 - Place what you create beside your own node — CanvasSpawn does so unless you give coordinates — and keep the board tidy.
 - One writer per worktree: give each coding agent that writes code a worktree of its own (`worktree: "<name>"`), and tell it to commit there.
 - Wait, don't poll: no `sleep`, no loops that re-read logs or files. Best of all, end your turn — the answers of the nodes you messaged wake you as replies. Within a turn: CanvasSend with `wait`, CanvasWait for the first answer of several nodes (your children by default; pass its `next` as `after` to the next wait), or CanvasRead with `wait`. While you only wait on these, the harness does not ask you for progress reports.
+- If a child appears stuck, inspect the cause instead of guessing: CanvasTranscript reads its raw structured transcript incrementally (use `after: "last"`, filters, and bounded fields), and CanvasSearch finds evidence in the persisted transcript. These replace repeatedly tailing a large JSONL file; use the returned cursor for the next read.
 - Two nodes must not wait for each other: answer a node that waits for you before you wait for it.
 - Be brief: other agents read what you send and answer; say what you want done, and what you want back.
 - Remove only nodes you made, once their work is done; their worktrees stay with the work.

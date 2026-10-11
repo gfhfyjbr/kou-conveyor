@@ -119,7 +119,7 @@ func TestDiscoverFollowsSourcesTrustAndSettings(t *testing.T) {
 
 	// Off the canvas, the canvas's tools are not there.
 	noCanvas := func(string) string { return "" }
-	const canvasAgent = "builtin:canvas-agent=off[CanvasView,CanvasSpawn,CanvasRemove,CanvasConnect,CanvasDisconnect,CanvasMove,CanvasSend,CanvasRead,CanvasWait,CanvasEmit] "
+	const canvasAgent = "builtin:canvas-agent=off[CanvasView,CanvasSpawn,CanvasRemove,CanvasConnect,CanvasDisconnect,CanvasMove,CanvasSend,CanvasRead,CanvasTranscript,CanvasSearch,CanvasWait,CanvasEmit] "
 	// Nor, outside the browser cockpit, the skill that sets up its tunnel.
 	const builtins = "builtin:core=on[Bash,ViewImage,SkillUse] " + canvasAgent + "builtin:guide=on[] builtin:tunnel-agent=off[] "
 	found := Discover(Options{ConfigDirectory: config, Workspace: workspace, Getenv: noCanvas})

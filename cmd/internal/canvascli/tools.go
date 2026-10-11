@@ -231,6 +231,49 @@ var tools = []Tool{
 		},
 	},
 	{
+		Name: "CanvasTranscript",
+		Description: "Read a node's raw, structured transcript incrementally: user prompts, assistant text, reasoning, tool calls and their full bounded outcomes, notices and harness or canvas messages. " +
+			"Use after from the previous answer, or after=last to use the server's cursor for this reader and node; filter by kinds, tools and time, and request notes or summaries when diagnosing a stall. " +
+			"This reads new records rather than polling or re-reading the whole session.",
+		Schema: `{"type":"object","properties":{` +
+			`"node":{"type":"string","description":"The node whose raw transcript to read: its ID, title, or self."},` +
+			`"after":{"type":"string","description":"The byte cursor from the previous answer, or last for the server's saved cursor for this reader and node."},` +
+			`"limit":{"type":"integer","description":"Maximum entries: 50 by default, 500 at most."},` +
+			`"kinds":{"type":"array","items":{"type":"string","enum":["user","assistant","reasoning","tool","notice","error","compaction","heartbeat","peer"]},"description":"Only these entry kinds."},` +
+			`"tools":{"type":"array","items":{"type":"string"},"description":"Only tool entries with these names."},` +
+			`"since":{"type":"string","description":"Only entries at or after this RFC3339 time."},` +
+			`"until":{"type":"string","description":"Only entries at or before this RFC3339 time."},` +
+			`"message_limit":{"type":"integer","description":"Maximum bytes of message, reasoning and detail fields: 8 KiB by default."},` +
+			`"output_limit":{"type":"integer","description":"Maximum bytes of tool output, stderr and error fields: 4 KiB by default."},` +
+			`"include":{"type":"array","items":{"type":"string","enum":["notes","summaries"]},"description":"Include the durable notes or recent summaries beside the entries."}` +
+			`},"required":["node"]}`,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a transcriptArgs
+			if err := decodeArgs("CanvasTranscript", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.transcript(ctx, a)
+		},
+	},
+	{
+		Name: "CanvasSearch",
+		Description: "Search a node's persisted raw transcript with a case-insensitive regular expression, showing matching lines with context. " +
+			"Use nodes=children to search all nodes you look after; this is for locating evidence, while CanvasTranscript reads the structured incremental feed.",
+		Schema: `{"type":"object","properties":{` +
+			`"node":{"type":"string","description":"The node to search: its ID, title, or self; with nodes=children it is the parent context."},` +
+			`"nodes":{"type":"string","enum":["children"],"description":"Search all of your children instead of only node."},` +
+			`"q":{"type":"string","description":"A case-insensitive regular expression to find."},` +
+			`"limit":{"type":"integer","description":"Maximum matches: 20 by default, 200 at most."}` +
+			`},"required":["q"]}`,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a searchArgs
+			if err := decodeArgs("CanvasSearch", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.search(ctx, a)
+		},
+	},
+	{
 		Name: "CanvasWait",
 		Description: "Wait for any of several nodes — your children by default: the nodes you made and those you are wired to — instead of polling or sleeping. " +
 			"until answer (the default): one of them gives an output, an agent's answer; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. " +

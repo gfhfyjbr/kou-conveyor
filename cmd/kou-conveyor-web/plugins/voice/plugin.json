@@ -1,0 +1,5 @@
+{
+  "name": "voice",
+  "description": "Dictation: the microphone button in the composer writes what is said, streaming it through the cockpit to a speech-to-text provider: Soniox, Deepgram, ElevenLabs, OpenAI or Gemini as it is said, Groq or Yandex SpeechKit once the take stops. Hold it to talk, or click it, talk and click again. Its settings, the cockpit's for every workspace and the iPhone, open with /voice or a right click on the button: the provider and its key, the languages, Russian swearing, the user's own words, the microphone.",
+  "web": {"script": "web/voice.js", "style": "web/voice.css", "after": ["composer"]}
+}

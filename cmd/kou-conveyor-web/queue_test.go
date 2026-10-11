@@ -100,6 +100,13 @@ func TestQueuedPromptRunsWhenTheRunEnds(t *testing.T) {
 	if queueOf(t, view["queue"]) != "then say hi" {
 		t.Fatalf("session queue = %v", view["queue"])
 	}
+	// It says how many events its run published, as many as its stream has
+	// by then: a reader that comes late takes those in at once.
+	run, _ := view["run"].(map[string]any)
+	published, _ := run["events"].(float64)
+	if run == nil || run["id"] != started["run_id"] || published < 2 {
+		t.Fatalf("session run = %v", view["run"])
+	}
 	os.WriteFile(filepath.Join(h.server.opt.Workspace, "gate"), nil, 0o600)
 	first, _ := h.stream(started["run_id"].(string), "")
 	done := first.last()

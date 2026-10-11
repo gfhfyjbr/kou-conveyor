@@ -46,10 +46,14 @@ struct CanvasBoard: View {
                 }
             }
             ForEach(model.nodes) { node in
-                NodeCard(node: node, status: model.status[node.id], feed: model.feeds[node.id]?.last, pending: model.pending[node.id] ?? 0)
-                    .frame(width: node.frame.width, height: node.frame.height)
-                    .offset(x: node.frame.minX - bounds.minX, y: node.frame.minY - bounds.minY)
-                    .onTapGesture { open(node) }
+                Button {
+                    open(node)
+                } label: {
+                    NodeCard(node: node, status: model.status[node.id], feed: model.feeds[node.id]?.last, pending: model.pending[node.id] ?? 0)
+                }
+                .buttonStyle(.plain)
+                .frame(width: node.frame.width, height: node.frame.height)
+                .offset(x: node.frame.minX - bounds.minX, y: node.frame.minY - bounds.minY)
             }
         }
         .frame(width: bounds.width, height: bounds.height, alignment: .topLeading)

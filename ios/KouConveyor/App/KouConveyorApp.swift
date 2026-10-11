@@ -34,7 +34,7 @@ struct RootView: View {
             }
         }
         .animation(.smooth, value: model.isPaired)
-        .alert("Pair with another relay?", isPresented: Binding(
+        .alert(incoming.title, isPresented: Binding(
             get: { model.incomingLink != nil },
             set: { if !$0 { model.incomingLink = nil } }
         )) {
@@ -46,7 +46,7 @@ struct RootView: View {
             }
             Button("Cancel", role: .cancel) { model.incomingLink = nil }
         } message: {
-            Text("This iPhone is paired with \(model.relay?.address ?? "a relay"). The link is of another one.")
+            Text(incoming.message)
         }
         .alert("Pairing failed", isPresented: Binding(
             get: { model.linkError != nil },
@@ -56,6 +56,21 @@ struct RootView: View {
         } message: {
             Text(model.linkError ?? "")
         }
+    }
+
+    /// What to ask of a pairing link opened while paired: the same relay set
+    /// up anew (a new token or certificate) or another relay.
+    private var incoming: (title: String, message: String) {
+        let current = model.relay?.address ?? "a relay"
+        guard let text = model.incomingLink, let config = try? RelayConfig(link: text) else {
+            return ("Pair with another relay?", "This iPhone is paired with \(current).")
+        }
+        if config.address == model.relay?.address {
+            return ("Pair again?",
+                    "The link is for \(current), with a new token or certificate: the relay was set up anew. Pairing again replaces the old ones.")
+        }
+        return ("Pair with another relay?",
+                "This iPhone is paired with \(current). The link is for \(config.address): pairing with it forgets \(current).")
     }
 }
 
@@ -74,6 +89,12 @@ struct CockpitView: View {
             }
             Tab("Canvases", systemImage: "point.3.connected.trianglepath.dotted", value: AppModel.Tab.canvases) {
                 CanvasesScreen()
+            }
+            Tab("Files", systemImage: "folder", value: AppModel.Tab.files) {
+                FilesScreen()
+            }
+            Tab("Accounts", systemImage: "person.2", value: AppModel.Tab.accounts) {
+                AccountsScreen()
             }
             Tab("Relay", systemImage: "globe", value: AppModel.Tab.relay) {
                 RelayScreen()

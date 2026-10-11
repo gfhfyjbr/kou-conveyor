@@ -84,7 +84,12 @@ cockpit runs), and the browser cockpit's `accounts`, `canvas`, `changes`,
 `commands`, `composer`, `connection`, `edit`, `effort`, `explorer`, `files`,
 `header`, `help`, `images`, `inspector`, `layout`, `markdown`, `models`,
 `palette`, `plugins`, `queue`, `session`, `session-list`, `sidebar`,
-`skills`, `terminal`, `theme`, `timeline`, `tunnel`, `ui` and `workspaces`
+`skills`, `terminal`, `theme`, `timeline`, `tunnel`, `ui`, `voice`
+(dictation through the cockpit to a speech-to-text provider: Soniox,
+Deepgram, ElevenLabs, OpenAI, Gemini, Groq or Yandex; its settings and the
+providers' keys are the cockpit's for every workspace, in `voice.json`
+beside the settings: `/voice`, or `SONIOX_API_KEY`, `DEEPGRAM_API_KEY`… of
+the cockpit's environment for the keys) and `workspaces`
 (`kou-conveyor-runner -list-plugins` lists what is there now). Two active
 plugins cannot share a tool or a command: the first keeps it and the other's
 is left out, with an error.

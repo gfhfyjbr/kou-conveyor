@@ -67,12 +67,15 @@ cockpit's own program (`kou-conveyor-web` on the PATH is the same):
    ask before you run anything with sudo on their host.
 6. Done when `"$KOU_CONVEYOR_WEB" tunnel status` passes. The cockpit
    connects by itself within seconds, and the planet beside the mark in its
-   rail says "tunnelling".
-7. Tell the user how to pair the iPhone app: in the cockpit, click the
-   planet beside the mark, then **Show code**, and scan it with the phone's
-   camera; or open the link `tunnel link` prints on the phone. Browsers
-   elsewhere: **Copy browser link** in the same dialog; with the relay's own
-   certificate a browser warns once.
+   rail says "tunnelling". When /tunnel asked you, its dialog opens by itself
+   then, with the code that pairs the iPhone app shown.
+7. Tell the user how to pair the iPhone app: scan that code with the
+   phone's camera (the dialog is also behind the planet beside the mark:
+   **Show code**), or open the link `tunnel link` prints on the phone. A
+   phone paired once stays paired: installing again on the same host keeps
+   the relay's token and certificate. Browsers elsewhere: **Copy browser
+   link** in the same dialog; with the relay's own certificate a browser
+   warns once.
 
 ## When it does not come up
 
@@ -88,14 +91,34 @@ cockpit's own program (`kou-conveyor-web` on the PATH is the same):
 - `unauthorized` — tunnel.json's token is not the relay's: install again, or
   `tunnel set -token "$(ssh DEST cat .config/kou-conveyor-relay/token)"`.
 - `not_relay` — something else answers at that URL: another port, `-url`.
-- `incompatible` — the relay and the cockpit are of different versions:
-  install again.
+- `incompatible` — the relay and the cockpit are of different versions: a
+  relay that updates itself (below) takes the build of the cockpit's
+  protocol within minutes once CI published it; else install again.
 - A certificate that is "not the one pinned": the relay made a new one;
   install again to take its fingerprint.
 
 To move it to another host: `tunnel install NEWDEST`; the cockpit goes to the
 new relay by itself. To turn it off: `tunnel stop`; the relay stays on its
 host (`systemctl --user disable --now kou-conveyor-relay` there stops it).
+
+## Updates
+
+The relay updates itself. CI (`.github/workflows/relay.yml`) builds it
+whenever what it is built from changes, and publishes the builds with a
+`manifest.json` to the `relay-latest` prerelease of
+github.com/gfhfyjbr/kou-conveyor. Every 5 minutes the relay reads the
+manifest; when it names a build newer than its own for its platform, the
+relay downloads it, checks its sha-256, has it serve once on a spare port,
+puts it in its place — keeping itself beside it as `kou-conveyor-relay.old`
+— and runs it in its stead, in the same process: the cockpit and the phone
+connect again within seconds. A build of another protocol it takes only once
+a cockpit of that protocol asked it. A relay built from a newer commit than
+the published one, as `tunnel install` builds it from the checkout, stays as
+it is. Its log says `update: …` of what it does; `-update off` (or
+`KOU_RELAY_UPDATE=off`) keeps it as built, `-update-every 10m` and
+`-update-url URL` change where and how often it looks. Back to the one
+before: `mv ~/.local/bin/kou-conveyor-relay.old ~/.local/bin/kou-conveyor-relay`
+there, and restart it.
 
 ## Security
 

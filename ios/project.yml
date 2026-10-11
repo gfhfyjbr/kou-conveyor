@@ -55,6 +55,7 @@ targets:
             CFBundleURLSchemes:
               - kouconveyor
         NSCameraUsageDescription: Scan the pairing code that /tunnel shows in the cockpit.
+        NSMicrophoneUsageDescription: Dictate prompts to the agent, written out as you speak.
         NSLocalNetworkUsageDescription: Reach a kou-conveyor relay on your local network.
         # A relay pins its own certificate (https with a fingerprint), which
         # the app checks itself; one started with -tls off, on a tailnet,

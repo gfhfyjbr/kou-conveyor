@@ -87,7 +87,7 @@ take any part's place (`ui.mount(slot, { id, order, node })`), hide it
 | `stage.main` | layout | the transcript (`timeline`) |
 | `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
 | `stage.overlay`, `overlays` | layout | the image shown large; dialogs, menus, toasts |
-| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), the file suggestions (`file-suggestions` 12), the images (`attachments` 20), the linked files (`links` 22); the model (`model` 10) and the effort (`effort` 20) |
+| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), the file suggestions (`file-suggestions` 12), the images (`attachments` 20), the linked files (`links` 22); the model (`model` 10), the effort (`effort` 20) and the dictation button (`voice` 90) |
 | `sessions.tools` | session-list | `ws-switch` 10, `new-session` 20, `session-filter` 30 |
 
 ## Contribution points

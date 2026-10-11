@@ -2,7 +2,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -12,6 +16,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -70,6 +75,8 @@ type server struct {
 	explorer  *explorer
 	// canvas runs the canvases (canvas.go), nil when they are off.
 	canvas *canvas.Engine
+	// voice keeps the keys and the names of voice input (voice.go).
+	voice voiceState
 
 	mu     sync.Mutex
 	runs   map[string]*run           // by run ID, including recently finished runs
@@ -151,6 +158,11 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("GET /api/folders", s.handleFolders)
 	mux.HandleFunc("GET /api/preferences", s.handlePreferences)
 	mux.HandleFunc("PUT /api/preferences", s.handleSavePreferences)
+	// Dictation's providers, their keys and its settings, the same in every
+	// workspace (voice.go).
+	mux.HandleFunc("GET /api/voice", s.handleVoice)
+	mux.HandleFunc("PUT /api/voice", s.handleSaveVoice)
+	mux.HandleFunc("DELETE /api/voice", s.handleForgetVoice)
 	// Accounts of the gateway (accounts.go), and signing new ones in.
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
 	mux.HandleFunc("GET /api/accounts/models", s.withGateway(s.handleGatewayModels))
@@ -219,6 +231,8 @@ func (s *server) handler() http.Handler {
 		mux.HandleFunc("GET "+prefix+"/raw", s.handleRawFile)
 		mux.HandleFunc("GET "+prefix+"/terminals", s.handleTerminals)
 		mux.HandleFunc("POST "+prefix+"/terminals", s.handleStartTerminal)
+		// The stream a composer dictates through (voicesocket.go).
+		mux.HandleFunc("GET "+prefix+"/voice/socket", s.handleVoiceSocket)
 		// Plugins (plugins.go), and the stream that says when they change
 		// (pluginevents.go).
 		mux.HandleFunc("GET "+prefix+"/plugins", s.handlePlugins)
@@ -409,6 +423,12 @@ type runSummary struct {
 	Started  time.Time `json:"started_at"`
 	Stopping bool      `json:"stopping"`
 	Compact  bool      `json:"compact,omitempty"` // the run compacts the conversation
+	// Activity is what the agent does now, and Events how many events the
+	// run published so far: a reader that streams them from the first has
+	// caught up with the run at that one, and need not show those before it
+	// one by one.
+	Activity string `json:"activity,omitempty"`
+	Events   int    `json:"events,omitempty"`
 }
 
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +441,17 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
+	// last asks for only the transcript's last entries: the phone, which
+	// shows a session of thousands from its end.
+	last := 0
+	if v := r.URL.Query().Get("last"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			writeError(w, http.StatusBadRequest, "last is a number of entries, at least 1")
+			return
+		}
+		last = n
+	}
 	dir := ws.opt.SessionDir
 	// Read the file before looking at runs: whatever a run appends after this
 	// point reaches the browser through the run's event stream.
@@ -429,7 +460,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	current, reserved := s.attachable(ws, id), s.active[activeKey(ws, id)]
 	var summary *runSummary
 	if current != nil {
-		summary = &runSummary{ID: current.id, Started: current.started, Stopping: current.isStopping(), Compact: current.compact}
+		summary = current.summary()
 	}
 	queue := s.queueSnapshot(activeKey(ws, id))
 	s.mu.Unlock()
@@ -460,7 +491,67 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	if meta.Canvas != "" {
 		body["canvas"], body["node"] = meta.Canvas, meta.Node
 	}
-	writeJSON(w, http.StatusOK, body)
+	if cut := len(tr.Entries) - last; last > 0 && cut > 0 {
+		// Of the entries left out, the prompts still go: the model of the
+		// last one runs the next, and changes are asked of any.
+		prompts := []*cockpit.Entry{}
+		for _, e := range tr.Entries[:cut] {
+			if e.Kind == cockpit.KindUser {
+				prompts = append(prompts, e)
+			}
+		}
+		body["entries"], body["earlier"], body["earlier_prompts"] = tr.Entries[cut:], cut, prompts
+	}
+	writeLargeJSON(w, r, body)
+}
+
+// writeLargeJSON answers with what can be megabytes, a session's
+// transcript: compressed for a client that takes gzip, as the phone over
+// the relay's link does, and not at all to one that has it already
+// (If-None-Match), the phone checking an idle session again.
+func writeLargeJSON(w http.ResponseWriter, r *http.Request, v any) {
+	var buf bytes.Buffer
+	if err := json.MarshalWrite(&buf, v, json.Deterministic(true)); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	sum := sha256.Sum256(buf.Bytes())
+	tag := `"` + hex.EncodeToString(sum[:12]) + `"`
+	h := w.Header()
+	h.Set("Content-Type", "application/json; charset=utf-8")
+	h.Set("Cache-Control", "no-store")
+	h.Set("ETag", tag)
+	h.Set("Vary", "Accept-Encoding")
+	if r.Header.Get("If-None-Match") == tag {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if buf.Len() < 4<<10 || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
+		w.WriteHeader(http.StatusOK)
+		w.Write(buf.Bytes())
+		return
+	}
+	h.Set("Content-Encoding", "gzip")
+	w.WriteHeader(http.StatusOK)
+	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	zw.Write(buf.Bytes())
+	if err := zw.Close(); err != nil {
+		log.Printf("compress response: %v", err)
+	}
+}
+
+// acceptsGzip says whether an Accept-Encoding takes gzip.
+func acceptsGzip(header string) bool {
+	for part := range strings.SplitSeq(header, ",") {
+		name, params, _ := strings.Cut(part, ";")
+		name = strings.ToLower(strings.TrimSpace(name))
+		if name != "gzip" && name != "*" {
+			continue
+		}
+		q := strings.ReplaceAll(strings.ToLower(params), " ", "")
+		return q != "q=0" && q != "q=0.0" && q != "q=0.00" && q != "q=0.000"
+	}
+	return false
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

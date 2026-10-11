@@ -41,6 +41,7 @@ type run struct {
 	retired  bool          // the run is gone from the server: its log goes with its last reader
 	stopping bool
 	done     bool
+	activity string // what the last status event said the agent does
 }
 
 // event is what browsers receive. Entry events are complete snapshots keyed by
@@ -82,6 +83,9 @@ func (r *run) publish(e event) {
 	r.events.append(data)
 	if e.Type == "done" {
 		r.done = true
+	}
+	if e.Type == "status" && e.Activity != "" {
+		r.activity = e.Activity
 	}
 	close(r.wake)
 	r.wake = make(chan struct{})
@@ -136,6 +140,13 @@ func (r *run) isStopping() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.stopping
+}
+
+// summary is what a session's reader learns of its run.
+func (r *run) summary() *runSummary {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return &runSummary{ID: r.id, Started: r.started, Stopping: r.stopping, Compact: r.compact, Activity: r.activity, Events: len(r.events.index)}
 }
 
 func (r *run) stop() {

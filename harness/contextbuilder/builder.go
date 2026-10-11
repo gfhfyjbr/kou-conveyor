@@ -50,6 +50,10 @@ type builder struct {
 	transcript string
 	memory     Memory
 	touched    []touchedFile
+	// shownNotes is what the conversation last showed of the notes, in
+	// the message of its latest compaction or a NotesUpdate since; nil
+	// before any.
+	shownNotes *string
 	// pruning says when the oldest tool results are cut down; pruned
 	// counts those cut so far, and imagesLeftOut the images left out
 	// (images.go).
@@ -138,6 +142,9 @@ func (current *builder) AddControlMessage(request inbox.ControlMessage) {
 			Type: llm.ItemMessage,
 			Data: llm.Message{Role: llm.RoleUser, Text: request.Reason},
 		})
+		if notes, update := notesIn(request.Reason); update {
+			current.shownNotes = &notes
+		}
 	}
 }
 

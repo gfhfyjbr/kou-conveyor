@@ -290,6 +290,34 @@ func TestTranscriptFinish(t *testing.T) {
 			t.Fatalf("entries = %#v", tr.Entries)
 		}
 	})
+	t.Run("stop the session records says why, once", func(t *testing.T) {
+		tr := NewTranscript()
+		tr.Submit(messageID, "hi", recorded)
+		control, err := json.Marshal(inbox.ControlMessage{Mode: inbox.StopHard, Reason: "the user stopped the run from the cockpit"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		apply(t, tr, liveLine(t, 2, sessionstore.ItemInput, inbox.Input{
+			ID: "0f5c3f6e-8f43-4e8a-9f0e-2b1d6c7a8e90", Kind: inbox.InputControl, Payload: control,
+		}))
+		tr.Finish(errors.New("canceled"), true, recorded)
+		var notices []string
+		for _, e := range tr.Entries {
+			if e.Kind == KindNotice {
+				notices = append(notices, e.Text)
+			}
+		}
+		if len(notices) != 1 || notices[0] != "Run stopped: the user stopped the run from the cockpit" || tr.Entry("stop:2") == nil {
+			t.Fatalf("notices = %q", notices)
+		}
+		// The next run's stop, which the session does not record, is marked
+		// as before.
+		tr.Submit("9a0d6a52-2cde-4b8f-8f0d-7d4c1e2b3a45", "again", recorded)
+		tr.Finish(errors.New("canceled"), true, recorded)
+		if last := tr.Entries[len(tr.Entries)-1]; last.Text != "Run stopped" {
+			t.Fatalf("last entry = %#v", last)
+		}
+	})
 }
 
 func TestClean(t *testing.T) {

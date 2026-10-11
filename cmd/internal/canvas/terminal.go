@@ -251,14 +251,16 @@ func (c *Canvas) terminalDir(n *Node) (string, error) {
 		if name == "" || !worktree.ValidName(name) {
 			name = strings.ReplaceAll(n.ID, "_", "-")
 		}
-		ctx, cancel := context.WithTimeout(c.e.ctx, 2*time.Minute)
+		// Its submodules are cloned, which can take a while.
+		ctx, cancel := context.WithTimeout(c.e.ctx, 10*time.Minute)
 		defer cancel()
-		path, made, err := worktree.Ensure(ctx, c.ws.Path, name, branch, base)
+		made, err := worktree.Ensure(ctx, c.ws.Path, name, branch, base, worktreeOptions(spec))
 		if err != nil {
 			return "", fmt.Errorf("the worktree: %w", err)
 		}
-		c.setRuntime(n.ID, func(r *Runtime) { r.Worktree, r.Branch = path, made })
-		return path, nil
+		c.setRuntime(n.ID, func(r *Runtime) { r.Worktree, r.Branch = made.Path, made.Branch })
+		c.worktreeNotice(n, made)
+		return made.Path, nil
 	}
 	if cwd := strings.TrimSpace(n.configString("cwd")); cwd != "" {
 		if !filepath.IsAbs(cwd) {
@@ -273,6 +275,53 @@ func (c *Canvas) terminalDir(n *Node) (string, error) {
 		return "", fmt.Errorf("the workspace's folder is missing")
 	}
 	return c.ws.Path, nil
+}
+
+// worktreeOptions reads what a node's worktree gets beside git's files from
+// the worktree of its configuration: include and link, the workspace's
+// untracked paths to copy or link in, and submodules, false to leave them
+// empty.
+func worktreeOptions(spec map[string]any) worktree.Options {
+	options := worktree.Options{Include: pathsOf(spec["include"]), Link: pathsOf(spec["link"])}
+	if on, ok := spec["submodules"].(bool); ok && !on {
+		options.NoSubmodules = true
+	}
+	return options
+}
+
+// pathsOf reads a list of paths: strings, or a string of them one per line
+// or separated by commas.
+func pathsOf(value any) []string {
+	var paths []string
+	add := func(text string) {
+		for _, p := range strings.FieldsFunc(text, func(r rune) bool { return r == ',' || r == '\n' }) {
+			if p = strings.TrimSpace(p); p != "" {
+				paths = append(paths, p)
+			}
+		}
+	}
+	switch value := value.(type) {
+	case string:
+		add(value)
+	case []any:
+		for _, item := range value {
+			if text, ok := item.(string); ok {
+				add(text)
+			}
+		}
+	}
+	return paths
+}
+
+// worktreeNotice tells the pages what a terminal's worktree got beside
+// git's files, and what it could not get.
+func (c *Canvas) worktreeNotice(n *Node, made worktree.Worktree) {
+	if len(made.Problems) > 0 {
+		c.notice("warning", fmt.Sprintf("«%s»'s worktree: %s.", n.Title, strings.Join(made.Problems, "; ")), n.ID, "")
+	}
+	if len(made.Filled) > 0 {
+		c.notice("info", fmt.Sprintf("«%s»'s worktree got %s.", n.Title, strings.Join(made.Filled, ", ")), n.ID, "")
+	}
 }
 
 // gridOf is how many columns and rows a node of a size shows, at the

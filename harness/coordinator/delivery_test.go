@@ -138,8 +138,12 @@ func TestCoordinatorCompactionPreservesPendingInputsOnReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(page.Items[len(page.Items)-1].Data, response) {
-		t.Fatal("compaction response was not persisted")
+	// The compaction is kept with the message that stood in for the
+	// conversation, which a run that restores the session shows as it was.
+	want := response
+	want.Compacted = &sessionstore.Compacted{Message: messageText(input[1])}
+	if !reflect.DeepEqual(page.Items[len(page.Items)-1].Data, want) {
+		t.Fatalf("compaction response was not persisted: %#v", page.Items[len(page.Items)-1].Data)
 	}
 	replayed := newStopTestRun(t, 0).current
 	replayed.dependencies.Sessions = reopened

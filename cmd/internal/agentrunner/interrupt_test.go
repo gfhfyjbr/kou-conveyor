@@ -76,6 +76,10 @@ func TestRunMainStopsToolsBeforeReturning(t *testing.T) {
 		syscall.Kill(-pid, syscall.SIGKILL)
 		t.Fatal("the runner returned while its tool was still running")
 	}
+	// The session records the stop: an interrupt says no more than that.
+	if reasons := stopReasons(t, stdout.Bytes()); len(reasons) != 1 || !strings.HasPrefix(reasons[0], "the runner was interrupted") {
+		t.Fatalf("recorded stops = %q", reasons)
+	}
 }
 
 // Saved keys reach the runner in KOU_CONVEYOR_LLM_API_KEY; the commands the

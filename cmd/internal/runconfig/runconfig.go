@@ -14,6 +14,10 @@ const (
 	ToolProfileEnvironment = "KOU_CONVEYOR_TOOL_PROFILE"
 	// SandboxEnvironment names the sandbox mode.
 	SandboxEnvironment = "KOU_CONVEYOR_SANDBOX"
+	// WorktreeEnvironment carries what the sandbox's worktree gets beside
+	// git's files, as the JSON of worktree.Options: untracked paths to copy
+	// or link in, and whether to leave the submodules out.
+	WorktreeEnvironment = "KOU_CONVEYOR_WORKTREE"
 )
 
 // Sandbox modes: where a run works.

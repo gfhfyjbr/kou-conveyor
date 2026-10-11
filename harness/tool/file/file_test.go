@@ -61,6 +61,32 @@ func TestTranslateBuildsFileOperations(t *testing.T) {
 	}
 }
 
+// Models write numbers as strings now and then: CF's Read failed nine
+// times on "offset":"1860" in one night.
+func TestReadTakesNumbersWrittenAsStrings(t *testing.T) {
+	for _, arguments := range []string{
+		`{"path":"a.go","offset":"1860","limit":"40"}`, `{"path":"a.go","offset":1860,"limit":40}`, `{"path":"a.go","offset":1860.0,"limit":"40.0"}`,
+	} {
+		status, state := translate(t, file.KindRead, arguments)
+		if status.Error != "" || state.Offset != 1860 || state.Limit != 40 {
+			t.Errorf("%s: %#v, %q", arguments, state, status.Error)
+		}
+	}
+	for arguments, want := range map[string]string{
+		`{"path":"a.go","offset":"abc"}`: "want a number",
+		`{"path":"a.go","offset":1.5}`:   `"offset" must be a whole number`,
+		`{"path":"a.go","limit":"-2"}`:   `"limit" must not be negative`,
+		`{"path":"a.go","offset":-1}`:    `"offset" must not be negative`,
+	} {
+		if status, _ := translate(t, file.KindRead, arguments); !strings.Contains(status.Error, want) {
+			t.Errorf("%s: error %q, want %q", arguments, status.Error, want)
+		}
+	}
+	if _, state := translate(t, file.KindTranscriptSearch, `{"query":"x","limit":"5"}`); state.Limit != 5 {
+		t.Fatalf("search limit = %d", state.Limit)
+	}
+}
+
 func TestTranslateRejectsBadArguments(t *testing.T) {
 	for kind, arguments := range map[file.Kind]string{
 		file.KindRead: `{}`, file.KindEdit: `{"path":"a","old_string":"x"}`, file.KindWrite: `[]`, file.KindApplyPatch: `{"input":" "}`,

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 // The command line's commands are the tools' calls: each makes the
@@ -43,7 +45,8 @@ func (p parsed) number(name string) (number, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--%s is a number", name)
 	}
-	return &n, nil
+	read := toolarg.Number(n)
+	return &read, nil
 }
 
 // isNumber reports whether an argument is a number, such as -100: not a
@@ -143,19 +146,20 @@ var commands = map[string]command{
 	},
 	"spawn": {
 		flags: map[string]flagKind{
-			"title": valueFlag, "cmd": valueFlag, "command": valueFlag, "cwd": valueFlag, "worktree": optionalFlag, "base": valueFlag,
+			"title": valueFlag, "cmd": valueFlag, "command": valueFlag, "cwd": valueFlag, "worktree": optionalFlag, "base": valueFlag, "include": valueFlag, "link": valueFlag,
 			"prompt": valueFlag, "config": valueFlag, "access": valueFlag, "near": valueFlag, "side": valueFlag,
 			"right-of": valueFlag, "below": valueFlag, "left-of": valueFlag, "above": valueFlag,
 			"x": valueFlag, "y": valueFlag, "w": valueFlag, "h": valueFlag,
 			"connect-to": valueFlag, "connect-from": valueFlag,
 		},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas spawn <preset> [--title T] [--cmd C] [--worktree [name]] [--prompt P] [--right-of N] …"); err != nil {
+			if err := p.need(1, 1, "kou-canvas spawn <preset> [--title T] [--cmd C] [--worktree [name]] [--include a,b] [--link c] [--prompt P] [--right-of N] …"); err != nil {
 				return result{}, err
 			}
 			a := spawnArgs{
 				Preset: p.args[0], Title: p.value("title"), Command: p.value("cmd"), Cwd: p.value("cwd"),
 				Base: p.value("base"), Prompt: p.value("prompt"), Access: p.value("access"), Near: p.value("near"), Side: p.value("side"),
+				Include: strings.Split(p.value("include"), ","), Link: strings.Split(p.value("link"), ","),
 			}
 			if a.Command == "" {
 				a.Command = p.value("command")
@@ -268,7 +272,8 @@ var commands = map[string]command{
 				if err != nil {
 					return result{}, err
 				}
-				a.TimeoutS = &seconds
+				timeout := toolarg.Number(seconds)
+				a.TimeoutS = &timeout
 			}
 			return c.send(ctx, a)
 		},
@@ -321,15 +326,63 @@ var commands = map[string]command{
 				if err != nil {
 					return result{}, err
 				}
-				a.TimeoutS = &seconds
+				timeout := toolarg.Number(seconds)
+				a.TimeoutS = &timeout
 			}
 			return c.read(ctx, a)
+		},
+	},
+	"transcript": {
+		flags: map[string]flagKind{
+			"after": valueFlag, "limit": valueFlag, "kinds": valueFlag, "tools": valueFlag,
+			"since": valueFlag, "until": valueFlag, "message-limit": valueFlag, "output-limit": valueFlag,
+			"include": valueFlag,
+		},
+		run: func(ctx context.Context, c *client, p parsed) (result, error) {
+			if err := p.need(1, 1, "kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b] [--since RFC3339] [--until RFC3339] [--message-limit N] [--output-limit N] [--include notes,summaries]"); err != nil {
+				return result{}, err
+			}
+			a := transcriptArgs{Node: p.args[0], After: transcriptCursor(p.value("after")), Since: p.value("since"), Until: p.value("until")}
+			a.Kinds, a.Tools, a.Include = nodeList(strings.Split(p.value("kinds"), ",")), nodeList(strings.Split(p.value("tools"), ",")), nodeList(strings.Split(p.value("include"), ","))
+			var err error
+			if a.Limit, err = p.number("limit"); err != nil {
+				return result{}, err
+			}
+			if a.MessageLimit, err = p.number("message-limit"); err != nil {
+				return result{}, err
+			}
+			if a.OutputLimit, err = p.number("output-limit"); err != nil {
+				return result{}, err
+			}
+			return c.transcript(ctx, a)
+		},
+	},
+	"search": {
+		flags: map[string]flagKind{"children": boolFlag, "limit": valueFlag},
+		run: func(ctx context.Context, c *client, p parsed) (result, error) {
+			if err := p.need(1, 2, "kou-canvas search [<node>] <query> [--children] [--limit N]"); err != nil {
+				return result{}, err
+			}
+			a := searchArgs{}
+			if len(p.args) == 1 {
+				a.Query = p.args[0]
+			} else {
+				a.Node, a.Query = p.args[0], p.args[1]
+			}
+			if p.bool("children") {
+				a.Nodes = "children"
+			}
+			var err error
+			if a.Limit, err = p.number("limit"); err != nil {
+				return result{}, err
+			}
+			return c.search(ctx, a)
 		},
 	},
 	"wait": {
 		flags: map[string]flagKind{"until": valueFlag, "after": valueFlag, "timeout": valueFlag},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]"); err != nil {
+			if err := p.need(0, -1, "kou-canvas wait [<node>…] [--until idle|output|exit|answer|any] [--after N|cursor] [--timeout 600]"); err != nil {
 				return result{}, err
 			}
 			timeout := 600 * time.Second
@@ -340,11 +393,19 @@ var commands = map[string]command{
 				}
 				timeout = time.Duration(seconds) * time.Second
 			}
-			after, err := p.number("after")
-			if err != nil {
-				return result{}, err
+			// One node, waited for as before; several, or your children
+			// (none named), as CanvasWait does.
+			until, cursor := p.value("until"), p.value("after")
+			_, numeric := strconv.Atoi(strings.TrimSpace(cursor))
+			if len(p.args) == 1 && until != "answer" && until != "any" && (cursor == "" || numeric == nil) {
+				after, err := p.number("after")
+				if err != nil {
+					return result{}, err
+				}
+				return c.wait(ctx, p.args[0], until, intOf(after), timeout)
 			}
-			return c.wait(ctx, p.args[0], p.value("until"), intOf(after), timeout)
+			seconds := toolarg.Number(timeout.Seconds())
+			return c.waitAny(ctx, waitArgs{Nodes: p.args, Until: until, After: cursor, TimeoutS: &seconds})
 		},
 	},
 	"emit": {

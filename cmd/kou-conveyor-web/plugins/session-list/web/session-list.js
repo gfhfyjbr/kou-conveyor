@@ -53,9 +53,11 @@ export default function activate(cockpit) {
   let lastQuery = '';
 
   // The sessions of the agents of canvas nodes stay out of the list unless
-  // asked for (or searched for): their canvas shows them.
+  // asked for (or searched for): their canvas shows them. A session the
+  // user put on a canvas (adopted) stays: it is theirs.
   const AGENTS = 'session-list.canvas-agents';
   const showAgents = () => cockpit.prefs.get(AGENTS, false) === true;
+  const canvasAgent = (s) => !!s.canvas && !s.adopted;
   const at = (value) => Date.parse(value || '') || 0;
 
   // extraRows are the rows plugins put among the sessions
@@ -86,9 +88,9 @@ export default function activate(cockpit) {
     const glide = query === lastQuery ? positions() : null;
     lastQuery = query;
     const inView = (s) => !!v && s.id === v.id && v.ws === state.ws;
-    const agents = sessions.filter((s) => s.canvas && !inView(s)).length;
+    const agents = sessions.filter((s) => canvasAgent(s) && !inView(s)).length;
     const hideAgents = !query && !showAgents();
-    const shown = sessions.filter((s) => (!query || (s.title || '').toLowerCase().includes(query) || s.id.includes(query)) && !(hideAgents && s.canvas && !inView(s)));
+    const shown = sessions.filter((s) => (!query || (s.title || '').toLowerCase().includes(query) || s.id.includes(query)) && !(hideAgents && canvasAgent(s) && !inView(s)));
     // The other rows go among the sessions that are not pinned, by when
     // they changed.
     const extras = extraRows(state.ws, query);
@@ -395,7 +397,7 @@ export default function activate(cockpit) {
   // moveSession opens the next or previous session of the list, as it
   // shows them.
   function move(step) {
-    const sessions = (session.state.sessions || []).filter((s) => !s.canvas || showAgents() || s.id === view().id);
+    const sessions = (session.state.sessions || []).filter((s) => !canvasAgent(s) || showAgents() || s.id === view().id);
     if (!sessions.length) return;
     const at = sessions.findIndex((s) => s.id === view().id);
     const next = sessions[Math.max(0, Math.min(sessions.length - 1, at < 0 ? 0 : at + step))];

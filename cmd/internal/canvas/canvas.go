@@ -4,6 +4,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"sync"
@@ -55,18 +56,19 @@ type Canvas struct {
 
 	saving sync.Mutex // one write of the files at a time
 
-	mu       sync.Mutex
-	doc      *Doc
-	readOnly bool
-	hub      *hub
-	states   map[string]*nodeState
-	graves   map[string]*grave
-	messages []*Message // the latest, the oldest first
-	pending  []*Message // those that wait for delivery or approval, in order
-	journal  []*Message // to be added to the journal
-	rates    map[string][]time.Time
-	failures map[string]int
-	spawns   []time.Time
+	mu                sync.Mutex
+	doc               *Doc
+	readOnly          bool
+	hub               *hub
+	states            map[string]*nodeState
+	graves            map[string]*grave
+	messages          []*Message // the latest, the oldest first
+	pending           []*Message // those that wait for delivery or approval, in order
+	journal           []*Message // to be added to the journal
+	rates             map[string][]time.Time
+	failures          map[string]int
+	transcriptCursors map[string]int64
+	spawns            []time.Time
 	// waits are the sends of nodes that wait for the answer to their
 	// message, by the message's ID.
 	waits map[string]*replyWait
@@ -126,7 +128,8 @@ func newCanvas(e *Engine, ws Workspace, doc *Doc, readOnly bool) *Canvas {
 		e: e, ws: ws, id: doc.ID, dir: dataDir(ws.Path, doc.ID),
 		doc: doc, readOnly: readOnly, hub: newHub(e.instance),
 		states: map[string]*nodeState{}, graves: map[string]*grave{},
-		rates: map[string][]time.Time{}, failures: map[string]int{}, waits: map[string]*replyWait{},
+		rates: map[string][]time.Time{}, failures: map[string]int{},
+		transcriptCursors: loadTranscriptCursors(dataDir(ws.Path, doc.ID)), waits: map[string]*replyWait{},
 		kick: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	c.messages = readJournal(c.dir, recentMessages)
@@ -402,11 +405,12 @@ func (c *Canvas) remove(o DeleteOptions) error {
 		inst     instance
 		terminal string
 		session  string
+		adopted  bool
 	}
 	var all []left
 	for _, n := range c.doc.Nodes {
 		st := c.states[n.ID]
-		item := left{terminal: n.Runtime.Terminal, session: n.Runtime.Session}
+		item := left{terminal: n.Runtime.Terminal, session: n.Runtime.Session, adopted: n.Runtime.Adopted}
 		if st != nil {
 			item.inst = st.inst
 		}
@@ -414,7 +418,7 @@ func (c *Canvas) remove(o DeleteOptions) error {
 	}
 	for _, g := range c.graves {
 		g.timer.Stop()
-		item := left{terminal: g.node.Runtime.Terminal, session: g.node.Runtime.Session}
+		item := left{terminal: g.node.Runtime.Terminal, session: g.node.Runtime.Session, adopted: g.node.Runtime.Adopted}
 		if g.state != nil {
 			item.inst = g.state.inst
 		}
@@ -440,7 +444,7 @@ func (c *Canvas) remove(o DeleteOptions) error {
 		}
 		if item.session != "" {
 			c.e.unindexSession(c, item.session)
-			c.dropSession(item.session, !o.KeepSessions)
+			c.dropSession(item.session, !o.KeepSessions && !item.adopted)
 		}
 	}
 	c.e.forget(c)
@@ -448,20 +452,73 @@ func (c *Canvas) remove(o DeleteOptions) error {
 }
 
 // dropSession lets go of an agent's session: the session list shows it as
-// any other, or, deleted, it is gone — unless it runs.
+// any other, or, deleted, it is gone — unless it runs, or the user put it
+// on the canvas (adopted).
 func (c *Canvas) dropSession(session string, deleteIt bool) {
 	dir := c.ws.SessionDir
 	if _, err := os.Stat(cockpit.SessionPath(dir, session)); errors.Is(err, fs.ErrNotExist) {
 		_ = cockpit.DropMeta(dir, session)
 		return
 	}
-	if deleteIt && !c.e.o.Host.RunActive(c.ws, session) {
+	meta := cockpit.LoadMeta(dir, session)
+	if deleteIt && !meta.Adopted && !c.e.o.Host.RunActive(c.ws, session) {
 		if err := cockpit.DeleteSession(dir, session); err == nil {
 			return
 		}
 	}
-	meta := cockpit.LoadMeta(dir, session)
 	_ = cockpit.SetCanvasMeta(dir, session, meta.Title, "", "")
+}
+
+// adopts reports whether a batch puts sessions the user has on the canvas.
+func adopts(batch Batch) bool {
+	for _, op := range batch.Ops {
+		if op.Op == "node.add" && op.Node != nil && op.Node.Session != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// adoptions checks the sessions a batch puts on the canvas and gives their
+// titles, as the session list shows them. It runs before the canvas is
+// locked: whether a session is the agent of another canvas's node may take
+// loading that canvas.
+func (c *Canvas) adoptions(actor Actor, batch Batch) (map[string]string, error) {
+	dir := c.ws.SessionDir
+	titles := map[string]string{}
+	for i, op := range batch.Ops {
+		if op.Op != "node.add" || op.Node == nil || op.Node.Session == "" {
+			continue
+		}
+		session := op.Node.Session
+		err := func() error {
+			switch {
+			case actor.node():
+				return errForbidden("only the user puts a session on a canvas")
+			case !cockpit.ValidSessionID(session):
+				return errInvalid(fmt.Sprintf("%q is not a session's ID", session))
+			}
+			if _, twice := titles[session]; twice {
+				return errInvalid("session " + session + " is put on the canvas twice")
+			}
+			if _, err := os.Stat(cockpit.SessionPath(dir, session)); err != nil {
+				return errNotFound("no session " + session + " in this workspace")
+			}
+			if ref, ok := c.e.session(c.ws.ID, session, true); ok {
+				node := "a node removed a moment ago"
+				if n := ref.canvas.node(ref.node); n != nil {
+					node = "«" + n.Title + "»"
+				}
+				return errConflict(fmt.Sprintf("session %s is already the agent of %s on the canvas «%s»: a session is on one canvas at a time", session, node, ref.canvas.summary().Title))
+			}
+			titles[session] = cockpit.ListedTitle(dir, session)
+			return nil
+		}()
+		if err != nil {
+			return nil, fmt.Errorf("operation %d (node.add): %w", i, err)
+		}
+	}
+	return titles, nil
 }
 
 // snapshot is a canvas as a page starts from.

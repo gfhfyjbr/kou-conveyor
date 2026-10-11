@@ -101,6 +101,11 @@ type Tool struct {
 	Parameters      map[string]any `json:"parameters,omitzero"`
 	Run             []string       `json:"run,omitzero"`
 	MaxOutputLength int            `json:"max_output_length,omitzero"`
+	// Waits says that the tool's calls wait for something outside the
+	// agent — another agent's answer, an event — and do nothing else
+	// meanwhile: while all that runs is such calls, the harness does not
+	// ask the agent for progress reports, and checks in on it less often.
+	Waits bool `json:"waits,omitzero"`
 }
 
 // Command is a slash command. Prompt is what it asks the agent: {{args}}

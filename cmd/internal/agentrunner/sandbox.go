@@ -63,15 +63,22 @@ type sandbox struct {
 	Shell string
 	// Container is the container's name and Image what it runs.
 	Container, Image string
+	// Placed are the untracked paths copied or linked into the worktree
+	// from the user's checkout.
+	Placed []string
 }
 
 // Description is what the model reads of the sandbox.
 func (current sandbox) Description() string {
+	placed := ""
+	if len(current.Placed) > 0 {
+		placed = fmt.Sprintf(" %s came from the user's checkout, not from git: leave them out of commits.", strings.Join(current.Placed, ", "))
+	}
 	switch current.Mode {
 	case SandboxWorktree:
-		return fmt.Sprintf("you work in a git worktree of the repository on branch %s (%s); the user's checkout is elsewhere and stays untouched. Commit your work on this branch when it is ready; the user merges it.", current.Branch, current.Workspace)
+		return fmt.Sprintf("you work in a git worktree of the repository on branch %s (%s); the user's checkout is elsewhere and stays untouched. Commit your work on this branch when it is ready; the user merges it.", current.Branch, current.Workspace) + placed
 	case SandboxContainer:
-		return fmt.Sprintf("commands run in a container (image %s) with the workspace mounted at the same path; files you read and edit are the same on both sides. You work in a git worktree on branch %s (%s); the user's checkout stays untouched. Commit your work on this branch when it is ready; the user merges it.", current.Image, current.Branch, current.Workspace)
+		return fmt.Sprintf("commands run in a container (image %s) with the workspace mounted at the same path; files you read and edit are the same on both sides. You work in a git worktree on branch %s (%s); the user's checkout stays untouched. Commit your work on this branch when it is ready; the user merges it.", current.Image, current.Branch, current.Workspace) + placed
 	}
 	return ""
 }
@@ -84,11 +91,15 @@ func prepareSandbox(ctx context.Context, mode, workspace, shell, operations stri
 	if mode == SandboxOff {
 		return current, nil
 	}
-	worktree, branch, err := ensureWorktree(ctx, workspace, id, report)
+	options, err := worktree.ParseOptions(getenv(runconfig.WorktreeEnvironment))
+	if err != nil {
+		fmt.Fprintf(report, "sandbox> %s: %v; left out\n", runconfig.WorktreeEnvironment, err)
+	}
+	made, err := ensureWorktree(ctx, workspace, id, options, report)
 	if err != nil {
 		return sandbox{}, err
 	}
-	current.Workspace, current.Branch = worktree, branch
+	current.Workspace, current.Branch, current.Placed = made.Path, made.Branch, made.Placed
 	if mode == SandboxWorktree {
 		return current, nil
 	}
@@ -101,7 +112,7 @@ func prepareSandbox(ctx context.Context, mode, workspace, shell, operations stri
 		return sandbox{}, err
 	}
 	wrapper := filepath.Join(operations, "sandbox-shell")
-	script := fmt.Sprintf("#!/bin/sh\n# Runs the Bash tool's commands in the sandbox container.\nexec docker exec -i -w %s %s /bin/bash \"$@\"\n", shellQuote(worktree), shellQuote(container))
+	script := fmt.Sprintf("#!/bin/sh\n# Runs the Bash tool's commands in the sandbox container.\nexec docker exec -i -w %s %s /bin/bash \"$@\"\n", shellQuote(made.Path), shellQuote(container))
 	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
 		return sandbox{}, fmt.Errorf("write the sandbox shell: %w", err)
 	}
@@ -109,27 +120,30 @@ func prepareSandbox(ctx context.Context, mode, workspace, shell, operations stri
 	return current, nil
 }
 
-// ensureWorktree makes the session's worktree, or finds it again.
-func ensureWorktree(ctx context.Context, workspace string, id session.ID, report io.Writer) (string, string, error) {
+// ensureWorktree makes the session's worktree, or finds it again, with what
+// options add to git's files.
+func ensureWorktree(ctx context.Context, workspace string, id session.ID, options worktree.Options, report io.Writer) (worktree.Worktree, error) {
 	if _, err := os.Stat(filepath.Join(workspace, ".git")); err != nil {
-		return "", "", fmt.Errorf("the sandbox needs a git repository; %s has no .git", workspace)
+		return worktree.Worktree{}, fmt.Errorf("the sandbox needs a git repository; %s has no .git", workspace)
 	}
 	short := string(id)
 	if len(short) > 8 {
 		short = short[:8]
 	}
-	existed := false
-	if _, err := os.Stat(filepath.Join(worktree.Path(workspace, short), ".git")); err == nil {
-		existed = true
-	}
-	path, branch, err := worktree.Ensure(ctx, workspace, short, "", "")
+	made, err := worktree.Ensure(ctx, workspace, short, "", "", options)
 	if err != nil {
-		return "", "", err
+		return worktree.Worktree{}, err
 	}
-	if !existed {
-		fmt.Fprintf(report, "sandbox> worktree %s on branch %s\n", path, branch)
+	if made.Made {
+		fmt.Fprintf(report, "sandbox> worktree %s on branch %s\n", made.Path, made.Branch)
 	}
-	return path, branch, nil
+	if len(made.Filled) > 0 {
+		fmt.Fprintf(report, "sandbox> the worktree got %s; copies and links are not tracked: leave them out of commits\n", strings.Join(made.Filled, ", "))
+	}
+	for _, problem := range made.Problems {
+		fmt.Fprintf(report, "sandbox> the worktree: %s\n", problem)
+	}
+	return made, nil
 }
 
 // sandboxConfig is the sandbox the active plugins declare, if one does:

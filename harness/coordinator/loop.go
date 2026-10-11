@@ -147,7 +147,9 @@ type loopState struct {
 	graceStarted time.Time
 	// heartbeats counts the heartbeats posted in a row while the same
 	// tool calls run: each waits longer than the one before.
-	heartbeats int
+	// heartbeatWait is how long the heartbeat set last waits, to tell.
+	heartbeats    int
+	heartbeatWait time.Duration
 	// continues, retries and failures count what the harness asked of the
 	// model in a row: answers to go on with after the output limit cut
 	// one, answers again after refusals and empty answers, and requests
@@ -183,6 +185,19 @@ type loopState struct {
 	// tools that change files since the latest compaction.
 	reminded    bool
 	fileChanges int
+	// notesChecked is set once the run's first ordinary turn was told what
+	// changed in the notes since the conversation showed them (notesUpdate).
+	notesChecked bool
+	// stopped is the stop the session records last with no ordinary turn
+	// after it: the stop that ended the run before this one, which the
+	// model is told of (resumeNote).
+	stopped *recordedStop
+}
+
+// recordedStop is a hard stop the session records: when, and why.
+type recordedStop struct {
+	at     time.Time
+	reason string
 }
 
 type compactRequest struct {
@@ -274,11 +289,20 @@ func (current *coordinator) Run(ctx context.Context) error {
 	if every := current.dependencies.ReportEvery; every > 0 {
 		report = time.After(every)
 	}
+	// reportHeld is set while a progress report waits for the end of
+	// calls that wait for others (onlyWaits).
+	reportHeld := false
 	for {
 		if !current.isWaitingForOnlyToolCalls() {
 			heartbeat = nil
 		} else if heartbeat == nil && current.dependencies.ToolHeartbeatInterval > 0 {
-			heartbeat = time.After(current.heartbeatInterval())
+			current.state.heartbeatWait = current.heartbeatInterval()
+			heartbeat = time.After(current.state.heartbeatWait)
+		}
+		if reportHeld && !current.onlyWaits() {
+			// The report held while the run waited for others is asked
+			// for a whole period after the wait: waiting is no work.
+			reportHeld, report = false, time.After(current.dependencies.ReportEvery)
 		}
 		select {
 		case <-ctx.Done():
@@ -291,9 +315,15 @@ func (current *coordinator) Run(ctx context.Context) error {
 			}
 
 		case <-report:
-			report = time.After(current.dependencies.ReportEvery)
-			if err := current.askForReport(ctx); err != nil {
-				return err
+			if current.onlyWaits() {
+				// A report asked for now would wake the run while it
+				// waits for others, with nothing done to report.
+				reportHeld, report = true, nil
+			} else {
+				report = time.After(current.dependencies.ReportEvery)
+				if err := current.askForReport(ctx); err != nil {
+					return err
+				}
 			}
 
 		case <-current.state.quotaWait:
@@ -542,9 +572,29 @@ func (current *coordinator) extendToolGrace() {
 
 // heartbeatInterval is how long the next heartbeat waits: the configured
 // interval, doubled for each heartbeat already posted for the same calls,
-// up to four times as long.
+// up to four times as long — four times at once for calls that wait for
+// others (onlyWaits), which end by their own timeouts.
 func (current *coordinator) heartbeatInterval() time.Duration {
+	if current.onlyWaits() {
+		return current.dependencies.ToolHeartbeatInterval << 2
+	}
 	return current.dependencies.ToolHeartbeatInterval << min(current.state.heartbeats, 2)
+}
+
+// onlyWaits reports a run that waits for tool calls alone, each of which
+// waits for something outside the agent, such as another agent's answer
+// (tool.Waiter).
+func (current *coordinator) onlyWaits() bool {
+	if !current.isWaitingForOnlyToolCalls() {
+		return false
+	}
+	for _, call := range current.state.toolCalls {
+		translator, exists := current.dependencies.Tools.Resolve(call.toolCall.Name)
+		if !exists || !tool.Waits(translator) {
+			return false
+		}
+	}
+	return true
 }
 
 // answerStop acts on how the model's response ended, where it did not end
@@ -696,6 +746,50 @@ func (current *coordinator) askForReport(ctx context.Context) error {
 	}
 	state.reportedAt = state.turns
 	return current.nudge(ctx, harnessPrefix+" Progress report: in a few lines, tell the user what you have done since your last report, what you are doing now and what is left, then carry on with the work.")
+}
+
+// notesUpdate is the message that shows the notes as they are now, once a
+// run, for its first ordinary turn, when they changed since the
+// conversation showed them: the compaction a run restores shows the notes
+// as they were (contextbuilder.Compacted), so the start of the request, and
+// what the provider cached of it, stays the same.
+func (current *coordinator) notesUpdate() (string, bool) {
+	if current.state.notesChecked {
+		return "", false
+	}
+	current.state.notesChecked = true
+	return current.dependencies.ContextBuilder.NotesUpdate()
+}
+
+// firstTurnNotes are the messages a run's first ordinary turn hears from the
+// harness before it starts: why the run before it stopped (resumeNote), and
+// the notes as they are now (notesUpdate).
+func (current *coordinator) firstTurnNotes() []string {
+	var notes []string
+	if note, ok := current.resumeNote(); ok {
+		notes = append(notes, note)
+	}
+	if note, changed := current.notesUpdate(); changed {
+		notes = append(notes, note)
+	}
+	return notes
+}
+
+// resumeNote tells the model that the run before this one was stopped, when
+// and why, as the session recorded it: the conversation shows only the tool
+// calls the stop cut short. The note is given once; the ordinary turn it
+// goes with clears the stop.
+func (current *coordinator) resumeNote() (string, bool) {
+	stopped := current.state.stopped
+	if stopped == nil {
+		return "", false
+	}
+	current.state.stopped = nil
+	at := ""
+	if !stopped.at.IsZero() {
+		at = " at " + stopped.at.Local().Format("2006-01-02 15:04:05 MST")
+	}
+	return fmt.Sprintf("%s The previous run was stopped%s: %s. The tool calls it was making were canceled and the commands they ran were ended; what they started that outlives them (servers, containers, detached jobs) may or may not still run. Check what they left before relying on it.", harnessPrefix, at, strings.TrimSuffix(stopped.reason, ".")), true
 }
 
 // compactionNear reports an ordinary request close enough to
@@ -949,7 +1043,10 @@ func (current *coordinator) postHeartbeat(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("encode heartbeat tool calls: %w", err)
 	}
-	waited := current.heartbeatInterval()
+	waited := current.state.heartbeatWait
+	if waited <= 0 {
+		waited = current.heartbeatInterval()
+	}
 	current.state.heartbeats++
 	payload, err := json.Marshal(inbox.ControlMessage{
 		Mode:   inbox.Heartbeat,
@@ -1040,7 +1137,21 @@ func (current *coordinator) startTurn(
 		sent = sentRequest{estimate: built.EstimatedTokens, focus: focus, budget: budget}
 	} else if !ordinary {
 		return nil
-	} else if current.compactionNear(built) {
+	} else if notes := current.firstTurnNotes(); len(notes) != 0 {
+		// The run's first turn hears why the run before it stopped, and what
+		// changed in the notes since the conversation showed them, after
+		// what the provider has cached.
+		for _, note := range notes {
+			if err := current.nudge(ctx, note); err != nil {
+				return err
+			}
+		}
+		if built, err = current.dependencies.ContextBuilder.Build(); err != nil {
+			return fmt.Errorf("build model request: %w", err)
+		}
+		sent = sentRequest{estimate: built.EstimatedTokens}
+	}
+	if turnType == session.TurnRegular && current.compactionNear(built) {
 		// The model hears that the conversation will be compacted soon
 		// with this turn, while there is room to act on it.
 		if err := current.nudge(ctx, reminderPrefix+" "+strings.TrimSpace(current.dependencies.CompactionReminder)); err != nil {
@@ -1375,6 +1486,9 @@ func (current *coordinator) addItemToLocalState(
 			if request.Mode == inbox.Compact {
 				current.state.compactionAsked = true
 			}
+			if request.Mode == inbox.StopHard && request.Reason != "" {
+				current.state.stopped = &recordedStop{at: item.RecordedAt, reason: request.Reason}
+			}
 		}
 
 	case sessionstore.ItemTurn:
@@ -1400,6 +1514,9 @@ func (current *coordinator) addItemToLocalState(
 			}
 		} else {
 			delete(current.state.compactionTurns, turn.ID)
+			// An ordinary turn after a stop was told of it, or was no
+			// run's first.
+			current.state.stopped = nil
 		}
 		current.state.compactionAsked = false
 		current.state.currentTurnInputs = current.state.availableInputs
@@ -1417,7 +1534,18 @@ func (current *coordinator) addItemToLocalState(
 			// The summary stands in for what its turn saw. A later turn saw
 			// more, so the summary of an earlier one would lose that.
 			if response.TurnID == current.state.currentTurnID {
-				if current.dependencies.ContextBuilder.Compact(response.Response) {
+				// The message that stands in for the conversation is kept
+				// with the compaction, so that a run that restores the
+				// session shows it as it was (contextbuilder.Compacted).
+				var kept *contextbuilder.Compacted
+				if response.Compacted != nil {
+					kept = (*contextbuilder.Compacted)(response.Compacted)
+				}
+				if made, ok := current.dependencies.ContextBuilder.Compact(response.Response, kept); ok {
+					if response.Compacted == nil {
+						response.Compacted = (*sessionstore.Compacted)(&made)
+						item.Data = response
+					}
 					current.state.compactionFailures = 0
 					current.state.turnsSinceCompaction = 0
 					current.state.reminded = false

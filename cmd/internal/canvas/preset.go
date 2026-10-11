@@ -357,7 +357,7 @@ func (c *Canvas) brief(id string) string {
 		b.WriteString("Your access: observe — you can look at the canvas and read nodes.\n")
 	}
 	if n.Preset == "foreman" {
-		b.WriteString("You are the canvas's foreman: you build and run the canvas at the user's request — make the nodes the work needs, wire them, start them, and report back briefly.\n")
+		b.WriteString("You are the canvas's foreman: you build and run the canvas at the user's request — make the nodes the work needs, wire them, start them, and report back briefly. While they work, end your turn: their answers wake you.\n")
 	}
 	if role := strings.TrimSpace(n.configString("instructions")); role != "" {
 		b.WriteString("Your role: " + role + "\n")

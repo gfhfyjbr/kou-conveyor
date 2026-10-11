@@ -12,7 +12,7 @@ import (
 
 // A canvas changes by batches of operations, all of which apply or none:
 //
-//	node.add      {"node": {kind, preset, plugin, title, x, y, w, h, near, side, exact, config, access, prompt, connect, id, restore}}
+//	node.add      {"node": {kind, preset, plugin, title, x, y, w, h, near, side, exact, config, access, prompt, connect, id, restore, session}}
 //	node.update   {"id", "set": {title, x, y, w, h, z, config, access, proposed}}
 //	node.remove   {"id", "keep": {"session"}, "grace_s"}
 //	edge.add      {"edge": {from: {node, port}, to: {node, port}, template, mode, deliver, header, id}}
@@ -104,6 +104,12 @@ type NodeSpec struct {
 	// Connect wires it: From's output to its input, its output to To's
 	// input; "node" or "node:port".
 	Connect *Connect `json:"connect"`
+	// Session makes a session the user has in the workspace the agent of
+	// a kou agent node, instead of a new one: the session goes on as it
+	// was, with the canvas's tools from its next run. Only the user puts a
+	// session on a canvas; a session is the agent of one node at a time,
+	// and removing the node or the canvas never deletes it.
+	Session string `json:"session"`
 }
 
 // Connect is how a new node is wired.
@@ -174,6 +180,9 @@ type applier struct {
 	approved []string
 	retitled []string
 	liveFrom *bool
+	// adopting are the titles of the sessions the batch puts on the
+	// canvas, checked before (adoptions).
+	adopting map[string]string
 }
 
 type addition struct {
@@ -199,6 +208,17 @@ func (c *Canvas) apply(actor Actor, batch Batch) (Result, error) {
 		return Result{}, errInvalid(fmt.Sprintf("a batch holds %d operations at most", maxOps))
 	}
 	catalog := c.e.catalog(c.ws)
+	// Sessions put on a canvas are put one batch at a time, the server
+	// over, so that two canvases do not take the same one.
+	var adopting map[string]string
+	if adopts(batch) {
+		c.e.adopting.Lock()
+		defer c.e.adopting.Unlock()
+		var err error
+		if adopting, err = c.adoptions(actor, batch); err != nil {
+			return Result{}, err
+		}
+	}
 	c.mu.Lock()
 	if c.deleted {
 		c.mu.Unlock()
@@ -210,7 +230,8 @@ func (c *Canvas) apply(actor Actor, batch Batch) (Result, error) {
 	}
 	a := &applier{
 		c: c, actor: actor, next: c.doc.clone(), ids: map[string]string{}, placed: map[string]Rect{},
-		stale: batch.BaseRev != nil && *batch.BaseRev != c.doc.Rev,
+		stale:    batch.BaseRev != nil && *batch.BaseRev != c.doc.Rev,
+		adopting: adopting,
 	}
 	for i, op := range batch.Ops {
 		if err := a.apply(i, op, catalog); err != nil {
@@ -326,6 +347,9 @@ func (a *applier) addNode(i int, spec *NodeSpec, catalog presetCache) error {
 		return errInvalid("node.add needs a node")
 	}
 	inferKind(spec, catalog)
+	if spec.Session != "" && spec.Restore {
+		return errInvalid("a node brought back has its own session")
+	}
 	c, next := a.c, a.next
 	var node *Node
 	var restored *grave
@@ -512,6 +536,15 @@ func (a *applier) newNode(spec *NodeSpec, catalog presetCache) (*Node, error) {
 		if n.Preset == "foreman" {
 			title = "Foreman"
 		}
+		if spec.Session != "" {
+			if err := a.adopt(n, spec.Session); err != nil {
+				return nil, err
+			}
+			// The node goes by the title the session list shows.
+			if listed := cleanTitle(a.adopting[spec.Session]); listed != "" {
+				title = listed
+			}
+		}
 	case KindSource:
 		def, ok := catalog.source(n.Plugin, n.Preset)
 		if !ok {
@@ -523,6 +556,9 @@ func (a *applier) newNode(spec *NodeSpec, catalog presetCache) (*Node, error) {
 		title = "Note"
 	default:
 		return nil, errInvalid("a node's kind is terminal, agent, source or note")
+	}
+	if spec.Session != "" && n.Kind != KindAgent {
+		return nil, errInvalid("only a kou agent's node takes a session")
 	}
 	if n.Title = cleanTitle(spec.Title); n.Title == "" {
 		n.Title = title
@@ -590,6 +626,21 @@ func (a *applier) newNode(spec *NodeSpec, catalog presetCache) (*Node, error) {
 	}
 	n.Access = access
 	return n, nil
+}
+
+// adopt makes a session the user has, checked before (adoptions), the agent
+// of a new node.
+func (a *applier) adopt(n *Node, session string) error {
+	if _, ok := a.adopting[session]; !ok {
+		return errInvalid("session " + session + " was not checked")
+	}
+	for _, other := range a.next.Nodes {
+		if other.Runtime.Session == session {
+			return errConflict(fmt.Sprintf("session %s is already the agent of «%s»", session, other.Title))
+		}
+	}
+	n.Runtime.Session, n.Runtime.Adopted = session, true
+	return nil
 }
 
 // limits checks what agents may make against the canvas's settings.
@@ -1083,6 +1134,9 @@ func (a *applier) commitLocked() []func() {
 		c.dropPendingLocked(id, "its node was removed")
 		if st == nil {
 			st = newState(StateStopped, "")
+		} else {
+			// What waits for the node learns that it is gone.
+			st.wake()
 		}
 		g := &grave{node: r.node, edges: r.edges, state: st, keep: r.keep}
 		if old := c.graves[id]; old != nil {

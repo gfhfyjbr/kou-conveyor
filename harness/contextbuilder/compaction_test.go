@@ -92,10 +92,10 @@ func TestBuilderCompactsConversation(t *testing.T) {
 	addInput(t, current, "third task")
 	current.AddToolResult("call-late", []llm.ToolResultOutput{{Kind: llm.ToolResultImage, Value: "data:image/png;base64,AAAA"}}, false)
 
-	if current.Compact(llm.Response{Output: []llm.Item{{Type: llm.ItemReasoning, Data: llm.Reasoning{Summary: []string{"thinking"}}}}}) {
+	if _, ok := current.Compact(llm.Response{Output: []llm.Item{{Type: llm.ItemReasoning, Data: llm.Reasoning{Summary: []string{"thinking"}}}}}, nil); ok {
 		t.Fatal("compacted without a summary")
 	}
-	if !current.Compact(answer("  The summary.  ")) {
+	if _, ok := current.Compact(answer("  The summary.  "), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	built, err := current.Build()
@@ -159,7 +159,7 @@ func TestBuilderDescribesRunningResultAfterCompaction(t *testing.T) {
 	current.Commit()
 	current.AddModelResponse(answer("", llm.ToolCall{CallID: "call-1", Name: "Bash", Arguments: `{"command":"sleep 60"}`}))
 	current.Commit()
-	if !current.Compact(answer("Summary.")) {
+	if _, ok := current.Compact(answer("Summary."), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	current.AddToolResult("call-1", nil, true)
@@ -186,7 +186,7 @@ func TestBuilderKeepsNewestPromptsThatFit(t *testing.T) {
 		current.AddModelResponse(answer("ok"))
 	}
 	current.Commit()
-	if !current.Compact(answer("Summary.")) {
+	if _, ok := current.Compact(answer("Summary."), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	built, err := current.Build()
@@ -234,7 +234,7 @@ func TestBuilderEstimatesRequestSize(t *testing.T) {
 		t.Fatalf("estimate with a result = %d, want %d", grown.EstimatedTokens, want)
 	}
 	current.Commit()
-	if !current.Compact(answer("Summary.")) {
+	if _, ok := current.Compact(answer("Summary."), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	compacted, _ := current.Build()
@@ -311,7 +311,7 @@ func TestBuilderFitKeepsTheEarlierSummary(t *testing.T) {
 	current.Commit()
 	current.AddModelResponse(answer("First part done."))
 	current.Commit()
-	if !current.Compact(answer("The earlier summary.")) {
+	if _, ok := current.Compact(answer("The earlier summary."), nil); !ok {
 		t.Fatal("did not compact")
 	}
 	for index := range 20 {
@@ -370,7 +370,7 @@ func TestCompactedMessagePointsToTheTranscript(t *testing.T) {
 		current.Commit()
 		current.AddModelResponse(answer("done"))
 		current.Commit()
-		if !current.Compact(answer("<analysis>notes</analysis><summary>The work so far.</summary>")) {
+		if _, ok := current.Compact(answer("<analysis>notes</analysis><summary>The work so far.</summary>"), nil); !ok {
 			t.Fatal("did not compact")
 		}
 		built, err := current.Build()

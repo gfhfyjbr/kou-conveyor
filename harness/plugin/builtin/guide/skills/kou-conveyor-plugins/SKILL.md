@@ -199,6 +199,11 @@ Declaring one:
   calls it: say what it does, what it returns, and when to use it.
 - `parameters`: a JSON schema of `"type": "object"`; without it the tool
   takes none.
+- `waits`: `true` for a tool whose calls wait for something outside the
+  agent — another agent's answer, an event — and do nothing else meanwhile.
+  While all that runs of an agent is such calls, the harness does not ask it
+  for progress reports, and checks in on it four times less often. Off by
+  default.
 
 ```sh
 #!/bin/sh
@@ -282,6 +287,16 @@ extra volumes in docker's `host:container` form. A workspace can instead
 keep a Dockerfile in `.harness/sandbox/`, which is built into the image,
 or set `KOU_CONVEYOR_SANDBOX_IMAGE`. `KOU_CONVEYOR_SANDBOX=worktree` gives
 the worktree alone, with the commands on the machine.
+
+git checks out only what it tracks. A worktree also gets the submodules the
+user's checkout has, cloned from its copies (a commit missing there comes
+from the submodule's remote), and `KOU_CONVEYOR_WORKTREE` can name what
+else it needs: `{"include": ["vendor", "tools/oracle"], "link": ["fonts"]}`
+copies untracked paths of the workspace in (cloned on APFS) or links them,
+and `"no_submodules": true` leaves the submodules empty. Nothing the
+worktree has is overwritten; what was put in is not the agent's change, and
+goes with the worktree when it is removed. On a canvas the node's
+`worktree` configuration says the same: `include`, `link`, `submodules`.
 
 ## 5c. Canvas
 

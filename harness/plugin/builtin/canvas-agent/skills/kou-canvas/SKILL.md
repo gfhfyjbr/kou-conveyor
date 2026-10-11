@@ -29,15 +29,25 @@ A message is delivered when its target is idle, by default: typed into a termina
 
 - **CanvasSend** `{node, text, wait?, timeout_s?, when?, keys?}` — message a node, named by ID or title: prompt an agent, or type into a terminal. With `wait: true` the call waits for the node's answer and returns it; without, an agent's answer comes to you later as a reply. `when: "now"` gives it at once; otherwise it waits until the node is idle.
 - **CanvasView** — the nodes (ID, kind, title, status, place, ports, worktree), the connections, free places beside you, and your access. Call it before you change anything.
-- **CanvasSpawn** `{preset, title, worktree?, prompt?, command?, near?, side?, connect?: {from?, to?}}` — create a node beside yours (or `near` another, on `side`), wire it, send it a first prompt. It answers the node's ID.
+- **CanvasSpawn** `{preset, title, worktree?, include?, link?, prompt?, command?, near?, side?, connect?: {from?, to?}}` — create a node beside yours (or `near` another, on `side`), wire it, send it a first prompt. It answers the node's ID. A worktree has what git tracks and the submodules of the user's checkout; `include` copies in what else a build needs that git does not carry (`["vendor", "tools/oracle"]`), `link` links it instead (big, read-only things).
 - **CanvasConnect** `{from: "node:port", to: "node:port", template?, mode?}` — wire an output to an input; ports default to `out` and `in`. `mode: "approve"` holds each message for the user; a connection that closes a loop of agents starts that way.
 - **CanvasDisconnect** `{edge}` or `{from, to}`, **CanvasMove** `{node, x, y, w, h}`, **CanvasRemove** `{node}`.
 - **CanvasRead** `{node, what?, wait?, after?, timeout_s?}` — read a terminal's tail or screen, or a node's latest output; with `wait` (`idle`, `output`, `exit`) it waits first.
+- **CanvasTranscript** `{node, after?, limit?, kinds?, tools?, since?, until?, message_limit?, output_limit?, include?}` — read the node's raw structured transcript incrementally, including reasoning and tool outcomes. Use the returned `next` cursor, or `after: "last"` for the saved cursor; include `notes` or `summaries` only when needed.
+- **CanvasSearch** `{node?, nodes?, q, limit?}` — search a persisted transcript with a case-insensitive regular expression; use `nodes: "children"` to search all children. Use this to locate evidence, not to poll.
+- **CanvasWait** `{nodes?, until?, after?, timeout_s?}` — wait for any of several nodes (your children — the nodes you made and those you are wired to — when none are named): `until` `answer` (the default), `idle` (all of them), `exit` or `any`. It answers which node it was and the state of each, with the `next` cursor to pass as `after`.
 - **CanvasEmit** `{text, port?, data?}` — put something out of your own node now; your answer to a node's message needs none.
 
 Nodes are named by ID (`n_…`) — or, to send, read and wait, by a title no other node has; `self` is you.
 
 ## Recipes
+
+### Diagnosing a stalled child
+
+1. `CanvasView` or `CanvasWait` checks which children are busy; do not start a shell loop or `sleep`.
+2. `CanvasTranscript {"node": "worker", "after": "last", "limit": 50}` reads only what changed since the saved cursor. Add `kinds: ["reasoning", "tool"]` or `tools: ["Read", "Bash"]` to focus it; tool outputs are bounded and carry a durable full-output path when available.
+3. `CanvasSearch {"node": "worker", "q": "gfxFont"}` locates an earlier read or error. Use `nodes: "children"` from a foreman to search all children.
+4. Keep the `next` cursor from a transcript response if you use an explicit cursor. Include `notes` or `summaries` only for a deliberate context handoff.
 
 ### Asking another node
 
@@ -57,8 +67,8 @@ To spread independent tasks over workers and gather what they say:
 
 1. Spawn a collector, or use yourself: the workers' outputs go to it.
 2. For each task: `CanvasSpawn {"preset": "claude-code", "title": "mig-a", "worktree": "mig-a", "prompt": "…", "connect": {"to": "self"}}` — with `connect.to: "self"`, each worker's answer comes back to you as a message.
-3. Wait for each: `CanvasRead {"node": "<id>", "wait": "idle"}`, or just end your turn: the answers arrive as prompts.
-4. When all are in, write the summary.
+3. End your turn: the answers arrive as prompts, one by one. To wait within a turn instead, `CanvasWait {}` returns at the first answer of any of your children, with the state of each; pass its `next` as `after` to the next `CanvasWait`, so that an answer given in between is not missed. `CanvasWait {"until": "idle"}` returns once they are all idle.
+4. When all are in, write the summary. Whenever you are woken, look at every worker, not just the one that answered: one may be stuck without a word.
 
 ### A review loop
 

@@ -1147,6 +1147,9 @@ export default function activate(cockpit) {
     group([{
       icon: '◆', label: 'kou agent', detail: 'An agent of this cockpit, with a session of its own',
       run: () => addNode({ kind: 'agent' }, at, { connect }),
+    }, {
+      icon: '◇', label: 'Session…', detail: 'A session you have, as a kou agent: it goes on as it was, with the canvas',
+      run: () => addSession(at, connect),
     }]);
     if (!takesInput) {
       group(kinds.sources().map((def) => ({
@@ -1165,6 +1168,94 @@ export default function activate(cockpit) {
         .map((item) => ({ icon: item.icon || '◇', label: item.title || item.id, detail: item.group || item.plugin || '', run: () => item.create?.(at) })));
     }
     return items;
+  }
+
+  // addSession puts a session the user has in the workspace on the canvas,
+  // as the agent of a node: those on no canvas, newest first.
+  async function addSession(at, connect) {
+    const m = ui.model;
+    if (!m || m.readOnly) return null;
+    let sessions = [];
+    try {
+      sessions = ((await cockpit.api(cockpit.wsPath(m.ws, '/sessions'))) || []).filter((s) => !s.canvas);
+    } catch (error) {
+      cockpit.toast(`The sessions were not read: ${error.message}`, 'error');
+      return null;
+    }
+    if (!sessions.length) return cockpit.toast('Every session of this workspace is on a canvas already.', 'error'), null;
+    const byChoice = new Map(sessions.slice(0, 200).map((s) => [`${(s.title || 'Untitled').slice(0, 80)} · ${s.id.slice(0, 8)}`, s]));
+    const choices = [...byChoice.keys()];
+    const values = await ask({
+      title: 'A session, as a kou agent', submit: 'Add',
+      note: 'It goes on as it was; from its next run it has the canvas’s tools. Removing the node, or the canvas, leaves the session.',
+      schema: { type: 'object', required: ['session'], properties: { session: { type: 'string', title: 'Session', enum: choices } } },
+      values: { session: choices[0] },
+    });
+    const picked = values && byChoice.get(values.session);
+    if (!picked) return null;
+    return addNode({ kind: 'agent', session: picked.id, title: freeTitle(picked.title || 'Agent') }, at, { connect });
+  }
+
+  // sessionItems are the session menu's: a session the user has goes on a
+  // canvas as its foreman, which orchestrates, or under a node, wired from
+  // it; one on a canvas opens it.
+  function sessionItems(ws, id) {
+    const info = ws === state().ws ? (state().sessions || []).find((s) => s.id === id) : null;
+    if (!info) return [];
+    if (info.canvas) return [{ icon: '◧', label: 'Open its canvas', run: () => go(ws, info.canvas) }];
+    return [
+      { icon: '◧', label: 'Orchestrate on a canvas…', detail: 'As the foreman of a canvas, new or one there is', run: () => putOnCanvas(ws, info, { foreman: true }) },
+      { icon: '◇', label: 'Put on a canvas under…', detail: 'As a kou agent wired from a node', run: () => putOnCanvas(ws, info, { foreman: false }) },
+    ];
+  }
+
+  async function putOnCanvas(ws, info, { foreman }) {
+    await refreshList(ws, { force: true });
+    const NEW = 'A new canvas';
+    const label = (c) => `${(c.title || 'Canvas').slice(0, 80)} · ${c.id.slice(0, 8)}`;
+    const canvases = new Map(canvasesOf(ws).map((c) => [label(c), c]));
+    const choices = foreman ? [NEW, ...canvases.keys()] : [...canvases.keys()];
+    if (!choices.length) return cockpit.toast('This workspace has no canvas yet: orchestrate on a new one.', 'error');
+    const busy = !!info.run_id;
+    const note = `«${info.title || 'Untitled'}» goes on as it was; the canvas’s tools come with its next run${busy ? ' — it runs now, so not before this run ends' : ''}. Removing the node, or the canvas, leaves the session.`;
+    const picked = await ask({
+      title: foreman ? 'Orchestrate on a canvas' : 'Put on a canvas', submit: foreman ? 'Orchestrate' : 'Next', note,
+      schema: { type: 'object', required: ['canvas'], properties: { canvas: { type: 'string', title: 'Canvas', enum: choices } } },
+      values: { canvas: choices[0] },
+    });
+    if (!picked) return;
+    const canvas = canvases.get(picked.canvas);
+    const node = { kind: 'agent', session: info.id };
+    if (foreman) node.preset = 'foreman';
+    else {
+      let doc = null;
+      try {
+        doc = (await cockpit.api(cockpit.wsPath(ws, `/canvases/${encodeURIComponent(canvas.id)}`)))?.doc;
+      } catch (error) {
+        return cockpit.toast(`The canvas did not load: ${error.message}`, 'error');
+      }
+      const parents = new Map((doc?.nodes || []).filter((n) => n.kind === 'agent' || n.kind === 'terminal').map((n) => [`${(n.title || n.id).slice(0, 80)} · ${n.id}`, n]));
+      if (!parents.size) return cockpit.toast('That canvas has no agent to put it under.', 'error');
+      const under = await ask({
+        title: 'Put on a canvas: under', submit: 'Put', note: 'What the node sends goes to the session; its replies go back.',
+        schema: { type: 'object', required: ['parent'], properties: { parent: { type: 'string', title: 'Under', enum: [...parents.keys()] } } },
+        values: { parent: [...parents.keys()][0] },
+      });
+      const parent = under && parents.get(under.parent);
+      if (!parent) return;
+      node.connect = { from: parent.id };
+    }
+    const id = canvas?.id || cockpit.uuid();
+    const body = { ops: [{ op: 'node.add', node }] };
+    if (!canvas) Object.assign(body, { create: true, title: info.title || '' });
+    try {
+      await cockpit.api(cockpit.wsPath(ws, `/canvases/${encodeURIComponent(id)}/ops`), { method: 'POST', body });
+    } catch (error) {
+      return cockpit.toast(`It was not put on the canvas: ${error.message}`, 'error');
+    }
+    session.refreshSessions?.();
+    refreshList(ws, { force: true });
+    go(ws, id);
   }
 
   function openAddMenu(anchor, at = null, options = {}) {
@@ -1413,6 +1504,7 @@ export default function activate(cockpit) {
       gated = [
         cockpit.contribute('layout.view', viewItem),
         cockpit.contribute('session-list.rows', rowsItem),
+        cockpit.contribute('session.menu', { id: 'canvas', items: (ws, id) => sessionItems(ws, id) }),
       ];
       refreshList(state().ws, { force: true });
       pollLive();

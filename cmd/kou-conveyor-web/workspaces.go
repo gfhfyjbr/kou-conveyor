@@ -68,6 +68,10 @@ type workspaceView struct {
 	Missing    bool               `json:"missing,omitzero"`
 	Running    int                `json:"running,omitzero"`
 	Connection cockpit.Connection `json:"connection"`
+	// Voice says that composers can take dictation: the cockpit has a key
+	// of the provider that listens (voice.go). It is the same for every
+	// workspace.
+	Voice bool `json:"voice,omitzero"`
 }
 
 // workspaces is the list browsers switch between. Folders added from a
@@ -330,7 +334,7 @@ func (s *server) viewOf(ws *workspace, settings cockpit.Settings) workspaceView 
 	_, err := os.Stat(ws.Path)
 	view := workspaceView{
 		ID: ws.ID, Name: filepath.Base(ws.Path), Path: ws.Path, Display: display(ws.Path),
-		Startup: ws.Startup, Missing: err != nil, Connection: s.connection(settings, ws),
+		Startup: ws.Startup, Missing: err != nil, Connection: s.connection(settings, ws), Voice: s.voiceReady(),
 	}
 	s.mu.Lock()
 	for _, current := range s.active {

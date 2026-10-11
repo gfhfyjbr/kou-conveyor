@@ -209,13 +209,15 @@ struct NodeList: View {
                     NodeKindIcon(kind: node.kind)
                         .frame(width: 28)
                     VStack(alignment: .leading, spacing: 3) {
+                        // Color.primary, not .primary: in a button's label
+                        // .primary is the button's tint.
                         Text(node.title.isEmpty ? node.kind.capitalized : node.title)
                             .font(.body.weight(.medium))
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(Color.primary)
                         if let status = model.status[node.id] {
                             Text(status.activity ?? status.detail ?? status.state)
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.secondary)
                                 .lineLimit(1)
                         }
                     }

@@ -16,6 +16,9 @@ struct Workspace: Decodable, Sendable, Identifiable, Hashable {
     let missing: Bool?
     let running: Int?
     let connection: Connection?
+    /// Whether the cockpit takes dictation in the workspace: Soniox's key is
+    /// set (voice.go).
+    let voice: Bool?
 
     struct Connection: Decodable, Sendable, Hashable {
         let source: String?
@@ -66,6 +69,15 @@ struct SessionDetail: Decodable, Sendable {
     let interrupted: Bool?
     let canvas: String?
     let node: String?
+    /// Read from its end (?last=), how many entries come before those
+    /// given, and the prompts among them.
+    let earlier: Int?
+    let earlierPrompts: [Entry]?
+
+    enum CodingKeys: String, CodingKey {
+        case id, workspace, title, entries, usage, run, size, external, pinned, queue, renamed, interrupted, canvas, node, earlier
+        case earlierPrompts = "earlier_prompts"
+    }
 }
 
 struct RunSummary: Decodable, Sendable, Hashable {
@@ -73,9 +85,14 @@ struct RunSummary: Decodable, Sendable, Hashable {
     let startedAt: Date?
     let stopping: Bool?
     let compact: Bool?
+    /// What the agent does now.
+    var activity: String?
+    /// How many events the run published by the time the session was read:
+    /// its stream, read from the first, has caught up at that one.
+    var events: Int?
 
     enum CodingKeys: String, CodingKey {
-        case id, stopping, compact
+        case id, stopping, compact, activity, events
         case startedAt = "started_at"
     }
 }
@@ -98,6 +115,28 @@ struct Entry: Codable, Sendable, Identifiable, Hashable {
 
     struct ImageInfo: Codable, Sendable, Hashable {
         let label: String?
+        var mediaType: String?
+        var width: Int?
+        var height: Int?
+        var size: Int?
+
+        /// The number of its label, "[Image 3]": how the server finds it.
+        var number: Int? {
+            guard let label, label.hasPrefix("[Image "), label.hasSuffix("]") else { return nil }
+            return Int(label.dropFirst(7).dropLast())
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case label, width, height, size
+            case mediaType = "media_type"
+        }
+    }
+
+    /// The ID of the prompt's message, as the server's routes take it: a
+    /// user entry is "input:<message>".
+    var messageID: String? {
+        guard kind == Entry.user, id.hasPrefix("input:") else { return nil }
+        return String(id.dropFirst(6))
     }
 }
 
@@ -160,6 +199,7 @@ struct QueueItem: Decodable, Sendable, Identifiable, Hashable {
     let at: Date?
     let forced: Bool?
     let model: String?
+    let images: [Entry.ImageInfo]?
 }
 
 /// An event of a run, as /api/runs/{id}/events streams them.
@@ -182,10 +222,31 @@ struct StartRunRequest: Encodable, Sendable {
     let sessionID: String
     let messageID: String
     let resume: Bool
+    /// The model to run with; nil for the connection's.
+    var model: String?
+    /// The effort; nil for the one saved in the cockpit.
+    var thinkingLevel: String?
+    var images: [PromptImage]?
+    /// The message ID of the session's prompt this one replaces: the
+    /// session goes back to before it, and this prompt runs from there.
+    var rewind: String?
 
     enum CodingKeys: String, CodingKey {
-        case prompt, resume
-        case sessionID = "session_id", messageID = "message_id"
+        case prompt, resume, model, images, rewind
+        case sessionID = "session_id", messageID = "message_id", thinkingLevel = "thinking_level"
+    }
+}
+
+/// An image that goes with a prompt, whose text refers to it by its label.
+struct PromptImage: Encodable, Sendable, Hashable {
+    let label: String
+    let mediaType: String
+    /// The image's bytes, in base64: Go reads []byte so.
+    let data: String
+
+    enum CodingKeys: String, CodingKey {
+        case label, data
+        case mediaType = "media_type"
     }
 }
 
@@ -202,6 +263,50 @@ struct StartRunResponse: Decodable, Sendable {
 struct EnqueueRequest: Encodable, Sendable {
     let text: String
     let force: Bool
+    var model: String?
+    var images: [PromptImage]?
+}
+
+/// A change to a queued message (PATCH …/queue/{item}); the server takes no
+/// other keys.
+struct QueueChange: Encodable, Sendable {
+    var text: String?
+    var force = false
+    var position: Int?
+    var model: String?
+}
+
+/// A change to a session (PATCH …/sessions/{id}).
+struct SessionChange: Encodable, Sendable {
+    var title: String?
+    var pinned: Bool?
+}
+
+struct SessionChanged: Decodable, Sendable {
+    let id: String
+    let title: String?
+    let pinned: Bool?
+}
+
+struct BranchRequest: Encodable, Sendable {
+    /// The prompt to branch before; "" duplicates the whole session.
+    let messageID: String
+
+    enum CodingKeys: String, CodingKey {
+        case messageID = "message_id"
+    }
+}
+
+struct BranchResponse: Decodable, Sendable {
+    /// The new session, when the branch has history; else a new session
+    /// starts with the prompt.
+    let sessionID: String?
+    let prompt: String?
+
+    enum CodingKeys: String, CodingKey {
+        case prompt
+        case sessionID = "session_id"
+    }
 }
 
 struct EnqueueResponse: Decodable, Sendable {

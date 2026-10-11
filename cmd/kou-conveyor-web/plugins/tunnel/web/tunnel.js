@@ -100,7 +100,9 @@ export default function activate(cockpit) {
   cockpit.ui.mount('overlays', { id: 'tunnel', order: 55, node: overlay });
   cockpit.contribute('overlay', { id: 'tunnel', order: 55, modal: true, isOpen: () => !overlay.hidden, close: () => close() });
 
-  const ui = { code: false, busy: false };
+  // pairWhenUp: the agent was asked to set the relay up from this page; when
+  // the tunnel comes up, the dialog opens with the pairing code shown.
+  const ui = { code: false, busy: false, pairWhenUp: false };
 
   function note(text, kind = '') {
     say.textContent = text;
@@ -190,6 +192,13 @@ export default function activate(cockpit) {
       void chip.offsetWidth;
       chip.classList.add('lit');
       if (was !== 'off') toast(`Tunnel up · ${host(status.url)}`);
+      if (ui.pairWhenUp) {
+        // The agent has set the relay up: what is left is to pair the phone.
+        ui.pairWhenUp = false;
+        if (overlay.hidden) open();
+        showCode(true);
+        note("The relay is set up and the cockpit is connected to it. Scan the code with the iPhone's camera: the kou-conveyor app pairs with the relay.", 'ok');
+      }
     }
   }
 
@@ -302,6 +311,7 @@ export default function activate(cockpit) {
     const fresh = v && v.fresh && !v.entries && !v.running;
     if (!fresh) session.newSession?.();
     close();
+    ui.pairWhenUp = true;
     cockpit.prompt(text);
     toast(result?.code === 'not_configured' || !result
       ? 'Tunnel: the agent sets the relay up; it asks you for the host'
@@ -324,7 +334,7 @@ export default function activate(cockpit) {
         : '- A relay is set up but does not answer as it should: find out why (is it running there, is its port open, is it of this version) and fix it, with my say before anything on the host beyond the relay itself.',
       '- Ask me before you change anything on the host beyond installing and running the relay as my user (firewall rules, sudo).',
       '',
-      'You are done when `"$KOU_CONVEYOR_WEB" tunnel status` passes: this cockpit then connects to the relay by itself. Tell me then how to pair the iPhone app: the pairing code is in the tunnel dialog (click the planet beside the mark), and `"$KOU_CONVEYOR_WEB" tunnel link` prints the link.',
+      'You are done when `"$KOU_CONVEYOR_WEB" tunnel status` passes: this cockpit then connects to the relay by itself, and its tunnel dialog opens with the code that pairs the iPhone app. Tell me then to scan it with the phone\'s camera (the dialog is also behind the planet beside the mark; `"$KOU_CONVEYOR_WEB" tunnel link` prints the link).',
     );
     return lines.join('\n');
   }

@@ -1,0 +1,420 @@
+--- a/ios/KouConveyor/Models/CanvasModels.swift
++++ b/ios/KouConveyor/Models/CanvasModels.swift
+@@ -236,6 +236,35 @@
+         try await client.get(path("nodes", node, "transcript"), query: [URLQueryItem(name: "tail", value: String(tail))])
+     }
+ 
++    /// rawTranscript is the diagnostic feed for a canvas node. It goes through
++    /// the workspace route so the iPhone uses its ordinary relay access; the
++    /// server still bounds every field and advances only over complete JSONL
++    /// records. Pass the returned `next` back as `after` to continue.
++    func rawTranscript(_ node: String, after: String? = nil, limit: Int = 80,
++                       kinds: [String] = [], tools: [String] = []) async throws -> RawTranscript
++    {
++        var query = [
++            URLQueryItem(name: "raw", value: "1"),
++            URLQueryItem(name: "limit", value: String(limit)),
++        ]
++        if let after {
++            query.append(URLQueryItem(name: "after", value: after))
++        }
++        if !kinds.isEmpty {
++            query.append(URLQueryItem(name: "kinds", value: kinds.joined(separator: ",")))
++        }
++        if !tools.isEmpty {
++            query.append(URLQueryItem(name: "tools", value: tools.joined(separator: ",")))
++        }
++        return try await client.get(path("nodes", node, "transcript"), query: query)
++    }
++
++    func rawSearch(_ node: String, query: String, limit: Int = 20) async throws -> RawTranscriptSearch {
++        try await client.get(path("nodes", node, "search"), query: [
++            URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: String(limit)),
++        ])
++    }
++
+     func restart(_ node: String, resume: Bool = true) async throws {
+         try await client.send("POST", path("nodes", node, "restart"), body: RestartRequest(resume: resume))
+     }
+--- /dev/null
++++ b/ios/KouConveyor/Models/CanvasTranscriptModels.swift
+@@ -0,0 +1,100 @@
++import Foundation
++
++/// The bounded raw feed returned by the canvas transcript endpoint. Cursors
++/// are byte offsets in the session JSONL file; they are opaque to the UI apart
++/// from being passed back to the next request.
++struct RawTranscript: Decodable, Sendable {
++    let node: String
++    let session: String?
++    let cursor: String
++    let next: String
++    let cursorReset: Bool?
++    let cursorResetReason: String?
++    let entries: [RawTranscriptEntry]
++    let notes: RawTranscriptAttachment?
++    let summaries: RawTranscriptAttachment?
++
++    enum CodingKeys: String, CodingKey {
++        case node, session, cursor, next, entries, notes, summaries
++        case cursorReset = "cursor_reset"
++        case cursorResetReason = "cursor_reset_reason"
++    }
++}
++
++struct RawTranscriptEntry: Decodable, Sendable, Identifiable, Hashable {
++    let id: String
++    let kind: String
++    let at: Date?
++    let text: String?
++    let detail: String?
++    let phase: String?
++    let state: String?
++    let model: String?
++    let forced: Bool?
++    let tool: RawTranscriptTool?
++    let changedAt: Int64
++
++    enum CodingKeys: String, CodingKey {
++        case id, kind, at, text, detail, phase, state, model, forced, tool
++        case changedAt = "changed_at"
++    }
++
++    var title: String {
++        switch kind {
++        case "reasoning": "Thinking"
++        case "tool": tool?.name ?? "Tool"
++        case "heartbeat": "Heartbeat"
++        case "peer": "Canvas message"
++        case "compaction": "Context compaction"
++        default: kind.capitalized
++        }
++    }
++
++    var body: String? {
++        if let text, !text.isEmpty { return text }
++        if let detail, !detail.isEmpty { return detail }
++        return nil
++    }
++}
++
++struct RawTranscriptTool: Decodable, Sendable, Hashable {
++    let callID: String
++    let name: String?
++    let input: String?
++    let state: String
++    let exitCode: Int?
++    let output: String?
++    let stderr: String?
++    let error: String?
++    let started: Date?
++    let finished: Date?
++    let fullOutput: RawTranscriptFile?
++    let fullStderr: RawTranscriptFile?
++
++    var isFinished: Bool { ["done", "failed", "canceled"].contains(state) }
++
++    enum CodingKeys: String, CodingKey {
++        case name, input, state, output, stderr, error, started, finished
++        case callID = "call_id"
++        case exitCode = "exit_code"
++        case fullOutput = "full_output"
++        case fullStderr = "full_stderr"
++    }
++}
++
++struct RawTranscriptFile: Decodable, Sendable, Hashable {
++    let path: String
++    let size: Int64?
++}
++
++struct RawTranscriptAttachment: Decodable, Sendable, Hashable {
++    let file: RawTranscriptFile?
++    let text: String?
++}
++
++struct RawTranscriptSearch: Decodable, Sendable {
++    let node: String
++    let session: String?
++    let query: String
++    let text: String
++}
+--- a/ios/KouConveyor/Views/NodeSheet.swift
++++ b/ios/KouConveyor/Views/NodeSheet.swift
+@@ -11,6 +11,7 @@
+     @State private var entries: [FeedEntry] = []
+     @State private var error: String?
+     @State private var sending = false
++    @State private var showingRaw = false
+     @FocusState private var focused: Bool
+ 
+     private var node: CanvasNode? { model.node(nodeID) }
+@@ -49,16 +50,25 @@
+                 ToolbarItem(placement: .topBarLeading) {
+                     Button("Close", systemImage: "xmark") { dismiss() }
+                 }
+-                if !model.readOnly, kind == CanvasNode.agent || kind == CanvasNode.terminal || kind == CanvasNode.source {
++                if kind == CanvasNode.agent || (!model.readOnly && (kind == CanvasNode.terminal || kind == CanvasNode.source)) {
+                     ToolbarItem(placement: .topBarTrailing) {
+                         Menu("Node", systemImage: "ellipsis") {
+-                            Button("Restart", systemImage: "arrow.clockwise") { act { try await model.restart(nodeID) } }
+-                            Button("Stop", systemImage: "stop.fill", role: .destructive) { act { try await model.stop(nodeID) } }
++                            if kind == CanvasNode.agent {
++                                Button("Raw transcript", systemImage: "waveform.path.ecg") { showingRaw = true }
++                            }
++                            if !model.readOnly, (kind == CanvasNode.agent || kind == CanvasNode.terminal || kind == CanvasNode.source) {
++                                Button("Restart", systemImage: "arrow.clockwise") { act { try await model.restart(nodeID) } }
++                                Button("Stop", systemImage: "stop.fill", role: .destructive) { act { try await model.stop(nodeID) } }
++                            }
+                         }
+                     }
+                 }
+             }
+         }
++        .sheet(isPresented: $showingRaw) {
++            RawTranscriptSheet(model: model, nodeID: nodeID)
++                .presentationDetents([.medium, .large])
++        }
+         .task(id: model.touched[nodeID] ?? 0) { await reload() }
+         .task(id: kind) {
+             // A terminal's screen changes without telling: look again often.
+--- /dev/null
++++ b/ios/KouConveyor/Views/RawTranscriptSheet.swift
+@@ -0,0 +1,224 @@
++import SwiftUI
++
++/// RawTranscriptSheet is the iPhone's diagnostic view for an agent node. The
++/// normal node feed stays compact and live; this view is deliberate, bounded,
++/// and cursor-driven so a foreman can see why a child stopped without a
++/// background polling loop.
++struct RawTranscriptSheet: View {
++    let model: CanvasModel
++    let nodeID: String
++    @Environment(\.dismiss) private var dismiss
++    @State private var entries: [RawTranscriptEntry] = []
++    @State private var next: String?
++    @State private var hasMore = false
++    @State private var search = ""
++    @State private var searchText: String?
++    @State private var error: String?
++    @State private var loading = false
++    @State private var searching = false
++
++    private let pageSize = 80
++
++    var body: some View {
++        NavigationStack {
++            Group {
++                if let searchText {
++                    ScrollView {
++                        Text(searchText.isEmpty ? "No matches" : searchText)
++                            .font(.system(.footnote, design: .monospaced))
++                            .textSelection(.enabled)
++                            .frame(maxWidth: .infinity, alignment: .leading)
++                            .padding(16)
++                    }
++                } else if entries.isEmpty {
++                    ContentUnavailableView("No raw entries", systemImage: "waveform.path.ecg", description: Text("The agent has not written a transcript yet."))
++                } else {
++                    List {
++                        ForEach(entries) { entry in
++                            RawTranscriptRow(entry: entry)
++                        }
++                        if hasMore {
++                            Button {
++                                Task { await load(reset: false) }
++                            } label: {
++                                HStack {
++                                    Spacer()
++                                    if loading { ProgressView() }
++                                    Text("Load more")
++                                    Spacer()
++                                }
++                            }
++                            .disabled(loading)
++                        }
++                    }
++                    .listStyle(.plain)
++                }
++            }
++            .safeAreaBar(edge: .top) {
++                HStack(spacing: 8) {
++                    Image(systemName: "magnifyingglass")
++                        .foregroundStyle(.secondary)
++                    TextField("Search transcript", text: $search)
++                        .textInputAutocapitalization(.never)
++                        .autocorrectionDisabled()
++                        .onSubmit { Task { await runSearch() } }
++                    if !search.isEmpty {
++                        Button("Clear", systemImage: "xmark.circle.fill") {
++                            search = ""
++                            searchText = nil
++                        }
++                        .labelStyle(.iconOnly)
++                    }
++                    Button("Search", systemImage: "return") { Task { await runSearch() } }
++                        .labelStyle(.iconOnly)
++                        .disabled(search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || searching)
++                }
++                .padding(.horizontal, 14)
++                .padding(.vertical, 8)
++                .glassEffect(.regular, in: .capsule)
++                .padding(.horizontal, 12)
++            }
++            .safeAreaBar(edge: .bottom) {
++                if let error {
++                    Label(error, systemImage: "exclamationmark.triangle.fill")
++                        .font(.footnote)
++                        .foregroundStyle(.red)
++                        .padding(.horizontal, 14)
++                        .padding(.vertical, 8)
++                        .onTapGesture { self.error = nil }
++                }
++            }
++            .navigationTitle("Raw transcript")
++            .navigationBarTitleDisplayMode(.inline)
++            .toolbar {
++                ToolbarItem(placement: .topBarLeading) {
++                    Button("Close", systemImage: "xmark") { dismiss() }
++                }
++                ToolbarItem(placement: .topBarTrailing) {
++                    Button("Refresh", systemImage: "arrow.clockwise") {
++                        Task { await load(reset: true) }
++                    }
++                    .disabled(loading)
++                }
++            }
++        }
++        .task { await load(reset: true) }
++    }
++
++    private func load(reset: Bool) async {
++        guard !loading else { return }
++        loading = true
++        defer { loading = false }
++        if reset {
++            entries = []
++            next = "0"
++            hasMore = false
++            searchText = nil
++        }
++        do {
++            let page = try await model.rawTranscript(nodeID, after: next ?? "0", limit: pageSize)
++            entries = merge(entries, with: page.entries)
++            next = page.next
++            hasMore = page.entries.count >= pageSize && page.next != page.cursor
++            error = nil
++        } catch is CancellationError {
++        } catch {
++            self.error = error.localizedDescription
++        }
++    }
++
++    private func runSearch() async {
++        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
++        guard !query.isEmpty, !searching else { return }
++        searching = true
++        defer { searching = false }
++        do {
++            searchText = try await model.rawSearch(nodeID, query: query).text
++            error = nil
++        } catch is CancellationError {
++        } catch {
++            self.error = error.localizedDescription
++        }
++    }
++
++    private func merge(_ old: [RawTranscriptEntry], with new: [RawTranscriptEntry]) -> [RawTranscriptEntry] {
++        var byID = Dictionary(old.map { ($0.id, $0) }, uniquingKeysWith: { _, latest in latest })
++        for entry in new { byID[entry.id] = entry }
++        return byID.values.sorted {
++            if $0.changedAt != $1.changedAt { return $0.changedAt < $1.changedAt }
++            return $0.id < $1.id
++        }
++    }
++}
++
++struct RawTranscriptRow: View {
++    let entry: RawTranscriptEntry
++
++    var body: some View {
++        VStack(alignment: .leading, spacing: 7) {
++            HStack(alignment: .firstTextBaseline, spacing: 8) {
++                Label(entry.title, systemImage: symbol(entry.kind))
++                    .font(.subheadline.weight(.semibold))
++                Spacer(minLength: 8)
++                if let at = entry.at {
++                    Text(at, format: .dateTime.hour().minute().second())
++                        .font(.caption2.monospaced())
++                        .foregroundStyle(.secondary)
++                }
++            }
++            if let body = entry.body {
++                Text(body)
++                    .font(entry.kind == "tool" ? .system(.footnote, design: .monospaced) : .subheadline)
++                    .textSelection(.enabled)
++            }
++            if let tool = entry.tool {
++                Text("\(tool.name ?? "Tool") · \(tool.state)")
++                    .font(.caption.monospaced())
++                    .foregroundStyle(tool.isFinished ? Color.secondary : Color.orange)
++                if let input = tool.input, !input.isEmpty {
++                    DisclosureGroup("Input") {
++                        Text(input)
++                            .font(.system(.caption, design: .monospaced))
++                            .textSelection(.enabled)
++                    }
++                }
++                if let output = tool.output, !output.isEmpty {
++                    DisclosureGroup("Output") {
++                        Text(output)
++                            .font(.system(.caption, design: .monospaced))
++                            .textSelection(.enabled)
++                    }
++                }
++                if let stderr = tool.stderr, !stderr.isEmpty {
++                    DisclosureGroup("stderr") {
++                        Text(stderr)
++                            .font(.system(.caption, design: .monospaced))
++                            .foregroundStyle(.orange)
++                            .textSelection(.enabled)
++                    }
++                }
++                if let full = tool.fullOutput {
++                    Text("Full output: \(full.path)")
++                        .font(.caption2.monospaced())
++                        .foregroundStyle(.secondary)
++                        .textSelection(.enabled)
++                }
++            }
++        }
++        .padding(.vertical, 5)
++    }
++
++    private func symbol(_ kind: String) -> String {
++        switch kind {
++        case "user": "person.fill"
++        case "assistant": "bubble.left.fill"
++        case "reasoning": "brain"
++        case "tool": "hammer.fill"
++        case "heartbeat": "heart.fill"
++        case "peer": "arrow.left.arrow.right"
++        case "error": "exclamationmark.triangle.fill"
++        case "compaction": "scissors"
++        default: "circle"
++        }
++    }
++}
+--- /dev/null
++++ b/ios/ORCHESTRATION_INTEGRATION.md
+@@ -0,0 +1,10 @@
++# Orchestration diagnostics on iOS
++
++The canvas node sheet keeps its normal compact/live feed. An agent node's **Raw transcript** action opens a deliberate diagnostic view:
++
++- `GET /api/w/{workspace}/canvases/{canvas}/nodes/{node}/transcript?raw=1&after=...` returns the bounded structured feed and a JSONL byte cursor.
++- The first load starts at `after=0`; **Load more** sends the returned `next` cursor. The app never sleeps or tails the session file.
++- `GET /api/w/{workspace}/canvases/{canvas}/nodes/{node}/search?q=...&limit=...` searches the persisted transcript for a stalled child.
++- Tool output is displayed from the bounded response. If the server reports a durable full-output path, the path remains visible for a future authenticated file viewer; the current phone UI does not read arbitrary filesystem paths.
++
++The workspace routes are intentional: the iPhone uses its existing relay/cockpit authorization instead of receiving a canvas-node bearer token. The same raw feed is also available to canvas agents through `CanvasTranscript` and `CanvasSearch`.

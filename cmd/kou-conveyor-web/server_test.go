@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json/v2"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,105 @@ func TestRunStreamsTranscriptAndPersistsSession(t *testing.T) {
 	res, _ := h.do("GET", "/api/sessions/missing-session", "")
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("missing session: %d", res.StatusCode)
+	}
+}
+
+// A big session goes compressed to a client that takes gzip, the phone over
+// the relay, and not at all to one that has it already.
+func TestSessionGoesCompressedAndOnlyWhenChanged(t *testing.T) {
+	h := newHarness(t)
+	prompt := strings.Repeat("a long prompt, pasted logs and all. ", 400)
+	started := h.start(`{"prompt":"` + prompt + `"}`)
+	sessionID := started["session_id"].(string)
+	if got, status := h.stream(started["run_id"].(string), ""); status != http.StatusOK || got.last().Type != "done" {
+		t.Fatalf("status %d, events %#v", status, got.events)
+	}
+
+	// The Go client asks for gzip itself and undoes it: Uncompressed.
+	res, session := h.do("GET", "/api/sessions/"+sessionID, "")
+	tag := res.Header.Get("ETag")
+	if res.StatusCode != http.StatusOK || !res.Uncompressed || tag == "" || len(session["entries"].([]any)) == 0 {
+		t.Fatalf("status %d, uncompressed %v, etag %q, session %v", res.StatusCode, res.Uncompressed, tag, session["title"])
+	}
+	plain, _ := h.do("GET", "/api/sessions/"+sessionID, "", "Accept-Encoding", "identity")
+	if plain.Header.Get("Content-Encoding") != "" || plain.Header.Get("ETag") != tag {
+		t.Fatalf("identity: encoding %q, etag %q, want %q", plain.Header.Get("Content-Encoding"), plain.Header.Get("ETag"), tag)
+	}
+	same, _ := h.do("GET", "/api/sessions/"+sessionID, "", "If-None-Match", tag)
+	if same.StatusCode != http.StatusNotModified {
+		t.Fatalf("unchanged session: %d", same.StatusCode)
+	}
+
+	// Pinned, the session is another.
+	if res, _ := h.do("PATCH", "/api/sessions/"+sessionID, `{"pinned":true}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("pin: %d", res.StatusCode)
+	}
+	changed, _ := h.do("GET", "/api/sessions/"+sessionID, "", "If-None-Match", tag)
+	if changed.StatusCode != http.StatusOK || changed.Header.Get("ETag") == tag {
+		t.Fatalf("pinned session: %d, etag %q", changed.StatusCode, changed.Header.Get("ETag"))
+	}
+}
+
+// The phone reads a session's last entries only, and of those before them
+// the prompts.
+func TestSessionFromItsEnd(t *testing.T) {
+	h := newHarness(t)
+	first := h.start(`{"prompt":"one"}`)
+	sessionID := first["session_id"].(string)
+	h.stream(first["run_id"].(string), "")
+	second := h.start(fmt.Sprintf(`{"prompt":"two","session_id":%q,"resume":true}`, sessionID))
+	h.stream(second["run_id"].(string), "")
+	full := h.waitFor(sessionID, func(body map[string]any) bool { return body["run"] == nil })
+	all := full["entries"].([]any)
+	if len(all) < 4 || full["earlier"] != nil || full["earlier_prompts"] != nil {
+		t.Fatalf("whole session: %d entries, earlier %v, prompts %v", len(all), full["earlier"], full["earlier_prompts"])
+	}
+
+	res, tail := h.do("GET", "/api/sessions/"+sessionID+"?last=1", "")
+	entries := tail["entries"].([]any)
+	if res.StatusCode != http.StatusOK || len(entries) != 1 || entries[0].(map[string]any)["id"] != all[len(all)-1].(map[string]any)["id"] {
+		t.Fatalf("last=1: %d, entries %v", res.StatusCode, entries)
+	}
+	if tail["earlier"] != float64(len(all)-1) {
+		t.Fatalf("earlier = %v, want %d", tail["earlier"], len(all)-1)
+	}
+	var texts []string
+	for _, p := range tail["earlier_prompts"].([]any) {
+		texts = append(texts, p.(map[string]any)["text"].(string))
+	}
+	if strings.Join(texts, ",") != "one,two" {
+		t.Fatalf("earlier prompts = %q", texts)
+	}
+	if tail["title"] != full["title"] {
+		t.Fatalf("title %v, want %v", tail["title"], full["title"])
+	}
+
+	// More than there are: the whole session, as without last.
+	if _, body := h.do("GET", "/api/sessions/"+sessionID+fmt.Sprintf("?last=%d", len(all)), ""); len(body["entries"].([]any)) != len(all) || body["earlier"] != nil {
+		t.Fatalf("last=all: %d entries, earlier %v", len(body["entries"].([]any)), body["earlier"])
+	}
+	for _, bad := range []string{"0", "-3", "many"} {
+		if res, _ := h.do("GET", "/api/sessions/"+sessionID+"?last="+bad, ""); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("last=%s: %d", bad, res.StatusCode)
+		}
+	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	for header, want := range map[string]bool{
+		"":                      false,
+		"gzip":                  true,
+		"gzip, deflate, br":     true,
+		"br;q=1.0, gzip;q=0.8":  true,
+		"deflate, gzip;q=0":     false,
+		"*":                     true,
+		"identity":              false,
+		"br, GZIP ; q=0.5":      true,
+		"x-gzip-not-really, br": false,
+	} {
+		if got := acceptsGzip(header); got != want {
+			t.Errorf("acceptsGzip(%q) = %v, want %v", header, got, want)
+		}
 	}
 }
 

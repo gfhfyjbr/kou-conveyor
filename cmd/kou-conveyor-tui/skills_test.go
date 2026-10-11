@@ -14,6 +14,9 @@ import (
 func TestSkillsListsTheProjectsAndTheSystems(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Run from a cockpit with its tunnel set up, the tests would list the
+	// tunnel's skill too.
+	t.Setenv("KOU_CONVEYOR_TUNNEL_CONFIG", "")
 	m := testModel(t)
 	write := func(directory, name, description string) {
 		path := filepath.Join(directory, name, "SKILL.md")

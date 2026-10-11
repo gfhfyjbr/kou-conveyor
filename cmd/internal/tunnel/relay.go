@@ -49,6 +49,8 @@ type Relay struct {
 	mu    sync.Mutex
 	agent *yamux.Session
 	since time.Time
+	// asked is the protocol a cockpit of another one asked for last.
+	asked int
 }
 
 // NewRelay makes the relay of token; logf, when set, hears the cockpit
@@ -222,6 +224,11 @@ func (rl *Relay) serveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if got := r.Header.Get(ProtocolHeader); got != strconv.Itoa(Protocol) {
+		if n, err := strconv.Atoi(got); err == nil && n > 0 {
+			rl.mu.Lock()
+			rl.asked = n
+			rl.mu.Unlock()
+		}
 		writeJSON(w, http.StatusConflict, map[string]string{
 			"error": "the relay speaks protocol " + strconv.Itoa(Protocol) + ", the cockpit " + cmp(got, "none") + ": update the older of the two",
 			"code":  "incompatible",
@@ -264,6 +271,15 @@ func (rl *Relay) serveAgent(w http.ResponseWriter, r *http.Request) {
 			rl.logf("cockpit disconnected")
 		}
 	}()
+}
+
+// Asked is the protocol a cockpit that speaks another one than the relay
+// asked for last, with the relay's token; 0 when none did. A relay that
+// updates itself may take a build of that protocol: the cockpit has.
+func (rl *Relay) Asked() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return rl.asked
 }
 
 func bearer(r *http.Request) string {

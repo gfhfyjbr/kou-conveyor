@@ -205,7 +205,10 @@ board; `spawn`, `rm`, `connect`, `disconnect` and `move` change it; `send`,
 output. `kou-canvas mcp` serves the same tools over MCP, which the Claude
 Code and Codex presets are given, and the built-in `canvas-agent` plugin
 gives them to the kou agents of a canvas (`CanvasView`, `CanvasSpawn`, …).
-Each node has a token of its own, which allows what its access says —
+`kou-canvas transcript` / `CanvasTranscript` reads a node's raw transcript by
+cursor, including reasoning and tool outcomes; `search` / `CanvasSearch` finds
+text in one node or its children. They let a foreman diagnose a stall without
+re-reading a whole session file or sleeping between polls. Each node has a token of its own, which allows what its access says —
 observe, talk, build or admin — and the canvas's settings bound how many
 nodes and terminals agents make, and how fast. **Ask the foreman…**, the
 field at the foot of a canvas, gives a request to a kou agent that builds

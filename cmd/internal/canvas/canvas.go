@@ -56,18 +56,19 @@ type Canvas struct {
 
 	saving sync.Mutex // one write of the files at a time
 
-	mu       sync.Mutex
-	doc      *Doc
-	readOnly bool
-	hub      *hub
-	states   map[string]*nodeState
-	graves   map[string]*grave
-	messages []*Message // the latest, the oldest first
-	pending  []*Message // those that wait for delivery or approval, in order
-	journal  []*Message // to be added to the journal
-	rates    map[string][]time.Time
-	failures map[string]int
-	spawns   []time.Time
+	mu                sync.Mutex
+	doc               *Doc
+	readOnly          bool
+	hub               *hub
+	states            map[string]*nodeState
+	graves            map[string]*grave
+	messages          []*Message // the latest, the oldest first
+	pending           []*Message // those that wait for delivery or approval, in order
+	journal           []*Message // to be added to the journal
+	rates             map[string][]time.Time
+	failures          map[string]int
+	transcriptCursors map[string]int64
+	spawns            []time.Time
 	// waits are the sends of nodes that wait for the answer to their
 	// message, by the message's ID.
 	waits map[string]*replyWait
@@ -127,7 +128,8 @@ func newCanvas(e *Engine, ws Workspace, doc *Doc, readOnly bool) *Canvas {
 		e: e, ws: ws, id: doc.ID, dir: dataDir(ws.Path, doc.ID),
 		doc: doc, readOnly: readOnly, hub: newHub(e.instance),
 		states: map[string]*nodeState{}, graves: map[string]*grave{},
-		rates: map[string][]time.Time{}, failures: map[string]int{}, waits: map[string]*replyWait{},
+		rates: map[string][]time.Time{}, failures: map[string]int{},
+		transcriptCursors: loadTranscriptCursors(dataDir(ws.Path, doc.ID)), waits: map[string]*replyWait{},
 		kick: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	c.messages = readJournal(c.dir, recentMessages)

@@ -70,6 +70,9 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
   kou-canvas keys <node> C-c Escape Up Enter …
   kou-canvas read <node> [--screen|--tail N|--output|--answer] [--wait idle|output|exit]
                   [--after N] [--timeout 600]
+  kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b]
+                      [--since RFC3339] [--until RFC3339] [--include notes,summaries]
+  kou-canvas search [<node>] <query> [--children] [--limit N]
   kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]
   kou-canvas wait [<node> <node>…] [--until answer|idle|exit|any] [--after cursor]
                                                     any of several nodes, your children when

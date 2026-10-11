@@ -215,6 +215,14 @@ nodes that bring events (`sources`) and canvases to start from
 built-in `canvas` plugin: the Shell, Command, Claude Code, Codex and
 OpenCode presets, and the Manual, Timer, Files and Webhook sources.
 
+Agents on a canvas also get `CanvasTranscript` and `CanvasSearch` through the
+built-in `canvas-agent` plugin. `CanvasTranscript` is the bounded, incremental
+raw feed for a node's session: it includes reasoning and tool outcomes, accepts
+a byte cursor or `after: "last"`, and can include notes or summaries. Use
+`CanvasSearch` for a bounded regular-expression search in one node or with
+`nodes: "children"`; neither tool requires polling or exposes a filesystem path
+chosen by the caller.
+
 ```json
 "canvas": {
   "sources": [{

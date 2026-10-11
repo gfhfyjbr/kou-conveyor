@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/worktree"
+	"github.com/gfhfyjbr/kou-conveyor/harness/transcript"
 )
 
 // The canvas's HTTP API. The pages' routes sit under both prefixes of the
@@ -34,7 +36,8 @@ import (
 //	GET    {p}/canvases/{id}/events                  its events (hub.go)
 //	POST   {p}/canvases/{id}/nodes/{node}/send       {text, submit, keys, deliver}
 //	GET    {p}/canvases/{id}/nodes/{node}/read       ?what=screen|tail|output|answer&lines=
-//	GET    {p}/canvases/{id}/nodes/{node}/transcript ?tail=40: an agent's latest entries
+//	GET    {p}/canvases/{id}/nodes/{node}/transcript ?tail=40: an agent's latest entries; ?raw=1 is the bounded cursor feed
+//	GET    {p}/canvases/{id}/nodes/{node}/search     ?q=&limit=: search its persisted transcript
 //	POST   {p}/canvases/{id}/nodes/{node}/restart    {resume}
 //	POST   {p}/canvases/{id}/nodes/{node}/stop       stop what it does now
 //	POST   {p}/canvases/{id}/nodes/{node}/fire       {text}: a manual source's button
@@ -59,6 +62,8 @@ import (
 //	POST /api/canvas/ops                   a batch of operations (build)
 //	POST /api/canvas/nodes/{node}/send     as the pages' (talk)
 //	GET  /api/canvas/nodes/{node}/read     as the pages', and ?wait=idle|output|exit&timeout= (observe)
+//	GET  /api/canvas/nodes/{node}/transcript ?after=&limit= (raw agent transcript, observe)
+//	GET  /api/canvas/nodes/{node}/search     ?q=&limit= (transcript search, observe)
 //	GET  /api/canvas/nodes/{node}/wait     ?until=idle|output|exit&timeout=&after= (observe)
 //	POST /api/canvas/emit                  {port, title, text, data, status, detail, agent_session}: its node's own
 //	POST /api/canvas/hooks/{hook}          a webhook source's address: its secret is the token
@@ -82,6 +87,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 		mux.HandleFunc("POST "+p+"/canvases/{id}/nodes/{node}/send", e.handleSend)
 		mux.HandleFunc("GET "+p+"/canvases/{id}/nodes/{node}/read", e.handleRead)
 		mux.HandleFunc("GET "+p+"/canvases/{id}/nodes/{node}/transcript", e.handleTranscript)
+		mux.HandleFunc("GET "+p+"/canvases/{id}/nodes/{node}/search", e.handleSearch)
 		mux.HandleFunc("POST "+p+"/canvases/{id}/nodes/{node}/restart", e.handleRestart)
 		mux.HandleFunc("POST "+p+"/canvases/{id}/nodes/{node}/stop", e.handleStop)
 		mux.HandleFunc("POST "+p+"/canvases/{id}/nodes/{node}/fire", e.handleFire)
@@ -104,6 +110,8 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/canvas/ops", e.agentRoute(ScopeBuild, e.handleAgentOps))
 	mux.HandleFunc("POST /api/canvas/nodes/{node}/send", e.agentRoute(ScopeTalk, e.handleAgentSend))
 	mux.HandleFunc("GET /api/canvas/nodes/{node}/read", e.agentRoute(ScopeObserve, e.handleAgentRead))
+	mux.HandleFunc("GET /api/canvas/nodes/{node}/transcript", e.agentRoute(ScopeObserve, e.handleAgentTranscript))
+	mux.HandleFunc("GET /api/canvas/nodes/{node}/search", e.agentRoute(ScopeObserve, e.handleAgentSearch))
 	mux.HandleFunc("GET /api/canvas/nodes/{node}/wait", e.agentRoute(ScopeObserve, e.handleAgentWait))
 	mux.HandleFunc("GET /api/canvas/wait", e.agentRoute(ScopeObserve, e.handleAgentWaitAny))
 	mux.HandleFunc("POST /api/canvas/emit", e.agentRoute("", e.handleEmit))
@@ -463,6 +471,15 @@ func (e *Engine) handleTranscript(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "«"+n.Title+"» is not an agent")
 		return
 	}
+	if truthy(r.URL.Query().Get("raw")) {
+		result, err := c.transcript(n.ID, r.URL.Query(), n.ID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
 	tail, err := strconv.Atoi(r.URL.Query().Get("tail"))
 	if err != nil || tail <= 0 {
 		tail = 40
@@ -491,6 +508,49 @@ func (e *Engine) handleTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	running := session != "" && e.o.Host.RunActive(c.ws, session)
 	writeJSON(w, http.StatusOK, map[string]any{"node": n.ID, "session": session, "exists": exists, "running": running, "entries": entries})
+}
+
+func (e *Engine) handleSearch(w http.ResponseWriter, r *http.Request) {
+	c, ok := e.canvasOf(w, r)
+	if !ok {
+		return
+	}
+	n := c.node(r.PathValue("node"))
+	switch {
+	case n == nil:
+		writeError(w, http.StatusNotFound, "no such node")
+	case n.Kind != KindAgent:
+		writeError(w, http.StatusBadRequest, "«"+n.Title+"» is not an agent")
+	default:
+		query := strings.TrimSpace(r.URL.Query().Get("q"))
+		if query == "" {
+			writeError(w, http.StatusBadRequest, "q is required")
+			return
+		}
+		limit := 0
+		if value := strings.TrimSpace(r.URL.Query().Get("limit")); value != "" {
+			var err error
+			limit, err = strconv.Atoi(value)
+			if err != nil || limit < 1 {
+				writeError(w, http.StatusBadRequest, "limit is a positive integer")
+				return
+			}
+		}
+		path, err := c.transcriptSession(n.ID)
+		if err != nil {
+			writeErr(w, err)
+			return
+		}
+		text, err := transcript.Search(path, query, limit)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"node": n.ID, "session": filepath.Base(strings.TrimSuffix(path, ".session.jsonl")),
+			"query": query, "text": text,
+		})
+	}
 }
 
 func (e *Engine) handleRestart(w http.ResponseWriter, r *http.Request) {

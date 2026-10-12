@@ -821,7 +821,7 @@ func (m *uiModel) stop() tea.Cmd {
 		return nil
 	}
 	m.state = stopping
-	m.job.Cancel()
+	m.job.Stop("the user stopped the run from the terminal cockpit")
 	return m.notify("stopping the run…", "warn")
 }
 
@@ -829,7 +829,7 @@ func (m *uiModel) stop() tea.Cmd {
 // the last snapshot of what it changed.
 func (m *uiModel) shutdown() {
 	if m.job != nil {
-		m.job.Cancel()
+		m.job.Stop("the user closed the terminal cockpit")
 		for range m.job.Lines() {
 		}
 	}

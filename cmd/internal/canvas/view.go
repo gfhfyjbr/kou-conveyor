@@ -2,7 +2,10 @@ package canvas
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -228,6 +231,199 @@ func (c *Canvas) wait(ctx context.Context, id, until string, after int, timeout 
 			return result, ctx.Err()
 		}
 	}
+}
+
+// WaitNode is a node a wait for several watched, as the wait ended.
+type WaitNode struct {
+	Node    string `json:"node"`
+	Title   string `json:"title"`
+	Status  Status `json:"status"`
+	Outputs int    `json:"outputs"`
+	// Gone says that the node was removed.
+	Gone bool `json:"gone,omitzero"`
+}
+
+// WaitAnyResult is how a wait for several nodes ended: Fired is the node
+// whose event ended it (none when it timed out, or when they were all idle
+// already), Next the cursor to wait on from, as after.
+type WaitAnyResult struct {
+	Fired    string     `json:"fired,omitzero"`
+	Until    string     `json:"until"`
+	Nodes    []WaitNode `json:"nodes"`
+	Next     string     `json:"next"`
+	TimedOut bool       `json:"timed_out,omitzero"`
+}
+
+// maxWaitNodes bounds the nodes a wait watches.
+const maxWaitNodes = 64
+
+// waitAny waits for something to happen to any of several nodes:
+//
+//	answer (output) one of them gives an output past the cursor
+//	idle            all of them are idle — the last to stop working fires
+//	exit            one of them exits, or is stopped or removed
+//	any             one of them gives an output, changes its state, or goes
+//
+// after is the cursor a wait gave as next ("node:outputs,…"); the outputs of
+// a node it does not name count from now.
+func (c *Canvas) waitAny(ctx context.Context, ids []string, until, after string, timeout time.Duration) (WaitAnyResult, error) {
+	switch until {
+	case "", "answer":
+		until = "answer"
+	case "output", "idle", "exit", "any":
+	default:
+		return WaitAnyResult{}, errInvalid("until is answer, idle, exit or any")
+	}
+	if len(ids) == 0 {
+		return WaitAnyResult{}, errInvalid("name the nodes to wait for")
+	}
+	if len(ids) > maxWaitNodes {
+		return WaitAnyResult{}, errInvalid(fmt.Sprintf("a wait watches %d nodes at most", maxWaitNodes))
+	}
+	cursor := parseCursor(after)
+	timeout = min(max(timeout, time.Second), maxWait)
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	// What the nodes were when the wait began, to tell a change, and which
+	// were at work the round before, to tell the last to stop.
+	start := map[string]string{}
+	wasBusy := map[string]bool{}
+	first := true
+	for {
+		c.mu.Lock()
+		result := WaitAnyResult{Until: until, Nodes: make([]WaitNode, 0, len(ids))}
+		cases := make([]reflect.SelectCase, 0, len(ids)+2)
+		fired := ""
+		busy := map[string]bool{}
+		next := make([]string, 0, len(ids))
+		for _, id := range ids {
+			st := c.states[id]
+			n := c.doc.node(id)
+			if st == nil || n == nil {
+				if first {
+					c.mu.Unlock()
+					return WaitAnyResult{}, errNotFound("no node " + id)
+				}
+				result.Nodes = append(result.Nodes, WaitNode{Node: id, Gone: true})
+				if fired == "" && (until == "exit" || until == "any") {
+					fired = id
+				}
+				continue
+			}
+			seen, ok := cursor[id]
+			if !ok {
+				seen = st.outputs
+				cursor[id] = seen
+			}
+			result.Nodes = append(result.Nodes, WaitNode{Node: id, Title: n.Title, Status: st.status, Outputs: st.outputs})
+			next = append(next, fmt.Sprintf("%s:%d", id, st.outputs))
+			if first {
+				start[id] = st.status.State
+			}
+			stopped := st.status.State == StateExited || st.status.State == StateStopped
+			if !c.idleLocked(id, st) {
+				busy[id] = true
+			}
+			if fired != "" {
+				continue
+			}
+			switch until {
+			case "answer", "output":
+				if st.outputs > seen {
+					fired = id
+				}
+			case "exit":
+				if stopped {
+					fired = id
+				}
+			case "any":
+				if st.outputs > seen || st.status.State != start[id] {
+					fired = id
+				}
+			}
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(st.changed)})
+		}
+		c.mu.Unlock()
+		result.Next = strings.Join(next, ",")
+		switch {
+		case until == "idle" && len(busy) == 0:
+			// The last of them to stop working is what ended the wait.
+			for i := len(ids) - 1; i >= 0; i-- {
+				if wasBusy[ids[i]] {
+					result.Fired = ids[i]
+					break
+				}
+			}
+			return result, nil
+		case until != "idle" && fired != "":
+			result.Fired = fired
+			return result, nil
+		case len(cases) == 0:
+			// They are all gone: nothing is left to wait for.
+			return result, nil
+		}
+		wasBusy, first = busy, false
+		cases = append(cases,
+			reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(deadline.C)},
+			reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(ctx.Done())})
+		chosen, _, _ := reflect.Select(cases)
+		switch chosen {
+		case len(cases) - 2:
+			result.TimedOut = true
+			return result, nil
+		case len(cases) - 1:
+			return result, ctx.Err()
+		}
+	}
+}
+
+// idleLocked says whether a node is idle: not at work, and no message on
+// its way to it.
+func (c *Canvas) idleLocked(id string, st *nodeState) bool {
+	switch st.status.State {
+	case StateIdle, StateWaiting, StateExited, StateStopped, StateError:
+		return !slices.ContainsFunc(c.pending, func(m *Message) bool {
+			return m.To.Node == id && (m.State == MessagePending || m.State == messageDelivering)
+		})
+	}
+	return false
+}
+
+// parseCursor reads a wait's cursor: "node:outputs,…".
+func parseCursor(after string) map[string]int {
+	cursor := map[string]int{}
+	for _, part := range strings.Split(after, ",") {
+		id, count, ok := strings.Cut(strings.TrimSpace(part), ":")
+		if !ok {
+			continue
+		}
+		if n, err := strconv.Atoi(count); err == nil && n >= 0 {
+			cursor[id] = n
+		}
+	}
+	return cursor
+}
+
+// children are the nodes a node looks after: those its agent made, and
+// those wired from it.
+func (c *Canvas) children(id string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var ids []string
+	seen := map[string]bool{id: true}
+	for _, n := range c.doc.Nodes {
+		if n.CreatedBy == id && !seen[n.ID] {
+			seen[n.ID] = true
+			ids = append(ids, n.ID)
+		}
+	}
+	for _, e := range c.doc.Edges {
+		if e.From.Node == id && !seen[e.To.Node] && c.doc.node(e.To.Node) != nil {
+			seen[e.To.Node] = true
+			ids = append(ids, e.To.Node)
+		}
+	}
+	return ids
 }
 
 // describe is a node's line in the text view kou-canvas prints.

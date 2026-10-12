@@ -28,21 +28,34 @@ type Meta struct {
 	Pinned   bool   `json:"pinned,omitzero"`
 	PinOrder int    `json:"pin_order,omitzero"`
 	// Canvas and Node name the canvas, and the node on it, whose agent the
-	// session is: the canvas made it.
-	Canvas string `json:"canvas,omitzero"`
-	Node   string `json:"node,omitzero"`
+	// session is: the canvas made it, or, Adopted, the user put a session
+	// of theirs on it — which the canvas never deletes, and the session
+	// list keeps showing.
+	Canvas  string `json:"canvas,omitzero"`
+	Node    string `json:"node,omitzero"`
+	Adopted bool   `json:"adopted,omitzero"`
 }
 
 // SetCanvasMeta records that a session is the agent of a node of a canvas,
 // titled title, before the session has a file: the canvas makes the
-// session's ID first, and its runs make the file.
+// session's ID first, and its runs make the file. A session that leaves
+// its canvas (canvas "") is no longer adopted either.
 func SetCanvasMeta(dir, id, title, canvas, node string) error {
 	if !ValidSessionID(id) {
 		return fmt.Errorf("invalid session ID %q", id)
 	}
 	m := LoadMeta(dir, id)
 	m.Title, m.Canvas, m.Node = Headline(Clean(title), 120), canvas, node
+	if canvas == "" {
+		m.Adopted = false
+	}
 	return saveMeta(dir, id, m)
+}
+
+// AdoptSession records that a session the user had is now the agent of a
+// node of a canvas: its title stays its own.
+func AdoptSession(dir, id, canvas, node string) error {
+	return updateMeta(dir, id, func(m *Meta) { m.Canvas, m.Node, m.Adopted = canvas, node, true })
 }
 
 // DropMeta removes what the cockpits added to a session that has no file:

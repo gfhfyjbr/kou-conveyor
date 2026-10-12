@@ -1,6 +1,6 @@
 CRITICAL: respond with text only, and do not call any tools. Everything you need is in the conversation above; a tool call would be rejected and waste the only turn you get.
 
-The conversation above is about to be compacted: everything before this message will be replaced by the summary you write now, and the work goes on from that summary alone. Write it so that someone who reads only the summary, and then the messages that follow it, can continue the work without losing anything that matters. After the summary the harness shows, as they are, the notes you keep in a file, if you keep any, and the files the conversation read and changed: do not spend the summary on what those already hold.
+The conversation above is about to be compacted: everything before this message will be replaced by the summary you write now, and the work goes on from that summary alone. Write it so that someone who reads only the summary, and then the messages that follow it, can continue the work without losing anything that matters. After the summary the harness shows the notes you keep in a file, if you keep any (up to 32 KB; past that, their beginning and end, with a mark of what is left out), and the files the conversation read and changed: do not spend the summary on what those already hold.
 
 First, inside <analysis> tags, go through the conversation in order and note for each part:
 - the user's explicit requests and intents, and how you went about them;

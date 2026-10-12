@@ -39,6 +39,10 @@ const (
 	// stuckCompactions is how many compactions in a row with no file changed
 	// have the harness ask the model whether it goes round in circles.
 	stuckCompactions = 3
+	// notesOverflowAsks is how many compactions in a row ask the model to
+	// rewrite notes that outgrew what a compaction shows; after them the
+	// harness lets it be.
+	notesOverflowAsks = 2
 )
 
 // runBounds bound a run (coordinator.Dependencies); zero sets no bound.
@@ -96,6 +100,9 @@ type sessionMemory struct {
 	// counts the compactions in a row with no file changed.
 	checkpoint string
 	idle       int
+	// overflowAsks counts the compactions in a row that asked the model to
+	// rewrite its notes shorter.
+	overflowAsks int
 }
 
 func newSessionMemory(directory string, id session.ID, fileTools bool) *sessionMemory {
@@ -124,10 +131,14 @@ func (memory *sessionMemory) builder() contextbuilder.Memory {
 	}
 }
 
+// notesShown says how much of the notes a compaction shows
+// (contextbuilder.NotesLimit).
+var notesShown = fmt.Sprintf("%d KB; past that, their beginning and end", contextbuilder.NotesLimit/1000)
+
 // reminder is what the model is told as the conversation nears its
 // compaction.
 func (memory *sessionMemory) reminder() string {
-	return "Bring your notes in " + memory.notes + " up to date before the summary replaces the conversation: the hypotheses you are testing, the evidence for and against them, the negative results, what you deferred and the next step. The summary may lose them; the notes follow it as they are."
+	return "Bring your notes in " + memory.notes + " up to date before the summary replaces the conversation: the hypotheses you are testing, the evidence for and against them, the negative results, what you deferred and the next step. The summary may lose them; the notes follow it, up to " + notesShown + "."
 }
 
 // compacted keeps the summary of a compaction of the run, and returns what
@@ -158,7 +169,28 @@ func (memory *sessionMemory) compacted(compaction coordinator.Compaction, now ti
 		notes = append(notes, fmt.Sprintf("%d compactions in a row came with no file changed. If the task is to change files and the work goes round in circles, the same files read again, the same commands, the same hypotheses: stop, write in your notes what you tried and what it showed, then change the approach, or tell the user what blocks you.", memory.idle))
 		memory.idle = 0
 	}
+	if ask := memory.notesOverflow(); ask != "" {
+		notes = append(notes, ask)
+	}
 	return strings.Join(notes, "\n\n"), err
+}
+
+// notesOverflow asks the model, notesOverflowAsks compactions in a row at
+// most, to rewrite notes that outgrew what a compaction shows of them
+// (contextbuilder.NotesLimit), which it shows only the beginning and end of;
+// "" when they fit, or it asked enough.
+func (memory *sessionMemory) notesOverflow() string {
+	info, err := os.Stat(memory.notes)
+	if err != nil || info.Size() <= contextbuilder.NotesLimit {
+		memory.overflowAsks = 0
+		return ""
+	}
+	if memory.overflowAsks >= notesOverflowAsks {
+		return ""
+	}
+	memory.overflowAsks++
+	return fmt.Sprintf("Your notes in %s are %d KB, more than the %d KB a compaction shows: the message above shows only their beginning and end, and what is between is lost to you unless you read the file. Rewrite them shorter now, under %d KB: keep what the summary may lose and you must not (the task, the hypotheses and the evidence for and against them, the negative results, what you deferred and the next step), and drop what is done, superseded or kept elsewhere, such as in the code or the summaries.",
+		memory.notes, (info.Size()+500)/1000, contextbuilder.NotesLimit/1000, contextbuilder.NotesLimit/1000)
 }
 
 // snapshots reads the cockpit's records of the session's snapshots of the

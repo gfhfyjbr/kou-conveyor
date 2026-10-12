@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
@@ -21,7 +22,7 @@ import (
 type Memory struct {
 	// Notes is the file the model keeps notes in across compactions, and
 	// ReadNotes reads it; nil reads nothing. What it holds follows the
-	// summary, up to notesLimit bytes.
+	// summary, up to NotesLimit bytes (ShownNotes).
 	Notes     string
 	ReadNotes func() (string, error)
 	// Summaries is the file that keeps the summaries of the session's
@@ -30,11 +31,114 @@ type Memory struct {
 }
 
 const (
-	// notesLimit bounds what the message shows of the notes.
-	notesLimit = 16_000
+	// NotesLimit bounds what a message shows of the notes: notes longer
+	// show their beginning and end, and a mark between says how much of
+	// the middle is left out and where the whole file is.
+	NotesLimit = 32_000
 	// touchedLimit bounds the files the message lists.
 	touchedLimit = 20
 )
+
+// NotesUpdatePrefix starts the message that shows the notes again when they
+// changed since the conversation last showed them (NotesUpdate).
+const NotesUpdatePrefix = "[harness] Your notes changed since the conversation last showed them."
+
+// Compacted is the message that stands in for a compacted conversation, as
+// the run that compacted it made it: kept with the compaction and given to
+// Compact again, it is shown as it was by every run that restores the
+// session, rather than made anew from notes that changed since, which would
+// change the start of every request and lose the provider's cache of the
+// conversation.
+type Compacted struct {
+	// Message is the text of the message.
+	Message string
+	// Notes is what the message shows of the notes, "" when they were
+	// empty; nil when it shows none.
+	Notes *string
+}
+
+// ShownNotes is what a message shows of notes: all of them up to NotesLimit
+// bytes; past it, their beginning and end, cut at lines where they can be,
+// with a mark between that says how much is left out and where the whole
+// file, path, is.
+func ShownNotes(notes, path string) string {
+	notes = strings.TrimSpace(notes)
+	if len(notes) <= NotesLimit {
+		return notes
+	}
+	head, tail := NotesLimit*2/3, len(notes)-NotesLimit/3
+	// A cut falls at the end of a line within a few lines of the limit.
+	if at := strings.LastIndexByte(notes[:head], '\n'); at > head-2000 {
+		head = at
+	}
+	if at := strings.IndexByte(notes[tail:], '\n'); at >= 0 && at < 2000 {
+		tail += at + 1
+	}
+	for head > 0 && !utf8.RuneStart(notes[head]) {
+		head--
+	}
+	for tail < len(notes) && !utf8.RuneStart(notes[tail]) {
+		tail++
+	}
+	return notes[:head] + fmt.Sprintf("\n[… %s from the middle of the notes are left out here, of %s in all: the whole file is %s …]\n", kilobytes(tail-head), kilobytes(len(notes)), path) + notes[tail:]
+}
+
+// kilobytes says a size in kilobytes, the way a person would.
+func kilobytes(size int) string {
+	if size < 10_000 {
+		return fmt.Sprintf("%.1f KB", float64(size)/1000)
+	}
+	return fmt.Sprintf("%d KB", (size+500)/1000)
+}
+
+// readNotes is what a message would show of the notes now; nil when the
+// session keeps none.
+func (current *builder) readNotes() *string {
+	memory := current.memory
+	if memory.Notes == "" {
+		return nil
+	}
+	notes := ""
+	if memory.ReadNotes != nil {
+		if read, err := memory.ReadNotes(); err == nil {
+			notes = ShownNotes(read, memory.Notes)
+		}
+	}
+	return &notes
+}
+
+// NotesUpdate is a message that shows the notes as they are now, when they
+// changed since the conversation last showed them: a run that restores a
+// compacted conversation shows its compaction as it was, notes included,
+// and this tells the model what changed since. It reports false when
+// nothing did, or no compaction has shown the notes yet.
+func (current *builder) NotesUpdate() (string, bool) {
+	if current.shownNotes == nil {
+		return "", false
+	}
+	notes := current.readNotes()
+	if notes == nil || *notes == *current.shownNotes {
+		return "", false
+	}
+	if *notes == "" {
+		return NotesUpdatePrefix + " The file " + current.memory.Notes + " is empty now.", true
+	}
+	return NotesUpdatePrefix + " They are in " + current.memory.Notes + ", and read now:\n<notes>\n" + *notes + "\n</notes>", true
+}
+
+// notesIn reads the notes a message of NotesUpdate shows; false for any
+// other message.
+func notesIn(message string) (string, bool) {
+	if !strings.HasPrefix(message, NotesUpdatePrefix) {
+		return "", false
+	}
+	start := strings.Index(message, "\n<notes>\n")
+	end := strings.LastIndex(message, "\n</notes>")
+	if start < 0 || end < start+len("\n<notes>\n") {
+		return "", true
+	}
+	return message[start+len("\n<notes>\n") : end], true
+}
 
 // SetMemory says where what a compaction keeps besides the summary is.
 func (current *builder) SetMemory(memory Memory) {
@@ -137,22 +241,17 @@ func touchedFiles(items []llm.Item, earlier []touchedFile) []touchedFile {
 }
 
 // memoryText is what the message that stands in for a compacted
-// conversation says after the summary: the notes, the files the
-// conversation touched, and where to find what was compacted away.
-func (current *builder) memoryText() string {
+// conversation says after the summary: the notes, as readNotes reads them,
+// the files the conversation touched, and where to find what was compacted
+// away.
+func (current *builder) memoryText(notes *string) string {
 	var text strings.Builder
 	memory := current.memory
-	if memory.Notes != "" {
-		notes := ""
-		if memory.ReadNotes != nil {
-			if read, err := memory.ReadNotes(); err == nil {
-				notes = strings.TrimSpace(read)
-			}
-		}
-		if notes == "" {
-			fmt.Fprintf(&text, "\n\nYou keep notes across compactions in %s, which is empty so far. Write there what the summary may lose and you must not: the hypotheses you are testing, the evidence for and against them, the negative results, what you deferred and the next step. Each compaction shows the notes here.", memory.Notes)
+	if notes != nil {
+		if *notes == "" {
+			fmt.Fprintf(&text, "\n\nYou keep notes across compactions in %s, which is empty so far. Write there what the summary may lose and you must not: the hypotheses you are testing, the evidence for and against them, the negative results, what you deferred and the next step. Each compaction shows the notes here, up to %s; past that, only their beginning and end.", memory.Notes, kilobytes(NotesLimit))
 		} else {
-			fmt.Fprintf(&text, "\n\nYour notes, which you keep in %s across compactions; keep them current, since no compaction changes them:\n<notes>\n%s\n</notes>", memory.Notes, clip(notes, notesLimit))
+			fmt.Fprintf(&text, "\n\nYour notes, which you keep in %s across compactions; keep them current, since no compaction changes them:\n<notes>\n%s\n</notes>", memory.Notes, *notes)
 		}
 	}
 	if len(current.touched) != 0 {

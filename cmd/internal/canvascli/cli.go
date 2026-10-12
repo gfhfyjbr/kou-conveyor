@@ -56,6 +56,7 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
   kou-canvas self                                   who you are: node, canvas, access, brief
   kou-canvas view [--full] [--json]                 the nodes, where they are, how they are wired
   kou-canvas spawn <preset> [--title T] [--cmd C] [--cwd D] [--worktree [name]] [--base B]
+                   [--include a,b] [--link c]
                    [--prompt P] [--right-of|--below|--left-of|--above <node|self>]
                    [--x X --y Y --w W --h H] [--connect-to N] [--connect-from N] [--access A]
                                                     presets: shell, command, claude-code, codex,
@@ -69,7 +70,13 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
   kou-canvas keys <node> C-c Escape Up Enter …
   kou-canvas read <node> [--screen|--tail N|--output|--answer] [--wait idle|output|exit]
                   [--after N] [--timeout 600]
+  kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b]
+                      [--since RFC3339] [--until RFC3339] [--include notes,summaries]
+  kou-canvas search [<node>] <query> [--children] [--limit N]
   kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]
+  kou-canvas wait [<node> <node>…] [--until answer|idle|exit|any] [--after cursor]
+                                                    any of several nodes, your children when
+                                                    none is named; it prints the next cursor
   kou-canvas emit [--port out] [--title T] "text" [--data JSON]
   kou-canvas launch [--resume]                      start the harness of this terminal node
   kou-canvas hook claude|codex                      the hooks of Claude Code and Codex

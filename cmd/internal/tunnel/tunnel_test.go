@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -214,6 +215,35 @@ func TestTunnelCarriesRequests(t *testing.T) {
 				t.Errorf("socket read %q, %v", data, err)
 			}
 		})
+	}
+}
+
+// A cockpit of another protocol is turned away; the relay remembers what it
+// asked for, when it had the token.
+func TestRelayHearsAnotherProtocol(t *testing.T) {
+	r := start(t, false, true)
+	ask := func(token, protocol string) int {
+		req, _ := http.NewRequest(http.MethodGet, r.config.Base()+AgentPath, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set(ProtocolHeader, protocol)
+		resp, err := r.client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	if r.relay.Asked() != 0 {
+		t.Fatalf("asked before any cockpit: %d", r.relay.Asked())
+	}
+	if code := ask("another-token-of-enough-length", "7"); code != http.StatusUnauthorized || r.relay.Asked() != 0 {
+		t.Errorf("without the token: %d, asked %d", code, r.relay.Asked())
+	}
+	if code := ask(testToken, strconv.Itoa(Protocol+1)); code != http.StatusConflict || r.relay.Asked() != Protocol+1 {
+		t.Errorf("another protocol: %d, asked %d", code, r.relay.Asked())
+	}
+	if code := ask(testToken, "nonsense"); code != http.StatusConflict || r.relay.Asked() != Protocol+1 {
+		t.Errorf("no protocol: %d, asked %d", code, r.relay.Asked())
 	}
 }
 

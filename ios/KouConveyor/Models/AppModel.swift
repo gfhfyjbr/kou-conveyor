@@ -19,7 +19,7 @@ final class AppModel {
     }
 
     enum Tab: Hashable {
-        case sessions, canvases, relay
+        case sessions, canvases, files, accounts, relay
     }
 
     private(set) var relay: RelayConfig?
@@ -29,6 +29,15 @@ final class AppModel {
     private(set) var workspaces: [Workspace] = []
     private(set) var tunnel: TunnelStatus?
     private(set) var workspaceID: String?
+    /// The cockpit's settings: the effort and its levels, its model.
+    private(set) var config: CockpitConfig?
+    /// What runs go with: the effort, the tools, the sandbox.
+    private(set) var preferences: Preferences?
+    /// A preference being saved, shown as chosen until the cockpit has it.
+    private(set) var saving: PreferencesChange?
+    private var settingsAt: Date?
+    /// The models of each workspace, and when they were asked for.
+    private var catalogs: [String: (catalog: ModelCatalog, at: Date)] = [:]
     /// Changes with the relay: screens of the one before start over.
     private(set) var generation = 0
     var tab: Tab = .sessions
@@ -76,6 +85,7 @@ final class AppModel {
         generation += 1
         workspaces = []
         tunnel = nil
+        forgetSettings()
         apply(health)
         tab = .sessions
         await refresh()
@@ -88,8 +98,17 @@ final class AppModel {
         health = nil
         workspaces = []
         tunnel = nil
+        forgetSettings()
         link = .checking
         generation += 1
+    }
+
+    private func forgetSettings() {
+        config = nil
+        preferences = nil
+        saving = nil
+        settingsAt = nil
+        catalogs = [:]
     }
 
     /// A link opened from outside: the Camera app read the pairing code,
@@ -133,6 +152,9 @@ final class AppModel {
             guard generation == self.generation else { return }
             self.workspaces = list.filter { $0.missing != true }
             self.tunnel = status
+            if settingsAt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
+                await loadSettings()
+            }
         } catch is CancellationError {
         } catch let error as RelayError where error == .cockpitOffline {
             guard generation == self.generation else { return }
@@ -166,5 +188,97 @@ final class AppModel {
     private func apply(_ health: RelayHealth) {
         self.health = health
         link = health.agent == true ? .online : .cockpitOffline
+    }
+
+    // MARK: Settings
+
+    /// The levels of effort, as the cockpit's page has them.
+    static let effortLevels = ["low", "medium", "high", "xhigh", "max"]
+
+    /// loadSettings asks the cockpit for its settings and its preferences.
+    func loadSettings() async {
+        guard let client else { return }
+        let generation = self.generation
+        async let config: CockpitConfig? = try? client.get("/api/config")
+        async let preferences: Preferences? = try? client.get("/api/preferences")
+        let (settings, chosen) = await (config, preferences)
+        guard generation == self.generation else { return }
+        if let settings { self.config = settings }
+        if let chosen { self.preferences = chosen }
+        settingsAt = Date()
+    }
+
+    var effortLevels: [String] {
+        if let levels = config?.thinkingLevels, !levels.isEmpty { return levels }
+        return Self.effortLevels
+    }
+
+    /// The effort of the next runs: the one chosen in either cockpit, else
+    /// the server's own.
+    var effort: String {
+        knownEffort ?? "high"
+    }
+
+    /// The effort, once the cockpit said it: what a run is sent with.
+    var knownEffort: String? {
+        saving?.effort ?? preferences?.effort ?? config?.thinking
+    }
+
+    var toolProfile: String? { saving?.toolProfile ?? preferences?.toolProfile }
+    var sandbox: String? { saving?.sandbox ?? preferences?.sandbox }
+
+    /// save keeps a preference in the cockpit, for its page and the terminal
+    /// cockpit too; it says what went wrong.
+    @discardableResult
+    func save(_ change: PreferencesChange) async -> String? {
+        guard let client else { return "This iPhone is not paired with a relay." }
+        saving = change
+        defer { saving = nil }
+        do {
+            let saved: Preferences = try await client.send("PUT", "/api/preferences", body: change)
+            preferences = saved
+            return nil
+        } catch {
+            noticed(error)
+            return error.localizedDescription
+        }
+    }
+
+    // MARK: Models
+
+    /// The models of a workspace, as last asked for.
+    func catalog(_ workspace: String) -> ModelCatalog? {
+        catalogs[workspace]?.catalog
+    }
+
+    /// loadCatalog asks for the models of a workspace, unless it did a
+    /// moment ago; fresh asks the providers again. It says what went wrong.
+    @discardableResult
+    func loadCatalog(_ workspace: String, fresh: Bool = false) async -> String? {
+        guard let client else { return nil }
+        if !fresh, let known = catalogs[workspace], Date().timeIntervalSince(known.at) < 120 { return nil }
+        do {
+            let catalog: ModelCatalog = try await client.get(API.workspace(workspace, "models"),
+                                                             query: fresh ? [URLQueryItem(name: "fresh", value: "1")] : [])
+            catalogs[workspace] = (catalog, Date())
+            return catalog.error.flatMap { $0.isEmpty ? nil : $0 }
+        } catch is CancellationError {
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// The model a workspace's runs take unless one is chosen.
+    func defaultModel(_ workspace: String) -> String? {
+        if let model = catalog(workspace)?.defaultModel, !model.isEmpty { return model }
+        if let model = workspaces.first(where: { $0.id == workspace })?.connection?.model, !model.isEmpty { return model }
+        return config?.model
+    }
+
+    /// How a model reads: its name, else its ID.
+    func modelTitle(_ id: String?, in workspace: String) -> String {
+        guard let id, !id.isEmpty else { return "Default model" }
+        return catalog(workspace)?.find(id)?.title ?? id
     }
 }

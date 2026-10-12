@@ -51,6 +51,24 @@ type Fork struct {
 type ModelResponse struct {
 	TurnID   session.TurnID
 	Response llm.Response
+	// Compacted is kept with the response of a compaction turn: the message
+	// that stood in for the conversation the compaction summarized, as the
+	// run that received the summary made it (Compacted). Responses of other
+	// turns, and compactions recorded before it was kept, have none.
+	Compacted *Compacted `json:",omitzero"`
+}
+
+// Compacted is the message that stands in for a compacted conversation,
+// kept so that every run that restores the session shows it as it was. Made
+// anew, it would show the notes as they are by then: the start of every
+// request would change with them, and the provider's cache of the whole
+// conversation would be lost.
+type Compacted struct {
+	// Message is the text of the message.
+	Message string
+	// Notes is what the message shows of the model's notes, "" when they
+	// are empty; nil when it shows none.
+	Notes *string `json:",omitzero"`
 }
 
 type ToolCallStatus struct {

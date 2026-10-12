@@ -30,6 +30,9 @@ func skillsOf(t *testing.T, listing map[string]any) map[string]map[string]any {
 func TestPluginListingHasTheSkills(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Run from a cockpit, the tests inherit its tunnel's file, which brings
+	// in the built-in tunnel-agent and its skill.
+	t.Setenv("KOU_CONVEYOR_TUNNEL_CONFIG", "")
 	h := newHarness(t)
 	h.server.watch.interval = 20 * time.Millisecond
 	ws := h.server.workspaces.startup()

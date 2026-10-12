@@ -42,6 +42,10 @@ const NoSteer = "COCKPITTEST_NO_STEER"
 // files: it turns a request with files away, as the runner does.
 const NoLinks = "COCKPITTEST_NO_LINKS"
 
+// NoStop, set to 1, makes the fake runner one built before runners took the
+// line that stops them and says why: it is only interrupted.
+const NoStop = "COCKPITTEST_NO_STOP"
+
 // Main turns the test binary into a fake runner when a test launched it
 // through Runner. Call it first in TestMain.
 func Main() {
@@ -54,7 +58,9 @@ func Main() {
 // Runner returns an executable that behaves like kou-conveyor-runner and
 // persists sessions in the runner's file format. The prompt picks the script:
 //
-//   - "wait": start a turn and block until interrupted;
+//   - "wait": start a turn and block until interrupted; with -steer, a
+//     stop line on stdin ({"stop": {"reason": string}}) is recorded as the
+//     runner records one, as a hard stop with its reason, once interrupted;
 //   - "fail": report an error event and exit 1;
 //   - "crash": write to stderr and exit 2 without an event;
 //   - "tool": run one Bash call before answering;
@@ -112,6 +118,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if os.Getenv(NoLinks) != "1" {
 			fmt.Fprintln(stderr, "  messages: … files: array of {path: string, start_line?: integer, end_line?: integer, label?: string}")
 		}
+		if os.Getenv(NoSteer) != "1" && os.Getenv(NoStop) != "1" {
+			fmt.Fprintln(stderr, `  stop: {"stop": {"reason": string}} stops the run, which records why`)
+		}
 	}
 	if err := flags.Parse(args); err != nil {
 		return 2
@@ -167,6 +176,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "panic: fake crash")
 		return 2
 	}
+	// Front-ends interrupt a waiting run once they see its prompt recorded:
+	// the signal is caught from the start, as the runner catches it.
+	var interrupted chan os.Signal
+	if strings.Contains(script, "wait") {
+		interrupted = make(chan os.Signal, 1)
+		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+	}
 
 	s, err := openStore(*sessions, request.SessionID, stdout)
 	if err != nil {
@@ -204,10 +220,26 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		}})
 		return 0
 	}
-	if strings.Contains(script, "wait") {
-		interrupted := make(chan os.Signal, 1)
-		signal.Notify(interrupted, os.Interrupt, syscall.SIGTERM)
+	if interrupted != nil {
+		if !*steer || os.Getenv(NoStop) == "1" {
+			<-interrupted
+			return 130
+		}
+		stops := make(chan string, 1)
+		go func() {
+			if reason, ok := receiveStop(decoder); ok {
+				stops <- reason
+			}
+		}()
 		<-interrupted
+		// The cockpit says why before it interrupts, but the line can reach
+		// the runner after the signal, which the runner waits a moment for.
+		select {
+		case reason := <-stops:
+			control, _ := json.Marshal(inbox.ControlMessage{Mode: inbox.StopHard, Reason: reason})
+			s.emit(sessionstore.ItemInput, inbox.Input{ID: inbox.ID(uuid.New().String()), Kind: inbox.InputControl, Payload: control})
+		case <-time.After(500 * time.Millisecond):
+		}
 		return 130
 	}
 	if strings.Contains(script, "gate") {
@@ -573,13 +605,33 @@ func promptPayload(text string, images []requestImage, files []contextbuilder.Li
 	return payload
 }
 
-// receive waits a while for a message on stdin.
+// receiveStop reads stdin up to a stop line and reports its reason.
+func receiveStop(decoder *jsontext.Decoder) (string, bool) {
+	for {
+		var line struct {
+			Stop *struct {
+				Reason string `json:"reason"`
+			} `json:"stop"`
+		}
+		if json.UnmarshalDecode(decoder, &line) != nil {
+			return "", false
+		}
+		if line.Stop != nil {
+			return line.Stop.Reason, true
+		}
+	}
+}
+
+// receive waits a while for a message on stdin. A stop line is no message.
 func receive(decoder *jsontext.Decoder) (steeringMessage, bool) {
 	received := make(chan steeringMessage, 1)
 	go func() {
-		var message steeringMessage
-		if json.UnmarshalDecode(decoder, &message) == nil {
-			received <- message
+		var message struct {
+			steeringMessage
+			Stop jsontext.Value `json:"stop"`
+		}
+		if json.UnmarshalDecode(decoder, &message) == nil && message.Stop == nil {
+			received <- message.steeringMessage
 		}
 	}()
 	select {

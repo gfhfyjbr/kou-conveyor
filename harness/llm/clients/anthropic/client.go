@@ -202,6 +202,9 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 				// thinking this response returns is rejected in turn.
 				response.Output = append([]llm.Item{thinkingReset()}, response.Output...)
 			}
+			llm.ReportPrefix(ctx, func() llm.PrefixReport {
+				return llm.PrefixReport{Model: string(params.Model), Response: response.ID, Usage: response.Usage, Prefix: prefixOf(params)}
+			})
 			return response, nil
 		}
 		if ctx.Err() != nil {

@@ -1,10 +1,18 @@
 import SwiftUI
+import UIKit
 
 /// SessionRoute opens a session: one of the list, or a new one.
 struct SessionRoute: Hashable {
     let workspace: String
     let id: String
     let fresh: Bool
+    /// What the composer starts with: the prompt of a session branched.
+    var seed: Seed? = nil
+
+    struct Seed: Hashable {
+        let prompt: String
+        var images: [PromptImage] = []
+    }
 }
 
 /// SessionsScreen is the Sessions tab: the workspace's sessions, and the
@@ -22,7 +30,7 @@ struct SessionsScreen: View {
             .navigationTitle("Sessions")
             .navigationDestination(for: SessionRoute.self) { route in
                 if let client = app.client {
-                    SessionScreen(client: client, route: route)
+                    SessionScreen(client: client, route: route) { path.append($0) }
                 }
             }
         }
@@ -65,6 +73,8 @@ struct SessionList: View {
     let workspace: Workspace
     @State private var query = ""
     @State private var deleting: SessionSummary?
+    @State private var renaming: SessionSummary?
+    @State private var title = ""
 
     init(client: RelayClient, workspace: Workspace, path: Binding<[SessionRoute]>) {
         _model = State(initialValue: SessionsModel(client: client, workspace: workspace.id))
@@ -128,6 +138,31 @@ struct SessionList: View {
         } message: { _ in
             Text("Its transcript is deleted from the computer the cockpit runs on.")
         }
+        .alert("Rename the session", isPresented: Binding(
+            get: { renaming != nil }, set: { if !$0 { renaming = nil } }
+        ), presenting: renaming) { session in
+            TextField("Title", text: $title)
+            Button("Rename") {
+                let title = title
+                Task {
+                    do { try await model.rename(session, to: title) } catch { app.noticed(error) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Empty, it takes the first prompt for its title again.")
+        }
+    }
+
+    private func rename(_ session: SessionSummary) {
+        title = session.title
+        renaming = session
+    }
+
+    private func pin(_ session: SessionSummary) {
+        Task {
+            do { try await model.setPinned(session, session.pinned != true) } catch { app.noticed(error) }
+        }
     }
 
     private var subtitle: String {
@@ -184,9 +219,28 @@ struct SessionList: View {
             }
             .padding(.vertical, 2)
         }
+        .swipeActions(edge: .leading) {
+            Button(session.pinned == true ? "Unpin" : "Pin", systemImage: session.pinned == true ? "pin.slash" : "pin") {
+                pin(session)
+            }
+            .tint(.orange)
+        }
         .swipeActions(edge: .trailing) {
             if !session.running {
                 Button("Delete", systemImage: "trash", role: .destructive) { deleting = session }
+            }
+            Button("Rename", systemImage: "pencil") { rename(session) }
+                .tint(.indigo)
+        }
+        .contextMenu {
+            Button("Rename…", systemImage: "pencil") { rename(session) }
+            Button(session.pinned == true ? "Unpin" : "Pin", systemImage: session.pinned == true ? "pin.slash" : "pin") {
+                pin(session)
+            }
+            Button("Copy session ID", systemImage: "doc.on.doc") { UIPasteboard.general.string = session.id }
+            if !session.running {
+                Divider()
+                Button("Delete…", systemImage: "trash", role: .destructive) { deleting = session }
             }
         }
     }

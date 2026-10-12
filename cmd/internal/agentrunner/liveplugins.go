@@ -61,6 +61,18 @@ func (live *liveTool) Translate(ctx tool.Context, call llm.ToolCall) tool.CallSt
 	return current.Translate(ctx, call)
 }
 
+// Waits says whether the tool's calls wait (tool.Waiter), as the plugin
+// that gives it says now, or said last.
+func (live *liveTool) Waits() bool {
+	live.mu.RLock()
+	translator := live.current
+	if translator == nil {
+		translator = live.last
+	}
+	live.mu.RUnlock()
+	return translator != nil && tool.Waits(translator)
+}
+
 func (live *liveTool) TranslateResult(callID string, status tool.CallStatus, operations []operation.Operation) (llm.ToolResult, error) {
 	live.mu.RLock()
 	translator := live.current
@@ -338,6 +350,7 @@ func pluginTool(current plugin.Plugin, definition plugin.Tool, sessionID session
 		Tool: model, Command: run, Directory: workspace, BaseDirectory: operations,
 		MaxOutputLength: definition.MaxOutputLength,
 		Environment:     pluginEnvironment(current, sessionID, workspace),
+		Waits:           definition.Waits,
 	})
 	return model, translator, err
 }

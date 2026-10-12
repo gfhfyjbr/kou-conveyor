@@ -17,6 +17,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -36,11 +37,13 @@ type options struct {
 	listen, dir, tlsMode, certFile, keyFile string
 	names                                   []string
 	printConfig, printVersion               bool
+	update, updateURL                       string
+	updateEvery                             time.Duration
 }
 
 func parse(args []string, output io.Writer) (options, error) {
 	var o options
-	var names string
+	var names, every string
 	f := flag.NewFlagSet(tunnel.Name, flag.ContinueOnError)
 	f.SetOutput(output)
 	f.StringVar(&o.listen, "listen", envOr("KOU_RELAY_LISTEN", ":"+strconv.Itoa(tunnel.DefaultPort)), "address to listen on (also KOU_RELAY_LISTEN)")
@@ -51,11 +54,24 @@ func parse(args []string, output io.Writer) (options, error) {
 	f.StringVar(&names, "names", "", "comma-separated host names and addresses the self-signed certificate is made for")
 	f.BoolVar(&o.printConfig, "print-config", false, "make the token and the certificate when there are none, print what a cockpit needs as JSON, and exit")
 	f.BoolVar(&o.printVersion, "version", false, "print the version and exit")
+	f.StringVar(&o.update, "update", envOr("KOU_RELAY_UPDATE", "on"), "on: take the newer builds of the relay CI publishes, as they come, and run them in its stead; off: stay as built (also KOU_RELAY_UPDATE)")
+	f.StringVar(&o.updateURL, "update-url", envOr("KOU_RELAY_UPDATE_URL", defaultUpdateURL), "the manifest that names the newest build (also KOU_RELAY_UPDATE_URL)")
+	f.StringVar(&every, "update-every", envOr("KOU_RELAY_UPDATE_EVERY", "5m"), "how often to read the manifest (also KOU_RELAY_UPDATE_EVERY)")
 	if err := f.Parse(args); err != nil {
 		return o, err
 	}
 	if f.NArg() != 0 {
 		return o, errors.New("unexpected arguments")
+	}
+	if o.update != "on" && o.update != "off" {
+		return o, fmt.Errorf("-update must be on or off, not %q", o.update)
+	}
+	if u, err := url.Parse(o.updateURL); err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+		return o, fmt.Errorf("-update-url must be an http(s) URL, not %q", o.updateURL)
+	}
+	var err error
+	if o.updateEvery, err = parseEvery(every); err != nil {
+		return o, err
 	}
 	for name := range strings.SplitSeq(names, ",") {
 		if name = strings.TrimSpace(name); name != "" {
@@ -161,16 +177,48 @@ func run(args []string) int {
 	if o.tlsMode == "off" {
 		logger.Printf("warning: plain HTTP; the token crosses the network as it is: use it behind TLS or on a private network")
 	}
+	if from := os.Getenv(updatedFrom); from != "" {
+		logger.Printf("update: in the place of %s now", from)
+		os.Unsetenv(updatedFrom)
+	}
+	var u *updater
+	updated := make(chan string, 1)
+	if o.update == "on" {
+		if exe, err := executable(); err != nil {
+			logger.Printf("update: off: the relay's own file is not known: %v", err)
+		} else {
+			u = newUpdater(o.updateURL, o.updateEvery, exe, args, certificate != nil, relay.Asked, logger.Printf)
+			go func() {
+				if version, ok := u.run(ctx); ok {
+					updated <- version
+				}
+			}()
+			logger.Printf("update: looks for newer builds every %s at %s", o.updateEvery, o.updateURL)
+		}
+	}
+	var version string
 	select {
 	case err := <-served:
 		fmt.Fprintln(os.Stderr, tunnel.Name+":", err)
 		return 1
 	case <-ctx.Done():
+	case version = <-updated:
+		logger.Printf("update: %s is in place: the relay restarts as it", version)
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	relay.Close()
 	_ = server.Shutdown(shutdown)
+	if version != "" {
+		err := execute(u.exe, currentVersion())
+		// Here only when the build did not start: the relay goes back to
+		// itself, and a service manager starts it again.
+		logger.Printf("update: %s did not start (%v): back to %s", version, err, currentVersion())
+		if err := u.restore(); err != nil {
+			logger.Printf("update: %v", err)
+		}
+		return 1
+	}
 	return 0
 }
 

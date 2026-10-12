@@ -435,6 +435,9 @@ func TestTranslatorPassesTheTimeoutAlong(t *testing.T) {
 	if _, input := submitted(`{"command":"true","timeout":0}`); input.Timeout != 0 {
 		t.Fatalf("timeout = %v", input.Timeout)
 	}
+	if _, input := submitted(`{"command":"true","timeout":"600"}`); input.Timeout != 600 {
+		t.Fatalf("timeout written as a string = %v", input.Timeout)
+	}
 	for _, bad := range []string{`{"command":"true","timeout":-1}`, `{"command":"true","timeout":"soon"}`, `{"command":"true","timeout":99999999}`} {
 		if status, _ := submitted(bad); status.Error == "" {
 			t.Fatalf("%s was accepted", bad)

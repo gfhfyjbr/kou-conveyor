@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -64,6 +65,10 @@ func newFakeCanvas(t *testing.T) *fakeCanvas {
 			io.WriteString(w, `{"message":{"id":"m_1","state":"delivered"},"node":"n_new","outputs":2,"answered":true,"answer":"pong\n","status":{"state":"idle"}}`)
 		case strings.HasSuffix(r.URL.Path, "/send"):
 			io.WriteString(w, `{"message":{"id":"m_1","state":"pending"},"node":"n_new","outputs":2}`)
+		case r.URL.Path == "/api/canvas/wait":
+			io.WriteString(w, `{"fired":"n_new","until":"answer","next":"n_new:3,n_b:0","nodes":[
+				{"node":"n_new","title":"worker","status":{"state":"idle"},"outputs":3},
+				{"node":"n_b","title":"tests","status":{"state":"busy","activity":"go test"},"outputs":0}]}`)
 		case r.URL.Path == "/api/canvas/emit":
 			io.WriteString(w, `{"ok":true}`)
 		case r.URL.Path == "/api/canvas/self":
@@ -123,7 +128,7 @@ func TestToolSchemasAreObjects(t *testing.T) {
 
 func TestSpawnFromTheCommandLine(t *testing.T) {
 	f := newFakeCanvas(t)
-	code, out, errOut := f.run(t, "", "spawn", "codex", "--title", "worker", "--worktree", "fix-a", "--right-of", "self", "--prompt", "Fix it", "--connect-to", "self")
+	code, out, errOut := f.run(t, "", "spawn", "codex", "--title", "worker", "--worktree", "fix-a", "--include", "vendor, tools/oracle", "--right-of", "self", "--prompt", "Fix it", "--connect-to", "self")
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut)
 	}
@@ -138,7 +143,8 @@ func TestSpawnFromTheCommandLine(t *testing.T) {
 	node := op["node"].(map[string]any)
 	config := node["config"].(map[string]any)
 	if op["op"] != "node.add" || node["preset"] != "codex" || node["title"] != "worker" || node["near"] != "self" || node["side"] != "right" ||
-		node["prompt"] != "Fix it" || config["worktree"].(map[string]any)["name"] != "fix-a" || node["connect"].(map[string]any)["to"] != "self" {
+		node["prompt"] != "Fix it" || config["worktree"].(map[string]any)["name"] != "fix-a" || node["connect"].(map[string]any)["to"] != "self" ||
+		fmt.Sprint(config["worktree"].(map[string]any)["include"]) != "[vendor tools/oracle]" || config["worktree"].(map[string]any)["link"] != nil {
 		t.Fatalf("node = %v", node)
 	}
 }
@@ -151,7 +157,18 @@ func TestSpawnAnAgentInAWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	node := f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
-	if node["kind"] != "agent" || node["preset"] != nil || node["config"].(map[string]any)["sandbox"] != "worktree" || node["x"] != 100.0 || node["y"] != -40.0 {
+	if node["kind"] != "agent" || node["preset"] != nil || node["config"].(map[string]any)["sandbox"] != "worktree" || node["x"] != 100.0 || node["y"] != -40.0 ||
+		node["config"].(map[string]any)["worktree"] != nil {
+		t.Fatalf("node = %v", node)
+	}
+	// What its worktree gets beside git's files: a list, or one string.
+	if _, err := tool.call(context.Background(), c, []byte(`{"preset":"agent","title":"builder","include":["vendor/"],"link":"fonts,tools/oracle"}`)); err != nil {
+		t.Fatal(err)
+	}
+	node = f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
+	config := node["config"].(map[string]any)
+	spec, _ := config["worktree"].(map[string]any)
+	if config["sandbox"] != "worktree" || fmt.Sprint(spec["include"]) != "[vendor/]" || fmt.Sprint(spec["link"]) != "[fonts tools/oracle]" || spec["name"] != nil {
 		t.Fatalf("node = %v", node)
 	}
 	if _, err := tool.call(context.Background(), c, []byte(`{"title":"x"}`)); err == nil {
@@ -198,6 +215,38 @@ func TestReadWaitsOnTheServer(t *testing.T) {
 	}
 	if !strings.HasPrefix(out, "n_new · exited (exit 1) · 2 lines\n--- FAIL: TestX") {
 		t.Fatalf("output:\n%s", out)
+	}
+}
+
+func TestWaitForSeveralNodes(t *testing.T) {
+	f := newFakeCanvas(t)
+	tool, _ := toolNamed("CanvasWait")
+	c := &client{base: f.server.URL, token: "kc1.test", http: f.server.Client()}
+	for _, args := range []string{`{"nodes":["worker","tests"],"after":"n_new:2","timeout_s":"120"}`, `{"nodes":"worker, tests","after":"n_new:2","timeout_s":120}`} {
+		res, err := tool.call(context.Background(), c, []byte(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if requests := f.take(); len(requests) != 1 || requests[0].path != "/api/canvas/wait" || requests[0].query != "after=n_new%3A2&nodes=worker%2Ctests&timeout=120" {
+			t.Fatalf("%s: requests = %+v", args, requests)
+		}
+		for _, want := range []string{"answer: n_new «worker».", "n_b «tests» · busy (go test) · 0 outputs", "next: n_new:3,n_b:0"} {
+			if !strings.Contains(res.text, want) {
+				t.Fatalf("no %q in:\n%s", want, res.text)
+			}
+		}
+	}
+	// The command line waits for the children when no node is named; for
+	// one node as before.
+	if code, _, errOut := f.run(t, "", "wait", "--until", "idle"); code != 0 {
+		t.Fatal(errOut)
+	}
+	if requests := f.take(); len(requests) != 1 || requests[0].path != "/api/canvas/wait" || requests[0].query != "timeout=600&until=idle" {
+		t.Fatalf("requests = %+v", requests)
+	}
+	f.run(t, "", "wait", "n_new", "--until", "output", "--after", "2")
+	if requests := f.take(); len(requests) != 1 || requests[0].path != "/api/canvas/nodes/n_new/wait" {
+		t.Fatalf("requests = %+v", requests)
 	}
 }
 

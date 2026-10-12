@@ -159,6 +159,9 @@ func runMain(args []string) int {
 	if len(args) > 0 && args[0] == "tunnel" {
 		return tunnelMain(args[1:], os.Stdout, os.Stderr)
 	}
+	if len(args) > 0 && args[0] == "metrics" {
+		return metricsMain(args[1:], os.Stdout, os.Stderr)
+	}
 	o, err := parseOptions(args, os.Stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
@@ -211,6 +214,10 @@ func runMain(args []string) int {
 	}
 	if n := len(s.workspaces.all()) - 1; n > 0 {
 		fmt.Printf("                  and %d more added in the browser\n", n)
+	}
+	if dir := sessionLinksDir(o.SettingsFile); dir != "" {
+		fmt.Printf("sessions          %s (every workspace's, linked, with index.json)\n", display(dir))
+		go s.keepSessionLinks(ctx, &sessionLinks{dir: dir})
 	}
 	if s.gateway != nil {
 		status := s.gateway.Status()

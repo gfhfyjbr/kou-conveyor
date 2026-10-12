@@ -7,11 +7,12 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"math"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg"
 )
 
 // Tool is a tool of the canvas: one model for the agents' plugin
@@ -21,7 +22,11 @@ type Tool struct {
 	Description string
 	// Schema is the JSON schema of its arguments, an object.
 	Schema string
-	run    func(ctx context.Context, c *client, args jsontext.Value) (result, error)
+	// Waits says that its calls may wait for other nodes: while all that
+	// runs of an agent is such calls, the harness does not ask the agent
+	// for progress reports (plugin.Tool's waits).
+	Waits bool
+	run   func(ctx context.Context, c *client, args jsontext.Value) (result, error)
 }
 
 // result is what a tool answers: text for the agent, and what the server
@@ -91,6 +96,8 @@ var tools = []Tool{
 			`"cwd":{"type":"string","description":"The directory a terminal starts in, relative to the workspace or to its worktree."},` +
 			`"worktree":{"type":"string","description":"Work in a git worktree of its own, made when missing: its name, its branch kou/<name>. One writer per worktree. A kou agent's worktree is named after its session, whatever the name."},` +
 			`"base":{"type":"string","description":"The branch or commit a new worktree starts from; HEAD by default."},` +
+			`"include":{"type":"array","items":{"type":"string"},"description":"Paths of the workspace git does not carry (vendor/, a tool's folder, fonts) to copy into its worktree, which gets the submodules of the user's checkout by itself."},` +
+			`"link":{"type":"array","items":{"type":"string"},"description":"Such paths to link into its worktree instead of copying: shared with the user's checkout, for big things nobody writes."},` +
 			`"prompt":{"type":"string","description":"Its first prompt, sent once it runs; for a note, its text."},` +
 			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: model, effort, instructions for an agent; permission_mode for claude-code."},` +
 			`"access":{"type":"string","enum":["none","observe","talk","build"],"description":"What its program may do on the canvas: talk by default for what an agent makes; build lets it make nodes too."},` +
@@ -192,6 +199,7 @@ var tools = []Tool{
 			`"keys":{"type":"array","items":{"type":"string"},"description":"Keys to press after the text, as tmux names them: Enter, Tab, Escape, BSpace, Up, Down, Left, Right, Home, End, C-c, M-x, F1…"},` +
 			`"when":{"type":"string","enum":["idle","now"],"description":"idle (the default) waits until the node is idle; now gives it at once: an agent at work reads it after its current step."}` +
 			`},"required":["node"]}`,
+		Waits: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a sendArgs
 			if err := decodeArgs("CanvasSend", args, &a); err != nil {
@@ -213,12 +221,77 @@ var tools = []Tool{
 			`"after":{"type":"integer","description":"With wait output: the count of outputs CanvasSend answered, so that an output given meanwhile counts."},` +
 			`"timeout_s":{"type":"integer","description":"How long to wait at most, in seconds: 600 by default."}` +
 			`},"required":["node"]}`,
+		Waits: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a readArgs
 			if err := decodeArgs("CanvasRead", args, &a); err != nil {
 				return result{}, err
 			}
 			return c.read(ctx, a)
+		},
+	},
+	{
+		Name: "CanvasTranscript",
+		Description: "Read a node's raw, structured transcript incrementally: user prompts, assistant text, reasoning, tool calls and their full bounded outcomes, notices and harness or canvas messages. " +
+			"Use after from the previous answer, or after=last to use the server's cursor for this reader and node; filter by kinds, tools and time, and request notes or summaries when diagnosing a stall. " +
+			"This reads new records rather than polling or re-reading the whole session.",
+		Schema: `{"type":"object","properties":{` +
+			`"node":{"type":"string","description":"The node whose raw transcript to read: its ID, title, or self."},` +
+			`"after":{"type":"string","description":"The byte cursor from the previous answer, or last for the server's saved cursor for this reader and node."},` +
+			`"limit":{"type":"integer","description":"Maximum entries: 50 by default, 500 at most."},` +
+			`"kinds":{"type":"array","items":{"type":"string","enum":["user","assistant","reasoning","tool","notice","error","compaction","heartbeat","peer"]},"description":"Only these entry kinds."},` +
+			`"tools":{"type":"array","items":{"type":"string"},"description":"Only tool entries with these names."},` +
+			`"since":{"type":"string","description":"Only entries at or after this RFC3339 time."},` +
+			`"until":{"type":"string","description":"Only entries at or before this RFC3339 time."},` +
+			`"message_limit":{"type":"integer","description":"Maximum bytes of message, reasoning and detail fields: 8 KiB by default."},` +
+			`"output_limit":{"type":"integer","description":"Maximum bytes of tool output, stderr and error fields: 4 KiB by default."},` +
+			`"include":{"type":"array","items":{"type":"string","enum":["notes","summaries"]},"description":"Include the durable notes or recent summaries beside the entries."}` +
+			`},"required":["node"]}`,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a transcriptArgs
+			if err := decodeArgs("CanvasTranscript", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.transcript(ctx, a)
+		},
+	},
+	{
+		Name: "CanvasSearch",
+		Description: "Search a node's persisted raw transcript with a case-insensitive regular expression, showing matching lines with context. " +
+			"Use nodes=children to search all nodes you look after; this is for locating evidence, while CanvasTranscript reads the structured incremental feed.",
+		Schema: `{"type":"object","properties":{` +
+			`"node":{"type":"string","description":"The node to search: its ID, title, or self; with nodes=children it is the parent context."},` +
+			`"nodes":{"type":"string","enum":["children"],"description":"Search all of your children instead of only node."},` +
+			`"q":{"type":"string","description":"A case-insensitive regular expression to find."},` +
+			`"limit":{"type":"integer","description":"Maximum matches: 20 by default, 200 at most."}` +
+			`},"required":["q"]}`,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a searchArgs
+			if err := decodeArgs("CanvasSearch", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.search(ctx, a)
+		},
+	},
+	{
+		Name: "CanvasWait",
+		Description: "Wait for any of several nodes — your children by default: the nodes you made and those you are wired to — instead of polling or sleeping. " +
+			"until answer (the default): one of them gives an output, an agent's answer; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. " +
+			"It answers which node it was, with the state of each; pass its next as after to the next wait, so that nothing given meanwhile is missed. " +
+			"No need to wait at all for an answer to come back: end your turn, and the answer wakes you as a message.",
+		Schema: `{"type":"object","properties":{` +
+			`"nodes":{"type":"array","items":{"type":"string"},"description":"The nodes: their IDs (n_…) or titles. Your children when not given."},` +
+			`"until":{"type":"string","enum":["answer","idle","exit","any"],"description":"What ends the wait: answer (the default), idle, exit or any."},` +
+			`"after":{"type":"string","description":"The next the last wait answered: outputs given since count, those before do not."},` +
+			`"timeout_s":{"type":"integer","description":"How long to wait at most, in seconds: 600 by default, 1800 at most."}` +
+			`}}`,
+		Waits: true,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a waitArgs
+			if err := decodeArgs("CanvasWait", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.waitAny(ctx, a)
 		},
 	},
 	{
@@ -242,15 +315,15 @@ var tools = []Tool{
 	},
 }
 
-// number is a number of a tool's arguments, which models write as 100 or
-// 100.0 alike.
-type number = *float64
+// number is a number of a tool's arguments, which models write as 100,
+// 100.0 or "100" alike; nil when it is not given.
+type number = *toolarg.Number
 
 func intOf(n number) *int {
 	if n == nil {
 		return nil
 	}
-	v := int(math.Round(*n))
+	v := n.Rounded()
 	return &v
 }
 
@@ -266,6 +339,8 @@ type spawnArgs struct {
 	Cwd      string         `json:"cwd"`
 	Worktree jsontext.Value `json:"worktree"`
 	Base     string         `json:"base"`
+	Include  nodeList       `json:"include"`
+	Link     nodeList       `json:"link"`
 	Prompt   string         `json:"prompt"`
 	Config   jsontext.Value `json:"config"`
 	Access   string         `json:"access"`
@@ -342,6 +417,31 @@ type readArgs struct {
 	Wait     string `json:"wait"`
 	After    number `json:"after"`
 	TimeoutS number `json:"timeout_s"`
+}
+
+type waitArgs struct {
+	Nodes    nodeList `json:"nodes"`
+	Until    string   `json:"until"`
+	After    string   `json:"after"`
+	TimeoutS number   `json:"timeout_s"`
+}
+
+// nodeList is the nodes of a tool's arguments, which models write as a
+// list or as one string, "a, b".
+type nodeList []string
+
+func (l *nodeList) UnmarshalJSON(data []byte) error {
+	var list []string
+	if err := json.Unmarshal(data, &list); err == nil {
+		*l = list
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(data, &one); err != nil {
+		return errors.New("it is a list of nodes")
+	}
+	*l = strings.Split(one, ",")
+	return nil
 }
 
 type emitArgs struct {
@@ -509,19 +609,33 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		config["cwd"] = cwd
 	}
 	agent := kind == "agent" || preset == "foreman"
+	include, link := paths(a.Include), paths(a.Link)
 	if name, wanted, err := worktreeOf(a.Worktree); err != nil {
 		return result{}, err
-	} else if wanted {
+	} else if wanted || len(include) > 0 || len(link) > 0 {
+		// What config says of the worktree stays, but for what the
+		// arguments say.
+		spec, _ := config["worktree"].(map[string]any)
+		if spec == nil {
+			spec = map[string]any{}
+		}
 		if agent {
 			config["sandbox"] = "worktree"
 		} else {
-			spec := map[string]any{}
 			if name != "" {
 				spec["name"] = name
 			}
 			if base := strings.TrimSpace(a.Base); base != "" {
 				spec["base"] = base
 			}
+		}
+		if len(include) > 0 {
+			spec["include"] = include
+		}
+		if len(link) > 0 {
+			spec["link"] = link
+		}
+		if !agent || len(spec) > 0 {
 			config["worktree"] = spec
 		}
 	}
@@ -602,6 +716,17 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		b.WriteString("\nits first prompt is sent once it runs")
 	}
 	return result{text: b.String(), raw: raw}, nil
+}
+
+// paths are the paths of a list, trimmed, without the empty ones.
+func paths(list nodeList) []string {
+	var out []string
+	for _, p := range list {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // worktreeOf reads CanvasSpawn's worktree: a name, true for one named
@@ -977,6 +1102,76 @@ func (c *client) emit(ctx context.Context, a emitArgs) (result, error) {
 		port = "out"
 	}
 	return result{text: "put out on " + port, raw: raw}, nil
+}
+
+// waitAny waits for any of several nodes (CanvasWait).
+func (c *client) waitAny(ctx context.Context, a waitArgs) (result, error) {
+	q := url.Values{}
+	var nodes []string
+	for _, n := range a.Nodes {
+		if n = strings.TrimSpace(n); n != "" {
+			nodes = append(nodes, n)
+		}
+	}
+	if len(nodes) > 0 {
+		q.Set("nodes", strings.Join(nodes, ","))
+	}
+	if a.Until != "" {
+		q.Set("until", a.Until)
+	}
+	if a.After != "" {
+		q.Set("after", a.After)
+	}
+	timeout := 600 * time.Second
+	if v := intOf(a.TimeoutS); v != nil && *v > 0 {
+		timeout = time.Duration(*v) * time.Second
+	}
+	q.Set("timeout", strconv.Itoa(int(timeout/time.Second)))
+	ctx, cancel := timeoutOf(ctx, timeout)
+	defer cancel()
+	var answer struct {
+		Fired string `json:"fired"`
+		Until string `json:"until"`
+		Nodes []struct {
+			Node    string `json:"node"`
+			Title   string `json:"title"`
+			Status  status `json:"status"`
+			Outputs int    `json:"outputs"`
+			Gone    bool   `json:"gone"`
+		} `json:"nodes"`
+		Next     string `json:"next"`
+		TimedOut bool   `json:"timed_out"`
+	}
+	raw, err := c.call(ctx, "GET", "/api/canvas/wait", q, nil, &answer)
+	if err != nil {
+		return result{}, err
+	}
+	var b strings.Builder
+	switch {
+	case answer.TimedOut:
+		fmt.Fprintf(&b, "Timed out after %s waiting for %s.", timeout, answer.Until)
+	case answer.Fired != "":
+		title := answer.Fired
+		for _, n := range answer.Nodes {
+			if n.Node == answer.Fired && n.Title != "" {
+				title = n.Node + " «" + n.Title + "»"
+			}
+		}
+		fmt.Fprintf(&b, "%s: %s.", answer.Until, title)
+	default:
+		fmt.Fprintf(&b, "%s: already so, nothing to wait for.", answer.Until)
+	}
+	for _, n := range answer.Nodes {
+		if n.Gone {
+			fmt.Fprintf(&b, "\n%s · removed", n.Node)
+			continue
+		}
+		fmt.Fprintf(&b, "\n%s «%s» · %s · %d outputs", n.Node, n.Title, describeStatus(n.Status), n.Outputs)
+	}
+	if answer.Next != "" {
+		fmt.Fprintf(&b, "\nnext: %s", answer.Next)
+	}
+	return result{text: b.String(), raw: raw}, nil
 }
 
 // describeStatus says a node's status in a few words.

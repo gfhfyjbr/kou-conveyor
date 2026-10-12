@@ -41,6 +41,7 @@ type run struct {
 	retired  bool          // the run is gone from the server: its log goes with its last reader
 	stopping bool
 	done     bool
+	activity string // what the last status event said the agent does
 }
 
 // event is what browsers receive. Entry events are complete snapshots keyed by
@@ -82,6 +83,9 @@ func (r *run) publish(e event) {
 	r.events.append(data)
 	if e.Type == "done" {
 		r.done = true
+	}
+	if e.Type == "status" && e.Activity != "" {
+		r.activity = e.Activity
 	}
 	close(r.wake)
 	r.wake = make(chan struct{})
@@ -138,14 +142,22 @@ func (r *run) isStopping() bool {
 	return r.stopping
 }
 
-func (r *run) stop() {
+// summary is what a session's reader learns of its run.
+func (r *run) summary() *runSummary {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return &runSummary{ID: r.id, Started: r.started, Stopping: r.stopping, Compact: r.compact, Activity: r.activity, Events: len(r.events.index)}
+}
+
+// stop stops the run; the session records why (cockpit.Job.Stop).
+func (r *run) stop(reason string) {
 	r.mu.Lock()
 	first := !r.stopping && !r.done
 	r.stopping = true
 	r.mu.Unlock()
 	if first {
 		r.publish(event{Type: "status", Stopping: true, Activity: "Stopping"})
-		r.job.Cancel()
+		r.job.Stop(reason)
 	}
 }
 
@@ -531,7 +543,7 @@ func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
-	current.stop()
+	current.stop("the user stopped the run from the cockpit")
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
 

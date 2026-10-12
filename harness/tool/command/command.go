@@ -42,6 +42,9 @@ type Config struct {
 	Environment map[string]string
 	// MaxOutputLength bounds each output stream; zero is the default.
 	MaxOutputLength int
+	// Waits says that the tool's calls wait for something outside the
+	// agent, such as another agent's answer (tool.Waiter).
+	Waits bool
 }
 
 type translator struct {
@@ -62,6 +65,11 @@ func New(config Config) (tool.Translator, error) {
 		config.MaxOutputLength = operation.DefaultMaxOutputLength
 	}
 	return &translator{config: config}, nil
+}
+
+// Waits says whether the tool's calls wait (tool.Waiter).
+func (translator *translator) Waits() bool {
+	return translator.config.Waits
 }
 
 func (translator *translator) Translate(ctx tool.Context, call llm.ToolCall) tool.CallStatus {

@@ -97,8 +97,42 @@ final class RelayClient: Sendable {
         return request
     }
 
+    /// webSocket is a WebSocket of the cockpit's, through the relay with its
+    /// token, on the session that lasts: not yet resumed.
+    func webSocket(_ path: String, query: [URLQueryItem] = []) -> URLSessionWebSocketTask {
+        var request = request("GET", path, query: query)
+        request.setValue(nil, forHTTPHeaderField: "Accept")
+        if let address = request.url, var components = URLComponents(url: address, resolvingAgainstBaseURL: false) {
+            components.scheme = components.scheme == "http" ? "ws" : "wss"
+            request.url = components.url
+        }
+        return streaming.webSocketTask(with: request)
+    }
+
     func get<T: Decodable & Sendable>(_ path: String, query: [URLQueryItem] = [], as type: T.Type = T.self) async throws -> T {
         try Self.decode(type, from: try await perform(request("GET", path, query: query)))
+    }
+
+    /// get reads what changed since the answer tagged tag (its ETag): nil
+    /// when nothing has, so a big session read again costs nothing. It
+    /// gives the tag of the answer.
+    func get<T: Decodable & Sendable>(_ path: String, query: [URLQueryItem] = [], unless tag: String?,
+                                      as type: T.Type = T.self) async throws -> (value: T?, tag: String?) {
+        var request = request("GET", path, query: query)
+        if let tag { request.setValue(tag, forHTTPHeaderField: "If-None-Match") }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw failure(error)
+        }
+        guard let http = response as? HTTPURLResponse else { throw RelayError.network("The relay did not answer over HTTP.") }
+        if http.statusCode == 304, tag != nil { return (nil, tag) }
+        guard (200..<300).contains(http.statusCode) else { throw Self.failure(status: http.statusCode, body: data) }
+        // Decoding megabytes is no work for the main actor.
+        let value = try await Task.detached(priority: .userInitiated) { try Self.decode(type, from: data) }.value
+        return (value, http.value(forHTTPHeaderField: "ETag"))
     }
 
     func send<T: Decodable & Sendable>(_ method: String, _ path: String, body: some Encodable & Sendable, as type: T.Type = T.self) async throws -> T {
@@ -145,6 +179,14 @@ final class RelayClient: Sendable {
     /// (204 says there is nothing more to send), and fails with what broke
     /// it; lastEventID resumes after the event of that ID.
     func events(_ path: String, lastEventID: String? = nil) -> AsyncThrowingStream<ServerEvent, any Error> {
+        events(path, lastEventID: lastEventID) { $0 }
+    }
+
+    /// events streams the events at path as read reads them, as they come
+    /// and away from the main actor: an event can carry a long tool output,
+    /// and a run read from its start hundreds of them.
+    func events<T: Sendable>(_ path: String, lastEventID: String? = nil,
+                             read: @escaping @Sendable (ServerEvent) -> T) -> AsyncThrowingStream<T, any Error> {
         var request = request("GET", path)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         if let lastEventID { request.setValue(lastEventID, forHTTPHeaderField: "Last-Event-ID") }
@@ -176,7 +218,7 @@ final class RelayClient: Sendable {
                         }
                         if line.last == UInt8(ascii: "\r") { line.removeLast() }
                         if let event = parser.feed(String(decoding: line, as: UTF8.self)) {
-                            continuation.yield(event)
+                            continuation.yield(read(event))
                         }
                         line.removeAll(keepingCapacity: true)
                     }

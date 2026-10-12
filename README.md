@@ -154,7 +154,10 @@ the session list (◧) and in the rail's Canvas tab, and links name them:
   coding agent in a terminal — Claude Code, Codex, OpenCode, or a harness a
   plugin adds. Their shells run on the server, as the sidebar's do, and
   outlive reloads and the server's restarts. A terminal can work in a git
-  worktree of its own (`.harness/worktrees/<name>`, on branch `kou/<name>`).
+  worktree of its own (`.harness/worktrees/<name>`, on branch `kou/<name>`),
+  which gets the submodules of the user's checkout and, as its `worktree`
+  configuration says, untracked paths copied in (`include`) or linked
+  (`link`).
 - **kou agents**: agents of this cockpit, each with a session of its own,
   which the session list leaves out until asked to show them; **Open
   session** shows the whole of one.
@@ -202,7 +205,10 @@ board; `spawn`, `rm`, `connect`, `disconnect` and `move` change it; `send`,
 output. `kou-canvas mcp` serves the same tools over MCP, which the Claude
 Code and Codex presets are given, and the built-in `canvas-agent` plugin
 gives them to the kou agents of a canvas (`CanvasView`, `CanvasSpawn`, …).
-Each node has a token of its own, which allows what its access says —
+`kou-canvas transcript` / `CanvasTranscript` reads a node's raw transcript by
+cursor, including reasoning and tool outcomes; `search` / `CanvasSearch` finds
+text in one node or its children. They let a foreman diagnose a stall without
+re-reading a whole session file or sleeping between polls. Each node has a token of its own, which allows what its access says —
 observe, talk, build or admin — and the canvas's settings bound how many
 nodes and terminals agents make, and how fast. **Ask the foreman…**, the
 field at the foot of a canvas, gives a request to a kou agent that builds
@@ -262,6 +268,17 @@ cockpits work with the same files:
 
 A running session can be followed from anywhere but not deleted, branched or
 edited.
+
+`kou-conveyor-web metrics SESSION...` measures sessions from their logs:
+what their requests cost, how much of it went to writing the provider's cache
+anew and why (a new run, the thinking window, pruning), the requests that only
+waited, the cold starts, messages, compactions, heartbeats, stops and tool
+calls that failed to start. `-since` counts from a time on, `-json` prints
+JSON, `-list` lists the requests that rewrote the cache.
+
+```sh
+bin/kou-conveyor-web metrics -since 2026-10-08T22:16 78844fda   # an ID of the workspace here, or a log's path
+```
 
 ### Models
 
@@ -527,6 +544,18 @@ completion as you type. Each workspace keeps its own sessions in
 `workspaces.json` beside the connection settings, so every server you start
 offers them, and removing one from the list never touches the folder. Links
 name the workspace: `#/w/<workspace>/s/<session>`.
+
+The sessions of every workspace are found in one place too: while it runs,
+the server keeps `sessions/` beside the connection settings
+(`~/Library/Application Support/kou-conveyor/sessions` on macOS). It holds
+a link to the sessions folder of each workspace, and of each git worktree of
+one that has sessions of its own, named by the workspace's ID
+(`joroweave-ab893e`), and `index.json`, which lists every session by ID with
+its workspace, file, title, canvas and node, times, size and whether it runs.
+The server makes them again as workspaces and runs change, and removes only
+the links it made; folders, files and links of your own there stay as they
+are. The links are for finding sessions, not for keeping them: backups such as
+Time Machine do not follow them.
 
 `make build-tui` and `make build-web` rebuild the runner next to the cockpit,
 and `go run ./cmd/kou-conveyor-web` builds it from the same sources, so a

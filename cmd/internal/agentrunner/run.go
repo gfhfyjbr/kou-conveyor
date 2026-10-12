@@ -264,7 +264,7 @@ func RunMain(
 	if errors.Is(err, flag.ErrHelp) {
 		return 0
 	}
-	if context.Cause(ctx) != nil {
+	if context.Cause(ctx) != nil || errors.Is(err, errStopped) {
 		return 130
 	}
 	encoded, encodeErr := json.Marshal(errorEvent{Type: "error", Message: err.Error()})
@@ -317,7 +317,7 @@ func Run(
 	listProviders := flags.Bool("providers", false, "print the providers this runner supports, one per line, and exit")
 	listPluginsFlag := flags.Bool("list-plugins", false, "print the plugins a run in the workspace would find, one JSON object per line, and exit")
 	listSkillsFlag := flags.Bool("list-skills", false, "print the skills a run in the workspace would find, the project's and the system-wide ones, one JSON object per line, and exit")
-	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making")
+	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making; {\"stop\": {\"reason\": string}} stops the run, which records why")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
 	toolGrace := flags.Duration("tool-grace", 3*time.Second, "how long the results of a turn's tool calls are gathered before they wake the model; a result that arrives while other calls run waits this long again for them")
 	toolGraceLimit := flags.Duration("tool-grace-limit", 15*time.Second, "the longest the results wait for the other calls, from when the calls started (0 does not extend the wait)")
@@ -523,8 +523,22 @@ func Run(
 		observedOutput = io.MultiWriter(logFile, output)
 	}
 
-	runContext, cancel := context.WithCancel(ctx)
+	// An interrupt does not cancel the run at once: the run stops its tools
+	// and records why first (runStopper), and is canceled only if that takes
+	// too long.
+	runContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
+	stops := &runStopper{cancel: cancel}
+	if steering != nil {
+		stops.lineWait = stopLineWait
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+			stops.interrupt(fmt.Sprintf("the runner was interrupted (%v); what interrupted it did not say why", context.Cause(ctx)))
+		case <-runContext.Done():
+		}
+	}()
 	operationDirectory := filepath.Join(storeDirectory, "operations", string(sessionID))
 	if err := os.MkdirAll(operationDirectory, 0o700); err != nil {
 		return fmt.Errorf("create operation directory: %w", err)
@@ -628,6 +642,7 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("open inbox: %w", err)
 	}
+	stops.ready(runContext, inputs)
 	settingsPayload, err := json.Marshal(inbox.ControlMessage{
 		Mode: inbox.UpdateSettings,
 		Parameters: inbox.Settings{
@@ -686,7 +701,7 @@ func Run(
 		// Reading stdin may outlast the run; what it reports then is dropped.
 		report := &lockedWriter{w: flagOutput}
 		defer report.Close()
-		go steerRun(runContext, steering, inputs, report, workspace)
+		go steerRun(runContext, steering, inputs, report, workspace, stops.stop)
 	}
 
 	builder := contextbuilder.NewBuilder()
@@ -789,9 +804,12 @@ func Run(
 	// diagnostic output: its tries can take minutes, which would otherwise
 	// look like the model thinking.
 	retries := &lockedWriter{w: flagOutput}
-	coordinatorErr := current.Run(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
+	// What each request began with is logged beside the tool output, to
+	// tell what cost a request its cache (prefixlog.go).
+	prefixes := &prefixLog{path: filepath.Join(operationDirectory, prefixLogFile)}
+	coordinatorErr := current.Run(llm.WithPrefixReporter(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
 		fmt.Fprintln(retries, RetryLine(retry))
-	}))
+	}), prefixes.report))
 	retries.Close()
 	// Tools run in their own process groups. Canceling the run makes the
 	// operation manager terminate them (TERM, then KILL after a grace period)
@@ -803,10 +821,101 @@ func Run(
 	if observerErr := observer.Err(); observerErr != nil {
 		return observerErr
 	}
+	if stops.asked() && (coordinatorErr == nil || errors.Is(coordinatorErr, context.Canceled)) {
+		return errStopped
+	}
 	if coordinatorErr != nil {
 		return fmt.Errorf("run coordinator: %w", coordinatorErr)
 	}
 	return nil
+}
+
+// errStopped ends a run that was told to stop: it exits as an interrupted
+// one does.
+var errStopped = errors.New("the run was stopped")
+
+// stopGrace is how long a run told to stop has to cancel its tool calls and
+// record so before its context is canceled, which ends them without a word
+// in the session.
+const stopGrace = 7 * time.Second
+
+// runStopper stops a run when the cockpit says so on stdin (a stop line) or
+// the runner is interrupted. It asks the coordinator for a hard stop with the
+// reason: the session records it, and the tool calls the stop cancels, and
+// the next run tells the model (coordinator resumeNote). The run's context is
+// canceled only if that takes longer than stopGrace. The cockpits send the
+// stop line and then interrupt the runner: the interrupt does not cut the
+// stop short, and the process is killed if the runner outlasts the cockpit's
+// own wait.
+type runStopper struct {
+	cancel context.CancelFunc
+	// grace is stopGrace unless a test says otherwise; lineWait is how long
+	// an interrupt waits for a stop line, none when stdin brings none.
+	grace, lineWait time.Duration
+
+	mu     sync.Mutex
+	ctx    context.Context
+	inputs inbox.Writer
+	reason string // set once the stop was asked for
+}
+
+// ready says where stops go: until then, one cancels the run at once.
+func (s *runStopper) ready(ctx context.Context, inputs inbox.Writer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ctx, s.inputs = ctx, inputs
+}
+
+// stop asks for the stop; only the first one counts, and its reason is the
+// one recorded.
+func (s *runStopper) stop(reason string) {
+	s.mu.Lock()
+	if s.reason != "" {
+		s.mu.Unlock()
+		return
+	}
+	s.reason = reason
+	ctx, inputs := s.ctx, s.inputs
+	s.mu.Unlock()
+	if inputs == nil {
+		s.cancel()
+		return
+	}
+	// The deadline comes first: a submission waits for the coordinator to
+	// take it, and the run ends even if it never does.
+	grace := s.grace
+	if grace == 0 {
+		grace = stopGrace
+	}
+	time.AfterFunc(grace, s.cancel)
+	payload, err := json.Marshal(inbox.ControlMessage{Mode: inbox.StopHard, Reason: reason})
+	if err == nil {
+		err = inputs.Submit(ctx, inbox.Input{ID: inbox.ID(uuid.New().String()), Kind: inbox.InputControl, Payload: payload})
+	}
+	if err != nil {
+		s.cancel()
+	}
+}
+
+// stopLineWait is how long an interrupted runner that reads stop lines waits
+// for one, which says why, before it stops for no reason it knows: the
+// cockpits send the line first, but it can reach the runner after the signal.
+const stopLineWait = 500 * time.Millisecond
+
+// interrupt is what an interrupt of the runner does: the stop, unless one
+// was asked for already.
+func (s *runStopper) interrupt(reason string) {
+	if s.lineWait <= 0 {
+		s.stop(reason)
+		return
+	}
+	time.AfterFunc(s.lineWait, func() { s.stop(reason) })
+}
+
+func (s *runStopper) asked() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reason != ""
 }
 
 func resolveMaxAttempts(requested *int, getenv func(string) string) (int, error) {
@@ -1154,8 +1263,9 @@ func parseTokens(value string) (int64, bool) {
 // running agent, until stdin ends, stops being JSON or the run ends. The
 // agent reads each after the tool calls it is making: a message never cuts a
 // response short, and follows the results it waited for. One the run ends
-// before is not recorded; its sender learns so from the session.
-func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writer, report io.Writer, workspace string) {
+// before is not recorded; its sender learns so from the session. A stop line
+// (stopLine) stops the run instead.
+func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writer, report io.Writer, workspace string, stop func(reason string)) {
 	for {
 		value, err := messages.ReadValue()
 		if err != nil {
@@ -1163,6 +1273,10 @@ func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writ
 				fmt.Fprintf(report, "steering stopped: %v\n", err)
 			}
 			return
+		}
+		if reason, ok := stopLine(value); ok {
+			stop(reason)
+			continue
 		}
 		input, err := steeringInput(value, workspace)
 		if err != nil {
@@ -1173,6 +1287,24 @@ func steerRun(ctx context.Context, messages *jsontext.Decoder, inputs inbox.Writ
 			return // the run is over
 		}
 	}
+}
+
+// stopLine reads a stop line, {"stop": {"reason": string}}: the cockpits send
+// one to stop a run and say why, which the session records.
+func stopLine(value jsontext.Value) (string, bool) {
+	var line struct {
+		Stop *struct {
+			Reason string `json:"reason"`
+		} `json:"stop"`
+	}
+	if json.Unmarshal(value, &line, json.RejectUnknownMembers(true)) != nil || line.Stop == nil {
+		return "", false
+	}
+	reason := strings.Join(strings.Fields(line.Stop.Reason), " ")
+	if reason == "" {
+		reason = "the cockpit stopped the run without saying why"
+	}
+	return reason, true
 }
 
 // steeringInput is the input for a message sent while the agent runs. The

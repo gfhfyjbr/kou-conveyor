@@ -180,6 +180,23 @@ type Transcript struct {
 	retrying string
 	// compactable is set by the model's answers and cleared by a compaction.
 	compactable bool
+	// stopNoted is set once the current run's stop, which the session
+	// records with its reason, has its notice (stopNotice).
+	stopNoted bool
+}
+
+// stopNotice is the notice of a stop the session records with its reason:
+// who or what stopped the run, which a run stopped before said nowhere.
+func (t *Transcript) stopNotice(sequence sessionstore.Sequence, at time.Time, input inbox.Input) []*Entry {
+	control, err := input.DecodeControlMessage()
+	if err != nil || control.Mode != inbox.StopHard || strings.TrimSpace(control.Reason) == "" {
+		return nil
+	}
+	t.stopNoted = true
+	return []*Entry{t.put(&Entry{
+		ID: fmt.Sprintf("stop:%d", sequence), Kind: KindNotice, At: at,
+		Text: "Run stopped: " + Clean(control.Reason),
+	})}
 }
 
 func NewTranscript() *Transcript {
@@ -219,7 +236,7 @@ func (t *Transcript) Running() []*Entry {
 // marks the start of a run. The entry settles when the runner persists the
 // input with the same message ID.
 func (t *Transcript) Submit(messageID, text string, at time.Time) *Entry {
-	t.runMark, t.run, t.retrying = t.failures, messageID, ""
+	t.runMark, t.run, t.retrying, t.stopNoted = t.failures, messageID, "", false
 	t.Activity = "Starting"
 	e := &Entry{ID: "input:" + messageID, Kind: KindUser, At: at, Text: Clean(text), State: Pending}
 	t.put(e)
@@ -248,7 +265,7 @@ func (t *Transcript) LastModel() string {
 // Begin marks the start of a run that sends no prompt, such as a compaction,
 // under an ID of the front-end's choosing, and says what it is doing.
 func (t *Transcript) Begin(runID, activity string) {
-	t.runMark, t.run, t.retrying = t.failures, runID, ""
+	t.runMark, t.run, t.retrying, t.stopNoted = t.failures, runID, "", false
 	t.Activity = activity
 }
 
@@ -274,9 +291,12 @@ func (t *Transcript) Finish(err error, stopped bool, at time.Time) []*Entry {
 	}
 	switch {
 	case stopped:
-		changed = append(changed, t.put(&Entry{
-			ID: t.liveID("stopped"), Kind: KindNotice, At: at, Text: "Run stopped",
-		}))
+		// A stop the session recorded has its notice, with the reason.
+		if !t.stopNoted {
+			changed = append(changed, t.put(&Entry{
+				ID: t.liveID("stopped"), Kind: KindNotice, At: at, Text: "Run stopped",
+			}))
+		}
 	case err != nil && t.failures == t.runMark:
 		changed = append(changed, t.put(&Entry{
 			ID: t.liveID("exit"), Kind: KindError, At: at, Text: "Runner exited: " + Clean(err.Error()),
@@ -352,6 +372,9 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 			Text: "Forked from session " + Clean(string(data.ParentID)),
 		})}
 	case inbox.Input:
+		if data.Kind == inbox.InputControl {
+			return t.stopNotice(item.Sequence, at, data)
+		}
 		if data.Kind != inbox.InputExternal {
 			return nil
 		}

@@ -78,7 +78,12 @@ type Engine struct {
 	canvases map[string]*Canvas    // by canvasKey
 	sessions map[string]sessionRef // agents' sessions, by sessionKey
 	presets  map[string]presetCache
+	raw      *rawFeedCache
 	closed   bool
+
+	// adopting holds the batches that put sessions the user has on a
+	// canvas one at a time; it is taken before any canvas's lock.
+	adopting sync.Mutex
 }
 
 type sessionRef struct {
@@ -106,6 +111,7 @@ func New(ctx context.Context, o Options) (*Engine, error) {
 		o: o, ctx: ctx, cancel: cancel, secret: secret,
 		instance: fmt.Sprintf("%x", time.Now().UnixNano()),
 		canvases: map[string]*Canvas{}, sessions: map[string]sessionRef{}, presets: map[string]presetCache{},
+		raw: newRawFeedCache(),
 	}, nil
 }
 

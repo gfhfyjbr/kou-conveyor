@@ -11,6 +11,7 @@
   border-left: 2px solid transparent;
   color: inherit;
   text-decoration: none;
+  transition: background-color 0.12s, border-color 0.12s;
 }
 /* A pinned session shows ◆ in place of its number, until a run puts its
    marker there. */
@@ -27,21 +28,23 @@
   background: var(--bg);
   color: var(--fg);
   font: 12.5px/20px var(--sans);
+  caret-color: var(--accent);
 }
 .crumbs .rename { width: min(420px, 100%); height: 26px; font: 600 13.5px/24px var(--sans); }
 /* The number, or the marker in its place, sits halfway down the row: level
    with the middle of the bar of the session in view, between the title and
    the line under it. */
 .session .n { grid-row: span 2; align-self: center; font: 500 10.5px/18px var(--mono); color: var(--fg-4); }
-.session .t { font-size: 12.5px; line-height: 18px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session .t { font-size: 12.5px; line-height: 18px; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 0.12s; }
 .session .m { font: 10.5px/16px var(--mono); color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .session:hover { background: var(--bg-3); }
 .session:hover .t, .session[aria-current="true"] .t { color: var(--fg); }
-.session[aria-current="true"] { background: var(--bg-3); border-left-color: var(--accent); }
+/* The session in view is lit from its rule. */
+.session[aria-current="true"] { background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 8%, var(--bg-3)), var(--bg-3) 70%); border-left-color: var(--accent); }
 .session[aria-current="true"] .n { color: var(--accent); }
 /* A run puts a blinking block in place of the marker: a square for the
    number, a diamond for a pinned session's ◆, so the row still says it is
-   pinned. */
+   pinned. It glows. */
 .session[data-running] .n { font-size: 0; line-height: 0; }
 .session[data-running] .n::before {
   content: "";
@@ -49,6 +52,7 @@
   width: 7px;
   height: 7px;
   background: var(--accent);
+  box-shadow: 0 0 8px 1px color-mix(in srgb, var(--accent) 60%, transparent);
   animation: blink 1s steps(2, jump-none) infinite;
 }
 .session-row[data-pinned] .session[data-running] .n::before { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
@@ -67,6 +71,7 @@
   text-align: left;
   font: 11px/1.4 var(--mono);
   color: var(--fg-4);
+  transition: border-color 0.12s, color 0.12s;
 }
 .sessions-toggle:hover { border-color: var(--fg-4); color: var(--fg-2); }
 

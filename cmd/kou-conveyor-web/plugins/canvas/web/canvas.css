@@ -1189,7 +1189,13 @@ button.cv-activity-text:hover { color: var(--fg); text-decoration: underline dot
 /* In the stage's bar they follow the title rather than the far end: the
    crumbs give up the room they would take. */
 .bar:has(> .slot-contents > .cv-mode:not([hidden])) > .slot-contents > .crumbs,
-.bar:has(> .slot-contents > .cv-crumb:not([hidden])) > .slot-contents > .crumbs { flex: 0 1 auto; }
+.bar:has(> .slot-contents > .cv-crumb:not([hidden])) > .slot-contents > .crumbs { flex: 0 1 auto; container-type: normal; }
+/* As wide as what they hold, the crumbs cannot be the container of their
+   own width (the layout's): it would count what they hold as nothing, and
+   the bar would lose the title. Short of room, the ID gives up its room
+   before the title does. */
+.bar:has(> .slot-contents > .cv-mode:not([hidden])) > .slot-contents > .crumbs code,
+.bar:has(> .slot-contents > .cv-crumb:not([hidden])) > .slot-contents > .crumbs code { min-width: 0; overflow: hidden; flex-shrink: 8; }
 .bar > .slot-contents > .cv-mode, .bar > .slot-contents > .cv-crumb { margin-right: auto; }
 
 /* The dialog that asks what a node needs. */

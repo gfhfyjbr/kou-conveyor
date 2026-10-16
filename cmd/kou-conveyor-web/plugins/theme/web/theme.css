@@ -24,7 +24,23 @@
   --err-soft: rgb(255 84 104 / 0.09);
   --code: #0f0f0e;
   --selection: rgb(255 91 31 / 0.3);
-  --shadow: 0 24px 64px rgb(0 0 0 / 0.5);
+  /* Depth. A raised surface is lit along its top edge (--highlight) and
+     stands a little off the page (--lift); what floats over the page casts
+     a contact shadow and a long soft one (--shadow), a dialog the accent's
+     faint light too (--halo); what is live glows (--glow); a dialog veils
+     the page under it (--scrim). */
+  --highlight: rgb(255 255 255 / 0.045);
+  --lift: 0 18px 40px -24px rgb(0 0 0 / 0.65);
+  --shadow: 0 0 0 1px rgb(0 0 0 / 0.3), 0 8px 20px -6px rgb(0 0 0 / 0.55), 0 32px 80px -12px rgb(0 0 0 / 0.7);
+  --halo: 0 24px 120px -36px rgb(255 91 31 / 0.2);
+  --glow: 0 0 0 1px rgb(255 91 31 / 0.2), 0 0 18px -3px rgb(255 91 31 / 0.45);
+  --scrim: rgb(8 8 7 / 0.66);
+  /* Motion. What arrives comes fast and settles (out); what goes from one
+     place to another speeds up and slows down evenly (in-out); what pops
+     goes a touch past and back (spring). */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
 
   --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -44,7 +60,11 @@
     --fg: #151513; --fg-2: #46453f; --fg-3: #77756c; --fg-4: #a19e94;
     --accent: #e4470c; --accent-ink: #ffffff; --accent-soft: rgb(228 71 12 / 0.1);
     --ok: #2e7a34; --warn: #9a6200; --err: #cc1f3d; --err-soft: rgb(204 31 61 / 0.07);
-    --code: #efeee8; --selection: rgb(228 71 12 / 0.22); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
+    --code: #efeee8; --selection: rgb(228 71 12 / 0.22);
+    --highlight: rgb(255 255 255 / 0.7); --lift: 0 14px 32px -20px rgb(40 30 20 / 0.2);
+    --shadow: 0 0 0 1px rgb(40 30 20 / 0.05), 0 6px 16px -6px rgb(40 30 20 / 0.14), 0 28px 64px -16px rgb(40 30 20 / 0.22);
+    --halo: 0 24px 120px -36px rgb(228 71 12 / 0.14); --glow: 0 0 0 1px rgb(228 71 12 / 0.22), 0 0 14px -4px rgb(228 71 12 / 0.35);
+    --scrim: rgb(236 235 229 / 0.62);
   }
 }
 :root[data-theme="light"] {
@@ -54,7 +74,11 @@
   --fg: #151513; --fg-2: #46453f; --fg-3: #77756c; --fg-4: #a19e94;
   --accent: #e4470c; --accent-ink: #ffffff; --accent-soft: rgb(228 71 12 / 0.1);
   --ok: #2e7a34; --warn: #9a6200; --err: #cc1f3d; --err-soft: rgb(204 31 61 / 0.07);
-  --code: #efeee8; --selection: rgb(228 71 12 / 0.22); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
+  --code: #efeee8; --selection: rgb(228 71 12 / 0.22);
+  --highlight: rgb(255 255 255 / 0.7); --lift: 0 14px 32px -20px rgb(40 30 20 / 0.2);
+  --shadow: 0 0 0 1px rgb(40 30 20 / 0.05), 0 6px 16px -6px rgb(40 30 20 / 0.14), 0 28px 64px -16px rgb(40 30 20 / 0.22);
+  --halo: 0 24px 120px -36px rgb(228 71 12 / 0.14); --glow: 0 0 0 1px rgb(228 71 12 / 0.22), 0 0 14px -4px rgb(228 71 12 / 0.35);
+  --scrim: rgb(236 235 229 / 0.62);
 }
 
 /* ---------------------------------------------------------------- base */
@@ -81,6 +105,7 @@ code, kbd, pre, time { font-family: var(--mono); }
 :focus { outline: none; }
 :focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; }
 
+/* A key: a cap, lit along its top, standing on its lower edge. */
 kbd {
   display: inline-grid;
   place-items: center;
@@ -89,6 +114,8 @@ kbd {
   padding: 0 4px;
   border: 1px solid var(--line-2);
   border-bottom-width: 2px;
+  background: color-mix(in srgb, var(--fg) 3%, transparent);
+  box-shadow: inset 0 1px 0 var(--highlight);
   color: var(--fg-3);
   font: 500 10px/1 var(--mono);
   letter-spacing: 0;
@@ -103,7 +130,10 @@ kbd + kbd { margin-left: 2px; }
   color: var(--fg-3);
 }
 
-/* Registration ticks: four corner marks that turn accent on focus/hover. */
+/* Registration ticks: four corner marks that turn accent on focus/hover.
+   Their colour is a registered property, so that it fades from one colour
+   to the next. */
+@property --tick { syntax: "<color>"; inherits: true; initial-value: transparent; }
 .ticks { position: relative; }
 .ticks::before {
   --tick: var(--fg-4);
@@ -121,8 +151,11 @@ kbd + kbd { margin-left: 2px; }
     linear-gradient(var(--tick), var(--tick)) bottom right / 9px 1px,
     linear-gradient(var(--tick), var(--tick)) bottom right / 1px 9px;
   background-repeat: no-repeat;
+  transition: --tick 0.25s var(--ease-out);
 }
 
+/* Buttons answer the pointer at once and give a little under a press (the
+   scale property, which leaves any transform of their own as it is). */
 .icon {
   display: inline-grid;
   place-items: center;
@@ -131,9 +164,10 @@ kbd + kbd { margin-left: 2px; }
   color: var(--fg-3);
   border: 1px solid transparent;
   font: 600 13px/1 var(--mono);
+  transition: color 0.12s, border-color 0.12s, background-color 0.12s, scale 0.16s var(--ease-out);
 }
 .icon svg { width: 16px; height: 16px; }
-.icon:hover { color: var(--fg); border-color: var(--line-2); }
+.icon:hover { color: var(--fg); border-color: var(--line-2); background-color: color-mix(in srgb, var(--fg) 3%, transparent); }
 .icon.wide { width: auto; padding: 0 6px; }
 .icon.wide kbd { border-color: var(--line-2); }
 
@@ -146,11 +180,12 @@ kbd + kbd { margin-left: 2px; }
   letter-spacing: 0.08em;
   text-transform: uppercase;
   white-space: nowrap;
+  transition: color 0.12s, border-color 0.12s, background-color 0.12s, scale 0.16s var(--ease-out);
 }
 .act:hover { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
 .act:disabled { opacity: 0.4; pointer-events: none; }
 .act.strong { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
-.act.strong:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.act.strong:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); box-shadow: var(--glow); }
 .icon.small { width: 24px; height: 24px; font-size: 14px; }
 .icon:disabled { opacity: 0.35; pointer-events: none; }
 
@@ -163,9 +198,12 @@ kbd + kbd { margin-left: 2px; }
   font: 700 11px/1 var(--mono);
   letter-spacing: 0.12em;
   text-transform: uppercase;
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22);
+  transition: background-color 0.12s, box-shadow 0.2s, scale 0.16s var(--ease-out);
 }
-.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--fg)); }
-.primary:disabled { background: transparent; color: var(--fg-4); border-color: var(--line-2); }
+.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 85%, var(--fg)); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.22), var(--glow); }
+.primary:disabled { background: transparent; color: var(--fg-4); border-color: var(--line-2); box-shadow: none; }
+.icon:active:not(:disabled), .act:active:not(:disabled), .primary:active:not(:disabled) { scale: 0.96; }
 
 .more {
   position: absolute;
@@ -179,7 +217,7 @@ kbd + kbd { margin-left: 2px; }
   color: var(--fg-3);
   font: 700 14px/1 var(--mono);
   opacity: 0;
-  transition: opacity 0.12s;
+  transition: opacity 0.12s, color 0.12s, border-color 0.12s, background-color 0.12s;
 }
 .session-row:hover .more, .more:focus-visible, .more[aria-expanded="true"] { opacity: 1; }
 .more:hover, .more[aria-expanded="true"] { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
@@ -193,7 +231,7 @@ kbd + kbd { margin-left: 2px; }
   border-right: 1.5px solid var(--fg-4);
   border-bottom: 1.5px solid var(--fg-4);
   transform: rotate(-45deg);
-  transition: transform 0.15s;
+  transition: transform 0.2s var(--ease-out);
 }
 [aria-expanded="true"] > .chev::before { transform: rotate(45deg); }
 
@@ -296,6 +334,8 @@ kbd + kbd { margin-left: 2px; }
 
 /* ---------------------------------------------------------------- overlays */
 
+/* The page under a dialog is veiled and goes soft, so the dialog stands
+   clear of it. */
 .overlay {
   position: fixed;
   inset: 0;
@@ -305,16 +345,19 @@ kbd + kbd { margin-left: 2px; }
   align-items: start;
   padding: 12vh 16px 16px;
   overflow-y: auto;
-  background: color-mix(in srgb, var(--bg) 62%, transparent);
-  backdrop-filter: blur(2px);
-  animation: fade 0.12s ease-out;
+  background: var(--scrim);
+  -webkit-backdrop-filter: blur(6px) saturate(1.1);
+  backdrop-filter: blur(6px) saturate(1.1);
+  animation: fade 0.16s ease-out;
 }
+/* A dialog stands raised over the page: lit along its top edge, a deep
+   shadow under it, and the accent's light faint beneath. */
 .palette, .sheet {
   width: min(600px, 100%);
   background: var(--bg-2);
   border: 1px solid var(--line-2);
-  box-shadow: var(--shadow);
-  animation: rise 0.14s ease-out;
+  box-shadow: inset 0 1px 0 var(--highlight), var(--shadow), var(--halo);
+  animation: rise 0.2s ease-out;
 }
 .palette::before, .sheet::before { --tick: var(--accent); }
 
@@ -332,8 +375,8 @@ kbd + kbd { margin-left: 2px; }
   width: min(560px, 100%);
   background: var(--bg-2);
   border: 1px solid var(--line-2);
-  box-shadow: var(--shadow);
-  animation: rise 0.14s ease-out;
+  box-shadow: inset 0 1px 0 var(--highlight), var(--shadow), var(--halo);
+  animation: rise 0.2s ease-out;
 }
 .settings::before { --tick: var(--accent); }
 .settings > header {
@@ -357,7 +400,7 @@ kbd + kbd { margin-left: 2px; }
   padding: 10px 12px;
   border: 1px solid var(--line-2);
   background: var(--bg);
-  transition: background 0.12s, color 0.12s;
+  transition: background 0.12s, color 0.12s, box-shadow 0.2s var(--ease-out);
 }
 .seg b { font: 700 11px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .seg small { font: 11px/1.3 var(--mono); color: var(--fg-4); }
@@ -379,12 +422,14 @@ kbd + kbd { margin-left: 2px; }
   outline: 0;
   font: 12.5px var(--mono);
   color: var(--fg);
+  caret-color: var(--accent);
+  transition: border-color 0.15s, box-shadow 0.2s var(--ease-out);
 }
 .field input::placeholder { color: var(--fg-4); }
 /* A masked text field: password fields invite password managers to save or
    generate what is really an API key. */
 .field input.secret:not(:placeholder-shown) { -webkit-text-security: disc; }
-.field input:focus { border-color: var(--accent); }
+.field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .settings-note code { font-size: 0.92em; color: var(--fg-2); }
 
 .settings-status { min-height: 18px; font: 12px/1.5 var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
@@ -417,10 +462,14 @@ kbd + kbd { margin-left: 2px; }
 @keyframes pulse { 50% { opacity: 0.45; } }
 @keyframes scan { from { transform: translateX(-100%); } to { transform: translateX(360%); } }
 @keyframes meter { 0%, 100% { background: var(--line-2); } 12% { background: var(--accent); } 40% { background: var(--line-2); } }
-@keyframes fade { from { opacity: 0; } }
-@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
-@keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
+/* What arrives comes in on a strong ease-out, whatever timing the rule that
+   runs it names: the keyframes carry the curve. */
+@keyframes fade { from { opacity: 0; animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1); } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(0.985); animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1); } }
+@keyframes drop { from { opacity: 0; transform: translateY(-6px) scale(0.985); animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1); } }
 @keyframes flash { 0% { background: var(--accent-soft); box-shadow: 0 0 0 6px var(--accent-soft); } 100% { background: transparent; box-shadow: 0 0 0 6px transparent; } }
+/* A conveyor's belt: stripes in tiles 12px wide, run along by one tile. */
+@keyframes belt { from { background-position: 0 0; } to { background-position: 12px 0; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

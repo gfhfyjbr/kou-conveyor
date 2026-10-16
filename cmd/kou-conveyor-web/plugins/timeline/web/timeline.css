@@ -3,6 +3,8 @@
 .log { max-width: var(--measure); margin: 0 auto; padding: 28px 24px 48px; }
 
 .entries { list-style: none; margin: 0; padding: 0; position: relative; }
+/* The thread the entries hang from: it comes in at the first and goes out
+   after the last. */
 .entries:not(:empty)::before {
   content: "";
   position: absolute;
@@ -10,7 +12,7 @@
   bottom: 6px;
   left: calc(var(--gutter) + 7px);
   width: 1px;
-  background: var(--line);
+  background: linear-gradient(to bottom, transparent, var(--line) 28px, var(--line) calc(100% - 28px), transparent);
 }
 .entry {
   display: grid;
@@ -20,7 +22,8 @@
   position: relative;
   scroll-margin: 24px;
 }
-/* The node on the timeline. */
+/* The node on the timeline, in a ring of the page's colour that parts the
+   thread around it. The user's, a failure and what is live glow. */
 .entry::before {
   content: "";
   position: absolute;
@@ -30,12 +33,13 @@
   height: 7px;
   background: var(--bg);
   border: 1px solid var(--fg-4);
+  box-shadow: 0 0 0 3px var(--bg);
 }
-.entry[data-kind="user"]::before { background: var(--accent); border-color: var(--accent); }
+.entry[data-kind="user"]::before { background: var(--accent); border-color: var(--accent); box-shadow: 0 0 0 3px var(--bg), 0 0 12px 1px color-mix(in srgb, var(--accent) 45%, transparent); }
 .entry[data-kind="assistant"]::before { background: var(--fg); border-color: var(--fg); }
-.entry[data-kind="error"]::before { background: var(--err); border-color: var(--err); }
-.entry[data-kind="notice"]::before { width: 7px; height: 1px; top: 18px; border: 0; background: var(--fg-4); }
-.entry:has(.tool[data-state="running"])::before { border-color: var(--accent); background: var(--accent); animation: blink 1s steps(2, jump-none) infinite; }
+.entry[data-kind="error"]::before { background: var(--err); border-color: var(--err); box-shadow: 0 0 0 3px var(--bg), 0 0 12px 1px color-mix(in srgb, var(--err) 40%, transparent); }
+.entry[data-kind="notice"]::before { width: 7px; height: 1px; top: 18px; border: 0; background: var(--fg-4); box-shadow: none; }
+.entry:has(.tool[data-state="running"])::before { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 0 3px var(--bg), 0 0 14px 2px color-mix(in srgb, var(--accent) 55%, transparent); animation: blink 1s steps(2, jump-none) infinite; }
 .entry:has(.tool[data-state="failed"])::before { border-color: var(--err); }
 .entry.flash .body { animation: flash 1.2s ease-out; }
 /* Between the entries drawn, a gap stands in for those that are not
@@ -80,12 +84,15 @@
 .entry:hover .actions, .entry:focus-within .actions, .tool-head:hover .actions { opacity: 1; }
 @media (hover: none) { .actions { opacity: 1; } }
 
+/* The user's words: a card lit along its top edge, warmed by the accent
+   from the side its rule is on. */
 .entry[data-kind="user"] .text {
   margin-top: 6px;
   padding: 11px 14px 12px;
-  background: var(--bg-2);
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 55%), var(--bg-2);
   border: 1px solid var(--line);
   border-left: 2px solid var(--accent);
+  box-shadow: inset 0 1px 0 var(--highlight);
   font-size: 14.5px;
   line-height: 1.6;
   white-space: pre-wrap;
@@ -145,18 +152,23 @@
   position: relative;
   border: 1px solid var(--line);
   background: var(--bg-2);
+  box-shadow: inset 0 1px 0 var(--highlight);
   overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.3s var(--ease-out);
 }
-.tool[data-state="running"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.tool:hover { border-color: var(--line-2); }
+/* A call that runs glows, and a light sweeps along its top edge. */
+.tool[data-state="running"] { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); box-shadow: inset 0 1px 0 var(--highlight), 0 0 28px -12px color-mix(in srgb, var(--accent) 80%, transparent); }
 .tool[data-state="running"]::after {
   content: "";
   position: absolute;
   top: 0;
   left: 0;
-  width: 28%;
+  width: 32%;
   height: 1px;
-  background: var(--accent);
-  animation: scan 1.3s linear infinite;
+  background: linear-gradient(90deg, transparent, var(--accent) 70%, color-mix(in srgb, var(--accent) 45%, #fff));
+  box-shadow: 0 0 10px 1px color-mix(in srgb, var(--accent) 60%, transparent);
+  animation: scan 1.4s cubic-bezier(0.65, 0, 0.35, 1) infinite;
 }
 .tool[data-state="failed"] { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
 
@@ -169,6 +181,7 @@
   font: 12px/1 var(--mono);
   cursor: pointer;
   user-select: none;
+  transition: background-color 0.12s;
 }
 .tool-head:hover { background: var(--bg-3); }
 .tstate { flex: none; width: 14px; text-align: center; font-size: 12px; color: var(--fg-3); }
@@ -235,12 +248,24 @@
 /* ---------------------------------------------------------------- empty / loading */
 
 .empty { padding: 4vh 0 24px; }
+/* The card is lit from its top left corner, in the accent, and its dot grid
+   fades out away from the light. */
 .empty-card {
+  isolation: isolate;
   padding: 28px 28px 22px;
   border: 1px solid var(--line);
-  background:
-    radial-gradient(circle, var(--line-2) 1px, transparent 1.2px) 0 0 / 16px 16px,
-    var(--bg);
+  background: radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 62%), var(--bg);
+  box-shadow: inset 0 1px 0 var(--highlight);
+}
+.empty-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: radial-gradient(circle, var(--line-2) 1px, transparent 1.2px) 0 0 / 16px 16px;
+  -webkit-mask-image: radial-gradient(140% 110% at 0% 0%, #000 25%, transparent 80%);
+  mask-image: radial-gradient(140% 110% at 0% 0%, #000 25%, transparent 80%);
 }
 .empty-head { display: flex; justify-content: space-between; gap: 16px; }
 .empty-head .label:first-child { flex: none; }
@@ -250,6 +275,7 @@
   font: 700 clamp(38px, 7vw, 64px)/0.95 var(--mono);
   letter-spacing: -0.04em;
   text-transform: uppercase;
+  text-shadow: 0 0 36px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 .caret {
   display: inline-block;
@@ -257,11 +283,19 @@
   height: 0.78em;
   margin-left: 0.08em;
   background: var(--accent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 65%, transparent);
   vertical-align: baseline;
   animation: blink 1.1s steps(2, jump-none) infinite;
 }
 .empty p { max-width: 520px; margin: 0; color: var(--fg-2); font-size: 14px; line-height: 1.6; }
 .starters { list-style: none; margin: 28px 0 0; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+/* The starters come in one after another, and rise to the pointer. */
+.starters li { animation: rise 0.4s ease-out backwards; }
+.starters li:nth-child(2) { animation-delay: 0.04s; }
+.starters li:nth-child(3) { animation-delay: 0.08s; }
+.starters li:nth-child(4) { animation-delay: 0.12s; }
+.starters li:nth-child(5) { animation-delay: 0.16s; }
+.starters li:nth-child(6) { animation-delay: 0.2s; }
 .starters button {
   display: grid;
   grid-template-columns: 28px minmax(0, 1fr);
@@ -272,12 +306,13 @@
   text-align: left;
   background: var(--bg-2);
   border: 1px solid var(--line);
-  transition: border-color 0.12s, background 0.12s;
+  transition: border-color 0.15s, background-color 0.15s, translate 0.2s var(--ease-out), scale 0.16s var(--ease-out), box-shadow 0.2s var(--ease-out);
 }
 .starters .n { grid-row: span 2; font: 700 11px/16px var(--mono); color: var(--accent); }
 .starters b { font: 700 11px/16px var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
 .starters span:last-child { font-size: 12.5px; line-height: 1.45; color: var(--fg-3); }
-.starters button:hover { border-color: var(--accent); background: var(--bg-3); }
+.starters button:hover { border-color: var(--accent); background: var(--bg-3); translate: 0 -1px; box-shadow: 0 8px 24px -14px color-mix(in srgb, var(--accent) 60%, transparent); }
+.starters button:active { translate: none; scale: 0.99; }
 .starters button:hover span:last-child { color: var(--fg-2); }
 .empty-keys { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 22px; font: 11px var(--mono); color: var(--fg-4); }
 .empty-keys kbd { margin-right: 6px; }
@@ -296,7 +331,12 @@
   text-transform: uppercase;
   box-shadow: var(--shadow);
   z-index: 5;
+  animation: jump-in 0.24s ease-out;
+  transition: background-color 0.12s, color 0.12s, scale 0.16s var(--ease-out);
 }
+.jump:hover { background: var(--accent); color: var(--accent-ink); }
+.jump:active { scale: 0.96; }
+@keyframes jump-in { from { opacity: 0; transform: translate(-50%, 8px); animation-timing-function: cubic-bezier(0.23, 1, 0.32, 1); } }
 
 /* A tool call a plugin renders keeps the card around it. */
 .tool-body.plugin-view { padding: 12px 14px; }
@@ -359,6 +399,7 @@
   padding-left: 4px;
   cursor: pointer;
   user-select: none;
+  transition: background-color 0.12s;
 }
 .call-head:hover { background: var(--bg-3); }
 .call .tstate { font-size: 11px; }
@@ -383,7 +424,7 @@
 .lane::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--line); }
 .lane i { position: absolute; top: 2px; height: 4px; min-width: 2px; background: var(--fg-4); }
 .call-head:hover .lane i { background: var(--fg-3); }
-.call[data-state="running"] .lane i { background: var(--accent); }
+.call[data-state="running"] .lane i { background: var(--accent); box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent); }
 .call[data-state="failed"] .lane i { background: var(--err); }
 .call[data-exit="nonzero"] .lane i { background: var(--warn); }
 
@@ -432,4 +473,4 @@
 }
 
 .tool-files { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; font: 11.5px/1.4 var(--mono); }
-.tool-files code { padding: 1px 6px; border: 1px solid var(--line); border-radius: 3px; color: var(--fg-2); background: var(--bg-3); }
+.tool-files code { padding: 1px 6px; border: 1px solid var(--line); color: var(--fg-2); background: var(--bg-3); }

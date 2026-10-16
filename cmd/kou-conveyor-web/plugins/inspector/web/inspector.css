@@ -32,7 +32,15 @@
 .kv.state-done .v { color: var(--ok); }
 .kv.state-stopping .v { color: var(--warn); }
 .meter-bar { height: 3px; margin: 2px 0 6px; background: var(--bg-4); }
-.meter-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.3s; }
+/* The fill brightens toward its tip, which glows, and grows on the strong
+   ease-out. */
+.meter-bar i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, var(--bg-4)), var(--accent));
+  box-shadow: 0 0 8px -1px color-mix(in srgb, var(--accent) 70%, transparent);
+  transition: width 0.5s var(--ease-out);
+}
 .tally { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); }
 .tally > div { padding: 8px 8px 7px; display: grid; gap: 4px; }
 .tally > div + div { border-left: 1px solid var(--line); }
@@ -41,6 +49,8 @@
 .tally > div[data-zero] b { color: var(--fg-4); }
 .tally > div:nth-child(2):not([data-zero]) b { color: var(--err); }
 .tally > div:nth-child(3):not([data-zero]) b { color: var(--accent); }
+/* Calls that run light their cell from below, as a selected tab is lit. */
+.tally > div:nth-child(3):not([data-zero]) { background: linear-gradient(to top, color-mix(in srgb, var(--accent) 10%, transparent), transparent 85%); }
 .recent { list-style: none; margin: 10px 0 0; padding: 0; }
 .recent button {
   display: grid;

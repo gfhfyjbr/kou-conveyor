@@ -53,7 +53,7 @@
   transition: color 0.12s, background 0.12s;
 }
 .sb-tab:hover { color: var(--fg); background: var(--bg-3); }
-.sb-tab[aria-selected="true"] { color: var(--fg); background: var(--bg); border-bottom-color: var(--accent); }
+.sb-tab[aria-selected="true"] { color: var(--fg); background: linear-gradient(to top, color-mix(in srgb, var(--accent) 9%, var(--bg)), var(--bg) 80%); border-bottom-color: var(--accent); }
 .sb-tab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 .sb-tab[data-dragging] { opacity: 0.45; }
 .sb-icon { display: inline-grid; place-items: center; flex: none; width: 14px; height: 14px; color: var(--fg-4); }

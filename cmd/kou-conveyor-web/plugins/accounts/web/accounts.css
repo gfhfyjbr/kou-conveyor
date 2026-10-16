@@ -33,8 +33,9 @@
 .accounts-scroll { position: relative; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
 .accounts-body { display: grid; gap: 22px; max-width: 1120px; margin: 0 auto; padding: 24px 24px 56px; }
 
-.gw-state[data-state="running"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: none; }
-.gw-state[data-state="running"] i { background: var(--ok); animation: none; }
+/* A gateway that runs is healthy, not busy: no belt, no glow. */
+.gw-state[data-state="running"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); background: none; box-shadow: none; animation: none; }
+.gw-state[data-state="running"] i { background: var(--ok); box-shadow: none; animation: none; }
 .gw-state[data-state="off"], .gw-state[data-state="stopped"] { color: var(--fg-3); }
 .range { display: inline-flex; height: 24px; border: 1px solid var(--line-2); }
 .range button { padding: 0 9px; font: 700 10px/22px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-3); }

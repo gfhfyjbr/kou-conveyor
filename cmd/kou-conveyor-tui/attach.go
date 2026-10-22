@@ -645,12 +645,12 @@ func (m *uiModel) previewBox(a *attachment, width, height int) []string {
 	}
 	// A hairline box with the accent at its corners, as the dock's.
 	border, corner := st.rule2, st.accent
-	top := corner.Render("┌") + border.Render("─") + fit(title, inner) + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(fit(title, inner))))) + corner.Render("┐")
+	top := corner.Render(corners.tl) + border.Render("─") + fit(title, inner) + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(fit(title, inner))))) + corner.Render(corners.tr)
 	bottomHint := hint
 	if ansi.StringWidth(hint) > inner {
 		bottomHint = ""
 	}
-	bottom := corner.Render("└") + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(bottomHint)))) + st.faint.Render(bottomHint) + border.Render("─") + corner.Render("┘")
+	bottom := corner.Render(corners.bl) + border.Render(strings.Repeat("─", max(0, inner+1-ansi.StringWidth(bottomHint)))) + st.faint.Render(bottomHint) + border.Render("─") + corner.Render(corners.br)
 	lines := []string{top}
 	for _, line := range body {
 		w := ansi.StringWidth(line)

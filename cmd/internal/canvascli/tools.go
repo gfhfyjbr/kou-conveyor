@@ -26,7 +26,12 @@ type Tool struct {
 	// runs of an agent is such calls, the harness does not ask the agent
 	// for progress reports (plugin.Tool's waits).
 	Waits bool
-	run   func(ctx context.Context, c *client, args jsontext.Value) (result, error)
+	// Refetch says that its results show what the canvas keeps — the board,
+	// a node's screen, messages and transcript —, which a call fetches
+	// again: a long conversation of an agent prunes them before the other
+	// tools' results (plugin.Tool's refetch).
+	Refetch bool
+	run     func(ctx context.Context, c *client, args jsontext.Value) (result, error)
 }
 
 // result is what a tool answers: text for the agent, and what the server
@@ -73,9 +78,11 @@ var tools = []Tool{
 		Name: "CanvasView",
 		Description: "Show the canvas you are on: every node (its ID, kind, title, status, place and size, ports, worktree), every connection between them, " +
 			"and free places beside your node. Look before you create, connect or remove anything: the canvas changes while you work. " +
+			"A busy kou agent that has shown nothing for 10 minutes or more is marked quiet: it waits on a long command, or it is stuck — its transcript tells. " +
 			"To message a node you know the title of, CanvasSend needs no look first.",
 		Schema: `{"type":"object","properties":{` +
 			`"detail":{"type":"string","enum":["summary","full"],"description":"full adds the connections' templates and the notes' texts."}}}`,
+		Refetch: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a viewArgs
 			if err := decodeArgs("CanvasView", args, &a); err != nil {
@@ -86,20 +93,22 @@ var tools = []Tool{
 	},
 	{
 		Name: "CanvasSpawn",
-		Description: "Create a node on the canvas — a terminal running a coding agent or a command, a kou agent, a note — beside your node unless you say where; " +
-			"optionally wire it to other nodes and give it its first prompt. Give each coding agent that writes code a worktree of its own. " +
-			"It answers the node's ID and place.",
+		Description: "Create a node on the canvas — a kou agent (the default), a terminal running a command or another coding agent, a note — beside your node unless you say where, " +
+			"and give it its first prompt. A kou agent is an agent like you with a session of its own, which the canvas talks to directly: " +
+			"make coders, reviewers and researchers kou agents, and give each one that writes code a worktree of its own. " +
+			"An agent you spawn (a kou agent, claude-code, codex, opencode) is wired to you: its output to your input, so what it answers comes back to you as a message; " +
+			"connect wires it otherwise, connect {} not at all. It answers the node's ID and place.",
 		Schema: `{"type":"object","properties":{` +
-			`"preset":{"type":"string","description":"What the node runs: shell, command (runs command), claude-code, codex, opencode, agent (a kou agent like you), note, or a plugin's preset as plugin/preset."},` +
+			`"preset":{"type":"string","description":"What the node runs: agent (the default: a kou agent like you), shell, command (runs command), note, claude-code, codex, opencode, or a plugin's preset as plugin/preset."},` +
 			`"title":{"type":"string","description":"Its title, which the other nodes see: short and telling."},` +
 			`"command":{"type":"string","description":"For a command node: the command line it runs."},` +
-			`"cwd":{"type":"string","description":"The directory a terminal starts in, relative to the workspace or to its worktree."},` +
+			`"cwd":{"type":"string","description":"The directory it works in, relative to the workspace or absolute: where a terminal starts; for a kou agent without a worktree, the folder its tools and shell work in (its session stays this workspace's). A worktree goes before it."},` +
 			`"worktree":{"type":"string","description":"Work in a git worktree of its own, made when missing: its name, its branch kou/<name>. One writer per worktree. A kou agent's worktree is named after its session, whatever the name."},` +
 			`"base":{"type":"string","description":"The branch or commit a new worktree starts from; HEAD by default."},` +
 			`"include":{"type":"array","items":{"type":"string"},"description":"Paths of the workspace git does not carry (vendor/, a tool's folder, fonts) to copy into its worktree, which gets the submodules of the user's checkout by itself."},` +
 			`"link":{"type":"array","items":{"type":"string"},"description":"Such paths to link into its worktree instead of copying: shared with the user's checkout, for big things nobody writes."},` +
 			`"prompt":{"type":"string","description":"Its first prompt, sent once it runs; for a note, its text."},` +
-			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: model, effort, instructions for an agent; permission_mode for claude-code."},` +
+			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: for a kou agent model, effort (low, medium, high, xhigh, max), instructions (its role), output, and reply (auto: what it answers at a turn's end goes back to the node that sent it a message; off: it answers nodes with CanvasSend only — a foreman's default); permission_mode for claude-code."},` +
 			`"access":{"type":"string","enum":["none","observe","talk","build"],"description":"What its program may do on the canvas: talk by default for what an agent makes; build lets it make nodes too."},` +
 			`"near":{"type":"string","description":"The node to place it beside: yours by default."},` +
 			`"side":{"type":"string","enum":["right","below","left","above"],"description":"Which side of near: the first free one by default."},` +
@@ -107,23 +116,26 @@ var tools = []Tool{
 			`"y":{"type":"integer","description":"Its top edge."},` +
 			`"w":{"type":"integer","description":"Its width; its preset's by default."},` +
 			`"h":{"type":"integer","description":"Its height; its preset's by default."},` +
-			`"connect":{"type":"object","description":"Wire it at once: from's output to its input, its output to to's input. A node is its ID or self, with :port when not out or in.",` +
+			`"connect":{"type":"object","description":"Wire it at once: from's output to its input, its output to to's input. A node is its ID or self, with :port when not out or in. Left out, an agent is wired to answer you, as {\"to\":\"self\"}, and nothing else is wired; {} wires nothing.",` +
 			`"properties":{"from":{"type":"string"},"to":{"type":"string"}}}` +
-			`},"required":["preset"]}`,
+			`}}`,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a spawnArgs
 			if err := decodeArgs("CanvasSpawn", args, &a); err != nil {
 				return result{}, err
 			}
+			// A tool is called by an agent: a kou agent, or a coding
+			// agent through kou-canvas mcp.
+			a.byAgent = true
 			return c.spawn(ctx, a)
 		},
 	},
 	{
 		Name:        "CanvasRemove",
-		Description: "Remove a node from the canvas: one you made, or any with admin access. Its program ends; its worktree stays, with its work.",
+		Description: "Remove a node from the canvas: one you made, or any with admin access. Its program ends — a kou agent's run is stopped, and its session deleted; its worktree stays, with its work.",
 		Schema: `{"type":"object","properties":{` +
 			`"node":{"type":"string","description":"The node's ID."},` +
-			`"keep_session":{"type":"boolean","description":"Keep a kou agent's session in the session list; it is deleted with the node otherwise."},` +
+			`"keep_session":{"type":"boolean","description":"Only when the user asks to keep it: keeps a kou agent's session, which then shows in the user's session list as a session of its own. By default it is deleted with the node."},` +
 			`"keep_worktree":{"type":"boolean","description":"Worktrees are always kept: only the user removes them."}` +
 			`},"required":["node"]}`,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
@@ -143,7 +155,7 @@ var tools = []Tool{
 			`"to":{"type":"string","description":"The input: a node's ID or self, with :port when not in."},` +
 			`"template":{"type":"string","description":"What the message says: {{text}}, {{title}}, {{data.<path>}}, {{from.title}}, {{from.id}}; the output's text by default."},` +
 			`"mode":{"type":"string","enum":["auto","approve","off"],"description":"approve holds each message until the user lets it go; a connection that closes a loop of agents starts so."},` +
-			`"deliver":{"type":"string","enum":["queue","now"],"description":"queue (the default) waits until the target is idle; now gives it at once."}` +
+			`"deliver":{"type":"string","enum":["queue","now"],"description":"By default a kou agent gets each message at once — at work, it reads it between its tool calls — and a terminal once it is idle. queue makes a kou agent wait until its turn ends too; now types into a busy terminal."}` +
 			`},"required":["from","to"]}`,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a connectArgs
@@ -188,8 +200,9 @@ var tools = []Tool{
 		Name: "CanvasSend",
 		Description: "Message a node — a prompt for an agent, a command for a shell — named by its ID or its title: one call, no need to look it up first. " +
 			"With wait, the call waits for the node's answer and returns it: an agent's answer at the end of its turn, a shell's command output. " +
-			"Without wait, an agent's answer comes to you later as a prompt that starts with [canvas] reply from. " +
-			"The text goes in once the node is idle, and Enter is pressed after it; keys are pressed as tmux send-keys names them.",
+			"Without wait, an agent's answer comes to you later as a prompt that starts with [canvas] reply from — unless it is a foreman, or its config's reply is off: those answer with CanvasSend. " +
+			"A kou agent reads the text at once, between its tool calls; a terminal is given it once idle, and Enter is pressed after it; keys are pressed as tmux send-keys names them. " +
+			"With replace, the text takes the place of your last prompt to a kou agent — one its model refused, say — instead of coming after it: no need to remove the agent and start over.",
 		Schema: `{"type":"object","properties":{` +
 			`"node":{"type":"string","description":"The node: its ID (n_…) or its title."},` +
 			`"text":{"type":"string","description":"The message: the prompt, or what to type."},` +
@@ -197,7 +210,8 @@ var tools = []Tool{
 			`"timeout_s":{"type":"integer","description":"With wait: how long to wait at most, in seconds; 600 by default. An answer that comes later comes to you as a reply."},` +
 			`"submit":{"type":"boolean","description":"Press Enter after the text: true by default."},` +
 			`"keys":{"type":"array","items":{"type":"string"},"description":"Keys to press after the text, as tmux names them: Enter, Tab, Escape, BSpace, Up, Down, Left, Right, Home, End, C-c, M-x, F1…"},` +
-			`"when":{"type":"string","enum":["idle","now"],"description":"idle (the default) waits until the node is idle; now gives it at once: an agent at work reads it after its current step."}` +
+			`"when":{"type":"string","enum":["idle","now"],"description":"By default a kou agent reads it at once (between its tool calls) and a terminal once it is idle. idle makes a kou agent wait until its turn ends; now types into a busy terminal, and starts an idle kou agent even when its queue is paused."},` +
+			`"replace":{"type":"boolean","description":"For a kou agent: the text replaces your last prompt to it, as an edited prompt does. Its session goes back to before that prompt — the agent forgets the prompt and all its run did of it, files aside — and runs this text from there. Only once its run is over, and only while no other prompt came after yours."}` +
 			`},"required":["node"]}`,
 		Waits: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
@@ -217,11 +231,12 @@ var tools = []Tool{
 			`"node":{"type":"string","description":"The node: its ID (n_…), its title, or self."},` +
 			`"what":{"type":"string","enum":["screen","tail","output","answer"],"description":"tail (the default): a terminal's latest lines; screen: what it shows; output or answer: its latest output."},` +
 			`"lines":{"type":"integer","description":"How many lines of tail: 80 by default."},` +
-			`"wait":{"type":"string","enum":["idle","output","exit"],"description":"Wait until the node is idle, gives its next output, or ends, then read."},` +
+			`"wait":{"type":"string","enum":["idle","output","exit"],"description":"Wait until the node is idle, gives its next output (or its run ends without one: refused, stopped, failed), or ends, then read."},` +
 			`"after":{"type":"integer","description":"With wait output: the count of outputs CanvasSend answered, so that an output given meanwhile counts."},` +
 			`"timeout_s":{"type":"integer","description":"How long to wait at most, in seconds: 600 by default."}` +
 			`},"required":["node"]}`,
-		Waits: true,
+		Waits:   true,
+		Refetch: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a readArgs
 			if err := decodeArgs("CanvasRead", args, &a); err != nil {
@@ -232,21 +247,25 @@ var tools = []Tool{
 	},
 	{
 		Name: "CanvasTranscript",
-		Description: "Read a node's raw, structured transcript incrementally: user prompts, assistant text, reasoning, tool calls and their full bounded outcomes, notices and harness or canvas messages. " +
-			"Use after from the previous answer, or after=last to use the server's cursor for this reader and node; filter by kinds, tools and time, and request notes or summaries when diagnosing a stall. " +
-			"This reads new records rather than polling or re-reading the whole session.",
+		Description: "Read a node's raw transcript: its prompts, answers, reasoning, tool calls with their outcomes, notices, and what the canvas told it (kind peer). " +
+			"tail=N gives the last N entries, wherever you stopped; after=last reads on from where you last stopped reading the node, a cursor of yours for each filter of kinds and tools. " +
+			"An answer holds about 30 KB: when it says more, read on with after set to its next — what did not fit is not lost. " +
+			"Filter by kinds, tools and time; ask for notes or summaries when you look into a stall.",
 		Schema: `{"type":"object","properties":{` +
 			`"node":{"type":"string","description":"The node whose raw transcript to read: its ID, title, or self."},` +
-			`"after":{"type":"string","description":"The byte cursor from the previous answer, or last for the server's saved cursor for this reader and node."},` +
-			`"limit":{"type":"integer","description":"Maximum entries: 50 by default, 500 at most."},` +
-			`"kinds":{"type":"array","items":{"type":"string","enum":["user","assistant","reasoning","tool","notice","error","compaction","heartbeat","peer"]},"description":"Only these entry kinds."},` +
+			`"tail":{"type":"integer","description":"The last N entries that match, 500 at most: what the node did lately. It moves no cursor, and does not go with after."},` +
+			`"after":{"type":"string","description":"Read on after a cursor: the next of an answer, or last for where you stopped reading the node with the same kinds and tools. Neither after nor tail: from the session's start."},` +
+			`"limit":{"type":"integer","description":"Maximum entries: 50 by default, 500 at most; fewer when they would not fit the answer."},` +
+			`"kinds":{"type":"array","items":{"type":"string","enum":["user","assistant","reasoning","tool","notice","error","compaction","heartbeat","peer"]},"description":"Only these entry kinds: peer is a message of the canvas, from another node."},` +
 			`"tools":{"type":"array","items":{"type":"string"},"description":"Only tool entries with these names."},` +
-			`"since":{"type":"string","description":"Only entries at or after this RFC3339 time."},` +
+			`"since":{"type":"string","description":"Only entries at or after this RFC3339 time. A read with since or until moves no cursor."},` +
 			`"until":{"type":"string","description":"Only entries at or before this RFC3339 time."},` +
-			`"message_limit":{"type":"integer","description":"Maximum bytes of message, reasoning and detail fields: 8 KiB by default."},` +
-			`"output_limit":{"type":"integer","description":"Maximum bytes of tool output, stderr and error fields: 4 KiB by default."},` +
-			`"include":{"type":"array","items":{"type":"string","enum":["notes","summaries"]},"description":"Include the durable notes or recent summaries beside the entries."}` +
+			`"message_limit":{"type":"integer","description":"Maximum bytes of message, reasoning and detail fields: 8 KiB by default, less for an entry too big for the answer."},` +
+			`"output_limit":{"type":"integer","description":"Maximum bytes of tool output, stderr and error fields: 4 KiB by default, less for an entry too big for the answer. An output the harness kept whole in a file names it."},` +
+			`"include":{"type":"array","items":{"type":"string","enum":["notes","summaries"]},"description":"Include the durable notes or recent summaries beside the entries."},` +
+			`"format":{"type":"string","enum":["text","json"],"description":"text (the default): an entry a line or a block, at local times; json: the entries as the server gives them, with their IDs and cursors."}` +
 			`},"required":["node"]}`,
+		Refetch: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a transcriptArgs
 			if err := decodeArgs("CanvasTranscript", args, &a); err != nil {
@@ -265,6 +284,7 @@ var tools = []Tool{
 			`"q":{"type":"string","description":"A case-insensitive regular expression to find."},` +
 			`"limit":{"type":"integer","description":"Maximum matches: 20 by default, 200 at most."}` +
 			`},"required":["q"]}`,
+		Refetch: true,
 		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
 			var a searchArgs
 			if err := decodeArgs("CanvasSearch", args, &a); err != nil {
@@ -276,7 +296,7 @@ var tools = []Tool{
 	{
 		Name: "CanvasWait",
 		Description: "Wait for any of several nodes — your children by default: the nodes you made and those you are wired to — instead of polling or sleeping. " +
-			"until answer (the default): one of them gives an output, an agent's answer; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. " +
+			"until answer (the default): one of them gives an output, an agent's answer — or a run of it ends without one, as when its model refuses, which the result says; idle: all of them are idle; exit: one of them ends; any: one of them changes at all. " +
 			"It answers which node it was, with the state of each; pass its next as after to the next wait, so that nothing given meanwhile is missed. " +
 			"No need to wait at all for an answer to come back: end your turn, and the answer wakes you as a message.",
 		Schema: `{"type":"object","properties":{` +
@@ -350,11 +370,22 @@ type spawnArgs struct {
 	Y        number         `json:"y"`
 	W        number         `json:"w"`
 	H        number         `json:"h"`
-	Connect  *struct {
-		From string `json:"from"`
-		To   string `json:"to"`
-	} `json:"connect"`
+	Connect  *spawnConnect  `json:"connect"`
+	// byAgent: the caller is an agent, as a tool's is; a command line
+	// may be a shell's.
+	byAgent bool
 }
+
+// spawnConnect wires a new node at once: from's output to its input, its
+// output to to's input. Both left empty, it wires nothing.
+type spawnConnect struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// codingAgents are the presets of terminals that run a coding agent, which
+// answers what it is sent as a kou agent does.
+var codingAgents = map[string]bool{"claude-code": true, "codex": true, "opencode": true}
 
 type removeArgs struct {
 	Node         string `json:"node"`
@@ -408,6 +439,7 @@ type sendArgs struct {
 	Submit   *bool    `json:"submit"`
 	Keys     []string `json:"keys"`
 	When     string   `json:"when"`
+	Replace  loose    `json:"replace"`
 }
 
 type readArgs struct {
@@ -483,6 +515,7 @@ type viewNode struct {
 	Pending   int      `json:"pending"`
 	Session   string   `json:"session"`
 	Text      string   `json:"text"`
+	QuietS    int      `json:"quiet_s"`
 }
 
 type viewEdge struct {
@@ -538,9 +571,10 @@ type status struct {
 }
 
 type message struct {
-	ID     string `json:"id"`
-	State  string `json:"state"`
-	Reason string `json:"reason"`
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Reason  string `json:"reason"`
+	Deliver string `json:"deliver"`
 }
 
 func (c *client) view(ctx context.Context, a viewArgs) (result, error) {
@@ -583,7 +617,9 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		preset = "command"
 	}
 	if preset == "" && kind == "" {
-		return result{}, errors.New("name the preset of the node: shell, command, claude-code, codex, opencode, agent, note, or plugin/preset")
+		// A node of no preset is a kou agent: the canvas's own, which it
+		// talks to and reads directly.
+		preset = "agent"
 	}
 	switch preset {
 	case "terminal":
@@ -676,13 +712,22 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 			node[name] = *v
 		}
 	}
-	if a.Connect != nil && (a.Connect.From != "" || a.Connect.To != "") {
+	// An agent an agent spawns answers it: its output is wired to the
+	// spawner's input, so that what it ends a turn with comes back as a
+	// message, unless connect says otherwise. A command line wires so for
+	// an agent's program only: a shell would take the answers for commands.
+	wire := a.Connect
+	answers := agent || codingAgents[preset] && (kind == "" || kind == "terminal")
+	if wire == nil && answers && c.node != "" && (a.byAgent || c.runsAnAgent(ctx)) {
+		wire = &spawnConnect{To: "self"}
+	}
+	if wire != nil && (wire.From != "" || wire.To != "") {
 		connect := map[string]any{}
-		if a.Connect.From != "" {
-			connect["from"] = a.Connect.From
+		if wire.From != "" {
+			connect["from"] = wire.From
 		}
-		if a.Connect.To != "" {
-			connect["to"] = a.Connect.To
+		if wire.To != "" {
+			connect["to"] = wire.To
 		}
 		node["connect"] = connect
 	}
@@ -716,6 +761,22 @@ func (c *client) spawn(ctx context.Context, a spawnArgs) (result, error) {
 		b.WriteString("\nits first prompt is sent once it runs")
 	}
 	return result{text: b.String(), raw: raw}, nil
+}
+
+// runsAnAgent says whether the node this program runs for is an agent's,
+// as the canvas has it: a kou agent, or a terminal of a coding agent.
+func (c *client) runsAnAgent(ctx context.Context) bool {
+	var s self
+	if _, err := c.call(ctx, "GET", "/api/canvas/self", nil, nil, &s); err != nil {
+		return false
+	}
+	switch n := s.Node; n.Kind {
+	case "agent":
+		return true
+	case "terminal":
+		return n.Preset != "" && n.Preset != "shell" && n.Preset != "command"
+	}
+	return false
 }
 
 // paths are the paths of a list, trimmed, without the empty ones.
@@ -927,6 +988,15 @@ func (c *client) send(ctx context.Context, a sendArgs) (result, error) {
 	if a.When != "" {
 		body["when"] = a.When
 	}
+	if a.Replace {
+		switch {
+		case len(a.Keys) != 0:
+			return result{}, errors.New("replace takes text, not keys")
+		case a.Text == "":
+			return result{}, errors.New("replace needs the text that takes your last prompt's place")
+		}
+		body["replace"] = true
+	}
 	wait := bool(a.Wait) && a.Text != ""
 	timeout := 600 * time.Second
 	if wait {
@@ -958,6 +1028,9 @@ func (c *client) send(ctx context.Context, a sendArgs) (result, error) {
 	if target == "" {
 		target = node
 	}
+	if a.Replace && (answer.Message == nil || answer.Message.State != "dropped") {
+		fmt.Fprintf(&b, "your last prompt to %s is replaced: its session went back to before it, and runs this text from there\n", target)
+	}
 	if wait {
 		switch {
 		case answer.Answered:
@@ -970,6 +1043,9 @@ func (c *client) send(ctx context.Context, a sendArgs) (result, error) {
 				reason = "it answered nothing"
 			}
 			fmt.Fprintf(&b, "%s gave no answer: %s", target, reason)
+			if strings.HasSuffix(reason, "refused to answer") {
+				b.WriteString("\nto word it otherwise, send the new text with replace: it takes this prompt's place, and the refused one is forgotten")
+			}
 		}
 		return result{text: b.String(), raw: raw}, nil
 	}
@@ -985,7 +1061,11 @@ func (c *client) send(ctx context.Context, a sendArgs) (result, error) {
 	case "dropped":
 		fmt.Fprintf(&b, "not delivered to %s: %s", target, answer.Message.Reason)
 	default:
-		fmt.Fprintf(&b, "sent to %s: it is delivered once the node is idle", target)
+		if answer.Message != nil && answer.Message.Deliver == "now" {
+			fmt.Fprintf(&b, "sent to %s: it goes in at once — an agent at work reads it between its tool calls", target)
+		} else {
+			fmt.Fprintf(&b, "sent to %s: it is delivered once the node is idle", target)
+		}
 	}
 	if a.Text != "" && state != "dropped" {
 		b.WriteString("\nan agent's answer comes to you later as a reply; send with wait to have it as this call's result")
@@ -1027,6 +1107,7 @@ func (c *client) read(ctx context.Context, a readArgs) (result, error) {
 		Status   status `json:"status"`
 		TimedOut bool   `json:"timed_out"`
 		Outputs  *int   `json:"outputs"`
+		NoAnswer string `json:"no_answer"`
 	}
 	raw, err := c.call(ctx, "GET", "/api/canvas/nodes/"+url.PathEscape(node)+"/read", q, nil, &answer)
 	if err != nil {
@@ -1037,6 +1118,9 @@ func (c *client) read(ctx context.Context, a readArgs) (result, error) {
 	b.WriteString(" · " + describeStatus(answer.Status))
 	if answer.TimedOut {
 		fmt.Fprintf(&b, " · timed out after %s waiting for %s", timeout, a.Wait)
+	}
+	if answer.NoAnswer != "" {
+		b.WriteString(" · " + noAnswer(answer.NoAnswer))
 	}
 	text := strings.TrimRight(answer.Text, "\n")
 	if text == "" {
@@ -1064,16 +1148,25 @@ func (c *client) wait(ctx context.Context, node, until string, after *int, timeo
 		Status   status `json:"status"`
 		Outputs  int    `json:"outputs"`
 		TimedOut bool   `json:"timed_out"`
+		NoAnswer string `json:"no_answer"`
 	}
 	raw, err := c.call(ctx, "GET", "/api/canvas/nodes/"+url.PathEscape(node)+"/wait", q, nil, &answer)
 	if err != nil {
 		return result{}, err
 	}
 	text := fmt.Sprintf("%s · %s · outputs %d", answer.Node, describeStatus(answer.Status), answer.Outputs)
+	if answer.NoAnswer != "" {
+		text += " · " + noAnswer(answer.NoAnswer)
+	}
 	if answer.TimedOut {
 		text = "timed out: " + text
 	}
 	return result{text: text, raw: raw}, nil
+}
+
+// noAnswer says that a node's last run ended without an answer, and why.
+func noAnswer(why string) string {
+	return "its last run ended without an answer: " + why
 }
 
 func (c *client) emit(ctx context.Context, a emitArgs) (result, error) {
@@ -1133,11 +1226,12 @@ func (c *client) waitAny(ctx context.Context, a waitArgs) (result, error) {
 		Fired string `json:"fired"`
 		Until string `json:"until"`
 		Nodes []struct {
-			Node    string `json:"node"`
-			Title   string `json:"title"`
-			Status  status `json:"status"`
-			Outputs int    `json:"outputs"`
-			Gone    bool   `json:"gone"`
+			Node     string `json:"node"`
+			Title    string `json:"title"`
+			Status   status `json:"status"`
+			Outputs  int    `json:"outputs"`
+			Gone     bool   `json:"gone"`
+			NoAnswer string `json:"no_answer"`
 		} `json:"nodes"`
 		Next     string `json:"next"`
 		TimedOut bool   `json:"timed_out"`
@@ -1151,13 +1245,22 @@ func (c *client) waitAny(ctx context.Context, a waitArgs) (result, error) {
 	case answer.TimedOut:
 		fmt.Fprintf(&b, "Timed out after %s waiting for %s.", timeout, answer.Until)
 	case answer.Fired != "":
-		title := answer.Fired
+		title, why := answer.Fired, ""
 		for _, n := range answer.Nodes {
-			if n.Node == answer.Fired && n.Title != "" {
-				title = n.Node + " «" + n.Title + "»"
+			if n.Node == answer.Fired {
+				if n.Title != "" {
+					title = n.Node + " «" + n.Title + "»"
+				}
+				why = n.NoAnswer
 			}
 		}
-		fmt.Fprintf(&b, "%s: %s.", answer.Until, title)
+		if why != "" && (answer.Until == "answer" || answer.Until == "output") {
+			// No answer comes of the run: waiting on would wait for nothing.
+			fmt.Fprintf(&b, "%s: %s ended its run without an answer — %s. "+
+				"Send it the task again, or, to word it otherwise, CanvasSend with replace, which edits your last message to it and runs it anew.", answer.Until, title, why)
+		} else {
+			fmt.Fprintf(&b, "%s: %s.", answer.Until, title)
+		}
 	default:
 		fmt.Fprintf(&b, "%s: already so, nothing to wait for.", answer.Until)
 	}
@@ -1167,6 +1270,9 @@ func (c *client) waitAny(ctx context.Context, a waitArgs) (result, error) {
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s «%s» · %s · %d outputs", n.Node, n.Title, describeStatus(n.Status), n.Outputs)
+		if n.NoAnswer != "" {
+			b.WriteString(" · " + noAnswer(n.NoAnswer))
+		}
 	}
 	if answer.Next != "" {
 		fmt.Fprintf(&b, "\nnext: %s", answer.Next)

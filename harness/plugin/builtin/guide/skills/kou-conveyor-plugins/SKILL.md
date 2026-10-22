@@ -204,6 +204,10 @@ Declaring one:
   While all that runs of an agent is such calls, the harness does not ask it
   for progress reports, and checks in on it four times less often. Off by
   default.
+- `refetch`: `true` for a tool whose results show what is kept elsewhere,
+  which a call fetches again — another agent's transcript, a search. When a
+  long conversation is pruned, its results go before the other tools'. Off
+  by default.
 
 ```sh
 #!/bin/sh

@@ -23,7 +23,7 @@ struct PairingView: View {
                             .foregroundStyle(.red)
                             .padding(14)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .glassEffect(.regular.tint(.red.opacity(0.12)), in: .rect(cornerRadius: 18))
+                            .glassEffect(.regular.tint(.red.opacity(0.12)), in: .rect(cornerRadius: .corner(18)))
                             .transition(.blurReplace)
                     }
                 }
@@ -79,7 +79,7 @@ struct PairingView: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: 22))
+        .glassEffect(.regular, in: .rect(cornerRadius: .corner(22)))
     }
 
     private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
@@ -108,26 +108,16 @@ struct PairingView: View {
                 .controlSize(.large)
                 .glassEffectID("scan", in: glass)
 
-                HStack(spacing: 10) {
-                    Button {
-                        paste()
-                    } label: {
-                        Label("Paste link", systemImage: "doc.on.clipboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .glassEffectID("paste", in: glass)
-                    Button {
-                        error = nil
-                        manual = true
-                    } label: {
-                        Label("Enter by hand", systemImage: "keyboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .glassEffectID("manual", in: glass)
+                // Side by side, of one width, while their words fit on a
+                // line; else one above the other.
+                ViewThatFits(in: .horizontal) {
+                    EvenRow(spacing: 10) { otherWays }
+                    VStack(spacing: 10) { otherWays }
                 }
                 .buttonStyle(.glass)
                 .controlSize(.large)
             }
+            .labelStyle(EvenSymbolLabelStyle())
         }
         .disabled(busy)
         .overlay {
@@ -142,9 +132,30 @@ struct PairingView: View {
         .padding(.bottom, 8)
     }
 
+    /// The ways to pair besides the camera: the link copied, or by hand.
+    @ViewBuilder private var otherWays: some View {
+        Button {
+            paste()
+        } label: {
+            Label("Paste link", systemImage: "doc.on.clipboard")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .glassEffectID("paste", in: glass)
+        Button {
+            error = nil
+            manual = true
+        } label: {
+            Label("Enter by hand", systemImage: "keyboard")
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+        }
+        .glassEffectID("manual", in: glass)
+    }
+
     private var backdrop: some View {
         ZStack {
-            Color(uiColor: .systemBackground)
+            Color.kouGround
             RadialGradient(colors: [Color.kouAccent.opacity(0.28), .clear], center: .top, startRadius: 0, endRadius: 420)
             RadialGradient(colors: [Color.indigo.opacity(0.18), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 380)
         }
@@ -177,6 +188,56 @@ struct PairingView: View {
             } catch {
                 withAnimation { self.error = error.localizedDescription }
             }
+        }
+    }
+}
+
+/// EvenRow sets its views side by side, all as wide as the widest of them,
+/// so that a row of buttons reads as one set. Its ideal width is what that
+/// takes, so a ViewThatFits picks it only where every title fits on a line.
+struct EvenRow: Layout {
+    var spacing: CGFloat = 10
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        let widest = sizes.map(\.width).max() ?? 0
+        let tallest = sizes.map(\.height).max() ?? 0
+        let needed = widest * CGFloat(subviews.count) + spacing * CGFloat(subviews.count - 1)
+        let offered = proposal.width.map { $0.isFinite ? $0 : needed } ?? needed
+        return CGSize(width: max(offered, needed), height: tallest)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let tallest = subviews.map { $0.sizeThatFits(.unspecified).height }.max() ?? 0
+        let width = (bounds.width - spacing * CGFloat(subviews.count - 1)) / CGFloat(subviews.count)
+        var x = bounds.minX
+        for subview in subviews {
+            subview.place(at: CGPoint(x: x, y: bounds.midY), anchor: .leading, proposal: ProposedViewSize(width: width, height: tallest))
+            x += width + spacing
+        }
+    }
+}
+
+/// EvenSymbolLabelStyle sets a label's symbol in a square of one size, so
+/// that buttons whose symbols differ in height come out as tall as each
+/// other, and the titles of buttons one above the other line up.
+struct EvenSymbolLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        EvenSymbolLabel(configuration: configuration)
+    }
+}
+
+private struct EvenSymbolLabel: View {
+    let configuration: LabelStyleConfiguration
+    @ScaledMetric(relativeTo: .body) private var side: CGFloat = 22
+
+    var body: some View {
+        HStack(spacing: 8) {
+            configuration.icon
+                .frame(width: side, height: side)
+            configuration.title
         }
     }
 }

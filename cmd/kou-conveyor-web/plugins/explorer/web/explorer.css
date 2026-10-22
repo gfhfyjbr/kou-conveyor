@@ -79,7 +79,9 @@
   color: var(--fg-2);
 }
 .fx-result small { font-size: 11px; color: var(--fg-4); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.fx-result:hover, .fx-result[aria-selected="true"] { background: var(--bg-3); color: var(--fg); border-left-color: var(--accent); }
+/* The pointer only lights a result; the accent bar marks the one Enter takes. */
+.fx-result:hover { background: var(--bg-3); }
+.fx-result[aria-selected="true"] { background: var(--bg-3); color: var(--fg); border-left-color: var(--accent); }
 
 .fx-divider { position: relative; background: var(--line); cursor: row-resize; touch-action: none; }
 .fx-divider::after { content: ""; position: absolute; inset: -3px 0; }
@@ -92,8 +94,10 @@
 .fx-headrow { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 4px 6px 4px 12px; }
 .fx-path { display: flex; align-items: baseline; min-width: 0; overflow: hidden; font: 12px/1.3 var(--mono); color: var(--fg); white-space: nowrap; text-align: left; }
 .fx-path:hover b { text-decoration: underline dotted var(--fg-4); text-underline-offset: 3px; }
-.fx-dir { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-4); }
-.fx-path b { flex: none; font-weight: 600; }
+/* The folder gives up its room first; then the name ends in "…" too. The
+   full path is the button's title. */
+.fx-dir { flex: 0 1000 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg-4); }
+.fx-path b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 600; }
 .fx-meta { flex: none; font: 11px/1 var(--mono); color: var(--fg-4); white-space: nowrap; }
 .fx-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; flex: none; }
 .fx-actions .act[aria-pressed="true"] { color: var(--accent); }
@@ -137,3 +141,10 @@
 .code.wrap .code-sizer { min-width: 0; }
 .code.wrap .code-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .code ::selection { background: var(--selection); }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Round, the current file and the chosen result are rounded blocks, with
+   no bar along their edge; their text stays where it was. */
+:root[data-corners="round"] .fx-row { margin: 0 4px; padding: 0 6px 0 calc(8px + var(--depth, 0) * 14px); border-left: 0; border-radius: var(--radius-sm); }
+:root[data-corners="round"] .fx-result { width: calc(100% - 8px); margin: 0 4px; padding: 6px 8px 6px 10px; border-left: 0; border-radius: var(--radius-sm); }

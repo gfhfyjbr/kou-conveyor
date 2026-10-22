@@ -34,7 +34,7 @@ import (
 //	DELETE {p}/canvases/{id}                         ?keep_terminals=1&keep_sessions=1
 //	POST   {p}/canvases/{id}/ops                     a batch of operations (ops.go)
 //	GET    {p}/canvases/{id}/events                  its events (hub.go)
-//	POST   {p}/canvases/{id}/nodes/{node}/send       {text, submit, keys, deliver}
+//	POST   {p}/canvases/{id}/nodes/{node}/send       {text, submit, keys, deliver, replace}
 //	GET    {p}/canvases/{id}/nodes/{node}/read       ?what=screen|tail|output|answer&lines=
 //	GET    {p}/canvases/{id}/nodes/{node}/transcript ?tail=40: an agent's latest entries; ?raw=1 is the bounded cursor feed
 //	GET    {p}/canvases/{id}/nodes/{node}/search     ?q=&limit=: search its persisted transcript
@@ -826,7 +826,19 @@ var agentConfig = map[string]any{
 		"sandbox":      map[string]any{"type": "string", "title": "Sandbox", "enum": []any{"off", "worktree"}, "default": "off", "description": "worktree: it works in a git worktree of its own."},
 		"output":       map[string]any{"type": "string", "title": "Output", "enum": []any{OutputReplies, OutputAll, OutputExplicit}, "default": OutputReplies, "description": "What goes along its edges: replies — its answers to messages from the canvas (what you ask it stays with you); all — every answer; explicit — only what it emits."},
 		"instructions": map[string]any{"type": "string", "title": "Role", "description": "What it is told it does on the canvas."},
+		"effort":       map[string]any{"type": "string", "title": "Effort", "enum": choices(cockpit.ThinkingLevels), "description": "How hard it thinks; its session's when empty. Its session is given it before its next prompt."},
+		"reply":        map[string]any{"type": "string", "title": "Replies", "enum": []any{ReplyAuto, ReplyOff}, "description": "auto: what it answers at the end of a turn goes back to a node that sent it a message; off: it stays with you, and it answers nodes with CanvasSend. Off for a foreman when empty, auto for the others."},
+		"cwd":          map[string]any{"type": "string", "title": "Folder", "description": "The folder its tools and shell work in when it has no worktree: absolute, or within the workspace; the workspace when empty. Its session stays the workspace's."},
 	},
+}
+
+// choices is an enum of a schema.
+func choices(values []string) []any {
+	out := make([]any, len(values))
+	for i, value := range values {
+		out[i] = value
+	}
+	return out
 }
 
 func (e *Engine) handleKinds(w http.ResponseWriter, r *http.Request) {
@@ -1147,6 +1159,9 @@ func (e *Engine) handleAgentRead(w http.ResponseWriter, r *http.Request, a *agen
 		}
 		result["timed_out"] = waited.TimedOut
 		result["outputs"] = waited.Outputs
+		if waited.NoAnswer != "" {
+			result["no_answer"] = waited.NoAnswer
+		}
 	}
 	lines, _ := strconv.Atoi(q.Get("lines"))
 	text, err := a.c.read(node, q.Get("what"), min(max(lines, 0), 5000))

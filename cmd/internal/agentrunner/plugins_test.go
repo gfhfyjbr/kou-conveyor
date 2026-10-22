@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/contextbuilder"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
@@ -44,6 +45,12 @@ func writeWorkspacePlugin(t *testing.T, workspace string) {
 
 func runWithPlugins(t *testing.T, workspace string, env map[string]string, request string, respond func(int, llm.Request) llm.Response) (string, string, int) {
 	t.Helper()
+	return runWithPluginsIn(t, workspace, t.TempDir(), env, request, respond)
+}
+
+// runWithPluginsIn is runWithPlugins with the sessions kept in sessions.
+func runWithPluginsIn(t *testing.T, workspace, sessions string, env map[string]string, request string, respond func(int, llm.Request) llm.Response) (string, string, int) {
+	t.Helper()
 	var mu sync.Mutex
 	calls := 0
 	client := &fakeClient{respond: func(_ context.Context, request llm.Request) (llm.Response, error) {
@@ -57,7 +64,7 @@ func runWithPlugins(t *testing.T, workspace string, env map[string]string, reque
 	var stdout, stderr bytes.Buffer
 	config := testConfig(client)
 	config.PluginConfigDirectory = func(func(string) string) (string, error) { return filepath.Join(workspace, "..", "config"), nil }
-	code := RunMain(ctx, []string{"-workspace", workspace, "-session-directory", t.TempDir()}, func(name string) string {
+	code := RunMain(ctx, []string{"-workspace", workspace, "-session-directory", sessions}, func(name string) string {
 		switch name {
 		case "OPENAI_API_KEY":
 			return "secret"
@@ -275,5 +282,108 @@ func TestRunnerFollowsPluginsDuringARun(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "plugin> the plugins changed") || !strings.Contains(stderr, "late (Late, instructions, skills)") {
 		t.Fatalf("stderr = %s", stderr)
+	}
+}
+
+// A session may hold calls of tools its run has not: a branch of a canvas
+// agent's session runs off the canvas, without the canvas's tools, and holds
+// the agent's calls of them; a workspace's plugin may not be trusted any
+// more; a model of another family works with another profile of built-in
+// tools. The session resumes all the same: the calls' results read as they
+// did, the model is not offered the tools, and a call of one now is turned
+// away, saying why, and does not run.
+func TestRunnerResumesCallsOfToolsItHasNot(t *testing.T) {
+	// What the canvas's tools run, with no canvas to talk to.
+	programs := t.TempDir()
+	if err := os.WriteFile(filepath.Join(programs, "kou-canvas"), []byte("#!/bin/sh\nprintf 'canvas:%s:%s' \"$2\" \"$(cat)\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := programs + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", path)
+	withPath := func(env map[string]string) map[string]string {
+		result := map[string]string{"PATH": path}
+		for name, value := range env {
+			result[name] = value
+		}
+		return result
+	}
+	resultOf := func(request llm.Request, id string) string {
+		for _, item := range request.Input {
+			if value, ok := item.Data.(llm.ToolResult); ok && value.CallID == id && value.Output[0].Value != contextbuilder.ToolCallRunningPayload {
+				return value.Output[0].Value
+			}
+		}
+		return ""
+	}
+	done := llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}}}
+	for _, test := range []struct {
+		name          string
+		before, after map[string]string // the environments of the runs
+		tool          string
+		input, again  string // the arguments of the call before, and of the call now
+		result        string // of the call before; empty for any but an error
+		refusal       string // of the call now; empty for the coordinator's (tool.Unavailable)
+	}{
+		{"off the canvas", map[string]string{"KOU_CANVAS_TOKEN": "token"}, nil, "CanvasSend",
+			`{"node": "n_b", "text": "hi"}`, `{"node": "n_b", "text": "again"}`, `canvas:CanvasSend:{"node":"n_b","text":"hi"}`,
+			`tool "CanvasSend" is not available in this run: its plugin, canvas-agent, is not active (only agents on a canvas have it)`},
+		{"not trusted", map[string]string{plugin.TrustEnvironment: "1"}, nil, "Echo",
+			`{"text": "hi"}`, `{"text": "again"}`, `echo:{"text":"hi"}:echo:project`,
+			`tool "Echo" is not available in this run: its plugin, echo, is not active (the workspace is not trusted)`},
+		// The test's model, gpt-default, works with the patch profile:
+		// apply_patch, and neither Edit nor Write.
+		{"another profile", map[string]string{runconfig.ToolProfileEnvironment: "edit"}, nil, "Write",
+			`{"path": "note.txt", "content": "hi"}`, `{"path": "note.txt", "content": "again"}`, "", ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := filepath.Join(t.TempDir(), "project")
+			writeWorkspacePlugin(t, workspace)
+			sessions := t.TempDir()
+			call := func(id, arguments string) llm.Response {
+				return llm.Response{Stop: llm.StopComplete, Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: test.tool, Arguments: arguments}}}}
+			}
+			var made string
+			stdout, stderr, code := runWithPluginsIn(t, workspace, sessions, withPath(test.before), `{"session_id":"resumed","prompt":"work"}`,
+				func(n int, request llm.Request) llm.Response {
+					if n == 1 {
+						return call("call-1", test.input)
+					}
+					made = resultOf(request, "call-1")
+					return done
+				})
+			if code != 0 || made == "" || strings.HasPrefix(made, "Error") || test.result != "" && made != test.result {
+				t.Fatalf("first run: exit %d, result %q: %s\n%s", code, made, stderr, stdout)
+			}
+			var first llm.Request
+			var refused string
+			stdout, stderr, code = runWithPluginsIn(t, workspace, sessions, withPath(test.after), `{"session_id":"resumed","prompt":"again"}`,
+				func(n int, request llm.Request) llm.Response {
+					switch n {
+					case 1:
+						first = request
+						return call("call-2", test.again)
+					case 2:
+						refused = resultOf(request, "call-2")
+					}
+					return done
+				})
+			if code != 0 {
+				t.Fatalf("resumed run: exit %d: %s\n%s", code, stderr, stdout)
+			}
+			if tools := toolNames(first); strings.Contains(tools, test.tool) {
+				t.Fatalf("tools = %s", tools)
+			}
+			if got := resultOf(first, "call-1"); got != made {
+				t.Fatalf("the result of the call made before = %q, want %q", got, made)
+			}
+			unavailable := `tool "` + test.tool + `" is not available; the tools are `
+			if test.refusal != "" && refused != test.refusal ||
+				test.refusal == "" && (!strings.HasPrefix(refused, unavailable) || strings.Contains(strings.TrimPrefix(refused, unavailable), test.tool)) {
+				t.Fatalf("the result of a call now = %q", refused)
+			}
+			if content, err := os.ReadFile(filepath.Join(workspace, "note.txt")); test.tool == "Write" && (err != nil || string(content) != "hi") {
+				t.Fatalf("note.txt = %q, %v: the call now ran", content, err)
+			}
+		})
 	}
 }

@@ -2,6 +2,7 @@ package canvas
 
 import (
 	"encoding/json/v2"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,6 +57,30 @@ func errorRecord(message string) map[string]any {
 	return map[string]any{"type": "error", "message": message}
 }
 
+// sessionFile is a session transcript of records, and where each ends.
+func sessionFile(t *testing.T, records ...any) (string, []int64) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.session.jsonl")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	ends := make([]int64, 0, len(records))
+	for _, record := range records {
+		ends = append(ends, writeSessionRecord(t, file, record))
+	}
+	return path, ends
+}
+
+func texts(entries []transcriptEntry) []string {
+	out := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry.Text)
+	}
+	return out
+}
+
 func TestRawFeedPreservesPartialTailAndContinues(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.session.jsonl")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
@@ -67,24 +92,25 @@ func TestRawFeedPreservesPartialTailAndContinues(t *testing.T) {
 	first := writeSessionRecord(t, file, errorRecord("first"))
 	cache := newRawFeedCache()
 	options := transcriptTestOptions()
-	entries, next, reset, err := cache.read(path, 0, options)
+	page, err := cache.read(path, 0, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 0 || next != first || len(entries) != 1 || entries[0].Text != "first" {
-		t.Fatalf("first read: entries=%+v next=%d reset=%d", entries, next, reset)
+	if page.Reset || page.More || page.Next != first || len(page.Entries) != 1 || page.Entries[0].Text != "first" {
+		t.Fatalf("first read: %+v", page)
 	}
+	next := page.Next
 
 	partial := []byte(`{"type":"error","message":"second"`)
 	if _, err := file.Write(partial); err != nil {
 		t.Fatal(err)
 	}
-	entries, nextAgain, reset, err := cache.read(path, next, options)
+	page, err = cache.read(path, next, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 0 || nextAgain != next || len(entries) != 0 {
-		t.Fatalf("partial read: entries=%+v next=%d reset=%d, want cursor %d and no entry", entries, nextAgain, reset, next)
+	if page.Reset || page.Next != next || len(page.Entries) != 0 {
+		t.Fatalf("partial read: %+v, want cursor %d and no entry", page, next)
 	}
 	if _, err := file.Write([]byte("}\n")); err != nil {
 		t.Fatal(err)
@@ -92,12 +118,12 @@ func TestRawFeedPreservesPartialTailAndContinues(t *testing.T) {
 	if err := file.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	entries, nextAgain, reset, err = cache.read(path, next, options)
+	page, err = cache.read(path, next, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 0 || nextAgain <= next || len(entries) != 1 || entries[0].Text != "second" {
-		t.Fatalf("completed tail: entries=%+v next=%d reset=%d", entries, nextAgain, reset)
+	if page.Reset || page.Next <= next || len(page.Entries) != 1 || page.Entries[0].Text != "second" {
+		t.Fatalf("completed tail: %+v", page)
 	}
 }
 
@@ -112,15 +138,15 @@ func TestRawFeedResetsInvalidAndTruncatedCursors(t *testing.T) {
 
 	cache := newRawFeedCache()
 	options := transcriptTestOptions()
-	if _, _, _, err := cache.read(path, 0, options); err != nil {
+	if _, err := cache.read(path, 0, options); err != nil {
 		t.Fatal(err)
 	}
-	entries, next, reset, err := cache.read(path, end-1, options)
+	page, err := cache.read(path, end-1, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 1 || next != end || len(entries) != 1 || entries[0].Text != "old" {
-		t.Fatalf("invalid cursor: entries=%+v next=%d reset=%d", entries, next, reset)
+	if !page.Reset || page.Next != end || len(page.Entries) != 1 || page.Entries[0].Text != "old" {
+		t.Fatalf("invalid cursor: %+v", page)
 	}
 
 	if err := file.Truncate(0); err != nil {
@@ -130,29 +156,22 @@ func TestRawFeedResetsInvalidAndTruncatedCursors(t *testing.T) {
 		t.Fatal(err)
 	}
 	newEnd := writeSessionRecord(t, file, errorRecord("new"))
-	entries, next, reset, err = cache.read(path, end, options)
+	page, err = cache.read(path, end, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 1 || next != newEnd || len(entries) != 1 || entries[0].Text != "new" {
-		t.Fatalf("truncated file: entries=%+v next=%d reset=%d", entries, next, reset)
+	if !page.Reset || page.Next != newEnd || len(page.Entries) != 1 || page.Entries[0].Text != "new" {
+		t.Fatalf("truncated file: %+v", page)
 	}
 }
 
 func TestRawFeedIncludesReasoningAndClipsToolOutput(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.session.jsonl")
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
 	at := time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
 	response := sessionstore.ModelResponse{TurnID: session.TurnID("turn-1"), Response: llm.Response{Output: []llm.Item{
 		{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "assistant answer"}},
 		{Type: llm.ItemReasoning, Data: llm.Reasoning{Summary: []string{"reasoning detail"}}},
 		{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "Bash", Arguments: `{"command":"printf hello"}`}},
 	}}}
-	writeSessionRecord(t, file, itemRecord(t, 1, at, sessionstore.ItemModelResponse, response))
 	output := strings.Repeat("output-", 20)
 	state, err := json.Marshal(operation.ShellState{
 		Input:  operation.ShellInput{Command: "printf hello"},
@@ -165,25 +184,28 @@ func TestRawFeedIncludesReasoningAndClipsToolOutput(t *testing.T) {
 		TurnID: session.TurnID("turn-1"), CallID: "call-1", Status: tool.CallStatus{},
 		Operations: []operation.Operation{{ID: "operation-1", Type: operation.TypeShell, Version: operation.VersionShell, Status: operation.StatusCompleted, State: state}},
 	}
-	end := writeSessionRecord(t, file, itemRecord(t, 2, at.Add(time.Second), sessionstore.ItemToolCallStatus, status))
+	path, ends := sessionFile(t,
+		itemRecord(t, 1, at, sessionstore.ItemModelResponse, response),
+		itemRecord(t, 2, at.Add(time.Second), sessionstore.ItemToolCallStatus, status))
+	end := ends[len(ends)-1]
 
 	options := transcriptTestOptions()
 	options.MessageLimit = 64
 	options.OutputLimit = 20
-	entries, next, reset, err := newRawFeedCache().read(path, 0, options)
+	page, err := newRawFeedCache().read(path, 0, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reset != 0 || next != end || len(entries) != 3 {
-		t.Fatalf("read: entries=%+v next=%d reset=%d", entries, next, reset)
+	if page.Reset || page.Next != end || len(page.Entries) != 3 {
+		t.Fatalf("read: %+v", page)
 	}
-	var reasoning, toolEntry *rawFeedEntry
-	for index := range entries {
-		switch entries[index].Kind {
+	var reasoning, toolEntry *transcriptEntry
+	for index := range page.Entries {
+		switch page.Entries[index].Kind {
 		case cockpit.KindReasoning:
-			reasoning = &entries[index]
+			reasoning = &page.Entries[index]
 		case cockpit.KindTool:
-			toolEntry = &entries[index]
+			toolEntry = &page.Entries[index]
 		}
 	}
 	if reasoning == nil || reasoning.Text != "reasoning detail" {
@@ -192,27 +214,144 @@ func TestRawFeedIncludesReasoningAndClipsToolOutput(t *testing.T) {
 	if toolEntry == nil || toolEntry.Tool == nil || toolEntry.Tool.Name != "Bash" {
 		t.Fatalf("tool = %+v", toolEntry)
 	}
-	public := toolEntry.public(options)
-	if public.Tool == nil || len(public.Tool.Output) > len(output) || !strings.Contains(public.Tool.Output, "bytes cut") {
-		t.Fatalf("clipped tool output = %+v", public.Tool)
+	if len(toolEntry.Tool.Output) > len(output) || !strings.Contains(toolEntry.Tool.Output, fmt.Sprintf("[… %d bytes cut]", len(output)-20)) {
+		t.Fatalf("clipped tool output = %+v", toolEntry.Tool)
 	}
 
 	options.Kinds = map[string]bool{cockpit.KindReasoning: true}
-	entries, _, _, err = newRawFeedCache().read(path, 0, options)
+	page, err = newRawFeedCache().read(path, 0, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Kind != cockpit.KindReasoning {
-		t.Fatalf("reasoning filter = %+v", entries)
+	if len(page.Entries) != 1 || page.Entries[0].Kind != cockpit.KindReasoning {
+		t.Fatalf("reasoning filter = %+v", page.Entries)
 	}
 	options = transcriptTestOptions()
 	options.Tools = map[string]bool{"bash": true}
-	entries, _, _, err = newRawFeedCache().read(path, 0, options)
+	page, err = newRawFeedCache().read(path, 0, options)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].Kind != cockpit.KindTool {
-		t.Fatalf("tool filter = %+v", entries)
+	if len(page.Entries) != 1 || page.Entries[0].Kind != cockpit.KindTool {
+		t.Fatalf("tool filter = %+v", page.Entries)
+	}
+}
+
+// TestRawFeedPagesWithinTheBudget: entries past the budget of an answer are
+// not given and passed over, but left after next, for the reader to read on.
+func TestRawFeedPagesWithinTheBudget(t *testing.T) {
+	var records []any
+	for index := range 7 {
+		records = append(records, errorRecord(fmt.Sprintf("record %d %s", index, strings.Repeat("x", 2000))))
+	}
+	path, ends := sessionFile(t, records...)
+	cache := newRawFeedCache()
+	options := transcriptTestOptions()
+	options.Budget = 5000
+
+	var seen []string
+	after, pages := int64(0), 0
+	for {
+		page, err := cache.read(path, after, options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		size := 0
+		for _, entry := range page.Entries {
+			size += entrySize(entry)
+		}
+		if len(page.Entries) == 0 || size > options.Budget {
+			t.Fatalf("page %d: %d entries of %d bytes, over the budget of %d", pages, len(page.Entries), size, options.Budget)
+		}
+		seen = append(seen, texts(page.Entries)...)
+		if !page.More {
+			if page.Next != ends[len(ends)-1] {
+				t.Fatalf("last page: next %d, want the end %d", page.Next, ends[len(ends)-1])
+			}
+			break
+		}
+		if page.Next != ends[len(seen)-1] {
+			t.Fatalf("page %d: next %d, want the end of its last record %d", pages, page.Next, ends[len(seen)-1])
+		}
+		after = page.Next
+	}
+	if pages != 4 || len(seen) != len(records) {
+		t.Fatalf("%d pages of %d entries, want 4 pages of all %d", pages, len(seen), len(records))
+	}
+	for index, text := range seen {
+		if !strings.HasPrefix(text, fmt.Sprintf("record %d ", index)) {
+			t.Fatalf("entry %d is %.20q: out of order or lost", index, text)
+		}
+	}
+
+	// The limit of entries pages them the same way.
+	options = transcriptTestOptions()
+	options.Limit = 3
+	page, err := cache.read(path, 0, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 || !page.More || page.Next != ends[2] {
+		t.Fatalf("limited page: %d entries, more %t, next %d", len(page.Entries), page.More, page.Next)
+	}
+}
+
+// TestRawFeedFitsAnEntryToTheBudget: an entry alone over the budget is cut
+// further than its default limits, but not past limits the reader chose.
+func TestRawFeedFitsAnEntryToTheBudget(t *testing.T) {
+	path, _ := sessionFile(t, errorRecord(strings.Repeat("y", 50000)))
+	options := transcriptTestOptions()
+	options.Budget = 3000
+	page, err := newRawFeedCache().read(path, 0, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 || entrySize(page.Entries[0]) > options.Budget || !strings.Contains(page.Entries[0].Text, "bytes cut]") {
+		t.Fatalf("fitted entry: %d entries, the first of %d bytes", len(page.Entries), entrySize(page.Entries[0]))
+	}
+	options.ExplicitLimits = true
+	page, err = newRawFeedCache().read(path, 0, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 || len(page.Entries[0].Text) < options.MessageLimit {
+		t.Fatalf("explicit limits: the entry was cut to %d bytes, want its limit of %d", len(page.Entries[0].Text), options.MessageLimit)
+	}
+}
+
+func TestRawFeedTail(t *testing.T) {
+	var records []any
+	for index := range 5 {
+		records = append(records, errorRecord(fmt.Sprintf("record %d", index)))
+	}
+	path, ends := sessionFile(t, records...)
+	cache := newRawFeedCache()
+	options := transcriptTestOptions()
+	options.Tail = 2
+	page, err := cache.read(path, 0, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(texts(page.Entries), ","); got != "record 3,record 4" || page.Older != 3 || page.Next != ends[4] || page.More {
+		t.Fatalf("tail 2: %q, older %d, next %d, more %t", got, page.Older, page.Next, page.More)
+	}
+	options.Tail = 50
+	if page, err = cache.read(path, 0, options); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 5 || page.Older != 0 {
+		t.Fatalf("tail 50: %d entries, older %d", len(page.Entries), page.Older)
+	}
+
+	// Of a tail over the budget the latest entries are given, one at least.
+	path, _ = sessionFile(t, errorRecord("old "+strings.Repeat("o", 3000)), errorRecord("new "+strings.Repeat("n", 3000)))
+	options.Tail, options.Budget = 2, 4000
+	if page, err = newRawFeedCache().read(path, 0, options); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 1 || !strings.HasPrefix(page.Entries[0].Text, "new ") || page.Older != 1 {
+		t.Fatalf("tail over the budget: %d entries, older %d", len(page.Entries), page.Older)
 	}
 }
 
@@ -227,6 +366,16 @@ func TestTranscriptOptionParsingAndKindClassification(t *testing.T) {
 	}
 	if options.Limit != 3 || !options.Kinds["reasoning"] || !options.Kinds["tool"] || !options.Tools["bash"] || options.MessageLimit != 99 || options.OutputLimit != 100 || options.Since == nil {
 		t.Fatalf("options = %+v", options)
+	}
+	if !options.ExplicitLimits || options.Budget != transcriptBudget || options.Tail != 0 {
+		t.Fatalf("explicit limits %t, budget %d, tail %d", options.ExplicitLimits, options.Budget, options.Tail)
+	}
+	options, err = parseTranscriptOptions(map[string][]string{"tail": {"9999"}})
+	if err != nil || options.Tail != maxTranscriptLimit || options.ExplicitLimits {
+		t.Fatalf("tail: %+v %v", options, err)
+	}
+	if _, err := parseTranscriptOptions(map[string][]string{"tail": {"0"}}); err == nil {
+		t.Fatal("tail 0 accepted")
 	}
 	if offset, last, err := parseTranscriptAfter("last"); err != nil || !last || offset != 0 {
 		t.Fatalf("last cursor: offset=%d last=%t err=%v", offset, last, err)
@@ -249,5 +398,15 @@ func TestTranscriptOptionParsingAndKindClassification(t *testing.T) {
 		if got := rawKind(entry); got != want {
 			t.Errorf("rawKind(%q) = %q, want %q", text, got, want)
 		}
+	}
+	plain := transcriptCursorKey("n_r", "n_t", transcriptOptions{})
+	if plain != "n_r\x00n_t" {
+		t.Errorf("unfiltered cursor key %q: the cursors kept before filters had their own would be lost", plain)
+	}
+	one := transcriptCursorKey("n_r", "n_t", transcriptOptions{Kinds: map[string]bool{"tool": true, "assistant": true}})
+	same := transcriptCursorKey("n_r", "n_t", transcriptOptions{Kinds: map[string]bool{"assistant": true, "tool": true}})
+	other := transcriptCursorKey("n_r", "n_t", transcriptOptions{Tools: map[string]bool{"assistant": true, "tool": true}})
+	if one != same || one == plain || one == other {
+		t.Errorf("cursor keys: %q %q %q %q", plain, one, same, other)
 	}
 }

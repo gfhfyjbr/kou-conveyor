@@ -1,10 +1,84 @@
 # kou-conveyor
 
-An async-first agent harness.
+> **One session, every model.** An async-first harness for coding agents, with three cockpits — a **browser**, a **terminal**, and an **iPhone** — that all share the same session files.
 
-- [harness/](harness/) — the library.
-- [cmd/](cmd/) — executables that use the library.
-- [benchmarks/](benchmarks/) — benchmark runners.
+[![CI](https://github.com/gfhfyjbr/kou-conveyor/actions/workflows/ci.yml/badge.svg)](https://github.com/gfhfyjbr/kou-conveyor/actions/workflows/ci.yml)
+&nbsp;![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)
+&nbsp;![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20iOS-555)
+&nbsp;[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+kou-conveyor runs an AI coding agent as a long-lived, asynchronous service:
+prompts **queue**, messages **steer a run in flight**, and the conversation
+**compacts itself** before it outgrows the model's context window. One session
+can hop from Claude to GPT to Gemini to Grok and back, through an accounts
+gateway that spreads the work over your subscriptions and API keys. Everything
+the project adds is a hot-reloaded plugin — the browser cockpit *is* plugins.
+
+## Contents
+
+| Start here | Day to day | Under the hood |
+| --- | --- | --- |
+| [Quick start](#quick-start) | [Sessions](#sessions) · [Models](#models) | [Architecture](#architecture) |
+| [Install](#install) | [Images](#images) · [Files](#files) | [Extending the harness](#extending-the-harness) |
+| [Three cockpits](#three-cockpits) | [Queue](#queue) · [Changes](#changes) | [Plugins](#plugins) · [Skills](#skills) |
+| [Web UI](#web-ui) · [Terminal UI](#terminal-ui) | [Compaction](#compaction) · [Canvas](#canvas) | [Connection settings](#connection-settings) |
+| [iPhone app](#the-iphone-app) · [Voice](#voice) | [Accounts](#accounts) · [Usage](#usage) | [Contributing](#contributing) · [License](#license) |
+
+## Highlights
+
+| &nbsp; | &nbsp; |
+| --- | --- |
+| 🔀 **One session, every model** | Pick a [model](#models) per prompt — any account or endpoint the [gateway](#accounts) reaches. Hop Claude → GPT → Gemini → Grok mid-conversation; every turn remembers the model that wrote it. |
+| ⚡ **Async-first** | [Queue](#queue) prompts, **force** a message into a running turn, and resume a crashed run. Runs live on the server, not the tab. |
+| 🧩 **Everything is a plugin** | Tools, skills, slash commands, whole UI panels — added, replaced and [hot-reloaded](#plugins) with nothing restarted. |
+| 🖼️ **Canvas** | A board of coding agents and terminals wired output → input. [Agents build canvases too](#canvas): a foreman spawns workers in worktrees and gathers their answers. |
+| 🧠 **Compaction & memory** | [Summarize](#compaction) a long session and keep going; durable notes and per-compaction summaries survive, and `TranscriptSearch` reaches the whole history. |
+| 💸 **Accounts & cost** | Sign in subscriptions and add API keys, watch rate-limit windows, and [see tokens as API credits](#usage) priced from OpenRouter's live list. |
+| 📸 **Images & files** | Paste or drop images and see [what the agent looked at](#images); [link files](#files) with `$path:lines` the model reads as the prompt runs. |
+| 📱 **Three cockpits** | The same sessions in a [browser](#web-ui), a [terminal](#terminal-ui) and on your [iPhone](#the-iphone-app) — live over a relay, from anywhere. |
+
+## Three cockpits
+
+Three front-ends, one set of session files on disk — open a session in any of them.
+
+| Capability | 🖥️ Browser | ⌨️ Terminal | 📱 iPhone |
+| --- | :---: | :---: | :---: |
+| Live transcript — reasoning + collapsible tool calls | ✅ | ✅ | ✅ |
+| Per-prompt diffs of what changed in the workspace | ✅ | ✅ | ✅ |
+| [Pick a model](#models) per prompt · effort control | ✅ | ✅ | ✅ |
+| [Images](#images): paste/attach + see what the agent saw | ✅ | ✅ | ✅ |
+| Resume · edit · branch · fork · rename · pin · delete | ✅ | ✅ | ✅ |
+| [Files](#files): browse & search with git status | ✅ | ✅ | ✅ |
+| [Queue & force](#queue) while the agent works | ✅ | ✅ | ➖ |
+| [Canvas](#canvas): a board of wired agents & terminals | ✅ | ➖ | ✅ |
+| [Accounts](#accounts) gateway & [usage / cost](#usage) | ✅ | ➖ | 👁️ |
+| 🎙️ [Voice](#voice) dictation | ✅ | ➖ | ✅ |
+| Server-side terminals that outlive reloads | ✅ | — | ➖ |
+| Reach it from anywhere (relay tunnel) | ➖ | ➖ | ✅ |
+
+_✅ yes · ➖ not yet / lives elsewhere · 👁️ view only · — n/a_
+
+## Quick start
+
+```sh
+# install the runner and both desktop cockpits into ~/.local/bin
+curl -fsSL https://raw.githubusercontent.com/gfhfyjbr/kou-conveyor/main/install.sh | sh
+
+# or build from a checkout
+make build
+
+# browser cockpit (bundles the accounts gateway)
+bin/kou-conveyor-web -workspace . -address 127.0.0.1:8080   # → http://127.0.0.1:8080
+
+# terminal cockpit
+bin/kou-conveyor-tui -workspace .
+
+# just the runner (writes JSONL to stdout)
+export OPENAI_API_KEY=…   # or KOU_CONVEYOR_LLM_PROVIDER=anthropic + ANTHROPIC_API_KEY
+bin/kou-conveyor-runner -p 'Map this repo and explain how to run its tests.'
+```
+
+See [Install](#install) for options and [Connection settings](#connection-settings) for how runs reach a model.
 
 ## Install
 
@@ -24,6 +98,38 @@ The runner talks to the OpenAI Responses API by default and to the Anthropic
 Messages API with `KOU_CONVEYOR_LLM_PROVIDER=anthropic`; see
 [`cmd/kou-conveyor-runner`](cmd/kou-conveyor-runner/README.md). Both cockpits
 can also keep the connection themselves (below).
+
+## Architecture
+
+Three cockpits and a CLI drive one library. A **runner** turns each prompt into
+a **coordinator**-managed sequence of LLM turns and asynchronous operations; a
+**session store** keeps an append-only, forkable history; a **context builder**
+assembles model input in memory; and runs reach providers through the browser
+cockpit's **accounts gateway**.
+
+- [`harness/`](harness/) — the library: coordinator, context builder, LLM adapters, session store, operations.
+- [`cmd/`](cmd/) — the executables: the runner, the two desktop cockpits, the canvas helper and the relay.
+- [`benchmarks/`](benchmarks/) — benchmark runners.
+- [`ios/`](ios/) — the native iPhone app.
+
+```mermaid
+flowchart LR
+  subgraph Cockpits
+    W["🖥️ browser"]
+    T["⌨️ terminal"]
+    P["📱 iPhone"]
+  end
+  P -. relay .-> W
+  W --> R["kou-conveyor-runner"]
+  T --> R
+  R --> CO["coordinator"]
+  CO --> CB["context builder"]
+  CO --> SS[("session store")]
+  CO --> OM["operation manager"]
+  CO --> AD["LLM adapter"]
+  AD --> GW["accounts gateway"]
+  GW --> M["Claude · GPT · Gemini · Grok · …"]
+```
 
 ## Glossary
 
@@ -294,8 +400,13 @@ hold. The terminal cockpit shows it among the composer's controls, where a
 click, `Ctrl-P` or `/model` lists them.
 
 The model chosen stays with the session. Its next prompts run with it; a
-session without a choice runs with the model its last prompt ran with, and a
-new one with the connection's. A prompt queued while the agent works keeps
+session without a choice runs with the model its last prompt ran with. A new
+session starts with the model last chosen in a composer of either cockpit,
+else the one the settings or the environment name, else the first the
+connection lists — through the gateway, the first it serves. Choosing a
+model changes no other session, and the models a canvas's agents or queued
+prompts run with are no choice of yours: new sessions do not start with
+them. A prompt queued while the agent works keeps
 the model chosen when it was queued, while a forced one goes to the running
 agent, which reads it with its own model. Each prompt shows the model that
 answered it, marked where the model changed, and so does the Markdown
@@ -515,9 +626,10 @@ gateway is not running.
 Settings are stored with mode `0600` in the user configuration directory
 (`~/Library/Application Support/kou-conveyor/settings.json` on macOS,
 `~/.config/kou-conveyor/settings.json` on Linux) or at `KOU_CONVEYOR_CONFIG`,
-and both cockpits share them. So they do the effort runs think with, kept
-beside them in `preferences.json`: a level chosen in either cockpit is the
-one both use, and an open cockpit takes up the other's choice. The browser never receives the saved key, only
+and both cockpits share them. So they do the effort and the model last
+chosen in a composer, kept beside them in `preferences.json`: a new session
+of either cockpit starts with them, and a session keeps its own effort and
+model whatever is chosen in another. The browser never receives the saved key, only
 its last four characters, and a saved key is only ever sent to the endpoint it
 was entered for: pointing the settings elsewhere requires entering it again.
 Runs get the key in `KOU_CONVEYOR_LLM_API_KEY`, which the runner removes
@@ -565,8 +677,8 @@ The web UI streams the transcript as a timeline of prompts, answers, thinking
 and collapsible tool calls, with a command palette (`⌘K`), slash commands in
 the composer, keyboard shortcuts (`?`), an inspector for tokens, tools and runner diagnostics, each prompt's
 [changes](#changes) as diffs (`D`), the [model](#models) of each prompt
-(`M`), an effort control shared with the terminal cockpit and light/dark
-themes. The composer's row ends in buttons with an icon: run, stop while the
+(`M`), the session's effort, which new sessions of both cockpits start with
+once chosen, and light/dark themes. The composer's row ends in buttons with an icon: run, stop while the
 agent works, and queue and force once something is written while it works.
 It fits a phone too, where `Enter` adds a line and the buttons send.
 The sessions rail and the panel at the right (the inspector or the
@@ -769,3 +881,52 @@ bin/kou-conveyor-web -workspace .                          # gateway on 127.0.0.
 bin/kou-conveyor-web -accounts 127.0.0.1:9318 -accounts-dir ~/cliproxy
 bin/kou-conveyor-web -accounts off
 ```
+
+## Voice
+
+The composer's microphone writes what you say. The cockpit streams your speech
+to a provider you choose — Soniox, Deepgram, ElevenLabs, OpenAI or Gemini as
+you speak, Groq or Yandex SpeechKit once you stop — and drops the text into the
+prompt. Hold the button to talk, or click it, talk and click again. A
+right-click, or `/voice`, sets the provider and its key, the languages and your
+own words; the settings are the cockpit's for every workspace, and the
+[iPhone](#the-iphone-app)'s. Dictation is a built-in plugin, so it reloads with
+the rest.
+
+## The iPhone app
+
+[`ios/`](ios/) is a native SwiftUI app that carries the cockpit in your pocket:
+the same sessions, canvases, files and accounts, live, from anywhere.
+
+It never asks the cockpit to listen on a public address. Instead the cockpit
+connects **out** to `kou-conveyor-relay` — a small server on a host you both
+can reach — and the phone meets it there. In the cockpit, run `/tunnel`: if a
+relay already answers, the tunnel starts and a pairing QR code appears; if not,
+the agent installs one for you over ssh, then shows the code. A run can keep the
+app awake in the background, so its event stream need not reconnect.
+
+On the phone you can:
+
+- follow a session's transcript live, [choose its model](#models) and effort,
+  attach photos or paste images, and see the pictures the agent looked at;
+- resume, rename, pin, duplicate, delete or [branch](#sessions) a session, and
+  open what a prompt [changed](#changes) as diffs;
+- watch a [canvas](#canvas) with its nodes and wires — create one, add agents,
+  terminals, sources and notes, wire them, and step into any node's chat;
+- browse and search the [files](#files), and view the [accounts](#accounts)
+  gateway's accounts, endpoints and limits;
+- 🎙️ dictate prompts with the [voice](#voice) button.
+
+See [`ios/README.md`](ios/README.md) to build it and pair it with a cockpit.
+
+## Contributing
+
+This repository shares selected components from a larger internal codebase, and
+more will follow as they prove out. Questions, feature requests and bug reports
+are welcome as [GitHub issues](https://github.com/gfhfyjbr/kou-conveyor/issues);
+pull requests cannot be reviewed or merged right now. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE) © Unreal Labs.

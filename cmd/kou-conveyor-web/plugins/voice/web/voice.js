@@ -136,6 +136,10 @@ export default function activate(cockpit) {
   });
   let dialog = 0; // counts the dialog's openings and closings: an answer for an earlier one is dropped
   let picked = ''; // the provider chosen in the dialog since it opened
+  let touched = false; // the user changed something in the form since it opened
+  let opener = null; // what had the focus when the dialog opened
+  cockpit.listen(form, 'input', () => { touched = true; });
+  cockpit.listen(form, 'change', () => { touched = true; });
 
   function say(text, kind = '') {
     status.textContent = text;
@@ -151,15 +155,23 @@ export default function activate(cockpit) {
     return [...new Set([...codes, 'en'])].join(' ');
   }
 
-  function fill() {
+  // fillProviders lists the providers, the one chosen first among them:
+  // the one chosen in the dialog, else the one saved.
+  function fillProviders() {
     const v = view || {};
     const list = v.providers || [];
-    const s = v.settings || { provider: '', languages: [], strict: false, swearing: true, files: true, coding: true, words: [] };
+    const s = v.settings || {};
     provider.replaceChildren(...list.map((p) => h('option', {
       value: p.id, text: `${p.name} · ${p.model}${p.live ? '' : ' · text when you stop'}${p.set ? ' · key ✓' : ''}`,
     })));
     provider.value = [picked, s.provider, v.provider].find((id) => id && list.some((p) => p.id === id)) || list[0]?.id || '';
     fillProvider();
+  }
+
+  function fill() {
+    const v = view || {};
+    const s = v.settings || { provider: '', languages: [], strict: false, swearing: true, files: true, coding: true, words: [] };
+    fillProviders();
     note.textContent = 'The microphone streams through the cockpit to the provider chosen here: its key never leaves the cockpit. These settings serve every workspace and the iPhone.';
     where.textContent = v.path || '';
     languages.value = s.languages.join(' ');
@@ -215,28 +227,46 @@ export default function activate(cockpit) {
   async function openSetup(message = '') {
     if (cockpit.has('overlays')) cockpit.use('overlays').closeTop?.();
     const opening = ++dialog;
+    if (overlay.hidden) {
+      const active = document.activeElement;
+      opener = active && active !== document.body && !overlay.contains(active) ? active : null;
+    }
     overlay.hidden = false;
     picked = '';
+    touched = false;
     field.value = '';
     save.disabled = false;
     fill();
     mics();
     say(message, message ? 'error' : '');
     const first = () => (selected() && !selected().set && !field.disabled ? field : provider);
-    first().focus();
+    const focused = first();
+    focused.focus();
     await refresh();
     if (opening !== dialog) return;
-    fill();
+    // What the user wrote or ticked meanwhile stays: the settings saved
+    // fill the form only while it is untouched, and the focus moves only
+    // from where the dialog put it.
+    if (touched) fillProviders();
+    else fill();
     if (view?.problem && !message) say(`${view.problem}: saving replaces it.`, 'warn');
-    first().focus();
+    const active = document.activeElement;
+    if (!overlay.contains(active) || (!touched && active === focused)) first().focus();
   }
 
   function closeSetup() {
     dialog++;
+    const had = overlay.contains(document.activeElement);
     overlay.hidden = true;
     // A pasted key never outlives the dialog.
     field.value = '';
     save.disabled = false;
+    // The focus goes back to what opened the dialog.
+    if (had) {
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      if (overlay.contains(document.activeElement)) document.activeElement.blur();
+    }
+    opener = null;
   }
 
   async function saveSettings() {

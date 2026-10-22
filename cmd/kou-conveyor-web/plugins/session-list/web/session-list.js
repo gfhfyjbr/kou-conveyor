@@ -15,6 +15,9 @@
 // (the canvases do). The sessions of the agents of canvas nodes stay out
 // of the list until it is asked to show them, or a filter finds them.
 const SEARCH = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.4"/></svg>';
+// The view's icon, which its rail tab shows when the names do not fit: a
+// stack of conversations.
+const SESSIONS_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h10v7h-5l-3 2.5v-2.5h-2z" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4.5 4.5v-3h10v8h-3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 
 export default function activate(cockpit) {
   const { h, svg, fmt } = cockpit;
@@ -38,7 +41,7 @@ export default function activate(cockpit) {
   // The Sessions view: shown from the start, and when its tab is picked it
   // goes back to the session it showed.
   cockpit.contribute('layout.view', {
-    id: 'sessions', title: 'Sessions', order: 10, rail,
+    id: 'sessions', title: 'Sessions', icon: SESSIONS_ICON, order: 10, rail,
     select: () => {
       const v = view();
       const state = session.state;
@@ -75,22 +78,30 @@ export default function activate(cockpit) {
     return out.sort((a, b) => at(b.at) - at(a.at));
   }
 
+  let drawn = ''; // the stamp of what the list shows
+  let revealed = ''; // the session the list last scrolled to
+  // menuHere says whether the menu is open from a ⋯ in the list.
+  const menuHere = () => {
+    const anchor = service('menu')?.anchor?.();
+    return !!anchor && list.contains(anchor);
+  };
+
   function render() {
-    // An edit in place survives until it is committed, and a drag until it
-    // drops; the list catches up then.
-    if (renaming || drag) return;
+    // An edit in place survives until it is committed, a drag until it
+    // drops, and a ⋯ menu, with the button it is open from, until it
+    // closes; the list catches up then.
+    if (renaming || drag || menuHere()) return;
     const v = view();
     const state = session.state;
     const sessions = state.sessions || [];
     const query = filter.value.trim().toLowerCase();
-    // Rows that moved glide to their new places — unless the filter moved
-    // them, as it does with every letter typed.
-    const glide = query === lastQuery ? positions() : null;
-    lastQuery = query;
     const inView = (s) => !!v && s.id === v.id && v.ws === state.ws;
     const agents = sessions.filter((s) => canvasAgent(s) && !inView(s)).length;
     const hideAgents = !query && !showAgents();
     const shown = sessions.filter((s) => (!query || (s.title || '').toLowerCase().includes(query) || s.id.includes(query)) && !(hideAgents && canvasAgent(s) && !inView(s)));
+    // The pinned ones head the list, whatever order it came in: a session
+    // above them would split them off and head a second group.
+    shown.sort((a, b) => !!b.pinned - !!a.pinned);
     // The other rows go among the sessions that are not pinned, by when
     // they changed.
     const extras = extraRows(state.ws, query);
@@ -102,7 +113,20 @@ export default function activate(cockpit) {
     }
     while (next < extras.length) items.push({ row: extras[next++] });
     const total = sessions.length - (hideAgents ? agents : 0) + (query ? extraRows(state.ws, '').length : extras.length);
-    count.textContent = query ? `${items.length}/${total}` : String(items.length);
+    const counted = query ? `${items.length}/${total}` : String(items.length);
+    if (count.textContent !== counted) count.textContent = counted;
+    // What the list shows, as text. A poll that changes none of it leaves
+    // the list as it is, with the focus, the text selected and a click
+    // begun in it.
+    const stamp = JSON.stringify([state.ws, query, showAgents(), agents, items.map(({ row: r, session: s }) => (r
+      ? [r.key, r.title, r.href, !!r.current, !!r.running, r.glyph, r.meta, typeof r.menu === 'function']
+      : [s.id, s.title, !!s.run_id, s.run_id ? '' : fmt.ago(s.updated_at), !!s.pinned, inView(s), s.size, !!s.canvas, s.queued, !!s.queue_paused]))]);
+    if (stamp === drawn) return;
+    drawn = stamp;
+    // Rows that moved glide to their new places — unless the filter moved
+    // them, as it does with every letter typed.
+    const glide = query === lastQuery ? positions() : null;
+    lastQuery = query;
     const pinned = (item) => !!item.session?.pinned;
     const grouped = !query && items.some(pinned) && items.some((item) => !pinned(item));
     const nodes = [];
@@ -142,7 +166,8 @@ export default function activate(cockpit) {
           onclick: (event) => {
             event.preventDefault();
             event.stopPropagation();
-            service('menu')?.open?.(event.currentTarget, session.menuItems(state.ws, s.id, 'rail'));
+            // A second click closes the menu it opened.
+            service('menu')?.toggle?.(event.currentTarget, () => session.menuItems(state.ws, s.id, 'rail'));
           },
         }, h('span', { 'aria-hidden': 'true', text: '⋯' }))));
     });
@@ -160,10 +185,33 @@ export default function activate(cockpit) {
         },
       }, on ? 'Hide the canvas agents' : `Show ${agents} canvas agent${agents === 1 ? '' : 's'}`));
     }
-    const focused = document.activeElement?.closest?.('a.session')?.getAttribute('href');
+    // The focus goes on to what had it, drawn anew: a row's link or ⋯, by
+    // the row's ID, or the toggle.
+    const active = list.contains(document.activeElement) ? document.activeElement : null;
+    const kind = ['a.session', '.more', '.sessions-toggle'].find((selector) => active?.closest(selector));
+    const rowOf = active?.closest('.session-row')?.dataset.id;
     list.replaceChildren(...nodes);
-    if (focused) list.querySelector(`a.session[href="${CSS.escape(focused)}"]`)?.focus();
+    if (kind === '.sessions-toggle') list.querySelector('.sessions-toggle')?.focus({ preventScroll: true });
+    else if (kind && rowOf) list.querySelector(`.session-row[data-id="${CSS.escape(rowOf)}"] ${kind}`)?.focus({ preventScroll: true });
+    // Another session in view: the list scrolls to its row, if it is out of
+    // sight. Before the rows glide, which moves where they show.
+    const now = v ? `${v.ws}/${v.id}` : '';
+    if (now !== revealed && list.clientHeight > 0) {
+      const row = list.querySelector('a.session[aria-current="true"]')?.closest('.session-row');
+      if (row) {
+        revealed = now;
+        reveal(row);
+      }
+    }
     if (glide) animate(glide);
+  }
+
+  // reveal scrolls the list, and nothing around it, to show a row.
+  function reveal(row) {
+    const box = list.getBoundingClientRect();
+    const at = row.getBoundingClientRect();
+    if (at.top < box.top) list.scrollTop -= box.top - at.top;
+    else if (at.bottom > box.bottom) list.scrollTop += at.bottom - box.bottom;
   }
 
   // extraRow draws a row a plugin put in the list: its link opens what it
@@ -190,8 +238,11 @@ export default function activate(cockpit) {
         onclick: (event) => {
           event.preventDefault();
           event.stopPropagation();
+          // A second click closes the menu it opened.
+          const menu = service('menu');
+          if (menu?.anchor?.() === event.currentTarget) return menu.close();
           const items = cockpit.safely(() => r.menu()) || [];
-          if (items.length) service('menu')?.open?.(event.currentTarget, items);
+          if (items.length) menu?.open?.(event.currentTarget, items);
         },
       }, h('span', { 'aria-hidden': 'true', text: '⋯' })) : null);
   }
@@ -313,9 +364,17 @@ export default function activate(cockpit) {
   cockpit.on('session:sessions', render);
   cockpit.on('point:session-list.rows', render);
   cockpit.on('session:view', render);
+  // A row of another plugin's is current while its view shows (a canvas,
+  // on the Canvas view): another view shown, the list says so at once, not
+  // with the next poll — one row current, not the canvas left with it.
+  cockpit.on('layout:view', render);
   cockpit.on('session:workspace', () => { filter.value = ''; });
 
-  cockpit.listen(filter, 'input', render);
+  cockpit.listen(filter, 'input', () => {
+    // A ⋯ menu still open would hold the list back from the filter.
+    if (menuHere()) service('menu')?.close?.();
+    render();
+  });
   cockpit.listen(filter, 'keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
@@ -336,7 +395,8 @@ export default function activate(cockpit) {
     const id = link.dataset.id;
     if (id !== view().id || view().ws !== session.state.ws) session.openSession(id);
   });
-  cockpit.listen(list, 'scroll', () => service('menu')?.close?.(), { passive: true });
+  // A scroll of the list that carries a ⋯ away closes its menu: the menu
+  // sees to it (ui.js). Menus opened elsewhere stay open as the list scrolls.
 
   // ---------------------------------------------------------------- renaming in place
 
@@ -394,20 +454,23 @@ export default function activate(cockpit) {
     input.select();
   }
 
-  // moveSession opens the next or previous session of the list, as it
-  // shows them.
+  // move opens the next or previous session of the list, as it shows them:
+  // in their order, as the filter leaves them, the canvas agents only when
+  // they show.
   function move(step) {
-    const sessions = (session.state.sessions || []).filter((s) => !canvasAgent(s) || showAgents() || s.id === view().id);
-    if (!sessions.length) return;
-    const at = sessions.findIndex((s) => s.id === view().id);
-    const next = sessions[Math.max(0, Math.min(sessions.length - 1, at < 0 ? 0 : at + step))];
-    if (next && next.id !== view().id) session.openSession(next.id);
+    const ids = [...list.querySelectorAll('a.session[data-id]')].map((link) => link.dataset.id);
+    if (!ids.length) return;
+    const at = ids.indexOf(view().id);
+    const next = ids[Math.max(0, Math.min(ids.length - 1, at < 0 ? 0 : at + step))];
+    if (next && next !== view().id) session.openSession(next);
   }
 
   cockpit.provide('session-list', { rename, move, render });
   cockpit.keys.register({ key: '/', views: ['sessions'], run: () => filter.focus() });
-  cockpit.keys.register({ key: 'j', run: () => move(1) });
-  cockpit.keys.register({ key: 'k', run: () => move(-1) });
+  // Only in the Sessions view: elsewhere, as on a canvas, J and K are not
+  // taken from under the user to switch to Sessions.
+  cockpit.keys.register({ key: 'j', views: ['sessions'], run: () => move(1) });
+  cockpit.keys.register({ key: 'k', views: ['sessions'], run: () => move(-1) });
   cockpit.contribute('help.keys', { keys: ['J', ' ', 'K'], text: 'Next / previous session', order: 150 });
   cockpit.contribute('help.keys', { keys: ['/'], text: 'Filter sessions', order: 160 });
   cockpit.contribute('help.keys', { keys: ['⌥', '↑', ' ', '⌥', '↓'], text: 'Move a pinned session up or down, on its row (or drag it)', order: 165 });

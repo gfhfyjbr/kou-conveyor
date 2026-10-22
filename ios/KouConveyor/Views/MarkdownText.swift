@@ -9,9 +9,12 @@ import SwiftUI
 /// the same blocks.
 struct MarkdownText: View, Equatable {
     let text: String
+    /// Whether the text still grows, as the agent writes it: each of its
+    /// lengths is parsed once, and kept by none.
+    var streaming = false
 
     var body: some View {
-        MarkdownBlocks(blocks: MarkdownDocument.blocks(of: text))
+        MarkdownBlocks(blocks: streaming ? MarkdownDocument.parse(text) : MarkdownDocument.blocks(of: text))
     }
 
     static func inline(_ text: String) -> AttributedString {
@@ -19,14 +22,19 @@ struct MarkdownText: View, Equatable {
     }
 }
 
-/// The blocks of a text, one under another.
+/// The blocks of a text, one under another. Those of a text that streams
+/// come in as they come (textReveal), the caret after the last (textCaret).
 private struct MarkdownBlocks: View {
     let blocks: [MarkdownBlock]
+    @Environment(\.textReveal) private var reveal
+    @Environment(\.textCaret) private var caret
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+            ForEach(Array(blocks.enumerated()), id: \.offset) { offset, block in
                 MarkdownBlockView(block: block)
+                    .environment(\.textCaret, caret && offset == blocks.count - 1)
+                    .modifier(RiseIn(active: reveal))
             }
         }
     }
@@ -34,6 +42,8 @@ private struct MarkdownBlocks: View {
 
 private struct MarkdownBlockView: View {
     let block: MarkdownBlock
+    @Environment(\.textReveal) private var reveal
+    @Environment(\.textCaret) private var caret
 
     var body: some View {
         switch block {
@@ -41,6 +51,7 @@ private struct MarkdownBlockView: View {
             CodeBlock(language: language ?? "text", code: code)
         case let .heading(level, text):
             heading(level, text)
+                .modifier(revealing(text, selectable: false))
         case let .quote(blocks):
             // A quote is Markdown too.
             AnyView(MarkdownBlocks(blocks: blocks))
@@ -50,9 +61,10 @@ private struct MarkdownBlockView: View {
                     Rectangle().fill(.tertiary).frame(width: 2)
                 }
         case let .paragraph(text):
+            // Selectable through Reveal.
             Text(text)
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+                .modifier(revealing(text))
         case let .list(items):
             MarkdownList(items: items)
         case let .table(head, rows):
@@ -60,6 +72,10 @@ private struct MarkdownBlockView: View {
         case .rule:
             Divider()
         }
+    }
+
+    private func revealing(_ text: AttributedString, selectable: Bool = true) -> Reveal {
+        Reveal(length: text.characters.count, reveal: reveal, caret: caret, selectable: selectable)
     }
 
     // The page's h3, h4 and h5: # and ## are titles, the rest small capitals.
@@ -89,18 +105,25 @@ private struct MarkdownBlockView: View {
 /// under its text and not under its marker.
 private struct MarkdownList: View {
     let items: [MarkdownListItem]
+    @Environment(\.textReveal) private var reveal
+    @Environment(\.textCaret) private var caret
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+            ForEach(Array(items.enumerated()), id: \.offset) { offset, item in
+                // The caret ends the last item, or the last of its own.
+                let last = caret && offset == items.count - 1
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     marker(item)
                     VStack(alignment: .leading, spacing: 5) {
+                        // Selectable through Reveal.
                         Text(item.text)
-                            .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
+                            .modifier(Reveal(length: item.text.characters.count, reveal: reveal,
+                                             caret: last && item.children.isEmpty))
                         if !item.children.isEmpty {
                             AnyView(MarkdownList(items: item.children))
+                                .environment(\.textCaret, last)
                         }
                     }
                 }
@@ -147,7 +170,7 @@ private struct MarkdownTable: View {
                             .foregroundStyle(.secondary)
                             // The column's width, so the row's tint is unbroken.
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .background(Color(uiColor: .secondarySystemBackground))
+                            .background(Color.kouSurface)
                     }
                 }
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
@@ -161,8 +184,8 @@ private struct MarkdownTable: View {
                 }
             }
             .textSelection(.enabled)
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.separator, lineWidth: 0.5))
-            .clipShape(.rect(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(.separator, lineWidth: 0.5))
+            .clipShape(.rect(cornerRadius: .corner(10)))
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
     }

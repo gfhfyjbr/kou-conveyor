@@ -30,6 +30,10 @@ struct FilesScreen: View {
                 }
             }
         }
+        // What was open is another workspace's.
+        .onChange(of: app.workspace?.id) {
+            path = []
+        }
     }
 }
 
@@ -82,13 +86,14 @@ struct DirectoryScreen: View {
                 }
             }
         }
+        .groupedBackground()
         .overlay {
             if query.isEmpty {
                 if listing == nil {
                     if let error {
                         ContentUnavailableView("Folder unavailable", systemImage: "folder.badge.questionmark", description: Text(error))
                     } else {
-                        ProgressView()
+                        LoadingSpinner()
                     }
                 } else if listing?.entries?.isEmpty ?? true {
                     ContentUnavailableView("Empty folder", systemImage: "folder")
@@ -202,7 +207,7 @@ struct GitBadge: View {
             .foregroundStyle(color)
             .padding(.horizontal, 5)
             .padding(.vertical, 1)
-            .background(color.opacity(0.15), in: .capsule)
+            .background(color.opacity(0.15), in: .cornerCapsule)
             .accessibilityLabel("Git: \(state)")
     }
 
@@ -231,34 +236,34 @@ struct FileScreen: View {
 
     var body: some View {
         Group {
-            if let file {
-                if let image = file.image, !image.isEmpty {
-                    ScrollView {
-                        Button {
-                            zoomed = true
-                        } label: {
-                            RemoteImage(client: client, path: rawPath, query: rawQuery, contentMode: .fit)
-                                .frame(maxWidth: .infinity, minHeight: 240)
-                        }
-                        .buttonStyle(.plain)
-                        .padding()
+            if let file, let image = file.image, !image.isEmpty {
+                ScrollView {
+                    Button {
+                        zoomed = true
+                    } label: {
+                        RemoteImage(client: client, path: rawPath, query: rawQuery, contentMode: .fit)
+                            .frame(maxWidth: .infinity, minHeight: 240)
                     }
-                } else if file.tooLarge == true {
-                    ContentUnavailableView("Too large to show", systemImage: "doc.badge.ellipsis",
-                                           description: Text("\(Format.bytes(file.size)): open it on the computer the cockpit runs on."))
-                } else if file.binary == true {
-                    ContentUnavailableView("Binary file", systemImage: "doc.badge.gearshape",
-                                           description: Text("\(Format.bytes(file.size)) of data that is not text."))
-                } else if let text {
-                    CodeText(text: text)
-                        .ignoresSafeArea(edges: .bottom)
-                } else {
-                    ProgressView()
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(name)
+                    .padding()
                 }
-            } else if let error {
+            } else if let file, file.tooLarge == true {
+                ContentUnavailableView("Too large to show", systemImage: "doc.badge.ellipsis",
+                                       description: Text("\(Format.bytes(file.size)): open it on the computer the cockpit runs on."))
+            } else if let file, file.binary == true {
+                ContentUnavailableView("Binary file", systemImage: "doc.badge.gearshape",
+                                       description: Text("\(Format.bytes(file.size)) of data that is not text."))
+            } else if let text {
+                CodeText(text: text)
+                    .ignoresSafeArea(edges: .bottom)
+            } else if file == nil, let error {
                 ContentUnavailableView("File unavailable", systemImage: "doc.questionmark", description: Text(error))
             } else {
-                ProgressView()
+                // One spinner while the file comes and while it is
+                // highlighted: two, the one shown went as the file came,
+                // and the other only showed after its own wait.
+                LoadingSpinner()
             }
         }
         .navigationTitle(name)
@@ -300,10 +305,13 @@ struct FileScreen: View {
         do {
             let file: FileView = try await client.get(API.workspace(workspace, "file"), query: [URLQueryItem(name: "path", value: path)])
             self.file = file
-            if let content = file.text {
-                text = Highlight.attributed(content, runs: file.runs, classes: file.classes)
-            }
             error = nil
+            if let content = file.text {
+                let runs = file.runs, classes = file.classes
+                let colored = await Highlight.colored { Highlight.attributed(content, runs: runs, classes: classes) }
+                guard !Task.isCancelled else { return }
+                text = colored.text
+            }
         } catch is CancellationError {
         } catch {
             self.error = error.localizedDescription

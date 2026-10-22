@@ -402,6 +402,66 @@ func TestAnAgentRunInAShellIsFoundAndAnswers(t *testing.T) {
 	})
 }
 
+// fakeTrust is a harness that asks, as it starts, whether to trust the
+// folder, as Claude Code does — y and Enter say yes —, then echoes each line
+// it reads.
+const fakeTrust = `#!/bin/sh
+echo " Quick safety check: Is this a project you created or one you trust?"
+echo
+echo " > No, exit"
+echo "   Yes, I trust this folder"
+echo
+echo " Enter to confirm · Esc to cancel"
+IFS= read -r answer
+[ "$answer" = y ] || exit 1
+i=0
+while [ $i -lt 10 ]; do echo "ready $i"; i=$((i+1)); done
+while IFS= read -r line; do echo "answer to $line"; done
+`
+
+func TestAHarnessThatAsksAsItStartsIsGivenNothingUntilAnswered(t *testing.T) {
+	t.Setenv("SHELL", integratedShell(t))
+	host := newHost(t, shellFiles)
+	script := filepath.Join(t.TempDir(), "fake-trust")
+	if err := os.WriteFile(script, []byte(fakeTrust), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	host.plugins = []plugin.Plugin{{
+		Manifest: plugin.Manifest{Name: "agents", Canvas: &plugin.Canvas{Harnesses: []plugin.CanvasHarness{{
+			ID: "trusty", Title: "Trusty", Command: []string{script}, Launch: "type",
+			Status: []string{"hooks"}, Output: "hooks",
+			Asks: "Enter to confirm|Yes, I trust this folder",
+		}}}},
+		Active: true,
+	}}
+	te := startEngine(t, host, filepath.Join(t.TempDir(), "canvas.secret"))
+	id, c := te.newCanvas(t, "Questions")
+	coder := te.ops(t, id, `[{"op":"node.add","node":{"preset":"agents/trusty","title":"Coder"}}]`).IDs["0"]
+	send := "/api/w/w1/canvases/" + id + "/nodes/" + coder + "/send"
+
+	// It asks: the node waits for the user, and what is sent to it — at
+	// once, even — waits too, as its Enter would answer the question.
+	eventually(t, 20*time.Second, "it asks", func() bool {
+		st := c.status(coder)
+		return st.State == StateWaiting && strings.Contains(st.Detail, "Trusty asks a question of its own")
+	})
+	te.must(t, http.StatusOK, "POST", send, `{"text":"hello","deliver":"now"}`, "", nil)
+	time.Sleep(1500 * time.Millisecond)
+	if st, screen := c.status(coder), tail(c, coder); st.State != StateWaiting || strings.Contains(screen, "hello") {
+		t.Fatalf("it was given the message as it asked (%+v); its screen:\n%s", st, screen)
+	}
+
+	// Once the user answers, it starts as it would have, and takes the
+	// message when its hooks say it waits for one.
+	te.must(t, http.StatusOK, "POST", send, `{"keys":["y","Enter"]}`, "", nil)
+	eventually(t, 20*time.Second, "it starts", func() bool {
+		st := c.status(coder)
+		return st.State == StateStarting && st.Detail == "starting Trusty"
+	})
+	te.must(t, http.StatusOK, "POST", "/api/canvas/emit", `{"status":"idle"}`, te.token(t, c, coder, ScopeBuild), nil)
+	eventually(t, 20*time.Second, "the message delivered", func() bool { return strings.Contains(tail(c, coder), "answer to hello") })
+}
+
 func TestAHarnessIsLaunchedAsItsPresetSays(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	host := newHost(t, nil)

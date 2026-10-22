@@ -1,20 +1,40 @@
-// effort: the effort of the next runs — the bars in composer.row, ⌥↑ ⌥↓,
-// /effort and the palette. The server keeps it where the terminal cockpit
-// reads it too, so a choice made in either holds in both. It provides the
-// effort service: current(), levels(), set(level), cycle(step),
-// command(arg), info().
+// effort: the effort of the session's next runs — the bars in composer.row,
+// ⌥↑ ⌥↓, /effort and the palette. Each session keeps its own; a new one
+// starts with the effort last chosen in a composer of either cockpit, which
+// the server keeps where the terminal one reads it too. A choice in one
+// session changes no other. It provides the effort service: current(v),
+// levels(), set(level), cycle(step), command(arg), refresh(), info().
+// refresh also tells the other plugins what the preferences hold, with the
+// "preferences" event.
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 export default function activate(cockpit) {
   const { h, prefs } = cockpit;
   const session = cockpit.use('session');
   const hot = cockpit.hot.data;
-  hot.level ??= null;
-  hot.ticket ??= 0;
+  hot.last ??= null; // the effort last chosen, which new sessions start with
+  hot.chosen ??= 0; // when it was last chosen here (performance.now())
 
   const config = () => session.state?.config;
+  const view = () => session.view?.();
   const levels = () => config()?.thinking_levels || LEVELS;
-  const current = () => hot.level || config()?.thinking || 'high';
+  const valid = (level) => !!level && levels().includes(level);
+  const effortKey = (v) => `effort.${v?.ws || 'default'}.${v?.id || 'new'}`;
+  const last = () => (valid(hot.last) && hot.last) || (valid(config()?.thinking) && config().thinking) || 'high';
+
+  // current is the effort of v's next runs: its own, else, for a session
+  // still to start, the effort last chosen. A session that ran before
+  // sessions kept their own takes the last chosen once, and keeps it; so
+  // does a new one once its first prompt is on its way (v.run).
+  const current = (v = view()) => {
+    if (!v) return last();
+    if (!valid(v.effort)) {
+      const saved = prefs.get(effortKey(v), '');
+      if (valid(saved)) v.effort = saved;
+      else if ((!v.fresh || v.run) && !v.loading && config()) v.effort = last();
+    }
+    return valid(v.effort) ? v.effort : last();
+  };
 
   const bars = h('span', { class: 'think-bars', id: 'think-bars', role: 'radiogroup', 'aria-label': 'Effort' });
   const label = h('span', { class: 'think-label', id: 'think-label', text: 'high' });
@@ -22,7 +42,7 @@ export default function activate(cockpit) {
   // the control (effort.css) and opens the system's list of the levels. The
   // bars stay what a screen reader reads.
   const select = h('select', { class: 'think-select', id: 'think-select', tabindex: '-1', 'aria-hidden': 'true', onchange: () => set(select.value) });
-  const node = h('div', { class: 'think', title: 'Effort, shared with the terminal cockpit (⌥↑ / ⌥↓)' }, h('span', { class: 'label', text: 'Effort' }), bars, label, select);
+  const node = h('div', { class: 'think', title: 'Effort for this session; new sessions start with the last chosen (⌥↑ / ⌥↓)' }, h('span', { class: 'label', text: 'Effort' }), bars, label, select);
   cockpit.ui.mount('composer.row', { id: 'effort', order: 20, node });
 
   function render() {
@@ -40,35 +60,52 @@ export default function activate(cockpit) {
     select.value = level;
   }
 
-  // set chooses the effort for the next runs, in this tab and in every
-  // other cockpit: the server keeps it where the terminal one reads it.
+  // set chooses the effort of this session's next runs, and of new sessions
+  // in every cockpit; the other sessions keep theirs. The session endpoint
+  // keeps it with a session that has a file; the local key covers a session
+  // still to start, until its first prompt takes the effort along.
   async function set(level) {
-    const ticket = ++hot.ticket;
-    hot.level = level;
+    if (!valid(level)) return;
+    const v = view();
+    const ticket = hot.chosen = performance.now();
+    hot.last = level;
+    if (v) {
+      v.effort = level;
+      prefs.set(effortKey(v), level);
+    }
     render();
     cockpit.render();
-    try {
-      await cockpit.api('/api/preferences', { method: 'PUT', body: { effort: level } });
-    } catch (error) {
-      if (ticket === hot.ticket) cockpit.toast(`The effort applies here only: ${error.message}`, 'error', 'effort');
-    }
+    const own = v && !v.fresh
+      ? cockpit.api(cockpit.wsPath(v.ws, `/sessions/${encodeURIComponent(v.id)}`), { method: 'PATCH', body: { effort: level } })
+      : null;
+    const [shared, kept] = await Promise.allSettled([cockpit.api('/api/preferences', { method: 'PUT', body: { effort: level } }), own]);
+    if (kept.status === 'rejected') cockpit.toast(`The effort is kept in this browser only: ${kept.reason?.message}`, 'error', 'effort');
+    else if (shared.status === 'rejected' && ticket === hot.chosen) cockpit.toast(`New sessions do not start with this effort: ${shared.reason?.message}`, 'warn', 'effort');
   }
 
-  // refresh takes up an effort chosen in another tab or in the terminal.
+  // refresh asks for the preferences: what was chosen in another window or
+  // the terminal is what new sessions start with here too. asked tells the
+  // listeners when they were asked for, to drop an answer older than a
+  // choice made here.
   async function refresh() {
-    const ticket = hot.ticket;
+    const asked = performance.now();
     let saved;
     try {
       saved = await cockpit.api('/api/preferences');
     } catch {
       return;
     }
-    // A choice made here meanwhile is newer.
-    if (ticket !== hot.ticket || !saved?.effort || saved.effort === hot.level) return;
-    hot.level = saved.effort;
+    cockpit.emit('preferences', saved, asked);
+  }
+  cockpit.on('preferences', (saved, asked) => {
+    if (!valid(saved?.effort) || !(asked > hot.chosen) || saved.effort === hot.last) return;
+    hot.last = saved.effort;
+    // Only a session still to start follows it.
+    const v = view();
+    if (v && !v.fresh) return;
     render();
     cockpit.render();
-  }
+  });
 
   function cycle(step) {
     const all = levels();
@@ -81,7 +118,7 @@ export default function activate(cockpit) {
     const level = arg.toLowerCase();
     if (!levels().includes(level)) return cockpit.toast(`Effort levels: ${levels().join(', ')}.`, 'error');
     set(level);
-    return cockpit.toast(`Effort for the next runs: ${level}`, 'info', 'effort');
+    return cockpit.toast(`Effort for this session and new ones: ${level}`, 'info', 'effort');
   }
 
   cockpit.listen(bars, 'keydown', (event) => {
@@ -97,18 +134,20 @@ export default function activate(cockpit) {
     return true;
   }, { order: 30 });
 
-  cockpit.on('session:config', (config) => {
-    if (!config) return;
-    hot.level ??= config.thinking;
-    // The effort used to be kept by each browser. The first time the server
-    // has none saved, this browser's choice becomes the shared one.
-    const local = prefs.get('thinking', null);
-    prefs.set('thinking', null);
-    if (!config.effort_saved && config.thinking_levels?.includes(local) && local !== current()) set(local);
+  cockpit.on('session:config', (c) => {
+    if (c && !valid(hot.last)) hot.last = c.thinking;
     render();
   });
+  cockpit.on('session:view', (v) => {
+    if (v) current(v);
+    render();
+  });
+  cockpit.on('render', () => {
+    // A session's own effort arrives with it.
+    if (label.textContent !== current()) render();
+  });
 
-  // It follows the other cockpits while the page is in view.
+  // The preferences are asked for while the page is in view.
   cockpit.interval(() => { if (document.visibilityState === 'visible') refresh(); }, 5000);
   cockpit.listen(document, 'visibilitychange', () => { if (document.visibilityState === 'visible') refresh(); });
 
@@ -116,7 +155,7 @@ export default function activate(cockpit) {
   cockpit.provide('effort', { current, levels, set, cycle, command, refresh, info });
 
   cockpit.commands.register({
-    name: 'effort', aliases: ['think'], args: '<level>', help: 'Effort for the next runs, shared with the terminal cockpit', order: 130, run: command,
+    name: 'effort', aliases: ['think'], args: '<level>', help: 'Effort for the next runs of this session, and of new sessions', order: 130, run: command,
     complete: () => levels().map((level) => ({ value: level, label: level, detail: level === current() ? 'current' : '', current: level === current() })),
   });
   cockpit.contribute('palette.provider', {

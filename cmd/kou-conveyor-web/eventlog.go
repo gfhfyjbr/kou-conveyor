@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"slices"
+	"sync/atomic"
 )
 
 // A run's events are kept in a file, not in memory. A long run publishes
@@ -26,25 +27,36 @@ type logged struct {
 	at   int64 // where in the file it starts
 	n    int   // how long it is
 	data []byte
+	// over is set, for a piece of text that streamed, once what it went
+	// into is recorded whole: a preview an entry took the place of, or a
+	// tool call that ended. A browser that reads the log after that has no
+	// use for the piece.
+	over *atomic.Bool
+}
+
+// past is whether the event is a piece of a stream that is over.
+func (e logged) past() bool {
+	return e.over != nil && e.over.Load()
 }
 
 // readSize is about how much of the file is read at once.
 const readSize = 1 << 20
 
-// append adds an event to the log.
-func (l *eventLog) append(data []byte) {
+// append adds an event to the log; over, if not nil, says when the stream
+// it is a piece of is over.
+func (l *eventLog) append(data []byte, over *atomic.Bool) {
 	if !l.tried {
 		l.tried = true
 		l.open()
 	}
 	if l.file != nil {
 		if _, err := l.file.WriteAt(data, l.size); err == nil {
-			l.index = append(l.index, logged{at: l.size, n: len(data)})
+			l.index = append(l.index, logged{at: l.size, n: len(data), over: over})
 			l.size += int64(len(data))
 			return
 		}
 	}
-	l.index = append(l.index, logged{data: data})
+	l.index = append(l.index, logged{data: data, over: over})
 }
 
 func (l *eventLog) open() {
@@ -59,22 +71,27 @@ func (l *eventLog) open() {
 	}
 }
 
-// each calls fn with each of events, a part of the log, in turn; fn has an
-// event only until it returns. Events that follow each other in the file
-// are read at once.
-func (l *eventLog) each(events []logged, fn func(data []byte) error) error {
+// each calls fn with each of events, a part of the log, in turn, and where
+// in events it is; fn has an event only until it returns. The pieces of
+// streams that are over are left out: what they went into comes after them
+// whole. Events that follow each other in the file are read at once.
+func (l *eventLog) each(events []logged, fn func(i int, data []byte) error) error {
 	var buffer []byte
 	for i := 0; i < len(events); {
 		first := events[i]
+		if first.past() {
+			i++
+			continue
+		}
 		if first.data != nil {
-			if err := fn(first.data); err != nil {
+			if err := fn(i, first.data); err != nil {
 				return err
 			}
 			i++
 			continue
 		}
 		j, end := i+1, first.at+int64(first.n)
-		for j < len(events) && events[j].data == nil && events[j].at == end && end-first.at < readSize {
+		for j < len(events) && events[j].data == nil && !events[j].past() && events[j].at == end && end-first.at < readSize {
 			end += int64(events[j].n)
 			j++
 		}
@@ -82,9 +99,9 @@ func (l *eventLog) each(events []logged, fn func(data []byte) error) error {
 		if _, err := l.file.ReadAt(buffer, first.at); err != nil {
 			return err
 		}
-		for _, e := range events[i:j] {
+		for k, e := range events[i:j] {
 			at := e.at - first.at
-			if err := fn(buffer[at : at+int64(e.n)]); err != nil {
+			if err := fn(i+k, buffer[at:at+int64(e.n)]); err != nil {
 				return err
 			}
 		}

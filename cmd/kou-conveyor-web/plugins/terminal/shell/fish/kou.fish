@@ -10,12 +10,24 @@
 #
 # Turning the theme off in the cockpit's settings starts fish without it.
 
+# Where the prompt starts (OSC 133 A). fish 4.1 and later move the cursor to
+# a click in the command line that the terminal tells them of (click_events),
+# as in Ghostty.
+set -g __kou_prompt_mark \e']133;A'\a
+set -l __kou_version (string match -r '^(\d+)\.(\d+)' -- $version)
+if test "$__kou_version[2]" -gt 4 2>/dev/null; or test "$__kou_version[2]" -eq 4 -a "$__kou_version[3]" -ge 1 2>/dev/null
+    set __kou_prompt_mark \e']133;A;click_events=1'\a
+end
+
 function fish_prompt
     set -l code $status
-    printf '\e]133;A\a'
+    printf '%s' $__kou_prompt_mark
     set -l arrow (set_color 208)❯(set_color normal)
     test $code -ne 0; and set arrow (set_color red)❯(set_color normal)
-    set -l path (prompt_pwd --full-length-dirs 1 2>/dev/null; or prompt_pwd)
+    # fish 4's prompt_pwd can print the path and fail all the same: what it
+    # printed is the path, when it printed one.
+    set -l path (prompt_pwd --full-length-dirs 1 2>/dev/null)
+    test -n "$path"; or set path (prompt_pwd)
     set -l vcs
     set -l branch (command git symbolic-ref --short HEAD 2>/dev/null; or command git rev-parse --short HEAD 2>/dev/null)
     if test -n "$branch"
@@ -29,9 +41,16 @@ function fish_prompt
     printf '\e]133;B\a'
 end
 
-# Where a command's output starts, and where the command ended with its
-# code (OSC 133 C and D).
+# At the prompt the cursor is a blinking bar, as Ghostty has it, unless fish's
+# vi mode shapes it.
+function __kou_cursor --on-event fish_prompt
+    functions -q fish_vi_cursor_handle; or printf '\e[5 q'
+end
+
+# Where a command's output starts, after the cursor the terminal has of its
+# own is back, and where the command ended with its code (OSC 133 C and D).
 function __kou_preexec --on-event fish_preexec
+    functions -q fish_vi_cursor_handle; or printf '\e[0 q'
     printf '\e]133;C\a'
 end
 

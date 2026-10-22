@@ -11,6 +11,7 @@
 // version in first, then the old one taken away — and nothing else.
 
 import { fmt, h, kv, svg, typingIn, uuid } from './dom.js';
+import { openEvents } from './events.js';
 
 export const API_VERSION = 2;
 const PREFIX = 'kou-conveyor.';
@@ -657,6 +658,8 @@ async function reconcile(listing, { force = false } = {}) {
     if (same) {
       if (running.meta.style_version !== meta.style_version || !!running.meta.style !== !!meta.style) swapStyle(running, meta.style);
       running.meta = meta;
+      // The version that failed is gone: the files are back to the one that runs.
+      running.stale = null;
       continue;
     }
     // A version that failed to load is not tried again until it changes.
@@ -668,7 +671,7 @@ async function reconcile(listing, { force = false } = {}) {
   }
   // Everything is fetched first; then the old versions go and the new ones
   // start in one go, with nothing else happening in between.
-  const results = await Promise.all(jobs.map((job) => Promise.all([job.module, job.style])));
+  const results = await fetched(jobs, ticket);
   if (ticket !== host.ticket) {
     for (const [, link] of results) link?.remove();
     return; // a newer listing took over
@@ -693,6 +696,44 @@ async function reconcile(listing, { force = false } = {}) {
   if (host.booted && changed.length) route();
   render();
   bootDone();
+  showFailed();
+}
+
+// While the page boots, it waits for every plugin's module and style sheet.
+// When that takes long, the boot screen names the plugins it still waits
+// for, with a way out: a module that never comes would hold the page for
+// good. One that comes late, over a slow link, loads as any other.
+const SLOW_LOAD = 15_000;
+
+function fetched(jobs, ticket) {
+  const pending = new Set(jobs.map((job) => job.meta.name));
+  let slow = false;
+  const say = () => {
+    const box = document.getElementById('kernel-boot');
+    if (!slow || !box || host.booted || ticket !== host.ticket || !pending.size) return;
+    const names = [...pending];
+    const text = `Still loading ${names.length === 1 ? 'the plugin' : 'the plugins'} ${names.join(', ')}…`;
+    // Built once: a module that comes changes only the line naming the
+    // rest, and the focus stays on Reload.
+    let line = box.querySelector('.kernel-wait > p');
+    if (!line) {
+      line = h('p');
+      box.replaceChildren(h('div', { class: 'kernel-wait' }, line,
+        h('p', null,
+          h('button', { type: 'button', text: 'Reload', onclick: () => location.reload() }),
+          host.safe ? null : [' · ', h('a', { href: '?safe#/', text: 'Open with the built-in plugins only' })])));
+    }
+    if (line.textContent !== text) line.textContent = text;
+  };
+  const timer = host.booted ? 0 : setTimeout(() => {
+    slow = true;
+    say();
+  }, SLOW_LOAD);
+  return Promise.all(jobs.map((job) => Promise.all([job.module, job.style]).then((result) => {
+    pending.delete(job.meta.name);
+    say();
+    return result;
+  }))).finally(() => clearTimeout(timer));
 }
 
 // broken is what stands for a plugin whose module did not load.
@@ -760,6 +801,7 @@ function activate(meta, module, link, reloaded = false) {
       result.then((stop) => { if (typeof stop === 'function') scope.add(stop); }, (error) => {
         instance.error = String(error?.message || error);
         failed(meta.name, error, 'start');
+        showFailed();
       });
     } else if (typeof result === 'function') {
       scope.add(result);
@@ -791,7 +833,7 @@ function expandPrompt(template, args) {
 // reconciled with what runs.
 function follow(ws) {
   host.source?.close();
-  const source = new EventSource(ws ? `${wsPath(ws, '/plugins/events')}` : '/api/plugins/events');
+  const source = openEvents(ws ? `${wsPath(ws, '/plugins/events')}` : '/api/plugins/events');
   host.source = source;
   source.addEventListener('plugins', (event) => {
     if (host.source !== source) return;
@@ -1050,8 +1092,9 @@ function bootDone() {
 function checkBuilt() {
   // Plugins that build parts of the page into slots of a layout that is
   // not there build nothing that shows.
-  const built = [...document.body.children].some((el) => !el.matches('#kernel-boot, .kernel-toasts, .kernel-rescue, script'));
+  const built = [...document.body.children].some((el) => !el.matches('#kernel-boot, .kernel-toasts, .kernel-rescue, .kernel-failed, script'));
   if (built) return;
+  document.getElementById('kernel-failed')?.remove(); // the panel says it all
   const listing = host.listing;
   const box = h('div', { class: 'kernel-rescue' },
     h('h1', { text: 'No plugin built this page' }),
@@ -1068,6 +1111,46 @@ function checkBuilt() {
     [...failures].length ? h('pre', { text: [...failures].map(([plugin, f]) => `${plugin}: ${f.message}`).join('\n') }) : null,
     h('p', null, h('a', { href: '?safe#/', text: 'Open with the built-in plugins only' })));
   document.body.append(box);
+}
+
+// showFailed keeps a small bar up while plugins do not work: they did not
+// load, or did not start, or their new version did not load and the last one
+// runs. The part of the page such a plugin builds is missing, and a toast is
+// soon gone. The bar goes when they work again. Closed, it stays closed for
+// the plugins it named: another one failing brings it back, and so does one
+// of them failing anew after it worked.
+const dismissed = new Set(); // failing plugins the bar was closed for
+
+function showFailed() {
+  const list = [...host.loaded.values()].filter((i) => i.broken || i.error || i.stale).map((i) => ({
+    name: i.meta.name,
+    why: i.broken ? `did not load: ${i.error}`
+      : i.error ? `failed to start: ${i.error}`
+      : `its new version did not load (${i.stale.error}); the last one runs`,
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  const failing = new Set(list.map((f) => f.name));
+  for (const name of dismissed) if (!failing.has(name)) dismissed.delete(name);
+  let bar = document.getElementById('kernel-failed');
+  // While nothing could build the page, the rescue panel says it all.
+  if (list.every((f) => dismissed.has(f.name)) || !host.booted || document.querySelector('.kernel-rescue')) {
+    bar?.remove();
+    return;
+  }
+  const key = JSON.stringify(list);
+  if (bar?.dataset.key === key) return;
+  bar ??= document.body.appendChild(h('div', { id: 'kernel-failed', class: 'kernel-failed', role: 'status' }));
+  bar.dataset.key = key;
+  bar.replaceChildren(
+    h('p', null, h('b', { text: list.length === 1 ? 'A plugin failed' : `${list.length} plugins failed` })),
+    h('ul', null, list.map((f) => h('li', { title: `${f.name} ${f.why}` }, h('b', { text: f.name }), ` ${f.why}`))),
+    host.safe ? null : h('p', null, h('a', { href: '?safe#/', text: 'Open with the built-in plugins only' })),
+    h('button', {
+      type: 'button', class: 'kernel-failed-close', title: 'Dismiss', 'aria-label': 'Dismiss', text: '×',
+      onclick: () => {
+        for (const f of list) dismissed.add(f.name);
+        bar.remove();
+      },
+    }));
 }
 
 async function boot() {

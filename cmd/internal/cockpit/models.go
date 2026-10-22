@@ -44,7 +44,7 @@ type Catalog struct {
 	// Source is where the models come from: "gateway", "endpoint", or ""
 	// for a connection that lists none, which runs any model it is given.
 	Source string `json:"source"`
-	// Default is the model a prompt runs with unless it picks another.
+	// Default is the model a new session starts with (NewSessionModel).
 	Default string      `json:"default,omitzero"`
 	Models  []ModelInfo `json:"models"`
 	// Error says why the connection listed no models.
@@ -61,13 +61,45 @@ func (c Catalog) Find(id string) (ModelInfo, bool) {
 	return ModelInfo{}, false
 }
 
+// First is the first model the catalog lists that an agent runs on, one
+// that no account waits out a limit for if there is any; "" when it lists
+// none.
+func (c Catalog) First() string {
+	first := ""
+	for _, m := range c.Models {
+		switch {
+		case m.Media:
+		case !m.Cooling:
+			return m.ID
+		case first == "":
+			first = m.ID
+		}
+	}
+	return first
+}
+
+// NewSessionModel is the model a new session starts with: the one last
+// chosen in a composer (Preferences.LastModel), else the one the settings
+// of an endpoint or the environment name, else the first the connection
+// lists, else the provider's default. A session that ran keeps its own.
+func NewSessionModel(last string, c Connection, catalog Catalog) string {
+	return cmp.Or(strings.TrimSpace(last), c.NamedModel(), catalog.First(), c.Model)
+}
+
 // ListModels lists the models a prompt can run with over the connection
 // runs use: the gateway's, published beside settingsFile, or those of the
 // endpoint the settings or the environment name. provider is the -provider
-// flag, which takes precedence over the settings.
+// flag, which takes precedence over the settings. Its Default is the model
+// a new session starts with.
 func ListModels(ctx context.Context, provider, settingsFile string, s Settings, getenv func(string) string) Catalog {
 	c := ResolveConnection(provider, s, getenv)
-	catalog := Catalog{Default: c.Model, Models: []ModelInfo{}}
+	catalog := listModels(ctx, c, settingsFile)
+	catalog.Default = NewSessionModel(LoadPreferences(PreferencesPath(settingsFile)).LastModel, c, catalog)
+	return catalog
+}
+
+func listModels(ctx context.Context, c Connection, settingsFile string) Catalog {
+	catalog := Catalog{Models: []ModelInfo{}}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	if c.Source == "gateway" {

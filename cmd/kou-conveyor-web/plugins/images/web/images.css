@@ -194,3 +194,17 @@
 .queue-images { display: inline-flex; gap: 3px; flex: none; }
 .queue-images img { width: 22px; height: 22px; object-fit: cover; border: 1px solid var(--line-2); background: var(--bg-3); }
 .queue-body { display: flex; align-items: center; gap: 8px; min-width: 0; }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.attachment, .prompt-image, .tool-image { border-radius: var(--radius); }
+.tool-image-frame, .attachment-thumb, .queue-images img { border-radius: var(--radius-sm); }
+.image-preview-card { border-radius: var(--radius-lg); }
+/* The pictures bend with what holds them: a thumbnail's frame clips its
+   picture, as the prompt's does; the large picture's frame follows the
+   card's corners inside its border, and the picture, set off from it by the
+   frame's padding, bends on its own. */
+.tool-image-frame { overflow: hidden; }
+.image-preview-frame { border-radius: max(0px, calc(var(--radius-lg) - 1px)) max(0px, calc(var(--radius-lg) - 1px)) 0 0; }
+.image-preview-frame img { border-radius: var(--radius-sm); }

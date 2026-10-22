@@ -1,0 +1,707 @@
+/* genui: surfaces the agent makes, drawn with the cockpit's own elements.
+   Only the theme's tokens: light and dark come for free. Sizes and places
+   that depend on data are custom properties (--gu-*) set from the script;
+   the page's CSP takes no style attributes. */
+
+/* ---------------------------------------------------------------- series */
+
+.gu-card, .gu-snapshot, .gu-chip {
+  --gu-s0: var(--accent); --gu-s1: #6f8cff; --gu-s2: #3fb6a8; --gu-s3: #b58cf0; --gu-s4: #d9a93a; --gu-s5: #e0679b;
+  /* Mixed with the text colour, the blue reads on light and on dark. */
+  --gu-info: color-mix(in srgb, var(--gu-s1) 78%, var(--fg));
+}
+.gu-s-0 { --gu-c: var(--gu-s0); } .gu-s-1 { --gu-c: var(--gu-s1); } .gu-s-2 { --gu-c: var(--gu-s2); }
+.gu-s-3 { --gu-c: var(--gu-s3); } .gu-s-4 { --gu-c: var(--gu-s4); } .gu-s-5 { --gu-c: var(--gu-s5); }
+
+/* ---------------------------------------------------------------- the card */
+
+/* The live card's node on the timeline is a diamond, as its mark. */
+.entry.gu-entry::before { transform: rotate(45deg); border-color: var(--accent); }
+
+.gu-card {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+}
+.gu-card[data-state="waiting"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+.gu-card[data-state="error"] { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+
+.gu-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 36px;
+  padding: 0 6px 0 12px;
+  border-bottom: 1px solid var(--line);
+  font: 12px/1 var(--mono);
+}
+.gu-mark { flex: none; color: var(--accent); font-size: 12px; }
+.gu-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font: 600 13px/1.2 var(--sans);
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* What the card knows of its files: live, reading, waiting, broken. */
+.gu-status {
+  flex: 0 10 auto;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 11px/1 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.gu-status > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gu-status::before { content: ""; flex: none; width: 6px; height: 6px; background: var(--fg-4); }
+.gu-status[data-tone="live"]::before { background: var(--ok); }
+.gu-status[data-tone="reading"]::before { background: transparent; box-shadow: inset 0 0 0 1px var(--fg-3); animation: pulse 1.2s ease-in-out infinite; }
+.gu-status[data-tone="warn"] { color: var(--warn); }
+.gu-status[data-tone="warn"]::before { background: var(--warn); }
+.gu-status[data-tone="err"] { color: var(--err); }
+.gu-status[data-tone="err"]::before { background: var(--err); }
+.gu-status[data-tone="static"]::before { display: none; }
+/* A file changed: the dot rings once. */
+.gu-status.gu-fresh::before { animation: gu-fresh 1.1s ease-out; }
+@keyframes gu-fresh {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 75%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+
+.gu-tools { flex: none; display: flex; gap: 2px; margin-left: auto; }
+.gu-icon {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 24px;
+  border: 1px solid transparent;
+  color: var(--fg-3);
+  font: 14px/1 var(--mono);
+}
+.gu-icon:hover, .gu-icon[aria-expanded="true"] { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
+
+.gu-body { padding: 14px; min-width: 0; container-type: inline-size; }
+.gu-card[data-place="overlay"] .gu-body { padding: 20px 22px; }
+
+.gu-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 5px 8px 5px 12px;
+  border-top: 1px solid var(--line);
+  font: 11px/1.3 var(--mono);
+  color: var(--fg-4);
+}
+.gu-foot:empty { display: none; }
+.gu-sources { flex: 1; display: flex; flex-wrap: wrap; gap: 3px 16px; min-width: 0; }
+.gu-source {
+  max-width: 100%;
+  color: var(--fg-3);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gu-source b { font-weight: 600; color: var(--fg-2); }
+.gu-source:hover { color: var(--fg); text-decoration: underline dotted var(--fg-4); text-underline-offset: 3px; }
+.gu-source[data-error] { color: var(--warn); }
+.gu-warnings { flex: none; color: var(--warn); cursor: help; }
+.gu-version { flex: none; margin-left: auto; color: var(--fg-4); }
+
+/* A call before the newest, opened: the snapshot its version took. */
+.gu-snapshot, .gu-snapshot-body { min-width: 0; }
+.gu-snapshot-head {
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed var(--line-2);
+  font: 11px/1.4 var(--mono);
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.gu-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.gu-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; min-width: 0; }
+/* In a row, blocks share the width; buttons, badges and links keep theirs. */
+.gu-row > :is(.gu-col, .gu-row, .gu-grid, .gu-section, .gu-tabs, .gu-disclosure, .gu-metric, .gu-progress, .gu-chart,
+  .gu-table-box, .gu-file, .gu-list, .gu-md, .gu-field, .gu-image, .gu-text, .gu-unknown, .gu-html) { flex: 1 1 0; min-width: min(180px, 100%); }
+.gu-row[data-align="start"] { align-items: flex-start; }
+.gu-row[data-align="center"] { align-items: center; }
+.gu-row[data-align="end"] { align-items: flex-end; }
+.gu-row[data-align="stretch"] { align-items: stretch; }
+/* In a column, what is small keeps its width rather than stretch. */
+.gu-col > :is(.gu-badge, .gu-link, .gu-toggle, .gu-btn) { align-self: flex-start; }
+[data-gap="none"] { gap: 0; }
+[data-gap="small"] { gap: 6px; }
+[data-gap="large"] { gap: 22px; }
+
+.gu-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  gap: 12px;
+  min-width: 0;
+}
+.gu-grid[data-fixed] { grid-template-columns: repeat(var(--gu-cols, 2), minmax(0, 1fr)); }
+@container (max-width: 520px) {
+  .gu-grid[data-fixed] { grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); }
+}
+
+.gu-section { min-width: 0; }
+.gu-section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 10px;
+  font: 600 10.5px/1.2 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.gu-section-title::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.gu-section-title:empty { display: none; }
+
+.gu-tabs { min-width: 0; }
+.gu-tablist { display: flex; margin-bottom: 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.gu-tab {
+  flex: none;
+  height: 30px;
+  margin-bottom: -1px;
+  padding: 0 12px;
+  border-bottom: 2px solid transparent;
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.gu-tab:hover { color: var(--fg); }
+.gu-tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+
+.gu-disclosure { min-width: 0; border: 1px solid var(--line); background: var(--bg); }
+.gu-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 10px 0 6px;
+  font: 600 12.5px/1.3 var(--sans);
+  color: var(--fg-2);
+  list-style: none;
+  cursor: pointer;
+  user-select: none;
+}
+.gu-summary::-webkit-details-marker { display: none; }
+.gu-summary:hover { color: var(--fg); background: var(--bg-3); }
+.gu-summary .chev { margin-left: 0; }
+.gu-disclosure[open] > .gu-summary .chev::before { transform: rotate(45deg); }
+.gu-disclosed { padding: 12px; border-top: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------- text */
+
+.gu-text { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.gu-text[data-style="heading"] { font: 650 15px/1.3 var(--sans); letter-spacing: -0.01em; }
+.gu-text[data-style="caption"] { font-size: 12px; color: var(--fg-3); }
+.gu-text[data-style="mono"] { font: 12px/1.55 var(--mono); color: var(--fg-2); }
+.gu-md.prose { margin-top: 0; font-size: 13.5px; line-height: 1.6; }
+
+/* ---------------------------------------------------------------- values */
+
+.gu-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px 9px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+}
+.gu-metric-label {
+  font: 600 10px/1.2 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gu-metric-value { display: flex; align-items: baseline; gap: 5px; min-width: 0; }
+.gu-num {
+  font: 600 22px/1.1 var(--mono);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gu-unit { flex: none; font: 12px/1 var(--mono); color: var(--fg-3); }
+.gu-metric[data-missing] .gu-num { color: var(--fg-4); }
+.gu-delta { font: 11px/1.2 var(--mono); color: var(--fg-3); white-space: nowrap; }
+.gu-delta[data-tone="good"] { color: var(--ok); }
+.gu-delta[data-tone="bad"] { color: var(--err); }
+
+/* A row of Metrics is one strip, ruled between its cells, however it wraps. */
+.gu-row.gu-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 0;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  overflow: hidden;
+}
+.gu-strip > .gu-metric {
+  margin: 0 -1px -1px 0;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: none;
+}
+
+.gu-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--line-2);
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  white-space: nowrap;
+}
+.gu-badge[data-tone="ok"] { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line-2)); background: color-mix(in srgb, var(--ok) 9%, transparent); }
+.gu-badge[data-tone="warn"] { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); background: color-mix(in srgb, var(--warn) 9%, transparent); }
+.gu-badge[data-tone="err"] { color: var(--err); border-color: color-mix(in srgb, var(--err) 45%, var(--line-2)); background: var(--err-soft); }
+.gu-badge[data-tone="info"] { color: var(--gu-info); border-color: color-mix(in srgb, var(--gu-s1) 45%, var(--line-2)); background: color-mix(in srgb, var(--gu-s1) 9%, transparent); }
+
+.gu-progress { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gu-progress-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.gu-progress-label { min-width: 0; font-size: 12.5px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gu-progress-value { flex: none; font: 600 11px/1.2 var(--mono); font-variant-numeric: tabular-nums; color: var(--fg); }
+.gu-progress[data-missing] .gu-progress-value { color: var(--fg-4); }
+.gu-bar { height: 6px; background: var(--bg-4); overflow: hidden; }
+.gu-bar > i { display: block; width: calc(var(--gu-share, 0) * 100%); height: 100%; background: var(--accent); transition: width 0.3s ease-out; }
+
+/* ---------------------------------------------------------------- tables and lists */
+
+.gu-table-box { min-width: 0; border: 1px solid var(--line); background: var(--bg); }
+.gu-table-wrap { overflow-x: auto; }
+.gu-table { width: 100%; border-collapse: collapse; font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; }
+.gu-table th {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-3);
+  font: 600 10px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  text-align: left;
+  white-space: nowrap;
+}
+.gu-table td { padding: 6px 12px; border-bottom: 1px solid var(--line); color: var(--fg); white-space: nowrap; }
+.gu-table tbody tr:last-child td { border-bottom: 0; }
+.gu-table tbody tr:hover td { background: var(--bg-3); }
+.gu-table [data-align="right"] { text-align: right; }
+.gu-table [data-align="center"] { text-align: center; }
+.gu-table td[data-missing] { color: var(--fg-4); }
+
+.gu-more { padding: 6px 12px; font: 11px/1.3 var(--mono); color: var(--fg-4); }
+.gu-table-box > .gu-more { border-top: 1px solid var(--line); }
+
+.gu-list { margin: 0; padding-left: 1.4em; font-size: 13.5px; line-height: 1.55; color: var(--fg); overflow-wrap: anywhere; }
+.gu-list > li + li { margin-top: 0.25em; }
+.gu-list > li::marker { content: "▪  "; color: var(--fg-4); font-size: 0.9em; }
+.gu-list + .gu-more { padding-left: 0; }
+
+/* ---------------------------------------------------------------- files */
+
+.gu-image { margin: 0; min-width: 0; border: 1px solid var(--line); background: var(--code); }
+.gu-image img { display: block; max-width: 100%; max-height: 480px; margin: 0 auto; object-fit: contain; }
+.gu-image figcaption { padding: 6px 10px; border-top: 1px solid var(--line); font: 11px/1.4 var(--mono); color: var(--fg-3); }
+
+.gu-file { min-width: 0; border: 1px solid var(--line); background: var(--code); }
+.gu-file-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px 0 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg-2);
+  font: 11.5px/1 var(--mono);
+  color: var(--fg-3);
+}
+.gu-file-name { min-width: 0; color: var(--fg-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gu-file-head > .gu-dim { flex: none; }
+.gu-open {
+  flex: none;
+  margin-left: auto;
+  height: 22px;
+  padding: 0 7px;
+  border: 1px solid transparent;
+  font: 11px/1 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+}
+.gu-open:hover { color: var(--fg); border-color: var(--line-2); background: var(--bg); }
+.gu-stat { flex: none; display: inline-flex; gap: 6px; font: 600 11px/1 var(--mono); }
+.gu-stat:last-child { margin-left: auto; padding-right: 6px; }
+.gu-add { color: var(--ok); }
+.gu-del { color: var(--err); }
+
+.gu-code-body, .gu-diff-body {
+  max-height: 360px;
+  overflow: auto;
+  padding: 6px 0;
+  font: 12px/1.6 var(--mono);
+  color: var(--syn-fg, var(--fg));
+  tab-size: 4;
+}
+.gu-code-body > .gu-none, .gu-diff-body > .gu-none { padding: 6px 12px; }
+.gu-code-body > .gu-more, .gu-diff-body > .gu-more { margin-top: 4px; border-top: 1px dashed var(--line); }
+.gu-line, .gu-dl { display: flex; width: max-content; min-width: 100%; }
+.gu-ln {
+  flex: none;
+  width: 5ch;
+  padding-right: 1.5ch;
+  text-align: right;
+  color: var(--fg-4);
+  user-select: none;
+}
+.gu-lt { white-space: pre; padding-right: 16px; }
+.gu-dl .gu-ln { width: 4.5ch; padding-right: 1ch; }
+/* The sign of a diff's line is drawn, not taken from it: copying the
+   lines copies the code. */
+.gu-dl .gu-lt::before { content: ""; display: inline-block; width: 2.5ch; padding-left: 0.5ch; color: var(--fg-4); }
+.gu-dl[data-t="add"] { background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.gu-dl[data-t="add"] .gu-lt::before { content: "+"; color: var(--ok); }
+.gu-dl[data-t="del"] { background: color-mix(in srgb, var(--err) 12%, transparent); }
+.gu-dl[data-t="del"] .gu-lt::before { content: "−"; color: var(--err); }
+.gu-dl[data-t="hunk"] { color: var(--fg-4); background: color-mix(in srgb, var(--fg) 4%, transparent); }
+.gu-dl[data-t="hunk"] + .gu-dl[data-t="hunk"], .gu-dl + .gu-dl[data-t="hunk"] { margin-top: 4px; }
+
+.gu-link {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 100%;
+  font: 12.5px/1.4 var(--mono);
+  color: var(--accent);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.gu-link:hover { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+.gu-link-mark { flex: none; font-size: 11px; }
+
+/* ---------------------------------------------------------------- inputs */
+
+.gu-btn {
+  flex: none;
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  font: 700 11px/1 var(--mono);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg);
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.gu-btn:hover:not(:disabled) { border-color: var(--fg-3); background: var(--bg-3); }
+.gu-btn:active:not(:disabled) { transform: translateY(1px); }
+.gu-btn[data-style="primary"] { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); }
+.gu-btn[data-style="primary"]:hover:not(:disabled) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 85%, var(--fg)); }
+.gu-btn[data-style="danger"] { border-color: color-mix(in srgb, var(--err) 55%, var(--line-2)); color: var(--err); }
+.gu-btn[data-style="danger"]:hover:not(:disabled) { border-color: var(--err); background: var(--err); color: var(--bg); }
+.gu-btn:disabled { opacity: 0.45; cursor: default; }
+.gu-btn[data-used] { opacity: 1; border-color: color-mix(in srgb, var(--ok) 50%, var(--line-2)); background: transparent; color: var(--ok); }
+
+.gu-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gu-field-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font: 600 10px/1.2 var(--mono);
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.gu-input, .gu-select {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  font: 13px/1.4 var(--sans);
+  color: var(--fg);
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+textarea.gu-input { display: block; height: auto; min-height: 76px; padding: 8px 10px; line-height: 1.5; resize: vertical; }
+.gu-input::placeholder { color: var(--fg-4); }
+.gu-input:focus, .gu-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.gu-input:disabled, .gu-select:disabled { border-style: dashed; background: var(--bg-2); color: var(--fg-3); cursor: default; }
+.gu-select {
+  appearance: none;
+  padding-right: 30px;
+  background-image: linear-gradient(45deg, transparent 50%, var(--fg-3) 50%), linear-gradient(135deg, var(--fg-3) 50%, transparent 50%);
+  background-position: calc(100% - 16px) 55%, calc(100% - 11px) 55%;
+  background-size: 5px 5px;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+.gu-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 24px;
+  font-size: 13px;
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+.gu-switch {
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 30px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--line-2);
+  background: var(--bg-4);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.gu-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  background: var(--fg-3);
+  transition: transform 0.15s ease-out, background 0.15s;
+}
+.gu-switch:checked { border-color: var(--accent); background: var(--accent); }
+.gu-switch:checked::before { transform: translateX(14px); background: var(--accent-ink); }
+.gu-switch:disabled { opacity: 0.5; cursor: default; }
+.gu-toggle:has(.gu-switch:disabled) { cursor: default; color: var(--fg-3); }
+
+.gu-range { width: 100%; margin: 4px 0 0; accent-color: var(--accent); cursor: pointer; }
+.gu-range:disabled { cursor: default; opacity: 0.5; }
+.gu-range-value { font: 600 11px/1.2 var(--mono); letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums; color: var(--fg); }
+
+/* ---------------------------------------------------------------- html */
+
+/* An Html: its page in a frame, as tall as the page says it is
+   (--gu-frame-h), on the card's background — the page has none of its own
+   and takes the theme's colours. */
+.gu-html { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+/* Loading again, as tall as it was framed (genui.js sets the height it had). */
+.gu-html[data-state="loading"] { min-height: var(--gu-frame-h, 0px); }
+.gu-frame {
+  display: block;
+  width: 100%;
+  height: var(--gu-frame-h, 120px);
+  border: 0;
+  background: transparent;
+}
+.gu-html-note { font-size: 12px; line-height: 1.5; color: var(--fg-3); }
+.gu-html-note[data-tone="warn"] { color: var(--warn); }
+.gu-html-note[data-tone="err"] { color: var(--err); }
+
+/* ---------------------------------------------------------------- what is not drawn */
+
+.gu-unknown {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-2);
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+.gu-unknown-alt { color: var(--fg); }
+.gu-none { padding: 6px 0; font: 12px/1.5 var(--mono); color: var(--fg-4); }
+.gu-dim { color: var(--fg-4); }
+.gu-fallback {
+  max-height: 280px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--code);
+  font: 11.5px/1.5 var(--mono);
+  color: var(--fg-2);
+  white-space: pre;
+}
+
+/* ---------------------------------------------------------------- charts */
+
+.gu-chart { display: flex; flex-direction: column; gap: 10px; min-width: 0; margin: 0; }
+.gu-legend { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; font: 11px/1.4 var(--mono); color: var(--fg-3); }
+.gu-legend-alt { flex: 1 1 auto; min-width: 0; margin-right: auto; font: 12.5px/1.4 var(--sans); color: var(--fg-2); }
+.gu-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.gu-legend-item b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--fg); }
+.gu-swatch { flex: none; display: inline-block; width: 8px; height: 8px; background: var(--gu-c, var(--accent)); }
+
+.gu-chart-grid { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 5px; }
+.gu-yaxis { position: relative; width: calc(var(--gu-chars, 3) * 1ch + 1px); font: 10.5px/1 var(--mono); color: var(--fg-4); }
+.gu-yaxis span { position: absolute; right: 0; top: calc(var(--gu-at, 0) * 100%); transform: translateY(-50%); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gu-area { position: relative; min-width: 0; height: var(--gu-h, 168px); }
+.gu-plot { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.gu-grid-line { stroke: var(--line); stroke-width: 1; }
+.gu-zero { stroke: var(--line-2); }
+.gu-series { fill: none; stroke: var(--gu-c); stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
+.gu-dots { stroke-width: 5; }
+.gu-last { stroke-width: 7; }
+.gu-bar-0 { fill: var(--gu-s0); } .gu-bar-1 { fill: var(--gu-s1); } .gu-bar-2 { fill: var(--gu-s2); }
+.gu-bar-3 { fill: var(--gu-s3); } .gu-bar-4 { fill: var(--gu-s4); } .gu-bar-5 { fill: var(--gu-s5); }
+.gu-guide { position: absolute; top: 0; bottom: 0; left: calc(var(--gu-x, 0) * 100%); width: 1px; background: var(--fg-4); pointer-events: none; }
+.gu-tip {
+  position: absolute;
+  top: 4px;
+  left: calc(var(--gu-x, 0) * 100%);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  font: 11px/1.3 var(--mono);
+  color: var(--fg-2);
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(10px);
+}
+.gu-tip[data-side="left"] { transform: translateX(calc(-100% - 10px)); }
+.gu-tip > b { font-weight: 600; color: var(--fg); }
+.gu-tip-row { display: flex; align-items: center; gap: 6px; }
+.gu-tip-value { margin-left: auto; padding-left: 12px; font-variant-numeric: tabular-nums; color: var(--fg); }
+.gu-xaxis { grid-column: 2; display: flex; justify-content: space-between; gap: 8px; min-width: 0; font: 10.5px/1 var(--mono); color: var(--fg-4); }
+.gu-xaxis span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------------------------------------------------------------- the chip, open large, the sidebar */
+
+/* At the top of the transcript, under the bar, where the newest card went
+   as it scrolled away above (genui.js, «the chip»); it comes down from the
+   bar as it shows. Its box is the stage's second row, as the overlay's
+   below. The bottom, over the composer, is the jump button's. */
+.gu-chip {
+  position: absolute;
+  grid-row: 2 / 3;
+  grid-column: 1 / 2;
+  top: 10px;
+  left: 0;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  max-width: min(560px, calc(100% - 32px));
+  height: 30px;
+  margin-inline: auto;
+  padding: 0 10px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  font: 11px/1 var(--mono);
+  color: var(--fg-3);
+  white-space: nowrap;
+  animation: drop 0.16s ease-out;
+}
+.shell[data-page] .gu-chip { display: none; }
+.gu-chip:hover { border-color: var(--accent); color: var(--fg-2); }
+.gu-chip-mark { flex: none; color: var(--accent); }
+.gu-chip-title { flex: none; max-width: 50%; font: 600 12px/1 var(--sans); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
+.gu-chip-glance { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.gu-chip-glance::before { content: "· "; color: var(--fg-4); }
+.gu-chip-up { flex: none; color: var(--fg-4); }
+.gu-chip:hover .gu-chip-up { color: var(--accent); }
+/* A file of its surface changed: it rings once — a ring of its own, so
+   that the chip does not come down again as the ring ends. */
+.gu-chip.gu-chip-fresh::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid transparent;
+  border-radius: inherit;
+  pointer-events: none;
+  animation: gu-chip-fresh 1.1s ease-out;
+}
+@keyframes gu-chip-fresh {
+  0% { border-color: var(--accent); box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); }
+  100% { box-shadow: 0 0 0 8px transparent; }
+}
+
+/* Over the transcript: the stage's second row, which an absolute item of
+   its grid takes as its box. Both lines are named: an absolute item's
+   auto line is the grid's edge, which would take in the composer. The
+   bar above and the composer below stay usable. */
+.gu-overlay {
+  position: absolute;
+  inset: 0;
+  grid-row: 2 / 3;
+  grid-column: 1 / 2;
+  z-index: 30;
+  display: grid;
+  align-items: start;
+  justify-items: center;
+  min-height: 0;
+  padding: 28px 24px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  backdrop-filter: blur(3px);
+  animation: fade 0.12s ease-out;
+}
+.gu-overlay-box { width: min(1100px, 100%); }
+.gu-overlay-frame > .gu-card { border-color: var(--line-2); box-shadow: var(--shadow); animation: rise 0.16s ease-out; }
+
+.gu-pane { height: 100%; padding: 12px; overflow: auto; }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…): the
+   card and what is boxed in it as the cockpit's own cards, small things
+   less, dots and bars as round as their size lets them. */
+.gu-card, .gu-chip, .gu-tip, .gu-metric, .gu-strip, .gu-disclosure, .gu-table-box, .gu-image, .gu-file,
+.gu-btn, .gu-input, .gu-select, .gu-unknown, .gu-fallback { border-radius: var(--radius); }
+.gu-overlay-frame > .gu-card { border-radius: var(--radius-lg); }
+/* A strip's cells are ruled inside it: the strip is what is rounded. */
+.gu-strip > .gu-metric { border-radius: 0; }
+.gu-icon, .gu-open, .gu-badge { border-radius: var(--radius-sm); }
+.gu-status::before, .gu-bar { border-radius: min(var(--radius-sm), 3px); }
+.gu-swatch { border-radius: min(var(--radius-sm), 2px); }
+/* The switch becomes a pill as the corners round, its knob with it. */
+.gu-switch { border-radius: min(var(--radius), 8px); }
+.gu-switch::before { border-radius: max(0px, calc(min(var(--radius), 8px) - 3px)); }
+/* The summary's hover stays inside the box; open, it sits on what it
+   discloses. */
+.gu-summary { border-radius: max(0px, calc(var(--radius) - 1px)); }
+.gu-disclosure[open] > .gu-summary { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+/* Round, a box with a head or a picture at its edge clips them to its
+   corners. */
+:root[data-corners="round"] :is(.gu-table-box, .gu-image, .gu-file) { overflow: hidden; }
+/* Round, the tabs are segments, as the cockpit's (layout.css, sidebar.css):
+   no line under them and no bar under the one in view, which is raised. */
+:root[data-corners="round"] .gu-tablist { gap: 3px; border-bottom: 0; }
+:root[data-corners="round"] .gu-tab { margin: 0; border-bottom: 0; border-radius: var(--radius); }
+:root[data-corners="round"] .gu-tab[aria-selected="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-2); }
+
+@media (prefers-reduced-motion: reduce) {
+  .gu-chip, .gu-chip::after, .gu-overlay, .gu-overlay-frame > .gu-card, .gu-status::before { animation: none !important; }
+  .gu-bar > i, .gu-switch, .gu-switch::before, .gu-btn { transition: none; }
+}

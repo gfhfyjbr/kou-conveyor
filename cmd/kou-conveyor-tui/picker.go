@@ -260,12 +260,12 @@ func tickBox(st styles, lines []string, inner int, accent bool) string {
 		corner = st.accent
 	}
 	edge := st.rule2.Render(strings.Repeat("─", inner+2))
-	out := []string{corner.Render("┌") + edge + corner.Render("┐")}
+	out := []string{corner.Render(corners.tl) + edge + corner.Render(corners.tr)}
 	for _, line := range lines {
 		line = fit(line, inner)
 		out = append(out, st.rule2.Render("│")+" "+line+strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)))+" "+st.rule2.Render("│"))
 	}
-	out = append(out, corner.Render("└")+edge+corner.Render("┘"))
+	out = append(out, corner.Render(corners.bl)+edge+corner.Render(corners.br))
 	return strings.Join(out, "\n")
 }
 

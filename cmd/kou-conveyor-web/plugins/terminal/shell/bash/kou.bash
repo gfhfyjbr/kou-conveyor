@@ -97,7 +97,21 @@ _kou_prompt() {
   return $code
 }
 
-# Starship and others set PS1 from PROMPT_COMMAND: theirs go, the rest stay.
+# _kou_prompt_start says where the prompt starts (OSC 133 A), the last thing
+# before it is drawn. As in Ghostty's own integration, it is said once, here,
+# and PS1 only marks itself a prompt (P): readline drawing the prompt again
+# (^L, a vi mode's switch) starts no new one. readline draws only the
+# prompt's last line again when the terminal is resized, so the terminal
+# clears only that one (redraw=last). Where PS0 can put the cursor back
+# before a command, it is a blinking bar at the prompt.
+_kou_prompt_start() {
+  local code=$?
+  printf '%s\e]133;A;redraw=last;cl=line\a' "$_kou_bar"
+  return $code
+}
+
+# Starship and others set PS1 from PROMPT_COMMAND: theirs go, the rest stay,
+# between kou-conveyor's.
 _kou_prompt_commands() {
   local cmd
   if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
@@ -105,21 +119,27 @@ _kou_prompt_commands() {
     for cmd in "${PROMPT_COMMAND[@]}"; do
       [[ $cmd == *starship* || $cmd == *_omp_* || $cmd == *powerline* ]] || keep+=("$cmd")
     done
-    PROMPT_COMMAND=(_kou_prompt "${keep[@]}")
+    PROMPT_COMMAND=(_kou_prompt "${keep[@]}" _kou_prompt_start)
   else
     cmd=${PROMPT_COMMAND-}
     [[ $cmd == *starship* || $cmd == *_omp_* || $cmd == *powerline* ]] && cmd=
-    PROMPT_COMMAND="_kou_prompt${cmd:+; $cmd}"
+    PROMPT_COMMAND="_kou_prompt${cmd:+; $cmd}"$'\n'_kou_prompt_start
   fi
 }
 _kou_prompt_commands
 unset -f _kou_prompt_commands
 
-PS1=$'\001\e]133;A\a\002\001\e[38;5;208m\002▪\001\e[39m\002 \001\e[1m\002${_kou_short}\001\e[22m\002${_kou_vcs} ${_kou_arrow} \001\e]133;B\a\002'
-PS2=$'\001\e[90m\002…\001\e[39m\002 '
+PS1=$'\001\e]133;P;k=i\a\002\001\e[38;5;208m\002▪\001\e[39m\002 \001\e[1m\002${_kou_short}\001\e[22m\002${_kou_vcs} ${_kou_arrow} \001\e]133;B\a\002'
+# A continuation prompt is marked one (P;k=s), its … no part of the command.
+PS2=$'\001\e]133;P;k=s\a\002\001\e[90m\002…\001\e[39m\002 \001\e]133;B\a\002'
 # Where a command's output starts (OSC 133 C): bash 4.4 and later print PS0
-# once a command is read, before it runs.
-PS0=$'\e]133;C\a'
+# once a command is read, before it runs; it puts back the cursor the
+# terminal has of its own, and only those have the bar at the prompt.
+PS0=$'\e[0 q\e]133;C\a'
+_kou_bar=
+if (( BASH_VERSINFO[0] > 4 || BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4 )); then
+  _kou_bar=$'\e[5 q'
+fi
 
 # A terminal of a canvas finds its kou-canvas first.
 if [[ -n ${KOU_CANVAS_BIN-} ]]; then

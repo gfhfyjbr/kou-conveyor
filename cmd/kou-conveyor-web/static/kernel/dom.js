@@ -87,9 +87,10 @@ export const fmt = Object.freeze({
   },
 });
 
-// kv is a key · · · value row, as the inspector shows them.
+// kv is a key · · · value row, as the inspector shows them. A value too
+// long for the row ends in "…": its title says all of it.
 export function kv(key, value, cls) {
-  return h('div', { class: `kv${cls ? ` ${cls}` : ''}` }, h('span', { class: 'k', text: key }), h('span', { class: 'dots' }), h('span', { class: 'v', text: value }));
+  return h('div', { class: `kv${cls ? ` ${cls}` : ''}` }, h('span', { class: 'k', text: key }), h('span', { class: 'dots' }), h('span', { class: 'v', text: value, title: value }));
 }
 
 export function uuid() {

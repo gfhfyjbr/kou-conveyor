@@ -75,6 +75,13 @@ export function families(id) {
   return [...new Set(out)].slice(0, 4);
 }
 
+// scrolls holds a table that may be wider than its card, as on a phone:
+// the table scrolls across in it, not the whole page. Not the card itself:
+// what it draws past its edge (the chart's axis) would be cut off.
+function scrolls(table) {
+  return h('div', { class: 'u-table-scroll' }, table);
+}
+
 export function createUsage(ctx) {
   const { api, toast, $, prefs } = ctx;
   const range = prefs.get('usage-range', '7d');
@@ -632,11 +639,11 @@ export function createUsage(ctx) {
       h('header', { class: 'u-head' },
         h('span', { class: 'label', text: 'By model' }),
         h('span', { class: 'u-note', text: `${list.length} model${list.length === 1 ? '' : 's'}` })),
-      list.length ? h('table', { class: 'u-table' },
+      list.length ? scrolls(h('table', { class: 'u-table' },
         h('thead', null, h('tr', null,
           h('th', { text: 'Model' }), h('th', { class: 'num', text: 'Req' }), h('th', { class: 'num', text: 'Fresh in' }),
           h('th', { class: 'num', text: 'Cache' }), h('th', { class: 'num', text: 'Out' }), h('th', { class: 'num', text: 'API cost' }))),
-        h('tbody', null, rows)) : h('p', { class: 'u-note', text: 'No model in this range.' }));
+        h('tbody', null, rows))) : h('p', { class: 'u-note', text: 'No model in this range.' }));
   }
 
   // priceLine says what a model's tokens count at, and opens its price.
@@ -710,7 +717,7 @@ export function createUsage(ctx) {
       totalTokens ? [
         h('div', { class: 'u-mixrow' }, h('span', { class: 'k', text: 'Tokens' }), bar(tokens, totalTokens, (v) => fmtTokens(v))),
         h('div', { class: 'u-mixrow' }, h('span', { class: 'k', text: 'Cost' }), bar(costs, totalCost, (v) => money(v, u))),
-        h('table', { class: 'u-table u-kinds' },
+        scrolls(h('table', { class: 'u-table u-kinds' },
           h('thead', null, h('tr', null, h('th', { text: 'Kind' }), h('th', { class: 'num', text: 'Tokens' }), h('th', { class: 'num', text: 'Per 1M' }),
             h('th', { class: 'num', text: 'Cost' }), h('th', { class: 'num', text: 'Share' }))),
           h('tbody', null,
@@ -725,7 +732,7 @@ export function createUsage(ctx) {
               h('td', { class: 'num', text: fmtTokens(totalTokens) }),
               h('td', { class: 'num', text: totalTokens ? rate((totalCost / totalTokens) * 1e6, u) : '—' }),
               h('td', { class: 'num', text: money(totalCost, u) }),
-              h('td', { class: 'num', text: totalCost ? '100%' : '—' })))),
+              h('td', { class: 'num', text: totalCost ? '100%' : '—' }))))),
         h('p', { class: 'u-note', text: saved
           ? `Caching ${saved > 0 ? 'saved' : 'cost'} ${money(Math.abs(saved), u)}: cache reads cost a fraction of the input${costs.cache_write ? ', less what writing the caches cost beyond it' : ''}.`
           : 'Prices are the providers’ list prices unless you set your own below.' }),
@@ -805,10 +812,10 @@ export function createUsage(ctx) {
     const rules = listing.rules || [];
     return h('section', { class: 'u-card u-prices', id: 'usage-prices', data: { row: 'prices' } }, header,
       listing.error ? h('p', { class: 'settings-status', data: { kind: 'error' }, text: `${listing.error}; saving a price replaces the file` }) : null,
-      shown.length ? h('table', { class: 'u-table u-price-table' },
+      shown.length ? scrolls(h('table', { class: 'u-table u-price-table' },
         h('thead', null, h('tr', null, h('th', { text: 'Model' }), h('th', { class: 'num', text: 'Input' }), h('th', { class: 'num', text: 'Cache read' }),
           h('th', { class: 'num', text: 'Cache write' }), h('th', { class: 'num', text: 'Output' }), h('th', { text: 'Source' }), h('th'))),
-        h('tbody', null, rows)) : h('p', { class: 'u-note', text: 'The gateway serves no models yet.' }),
+        h('tbody', null, rows))) : h('p', { class: 'u-note', text: 'The gateway serves no models yet.' }),
       main.length && rest.length ? h('button', { class: 'lim-more u-more', type: 'button', onclick: () => { ui.moreModels = !ui.moreModels; render(); } },
         ui.moreModels ? 'Only the models used' : `+ ${rest.length} more model${rest.length === 1 ? '' : 's'} the gateway serves`) : null,
       rules.length ? h('div', { class: 'u-rules' },

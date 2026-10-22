@@ -313,7 +313,7 @@ func (m *uiModel) composerRows() (rows []wrappedRow, first int, ok bool) {
 // decoration reports a rendered row that is only rules and edges: the
 // rail between entries, a card's top or bottom.
 func decoration(line string) bool {
-	return strings.Trim(ansi.Strip(line), " ─│┃┌┐└┘┎┖├┤") == ""
+	return strings.Trim(ansi.Strip(line), " ─│┃┌┐└┘┎┖╭╮╰╯├┤") == ""
 }
 
 // runeSpan returns the runes of a row that start in columns [from, to).

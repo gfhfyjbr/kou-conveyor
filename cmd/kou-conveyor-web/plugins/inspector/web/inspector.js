@@ -252,11 +252,35 @@ export default function activate(cockpit) {
   // ---------------------------------------------------------------- its own sections
 
   const kvs = (...rows) => rows;
-  const tally = (label, n) => h('div', { data: { zero: n === 0 ? 'true' : null } }, h('b', { text: String(n) }), h('span', { text: label }));
-  const meterFill = (percent) => {
-    const fill = h('i');
-    fill.style.width = `${percent}%`;
-    return fill;
+
+  // The sections' rows, buttons and boxes keep their elements from one
+  // render to the next, as a run renders them every second: put leaves a
+  // node it is given again where it is, so text selected in it, the focus on
+  // it and a click begun on it all stay. Only what changed is written. A
+  // section that keeps nodes returns a list of them, not a fragment, which
+  // would take them out of the page.
+  const keptRows = new Map(); // key → its kv row
+  function row(key, label, value, cls) {
+    let el = keptRows.get(key);
+    if (!el) keptRows.set(key, (el = kv(label, '', cls)));
+    const name = `kv${cls ? ` ${cls}` : ''}`;
+    if (el.className !== name) el.className = name;
+    const shown = el.querySelector('.v');
+    setText(shown, value);
+    if (shown.title !== shown.textContent) shown.title = shown.textContent;
+    return el;
+  }
+  const disable = (el, off) => {
+    if (el.disabled !== !!off) el.disabled = !!off;
+  };
+  const tallyOf = (label) => {
+    const n = h('b');
+    return { n, node: h('div', null, n, h('span', { text: label })) };
+  };
+  const setTally = (tally, n) => {
+    setText(tally.n, String(n));
+    if (n === 0) tally.node.dataset.zero = 'true';
+    else delete tally.node.dataset.zero;
   };
   const host = (url) => {
     try {
@@ -347,14 +371,14 @@ export default function activate(cockpit) {
       const via = service('connection')?.viaGateway?.(link?.base_url, link);
       // A list, not a fragment: the rows it keeps stay where they are.
       return kvs(
-        kv('State', session.PHASE_LABEL[phase] || phase, `state-${phase}`),
-        kv('Elapsed', v.run ? fmt.timer(Date.now() - v.run.started) : '—'),
-        kv('Activity', v.run?.activity || '—'),
-        kv('Effort', service('effort')?.current?.() || state.config?.thinking || '—'),
-        kv('Provider', link ? [link.source === 'gateway' ? 'gateway' : link.provider, API_LABEL[api]].filter(Boolean).join(' · ') : '—'),
-        kv('Model', next || 'runner default'),
-        kv('Default', session.defaultModel() || 'runner default'),
-        kv('Endpoint', link?.source === 'gateway' ? `accounts gateway${state.config?.accounts?.url ? ` · ${host(state.config.accounts.url)}` : ''}`
+        row('run.state', 'State', session.PHASE_LABEL[phase] || phase, `state-${phase}`),
+        row('run.elapsed', 'Elapsed', v.run ? fmt.timer(Date.now() - v.run.started) : '—'),
+        row('run.activity', 'Activity', v.run?.activity || '—'),
+        row('run.effort', 'Effort', service('effort')?.current?.() || state.config?.thinking || '—'),
+        row('run.provider', 'Provider', link ? [link.source === 'gateway' ? 'gateway' : link.provider, API_LABEL[api]].filter(Boolean).join(' · ') : '—'),
+        row('run.model', 'Model', next || 'runner default'),
+        row('run.default', 'Default', session.defaultModel() || 'runner default'),
+        row('run.endpoint', 'Endpoint', link?.source === 'gateway' ? `accounts gateway${state.config?.accounts?.url ? ` · ${host(state.config.accounts.url)}` : ''}`
           : link?.base_url ? (via ? `accounts gateway · ${host(link.base_url)}` : host(link.base_url)) : 'provider default'),
         runPrefs.profiles.length ? choice('Tools', 'tool_profile', runPrefs.profile, runPrefs.profiles,
           'The built-in tools the next runs work with: edit (Read/Edit/Write) for Claude, patch (apply_patch) for GPT, code (one Code tool: JavaScript that calls the tools), shell (Bash only); all but code have TranscriptSearch, which finds what compaction took out of the context, and code has transcriptSearch()') : null,
@@ -386,67 +410,132 @@ export default function activate(cockpit) {
     complete: () => runPrefs.sandboxes.map((option) => ({ value: option.value, label: option.value, detail: option.description, current: option.value === runPrefs.sandbox })),
   });
 
+  const meterFill = h('i');
+  const meter = h('div', { class: 'meter-bar' }, meterFill);
+  const compactButton = h('button', {
+    class: 'act', type: 'button',
+    title: 'Summarize the conversation to free context; the next prompt starts from the summary (/compact in the composer)',
+    onclick: () => session.compact(),
+  }, 'Compact');
+  const tokenActions = h('div', { class: 'ins-actions' }, compactButton);
+  // Tokens per second: output tokens over the time their turns took, from
+  // the request to the response, as the server measures them (Usage).
+  const perSecond = (tokens, ms) => (tokens > 0 && ms > 0 ? (tokens * 1000) / ms : NaN);
+  const rate = (n) => (n >= 100 ? String(Math.round(n)) : n.toFixed(1));
   cockpit.contribute('inspector.section', {
     id: 'tokens', title: 'Tokens', order: 20,
     render: (summary, v) => {
       const usage = v.usage || {};
       const cachedShare = usage.input ? Math.round((usage.cached / usage.input) * 100) : 0;
-      return frag(
-        kv('Context', fmt.tokens(usage.context ?? NaN)),
-        kv('Input', fmt.tokens(usage.input ?? NaN)),
-        kv('Cached', usage.input ? `${fmt.tokens(usage.cached)} · ${cachedShare}%` : '—'),
-        h('div', { class: 'meter-bar', title: `${cachedShare}% of input tokens were cached` }, meterFill(cachedShare)),
-        kv('Output', fmt.tokens(usage.output ?? NaN)),
-        kv('Reasoning', fmt.tokens(usage.reasoning ?? NaN)),
-        kv('Turns', usage.turns ? String(usage.turns) : '—'),
-        h('div', { class: 'ins-actions' },
-          h('button', {
-            class: 'act', type: 'button', disabled: v.fresh || !!session.runBlocked(v),
-            title: 'Summarize the conversation to free context; the next prompt starts from the summary (/compact in the composer)',
-            onclick: () => session.compact(),
-          }, 'Compact')));
+      const tip = `${cachedShare}% of input tokens were cached`;
+      if (meter.title !== tip) meter.title = tip;
+      // Inline styles are refused by the page's policy; properties are not.
+      if (meterFill.style.width !== `${cachedShare}%`) meterFill.style.width = `${cachedShare}%`;
+      disable(compactButton, v.fresh || !!session.runBlocked(v));
+      // The latest turn's, then the session's: one turn timed has but one.
+      const last = perSecond(usage.last_output, usage.last_ms);
+      const average = perSecond(usage.timed_output, usage.timed_ms);
+      const speed = row('tokens.tps', 'TPS', !Number.isFinite(last) ? '—'
+        : usage.timed_ms === usage.last_ms ? rate(last) : `${rate(last)} · avg ${rate(average)}`);
+      const speedTip = Number.isFinite(last)
+        ? `Output tokens per second: the latest turn wrote ${fmt.tokens(usage.last_output)} in ${fmt.duration(usage.last_ms)}; the average is over the session's turns. Timed from each request to its response, so the wait for the first token counts too`
+        : 'Output tokens per second, once a turn reports its output tokens';
+      if (speed.title !== speedTip) speed.title = speedTip;
+      return kvs(
+        row('tokens.context', 'Context', fmt.tokens(usage.context ?? NaN)),
+        row('tokens.input', 'Input', fmt.tokens(usage.input ?? NaN)),
+        row('tokens.cached', 'Cached', usage.input ? `${fmt.tokens(usage.cached)} · ${cachedShare}%` : '—'),
+        meter,
+        row('tokens.output', 'Output', fmt.tokens(usage.output ?? NaN)),
+        row('tokens.reasoning', 'Reasoning', fmt.tokens(usage.reasoning ?? NaN)),
+        speed,
+        row('tokens.turns', 'Turns', usage.turns ? String(usage.turns) : '—'),
+        tokenActions);
     },
   });
 
   const GLYPH = { done: '✓', failed: '✕', running: '■', queued: '□', canceled: '⊘', interrupted: '◌' };
+  const toolCount = h('span', { id: 'ins-tools-count' });
+  const toolsHead = h('h2', null, 'Tools ', toolCount);
+  const tallies = { done: tallyOf('Done'), failed: tallyOf('Failed'), live: tallyOf('Live'), other: tallyOf('Other') };
+  const tallyBox = h('div', { class: 'tally' }, Object.values(tallies).map((tally) => tally.node));
+  const recentList = h('ol', { class: 'recent' });
+  const recentRows = new Map(); // entry ID → { li, button, glyph, name, input }
+  const noTools = h('p', { class: 'none', text: 'No tool calls yet' });
   cockpit.contribute('inspector.section', {
     id: 'tools', order: 30,
-    title: (summary, v) => h('h2', null, 'Tools ', h('span', { id: 'ins-tools-count', text: String([...v.entries.values()].filter((e) => e.kind === 'tool').length) })),
+    title: (summary, v) => {
+      setText(toolCount, String([...v.entries.values()].filter((e) => e.kind === 'tool').length));
+      return toolsHead;
+    },
     render: (summary, v) => {
       const tools = [...v.entries.values()].filter((e) => e.kind === 'tool');
       const stateOf = (e) => service('timeline')?.toolState?.(e, !!v.run) || e.tool?.state || 'queued';
       const count = (s) => tools.filter((e) => stateOf(e) === s).length;
       const recent = tools.slice(-10).reverse();
-      return frag(
-        h('div', { class: 'tally' },
-          tally('Done', count('done')), tally('Failed', count('failed')),
-          tally('Live', count('running') + count('queued')), tally('Other', count('canceled') + count('interrupted'))),
-        recent.length ? h('ol', { class: 'recent' }, recent.map((e) => {
-          const s = stateOf(e);
-          return h('li', null, h('button', { type: 'button', data: { state: s }, title: e.tool?.input || '', onclick: () => service('timeline')?.reveal?.(e.id) },
-            h('span', { class: 'g', text: GLYPH[s] }),
-            h('span', { class: 'n', text: e.tool?.name || 'Tool' }),
-            h('span', { class: 'i', text: (e.tool?.input || '').split('\n')[0] })));
-        })) : h('p', { class: 'none', text: 'No tool calls yet' }));
+      setTally(tallies.done, count('done'));
+      setTally(tallies.failed, count('failed'));
+      setTally(tallies.live, count('running') + count('queued'));
+      setTally(tallies.other, count('canceled') + count('interrupted'));
+      const items = recent.map((e) => {
+        let made = recentRows.get(e.id);
+        if (!made) {
+          const glyph = h('span', { class: 'g' });
+          const name = h('span', { class: 'n' });
+          const input = h('span', { class: 'i' });
+          const button = h('button', { type: 'button', onclick: () => service('timeline')?.reveal?.(e.id) }, glyph, name, input);
+          made = { li: h('li', null, button), button, glyph, name, input };
+          recentRows.set(e.id, made);
+        }
+        const s = stateOf(e);
+        const text = e.tool?.input || '';
+        if (made.button.dataset.state !== s) made.button.dataset.state = s;
+        if (made.button.title !== text) made.button.title = text;
+        setText(made.glyph, GLYPH[s]);
+        setText(made.name, e.tool?.name || 'Tool');
+        setText(made.input, text.split('\n')[0]);
+        return made.li;
+      });
+      const ids = new Set(recent.map((e) => e.id));
+      for (const id of [...recentRows.keys()]) if (!ids.has(id)) recentRows.delete(id);
+      put(recentList, items);
+      return kvs(tallyBox, recent.length ? recentList : noTools);
     },
   });
 
+  // The Session section's buttons act on the session in view when clicked.
+  const actionsButton = h('button', {
+    class: 'act', type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: (event) => {
+      const v = view();
+      if (v && !v.fresh) service('menu')?.toggle?.(event.currentTarget, () => session.menuItems(v.ws, v.id));
+    },
+  }, 'Actions…');
+  const copyIdButton = h('button', {
+    class: 'act', type: 'button',
+    onclick: () => {
+      const v = view();
+      if (v && !v.fresh) cockpit.copy(v.id, 'Session ID copied');
+    },
+  }, 'Copy ID');
+  const copyTuiButton = h('button', {
+    class: 'act', type: 'button',
+    onclick: () => {
+      const v = view();
+      if (v && !v.fresh) cockpit.copy(`kou-conveyor-tui -workspace ${shellQuote(session.currentWorkspace()?.path || session.state.config?.workspace || '.')} -session ${v.id}`, 'Resume command copied');
+    },
+  }, 'Copy TUI command');
+  const sessionActions = h('div', { class: 'ins-actions' }, actionsButton, copyIdButton, copyTuiButton);
   cockpit.contribute('inspector.section', {
     id: 'session', title: 'Session', order: 40,
-    render: (summary, v) => frag(
-      kv('ID', v.fresh ? 'unsaved' : v.id.slice(0, 13)),
-      kv('Entries', String(v.order.length)),
-      kv('Started', v.order.length ? fmt.stamp(v.entries.get(v.order[0]).at) : '—'),
-      h('div', { class: 'ins-actions' },
-        h('button', {
-          class: 'act', type: 'button', disabled: v.fresh, 'aria-haspopup': 'menu',
-          onclick: (event) => service('menu')?.open?.(event.currentTarget, session.menuItems(v.ws, v.id)),
-        }, 'Actions…'),
-        h('button', { class: 'act', type: 'button', disabled: v.fresh, onclick: () => cockpit.copy(v.id, 'Session ID copied') }, 'Copy ID'),
-        h('button', {
-          class: 'act', type: 'button', disabled: v.fresh,
-          onclick: () => cockpit.copy(`kou-conveyor-tui -workspace ${shellQuote(session.currentWorkspace()?.path || session.state.config?.workspace || '.')} -session ${v.id}`, 'Resume command copied'),
-        }, 'Copy TUI command'))),
+    render: (summary, v) => {
+      for (const button of [actionsButton, copyIdButton, copyTuiButton]) disable(button, v.fresh);
+      return kvs(
+        row('session.id', 'ID', v.fresh ? 'unsaved' : v.id.slice(0, 13)),
+        row('session.entries', 'Entries', String(v.order.length)),
+        row('session.started', 'Started', v.order.length ? fmt.stamp(v.entries.get(v.order[0]).at) : '—'),
+        sessionActions);
+    },
   });
 
   // The runner log keeps its element, so it stays scrolled.

@@ -175,9 +175,19 @@ type uiModel struct {
 	edit          *editState
 	editAfterStop bool
 
-	// prefsSeen is the preferences file as last read or written here; a
-	// different one holds an effort chosen elsewhere.
+	// prefsSeen is the preferences file as last read or written here, and
+	// prefs what it held; a different file holds a choice made elsewhere.
 	prefsSeen fs.FileInfo
+	prefs     cockpit.Preferences
+	// lastEffort and lastModel are what a composer last chose, here or in
+	// the web cockpit (at first -thinking-level's and -model's): new sessions
+	// start with them. thinking is the effort of the session in view;
+	// ownEffort says it is the session's own, which a choice made elsewhere
+	// leaves alone, while a new session not chosen in takes such a choice
+	// up. keepEffort keeps -thinking-level's for the session the cockpit
+	// opens with, whatever effort it had.
+	lastEffort, lastModel string
+	ownEffort, keepEffort bool
 
 	// compact lays the cockpit out below the command that started it,
 	// printing the transcript into the terminal's scrollback; otherwise it
@@ -241,6 +251,8 @@ type uiModel struct {
 	// viewed are the pictures the agent looked at, under the calls that
 	// read them (see viewed.go).
 	viewed viewedPictures
+	// surfaces are the genui plugin's surfaces in the transcript (surface.go).
+	surfaces surfaceBook
 }
 
 type block struct {
@@ -264,6 +276,8 @@ type entrySpan struct {
 }
 
 func newModel(ctx context.Context, o options) *uiModel {
+	// The look chosen in either cockpit, which the styles are built of.
+	applyAppearance(cockpit.LoadPreferences(o.preferences).Appearance())
 	st := newStyles(o.noColor)
 	in := textarea.New()
 	in.Placeholder = idlePlaceholder
@@ -278,15 +292,7 @@ func newModel(ctx context.Context, o options) *uiModel {
 	in.KeyMap.InsertNewline.SetEnabled(false)
 	// Each row starts with the box's left edge, after the margin.
 	in.SetPromptFunc(promptWidth, func(int) string { return strings.Repeat(" ", margin) + "│ " })
-	focused, blurred := textarea.DefaultStyles()
-	focused.CursorLine = st.text
-	focused.Text = st.text
-	focused.Placeholder = st.ghost
-	focused.Prompt = st.rule2
-	focused.EndOfBuffer = st.ghost
-	blurred.Prompt = st.rule2
-	blurred.Placeholder = st.ghost
-	in.FocusedStyle, in.BlurredStyle = focused, blurred
+	styleComposer(&in, st)
 	in.Focus()
 
 	history, _ := loadHistory(o.historyFile)
@@ -317,6 +323,8 @@ func newModel(ctx context.Context, o options) *uiModel {
 	m.loadPlugins()
 	prefs := cockpit.LoadPreferences(o.preferences)
 	m.changes.open, m.changes.width = prefs.Changes, prefs.ChangesWidth
+	m.prefs, m.lastEffort, m.lastModel = prefs, o.thinking, cmp.Or(o.model, prefs.LastModel)
+	m.ownEffort, m.keepEffort = o.effortFlag, o.effortFlag && m.loading
 	if o.prompt != "" {
 		m.input.SetValue(o.prompt)
 		m.autoSubmit = true
@@ -331,6 +339,9 @@ func (m *uiModel) Init() tea.Cmd {
 		if _, err := cockpit.LoadSettings(m.opt.SettingsFile); err != nil {
 			cmds = append(cmds, m.notify(err.Error()+" — /settings fixes it", "error"))
 		}
+	}
+	if list := m.modelsForNewSessions(); list != nil {
+		cmds = append(cmds, list)
 	}
 	switch {
 	case m.loading:
@@ -357,6 +368,10 @@ func (m *uiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// The pictures the agent looked at that are about to show are made.
 	if pictures := m.viewedUpdate(msg); pictures != nil {
 		cmd = tea.Batch(cmd, pictures)
+	}
+	// The surfaces' live files are read, and their controls follow.
+	if surfaces := m.surfacesUpdate(msg); surfaces != nil {
+		cmd = tea.Batch(cmd, surfaces)
 	}
 	if m.compact && !m.switching {
 		m.commit()
@@ -639,6 +654,12 @@ func (m *uiModel) start(text string, o startOptions) tea.Cmd {
 	if err != nil {
 		return m.notify(err.Error(), "error")
 	}
+	// The session keeps the effort it runs with, for either cockpit to show:
+	// a choice made elsewhere no longer changes it.
+	if cockpit.SetSessionEffort(m.opt.SessionDir, m.sessionID, m.thinking) == nil {
+		m.meta.Effort = m.thinking
+	}
+	m.ownEffort = true
 	if o.fromComposer {
 		m.keep(text)
 		m.clearImages() // they went with the prompt
@@ -929,6 +950,10 @@ func (m *uiModel) loaded(msg loadedMsg) tea.Cmd {
 		if errors.Is(msg.err, os.ErrNotExist) {
 			// A new session under a chosen ID: the runner creates it.
 			m.sessionID, m.fresh, m.external, m.meta = msg.id, true, false, cockpit.Meta{}
+			if !m.keepEffort {
+				m.thinking, m.ownEffort = m.lastEffort, false
+			}
+			m.keepEffort = false
 			m.reset(cockpit.NewTranscript())
 			return tea.Batch(m.notify("new session "+shortID(msg.id), "info"), m.title(), m.resubmit())
 		}
@@ -936,6 +961,16 @@ func (m *uiModel) loaded(msg loadedMsg) tea.Cmd {
 		return m.notify("cannot open session: "+msg.err.Error(), "error")
 	}
 	m.sessionID, m.fresh, m.external, m.meta = msg.id, false, msg.busy, msg.meta
+	// The session goes on with its own effort; one from before sessions
+	// kept theirs takes the last chosen, and keeps it.
+	switch {
+	case m.keepEffort:
+	case cockpit.ValidThinkingLevel(msg.meta.Effort):
+		m.thinking = msg.meta.Effort
+	default:
+		m.thinking = m.lastEffort
+	}
+	m.ownEffort, m.keepEffort = true, false
 	m.reset(msg.tr)
 	if m.external {
 		m.autoSubmit = false
@@ -990,6 +1025,9 @@ func (m *uiModel) newSession() tea.Cmd {
 	m.loadGen++ // drop any load still in flight
 	m.loading = false
 	m.sessionID, m.fresh, m.external, m.meta = uuid.New().String(), true, false, cockpit.Meta{}
+	// It starts with the effort and the model last chosen, here or elsewhere.
+	m.readPreferences()
+	m.thinking, m.ownEffort, m.keepEffort = m.lastEffort, false, false
 	m.reset(cockpit.NewTranscript())
 	return tea.Batch(m.notify("new session", "info"), m.title())
 }
@@ -1076,6 +1114,11 @@ func (m *uiModel) openPicker(kind string) tea.Cmd {
 			items = append(items, pickerItem{title: k[1], detail: k[0]})
 		}
 		m.picker.setItems(items)
+	case "appearance":
+		m.picker = newPicker(kind, "appearance · both cockpits", "", st)
+		m.picker.setItems(m.appearanceItems())
+		m.picker.hints = []string{"←→", "change", "↑↓", "move", "esc", "close"}
+		m.picker.fixed = true
 	}
 	m.input.Blur()
 	return nil
@@ -1111,6 +1154,7 @@ var shortcuts = [][2]string{
 	{"drag", "select text; letting go copies it"},
 	{"scrollbar", "click or drag to scroll"},
 	{"ctrl+y", "copy the last answer"},
+	{"ctrl+]", "the newest surface's controls: tab moves, enter acts, esc leaves; a click works too"},
 	{"ctrl+l", "clear the view (the session keeps its history); in compact, the screen"},
 	{"ctrl+f", "inline ↔ fullscreen; the next start keeps it"},
 	{"ctrl+g", "changes: what the prompt in view changed, file by file, beside the transcript"},
@@ -1141,6 +1185,7 @@ var commands = []struct{ name, args, help string }{
 	{"/export", "[path]", "save the session as Markdown"},
 	{"/delete", "", "delete the session"},
 	{"/settings", "", "connection: provider type, base URL, API key, model"},
+	{"/appearance", "[accent|shade|corners] [value]", "accent colour or #rrggbb, shade of the greys, corners; the web cockpit's too"},
 	{"/history", "", "reuse an earlier prompt"},
 	{"/effort", "<level>", "effort: low medium high xhigh max"},
 	{"/tools", "<profile>", "built-in tools of the next runs: auto edit patch code shell"},
@@ -1169,6 +1214,8 @@ func (m *uiModel) paletteItems() []pickerItem {
 		{title: "Open a session…", detail: "ctrl+s", action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.openPicker("sessions") }},
 		{title: "Prompt history…", detail: "ctrl+r", action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.openPicker("history") }},
 		{title: "Connection settings…", detail: "/settings", search: "provider base url api key model", action: func(m *uiModel) tea.Cmd { return m.openSettings() }},
+		{title: "Appearance: accent, shade, corners…", detail: "/appearance", search: "theme colour color accent shade grey gray corners radius round sharp",
+			action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.openPicker("appearance") }},
 	}
 	if m.state == idle && !m.external && m.tr.Interrupted() {
 		items = append([]pickerItem{{title: "Continue the interrupted run", detail: "/continue", action: run("/continue")}}, items...)
@@ -1257,6 +1304,7 @@ func (m *uiModel) paletteItems() []pickerItem {
 		title: "Model: " + orDefault(m.nextModel(), orDefault(m.conn.Model, "runner default")) + " — choose another…", detail: "ctrl+p",
 		search: "model provider claude gpt grok gemini", action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.openPicker("models") },
 	})
+	items = append(items, m.surfacePalette()...)
 	items = append(items,
 		pickerItem{title: "Keyboard shortcuts", detail: "/help", action: func(m *uiModel) tea.Cmd { m.closePicker(); return m.openPicker("help") }},
 		pickerItem{title: "Quit", detail: "ctrl+d", action: run("/quit")},
@@ -1309,6 +1357,8 @@ func (m *uiModel) command(text string) tea.Cmd {
 		return m.confirmDelete(m.sessionID, m.sessionTitle())
 	case "/settings", "/config":
 		return m.openSettings()
+	case "/appearance", "/accent", "/corners":
+		return m.appearanceCommand(arg)
 	case "/history":
 		return m.openPicker("history")
 	case "/effort", "/think":
@@ -1423,6 +1473,9 @@ func (m *uiModel) handleKey(msg tea.KeyMsg) tea.Cmd {
 func (m *uiModel) key(msg tea.KeyMsg) tea.Cmd {
 	if m.picker != nil {
 		return m.pickerKey(msg)
+	}
+	if cmd, ok := m.surfaceKey(msg); ok {
+		return cmd
 	}
 	if m.queueFocus >= 0 && !msg.Paste {
 		if cmd, handled := m.queueKey(msg); handled {
@@ -1627,6 +1680,11 @@ func (m *uiModel) key(msg tea.KeyMsg) tea.Cmd {
 func (m *uiModel) pickerKey(msg tea.KeyMsg) tea.Cmd {
 	if m.picker.kind == "sessions" {
 		if cmd, handled := m.sessionsKey(msg); handled {
+			return cmd
+		}
+	}
+	if m.picker.kind == "appearance" {
+		if cmd, handled := m.appearanceKey(msg); handled {
 			return cmd
 		}
 	}
@@ -1835,6 +1893,9 @@ func (m *uiModel) click(x, y int) tea.Cmd {
 				return m.beginEdit(e.ID)
 			}
 			return nil
+		}
+		if cmd, ok := m.surfaceClick(line, x); ok {
+			return cmd
 		}
 		return m.toggleAt(line)
 	case y > m.statusRow() && y < m.ruleRow():

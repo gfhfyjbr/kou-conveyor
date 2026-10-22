@@ -166,9 +166,7 @@ func (s Settings) Validate() error {
 	case APIGateway:
 		switch {
 		case s.BaseURL != "" || s.APIKey != "":
-			return errors.New("the gateway keeps its own address and key; settings for it name a model only")
-		case s.Model == "":
-			return errors.New("choose the model runs use through the gateway")
+			return errors.New("the gateway keeps its own address and key; settings for it may name a model and protocol only")
 		case s.Protocol != "" && s.Protocol != APIResponses && s.Protocol != APIMessages:
 			return fmt.Errorf("unknown protocol %q; use responses or messages", s.Protocol)
 		case len(s.Model) > 256 || strings.ContainsFunc(s.Model, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }):
@@ -306,6 +304,19 @@ type Connection struct {
 	// Key names where the API key comes from, empty when there is none.
 	Key    string `json:"key,omitzero"`
 	apiKey string
+	// named: the settings or the environment name Model, rather than the
+	// provider's default filling it in.
+	named bool
+}
+
+// NamedModel is the model the settings of an endpoint or the environment
+// name, or "" when they name none. Through the gateway it is always "": its
+// models are chosen in the composer, and an older setting does not count.
+func (c Connection) NamedModel() string {
+	if c.named {
+		return c.Model
+	}
+	return ""
 }
 
 // ResolveConnection mirrors how the runner picks its connection: an explicit
@@ -325,7 +336,7 @@ func ResolveConnection(provider string, s Settings, getenv func(string) string) 
 		return Connection{Source: "gateway", Provider: apiDefaults[api].Provider, API: api, Model: s.Model, Key: "gateway"}
 	}
 	if c.Source != "flag" && s.API != APIEnvironment {
-		c = Connection{Source: "settings", Provider: apiDefaults[s.API].Provider, BaseURL: s.BaseURL, Model: s.Model}
+		c = Connection{Source: "settings", Provider: apiDefaults[s.API].Provider, BaseURL: s.BaseURL, Model: s.Model, named: s.Model != ""}
 		if s.APIKey != "" {
 			c.Key, c.apiKey = "settings", s.APIKey
 		}
@@ -335,6 +346,7 @@ func ResolveConnection(provider string, s Settings, getenv func(string) string) 
 		}
 		c.BaseURL = strings.TrimSpace(getenv(baseURLVariable))
 		c.Model = strings.TrimSpace(getenv(modelVariable))
+		c.named = c.Model != ""
 	}
 	for api, defaults := range apiDefaults {
 		if defaults.Provider != c.Provider {

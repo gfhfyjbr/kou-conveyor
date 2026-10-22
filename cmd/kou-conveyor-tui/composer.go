@@ -74,43 +74,74 @@ func csiSequence(msg tea.Msg) (string, bool) {
 
 // ---------------------------------------------------------------- effort
 
-// setEffort chooses the effort for the next runs, here and in the web
-// cockpit, which reads it from the preferences beside the settings.
+// setEffort chooses the effort of the session's next runs, and of new
+// sessions here and in the web cockpit, which reads it from the preferences
+// beside the settings. Other sessions keep theirs.
 func (m *uiModel) setEffort(level string) tea.Cmd {
-	m.thinking = level
+	m.thinking, m.lastEffort, m.ownEffort, m.prefs.Effort = level, level, true, level
+	text, kind := "effort: "+level, "info"
+	// A session that has started keeps it, for the web cockpit to show.
+	if !m.fresh || m.state != idle {
+		if err := cockpit.SetSessionEffort(m.opt.SessionDir, m.sessionID, level); err != nil {
+			text, kind = text+" — not kept with the session: "+err.Error(), "warn"
+		} else {
+			m.meta.Effort = level
+		}
+	}
 	if m.opt.preferences == "" {
-		return m.notify("effort: "+level, "info")
+		return m.notify(text, kind)
 	}
 	if err := cockpit.SaveEffort(m.opt.preferences, level); err != nil {
-		return m.notify("effort: "+level+" here only — "+err.Error(), "warn")
+		return m.notify("effort: "+level+", for new sessions here only — "+err.Error(), "warn")
 	}
 	m.prefsSeen, _ = cockpit.PreferencesChanged(m.opt.preferences, nil)
-	return m.notify("effort: "+level, "info")
+	return m.notify(text, kind)
 }
 
-// watchPreferences looks for an effort chosen elsewhere every few seconds;
-// the check is a stat of a small file.
+// watchPreferences looks for a choice made elsewhere every few seconds; the
+// check is a stat of a small file.
 func watchPreferences() tea.Cmd {
 	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return prefsMsg{} })
 }
 
-// preferencesChanged takes up an effort chosen in the web cockpit or
-// another terminal.
-func (m *uiModel) preferencesChanged() tea.Cmd {
+// readPreferences takes up the effort and the model a composer of the web
+// cockpit or another terminal chose, for new sessions. It reports whether
+// the effort is another.
+func (m *uiModel) readPreferences() (effort bool) {
 	if m.opt.preferences == "" {
-		return nil
+		return false
 	}
 	info, changed := cockpit.PreferencesChanged(m.opt.preferences, m.prefsSeen)
 	if !changed {
-		return nil
+		return false
 	}
 	m.prefsSeen = info
-	effort := cockpit.LoadPreferences(m.opt.preferences).Effort
-	if effort == "" || effort == m.thinking {
+	p := cockpit.LoadPreferences(m.opt.preferences)
+	// Only what changed: -model and -thinking-level hold until a choice.
+	if p.LastModel != "" && p.LastModel != m.prefs.LastModel {
+		m.lastModel = p.LastModel
+	}
+	if p.Effort != "" && p.Effort != m.prefs.Effort {
+		m.lastEffort, effort = p.Effort, true
+	}
+	// The look chosen there is this window's too.
+	if applyAppearance(p.Appearance()) {
+		m.restyle()
+	}
+	m.prefs = p
+	return effort
+}
+
+// preferencesChanged takes up a choice made in the web cockpit or another
+// terminal: new sessions start with it, and so does the session in view
+// while it is new and nothing was chosen in it. Every other session keeps
+// its own effort and model.
+func (m *uiModel) preferencesChanged() tea.Cmd {
+	if !m.readPreferences() || m.ownEffort || m.state != idle || m.loading || m.thinking == m.lastEffort {
 		return nil
 	}
-	m.thinking = effort
-	return m.notify("effort: "+effort+", as chosen in another window", "info")
+	m.thinking = m.lastEffort
+	return m.notify("effort of the new session: "+m.thinking+", as chosen in another window", "info")
 }
 
 // stepEffort raises or lowers the effort by one level, stopping at the ends.

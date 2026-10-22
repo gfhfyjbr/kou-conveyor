@@ -33,15 +33,19 @@ final class SessionsModel {
 
     func load() async -> (any Error)? {
         do {
-            sessions = try await client.get(API.workspace(workspace, "sessions"))
-            error = nil
-            loaded = true
+            let fresh: [SessionSummary] = try await client.get(API.workspace(workspace, "sessions"))
+            // Set only what changed: the list is asked for every few
+            // seconds, and each change draws it again.
+            if fresh != sessions { sessions = fresh }
+            if error != nil { error = nil }
+            if !loaded { loaded = true }
             return nil
         } catch is CancellationError {
             return nil
         } catch {
-            self.error = error.localizedDescription
-            loaded = true
+            let message = error.localizedDescription
+            if self.error != message { self.error = message }
+            if !loaded { loaded = true }
             return error
         }
     }
@@ -51,7 +55,7 @@ final class SessionsModel {
     func poll(noticed: (any Error) -> Void) async {
         while !Task.isCancelled {
             if let error = await load() { noticed(error) }
-            try? await Task.sleep(for: .seconds(4))
+            await AppFront.poll(.seconds(4))
         }
     }
 
@@ -96,12 +100,24 @@ final class SessionModel {
     let id: String
     /// A session the server has not seen yet: its first prompt makes it.
     private(set) var fresh: Bool
+    /// The session of a canvas node: the canvas reserved its id, so it may
+    /// have no transcript yet. It is read all the same, and while it has
+    /// none it is fresh: its first prompt, sent from here, makes it.
+    let reserved: Bool
+    /// The model of the prompts when none was chosen and none ran yet: for
+    /// a node's session, the one the node is set to.
+    let preferredModel: String?
 
     private(set) var entries: [Entry] = [] {
         // What is shown is no longer the answer tagged.
         didSet { shownTag = nil }
     }
     private var index: [String: Int] = [:]
+    /// What the running commands printed so far, by their call's entry.
+    private(set) var outputs: [String: LiveOutput] = [:]
+    /// The previews an entry took the place of, or that went void: a piece
+    /// of one that comes late does not bring it back.
+    @ObservationIgnored private var settledPreviews: Set<String> = []
     /// The ETag of the session as read last, while the entries are as it
     /// gave them: the server sends it again only once it changed.
     @ObservationIgnored private var shownTag: String?
@@ -121,14 +137,34 @@ final class SessionModel {
     private(set) var chosenModel: String?
     private(set) var usage: Usage?
     private(set) var queue: Queue?
-    private(set) var phase: Phase = .idle
+    private(set) var phase: Phase = .idle {
+        didSet {
+            guard oldValue != phase else { return }
+            // The run ended: a session kept for it without its screen is let go.
+            if phase == .idle { DetachedRuns.drop(self) }
+            syncKeeper()
+        }
+    }
+    /// Whether the session holds the app in the background for its run.
+    @ObservationIgnored private var holdsKeeper = false
+    /// Let go while kept without its screen: it follows no run any more.
+    @ObservationIgnored private var abandoned = false
     private(set) var runID: String?
-    private(set) var activity: String?
+    private(set) var activity: String? {
+        didSet {
+            if activity != oldValue, phase != .idle, let activity {
+                RunKeeper.shared.describe(title: displayTitle, subtitle: activity)
+            }
+        }
+    }
     private(set) var started: Date?
     /// Run by another process (the terminal cockpit): followed, not driven.
     private(set) var external = false
     private(set) var interrupted = false
     private(set) var loading = false
+    /// The session was read once, or reading it failed: what it last ran
+    /// with is known, or will not be.
+    private(set) var read = false
     private(set) var loadError: String?
     /// A word for the user: a failure, or how a run ended.
     var notice: Notice?
@@ -143,11 +179,15 @@ final class SessionModel {
 
     private var following: Task<Void, Never>?
 
-    init(client: RelayClient, workspace: String, id: String, fresh: Bool) {
+    init(client: RelayClient, workspace: String, id: String, fresh: Bool, reserved: Bool = false, preferredModel: String? = nil,
+         title: String? = nil) {
         self.client = client
         self.workspace = workspace
         self.id = id
         self.fresh = fresh
+        self.reserved = reserved
+        self.preferredModel = preferredModel.flatMap { $0.isEmpty ? nil : $0 }
+        self.title = title
         chosenModel = UserDefaults.standard.string(forKey: Self.modelKey(workspace, id))
     }
 
@@ -165,7 +205,7 @@ final class SessionModel {
     }
 
     /// The model the next prompt runs with, unless the workspace's default.
-    var nextModel: String? { chosenModel ?? lastModel }
+    var nextModel: String? { chosenModel ?? lastModel ?? preferredModel }
 
     /// choose picks the model of the session's next prompts; the running
     /// agent keeps its own. nil goes back to the session's own.
@@ -186,8 +226,8 @@ final class SessionModel {
     /// load reads the session from the server, and follows its run if it
     /// has one.
     func load() async {
-        guard !fresh else { return }
-        loading = entries.isEmpty
+        guard !fresh || reserved else { return }
+        loading = entries.isEmpty && !fresh
         defer { loading = false }
         do {
             // A session read again as it was is not sent again: a big one
@@ -200,13 +240,21 @@ final class SessionModel {
                 apply(detail)
                 shownTag = tag
             }
+            // A node's session the canvas started meanwhile goes on.
+            fresh = false
             loadError = nil
         } catch is CancellationError {
+            return
+        } catch RelayError.http(404, _, _) where reserved {
+            // A node's session nothing ran in yet: its first prompt makes it.
+            if phase == .idle { fresh = true }
+            loadError = nil
         } catch RelayError.http(404, _, _) {
             loadError = "This session is gone: it was deleted in the cockpit."
         } catch {
             loadError = error.localizedDescription
         }
+        if !read { read = true }
     }
 
     private func apply(_ detail: SessionDetail) {
@@ -218,10 +266,26 @@ final class SessionModel {
         interrupted = detail.interrupted == true
         // The same transcript read again is not shown again: thousands of
         // entries, laid out anew every few seconds while idle.
-        let read = detail.entries ?? []
+        var read = detail.entries ?? []
+        // An entry that took a preview's place keeps its row.
+        for i in read.indices {
+            if let at = index[read[i].id], entries.indices.contains(at), let row = entries[at].row { read[i].row = row }
+        }
+        // While the run is followed, what streams of it stays: the session
+        // read has only what was recorded.
+        let followed = following != nil && detail.run?.id == runID
+        if followed {
+            let ids = Set(read.map(\.id)), replaced = Set(read.compactMap(\.replaces))
+            read += entries.filter { $0.streaming == true && !ids.contains($0.id) && !replaced.contains($0.id) }
+        }
         if read != entries {
             entries = read
-            index = Dictionary(entries.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { _, last in last })
+            reindex()
+        }
+        if followed {
+            outputs = outputs.filter { id, _ in index[id].map { entries[$0].tool?.isFinished == false } ?? false }
+        } else if !outputs.isEmpty {
+            outputs = [:]
         }
         earlier = detail.earlier ?? 0
         earlierPrompts = detail.earlierPrompts ?? []
@@ -248,17 +312,27 @@ final class SessionModel {
     /// watch keeps a session current that the app does not drive: one run
     /// elsewhere, or any while no run's stream is followed.
     func watch() async {
+        // The screen is back: the run followed without it is its own again,
+        // and one let go meanwhile is followed anew.
+        abandoned = false
+        DetachedRuns.reclaim(for: self)
+        syncKeeper()
         await load()
         while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(external ? 2 : 5))
+            await AppFront.poll(.seconds(external ? 2 : 5))
             if Task.isCancelled { return }
-            if following == nil, phase == .idle, !fresh { await load() }
+            // A node's session with no transcript yet is looked for still:
+            // the canvas may give its agent a message meanwhile. A run whose
+            // stream is not followed (it was let go, or reading it failed) is
+            // looked for too: read, it is followed, or it ended.
+            if following == nil, phase != .starting, !fresh || reserved { await load() }
         }
     }
 
     // MARK: Runs
 
     private func follow(_ run: RunSummary) {
+        guard !abandoned else { return }
         stopFollowing()
         runID = run.id
         started = run.startedAt ?? Date()
@@ -275,6 +349,8 @@ final class SessionModel {
         following?.cancel()
         following = nil
         reconnecting = false
+        // A run followed anew streams again from its first event.
+        dropPreviews()
     }
 
     /// stream follows a run's events from the first. Those it published
@@ -319,7 +395,18 @@ final class SessionModel {
                 if Task.isCancelled { return }
                 failures += 1
                 reconnecting = true
-                try? await Task.sleep(for: .milliseconds(min(1500 * failures, 10000)))
+                if failures >= 30, DetachedRuns.keeps(self) {
+                    // Kept without its screen, and the relay out of reach for
+                    // minutes: let go. Opened again, the session follows anew.
+                    DetachedRuns.drop(self)
+                    abandon()
+                    return
+                }
+                // Broken while the app was away, the stream is tried again at
+                // once when it is in front again.
+                if failures > 1 || !AppFront.justArrived {
+                    await AppFront.pause(.milliseconds(min(1500 * failures, 10000)))
+                }
             }
         }
     }
@@ -348,6 +435,10 @@ final class SessionModel {
         switch event.type {
         case "entry":
             if let entry = event.entry { upsert(entry) }
+        case "delta":
+            if let delta = event.delta { streamed(delta) }
+        case "output":
+            if let output = event.output { wrote(output) }
         case "queue":
             queue = event.queue ?? queue
         case "status":
@@ -367,6 +458,9 @@ final class SessionModel {
         following = nil
         reconnecting = false
         fresh = false
+        // What streamed and was not recorded is not part of the session: the
+        // run was stopped as the agent wrote it.
+        dropPreviews()
         if let queue = event.queue { self.queue = queue }
         if let usage = event.usage { self.usage = usage }
         let kind = event.stopped == true ? "stopped" : (event.error?.isEmpty == false ? "failed" : "done")
@@ -380,6 +474,11 @@ final class SessionModel {
             // The next queued message took the session over.
             follow(next)
         } else {
+            // The turn is over and nothing queued takes over: say so, unless
+            // the user stopped it themselves; before the run lets the app go.
+            if kind != "stopped" {
+                notifyTurnEnd(kind: kind, error: event.error)
+            }
             self.runID = nil
             phase = .idle
             activity = nil
@@ -392,8 +491,58 @@ final class SessionModel {
         }
     }
 
+    /// notifyTurnEnd tells the user a turn ended while they were away: a
+    /// local notification, skipped on the session's own screen in front.
+    private func notifyTurnEnd(kind: String, error: String?) {
+        let body: String
+        if kind == "failed" {
+            body = error.flatMap { $0.isEmpty ? nil : $0 } ?? "The run failed."
+        } else {
+            let answer = entries.last { $0.kind == Entry.assistant }?.text?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            body = answer.flatMap { $0.isEmpty ? nil : String($0.prefix(150)) } ?? "The agent finished its turn."
+        }
+        TurnNotifier.shared.post(workspace: workspace, session: id, title: displayTitle, body: body)
+    }
+
+    /// syncKeeper holds the app in the background while the session's run
+    /// goes on, and lets it go once it ended.
+    private func syncKeeper() {
+        let busy = phase != .idle && !abandoned
+        if busy, !holdsKeeper {
+            holdsKeeper = true
+            RunKeeper.shared.hold()
+        } else if !busy, holdsKeeper {
+            holdsKeeper = false
+            RunKeeper.shared.release()
+        }
+    }
+
     private func upsert(_ entry: Entry) {
+        var entry = entry
+        if entry.kind == Entry.tool, entry.tool?.isFinished == true, outputs[entry.id] != nil {
+            outputs[entry.id] = nil
+        }
+        if entry.gone == true {
+            settledPreviews.insert(entry.id)
+            remove(entry.id)
+            return
+        }
+        if let preview = entry.replaces, let at = index[preview], entries.indices.contains(at), entries[at].streaming == true {
+            settledPreviews.insert(preview)
+            if index[entry.id] == nil {
+                // The entry takes the preview's place, and its row: the same
+                // block, done.
+                entry.row = entries[at].rowID
+                index[preview] = nil
+                index[entry.id] = at
+                entries[at] = entry
+                return
+            }
+            remove(preview)
+        }
         if let at = index[entry.id], entries.indices.contains(at) {
+            if entry.row == nil { entry.row = entries[at].row }
             entries[at] = entry
         } else if earlier > 0, let when = entry.at, let first = entries.first?.at, when < first {
             // One of those not read: a run's events, followed from its
@@ -404,6 +553,52 @@ final class SessionModel {
         }
     }
 
+    /// streamed adds a piece of what the agent writes to its preview: an
+    /// entry that shows the answer, or the thinking, as it comes. The entry
+    /// it is recorded as takes its place once the model is done.
+    private func streamed(_ delta: StreamDelta) {
+        // A compaction's summary is no preview: its notice holds it.
+        guard delta.compaction != true, !settledPreviews.contains(delta.id) else { return }
+        if let at = index[delta.id], entries.indices.contains(at) {
+            guard entries[at].streaming == true else { return }
+            entries[at].text = (entries[at].text ?? "") + delta.text
+            return
+        }
+        guard !delta.text.isEmpty else { return }
+        let kind = delta.kind == Entry.reasoning ? Entry.reasoning : Entry.assistant
+        index[delta.id] = entries.count
+        entries.append(Entry(id: delta.id, kind: kind, at: delta.at ?? Date(), text: delta.text, streaming: true))
+    }
+
+    /// wrote adds what a running command printed to what is shown of it.
+    private func wrote(_ output: StreamOutput) {
+        guard let at = index[output.id], entries.indices.contains(at), entries[at].kind == Entry.tool,
+              entries[at].tool?.isFinished != true
+        else { return }
+        var live = outputs[output.id] ?? LiveOutput()
+        live.add(output)
+        outputs[output.id] = live
+    }
+
+    /// dropPreviews takes away what streams: the previews no entry took the
+    /// place of, and what running commands printed.
+    private func dropPreviews() {
+        if !outputs.isEmpty { outputs = [:] }
+        guard entries.contains(where: { $0.streaming == true }) else { return }
+        entries.removeAll { $0.streaming == true }
+        reindex()
+    }
+
+    private func remove(_ id: String) {
+        guard let at = index[id], entries.indices.contains(at) else { return }
+        entries.remove(at: at)
+        reindex()
+    }
+
+    private func reindex() {
+        index = Dictionary(entries.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { _, last in last })
+    }
+
     // MARK: Sending
 
     /// send runs text as a prompt, with the images it refers to by their
@@ -412,6 +607,8 @@ final class SessionModel {
     func send(_ text: String, force: Bool = false, images: [PromptImage] = [], effort: String? = nil) async -> Bool {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
+        // The first run asks to be allowed to tell when a turn ends.
+        Task { await TurnNotifier.shared.ask() }
         let images = images.filter { text.contains($0.label) }
         if external {
             notice = Notice(text: "This session is running in another window or terminal.", isError: true)
@@ -536,8 +733,24 @@ final class SessionModel {
         }
     }
 
+    /// close is the screen going away: another pushed over it, another tab,
+    /// back to the list. A run going on is seen through without it, so its
+    /// end is still told and the app still held for it in the background;
+    /// the screen back takes it again.
     func close() {
+        if phase != .idle, !abandoned {
+            DetachedRuns.keep(self)
+            return
+        }
         stopFollowing()
+    }
+
+    /// abandon stops following the run of a session kept without its screen:
+    /// a screen of the session took it over, or the relay changed.
+    func abandon() {
+        abandoned = true
+        stopFollowing()
+        syncKeeper()
     }
 
     // MARK: The session
@@ -582,6 +795,12 @@ final class SessionModel {
     func imagePath(_ entry: Entry, _ n: Int) -> String? {
         guard let message = entry.messageID, entry.state != "pending" else { return nil }
         return API.workspace(workspace, "sessions", id, "images", message, String(n))
+    }
+
+    /// The path of the picture a ViewImage call read.
+    func toolImagePath(_ entry: Entry) -> String? {
+        guard let tool = entry.tool, tool.image != nil, !tool.callID.isEmpty else { return nil }
+        return API.workspace(workspace, "sessions", id, "tools", tool.callID, "image")
     }
 
     /// branch starts a session from the history before a prompt, which it
@@ -648,5 +867,47 @@ final class SessionModel {
         } catch {
             notice = Notice(text: error.localizedDescription, isError: true)
         }
+    }
+}
+
+/// DetachedRuns keeps the sessions whose run goes on after their screen went
+/// away (another screen over it, another tab, back to the list): the run's
+/// stream is followed still, so its end is told and the app held for it in the
+/// background. A screen of the session watching it again takes the run over.
+@MainActor
+enum DetachedRuns {
+    private static var kept: [SessionModel] = []
+
+    private static func same(_ a: SessionModel, _ b: SessionModel) -> Bool {
+        a.workspace == b.workspace && a.id == b.id
+    }
+
+    /// keep follows a session's run without its screen; another kept for the
+    /// same session is let go.
+    static func keep(_ session: SessionModel) {
+        let others = kept.filter { $0 !== session && same($0, session) }
+        kept.removeAll { $0 === session || same($0, session) }
+        kept.append(session)
+        others.forEach { $0.abandon() }
+    }
+
+    static func keeps(_ session: SessionModel) -> Bool { kept.contains { $0 === session } }
+
+    /// drop forgets a session whose run ended.
+    static func drop(_ session: SessionModel) { kept.removeAll { $0 === session } }
+
+    /// reclaim is a screen of the session watching it: the session is kept no
+    /// more, and another kept for it stops following the run.
+    static func reclaim(for session: SessionModel) {
+        let others = kept.filter { $0 !== session && same($0, session) }
+        kept.removeAll { $0 === session || same($0, session) }
+        others.forEach { $0.abandon() }
+    }
+
+    /// abandonAll lets every kept session go: the relay changed.
+    static func abandonAll() {
+        let all = kept
+        kept = []
+        all.forEach { $0.abandon() }
     }
 }

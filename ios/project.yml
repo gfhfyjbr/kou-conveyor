@@ -63,6 +63,12 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
         ITSAppUsesNonExemptEncryption: false
+        # A run keeps the app alive in the background (BGContinuedProcessingTask,
+        # iOS 26), so its event stream need not reconnect. The id is per run,
+        # under the app's own prefix (wildcard notation), which follows the
+        # bundle identifier when it is changed.
+        BGTaskSchedulerPermittedIdentifiers:
+          - $(PRODUCT_BUNDLE_IDENTIFIER).run.*
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: io.github.gfhfyjbr.kouconveyor

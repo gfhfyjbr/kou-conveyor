@@ -198,6 +198,9 @@ func runMain(args []string) int {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 	}
+	// Shutdown waits for none of the streams read over WebSockets: they
+	// are not its connections any more (eventsocket.go).
+	server.RegisterOnShutdown(s.sockets.drop)
 	served := make(chan error, 1)
 	go func() { served <- server.Serve(listener) }()
 

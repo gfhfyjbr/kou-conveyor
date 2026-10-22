@@ -10,6 +10,7 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -36,6 +37,9 @@ const (
 	KindNotice    = "notice"
 	KindError     = "error"
 )
+
+// RefusedNotice is the text of the notice of a response the model refused.
+const RefusedNotice = "The model refused to respond"
 
 // Tool states. Harness operation statuses are folded into these.
 const (
@@ -80,6 +84,13 @@ type Entry struct {
 	// (PromptFiles).
 	Files []LinkedFileInfo `json:"files,omitempty"`
 
+	// Replaces is the preview the entry takes the place of: the text that
+	// streamed of it before the runner recorded it (Live).
+	Replaces string `json:"replaces,omitempty"`
+	// Gone marks a preview that is void: its response started over, or
+	// ended without it. Front-ends drop it.
+	Gone bool `json:"gone,omitempty"`
+
 	// Rev increases whenever the entry changes, so renderers can cache.
 	Rev int `json:"-"`
 }
@@ -111,9 +122,14 @@ type Tool struct {
 	Value string `json:"value,omitempty"`
 	// Files are the files a call changed: an Edit, a Write, a patch.
 	Files []string `json:"files,omitempty"`
+	// Change is what a Write call wrote or an Edit call changed.
+	Change *FileView `json:"change,omitempty"`
 
 	callError   string
 	highlighted string // the code Syntax is of
+	// file is what a Write or an Edit call's operation does, and drawn the
+	// one Change shows.
+	file, drawn fileOp
 	// outcomes are what the call's operations came to, in their order,
 	// without their states, which hold whole outputs and pictures.
 	outcomes []outcome
@@ -151,6 +167,15 @@ type Usage struct {
 	Reasoning int64 `json:"reasoning"`
 	Context   int64 `json:"context"` // input tokens of the latest model request
 	Turns     int   `json:"turns"`
+	// How fast the model writes: the output tokens of the turns whose time
+	// is known, and that time in milliseconds, from when each turn began —
+	// its request sent — to when its response was recorded, the wait for
+	// the first token included. Tokens over time are tokens per second;
+	// Last is the latest such turn's.
+	TimedOutput int64 `json:"timed_output"`
+	TimedMillis int64 `json:"timed_ms"`
+	LastOutput  int64 `json:"last_output"`
+	LastMillis  int64 `json:"last_ms"`
 }
 
 // Transcript folds runner events into entries. It is not safe for concurrent
@@ -183,6 +208,14 @@ type Transcript struct {
 	// stopNoted is set once the current run's stop, which the session
 	// records with its reason, has its notice (stopNotice).
 	stopNoted bool
+	// previews are what streams of a turn's response, in the order the
+	// output items began, until the response is recorded (live.go).
+	previews map[session.TurnID][]*preview
+	streamed int // the previews there have been, which number them
+	// turn is the latest turn, until its response is recorded, and began is
+	// when it was: the time between is how long its model took (Usage).
+	turn  session.TurnID
+	began time.Time
 }
 
 // stopNotice is the notice of a stop the session records with its reason:
@@ -205,7 +238,103 @@ func NewTranscript() *Transcript {
 		operations: make(map[operation.ID]string),
 		compaction: make(map[session.TurnID]bool),
 		active:     make(map[string]*Entry),
+		previews:   make(map[session.TurnID][]*preview),
 	}
+}
+
+// Clone returns a copy of the transcript that shares nothing with it that
+// either changes as more is folded into it, or as its entries are changed:
+// what LoadSession keeps of a session is not the caller's.
+func (t *Transcript) Clone() *Transcript {
+	c := *t
+	copies := make(map[*Entry]*Entry, len(t.Entries))
+	entry := func(e *Entry) *Entry {
+		if e == nil {
+			return nil
+		}
+		if copied := copies[e]; copied != nil {
+			return copied
+		}
+		copied := e.clone()
+		copies[e] = copied
+		return copied
+	}
+	list := func(entries []*Entry) []*Entry {
+		entries = slices.Clone(entries)
+		for i, e := range entries {
+			entries[i] = entry(e)
+		}
+		return entries
+	}
+	byID := func(entries map[string]*Entry) map[string]*Entry {
+		if entries == nil {
+			return nil
+		}
+		copied := make(map[string]*Entry, len(entries))
+		for id, e := range entries {
+			copied[id] = entry(e)
+		}
+		return copied
+	}
+	c.Entries, c.awaiting = list(t.Entries), list(t.awaiting)
+	c.index, c.active = byID(t.index), byID(t.active)
+	c.operations, c.compaction = maps.Clone(t.operations), maps.Clone(t.compaction)
+	if t.previews != nil {
+		c.previews = make(map[session.TurnID][]*preview, len(t.previews))
+		for turn, previews := range t.previews {
+			previews = slices.Clone(previews)
+			for i, p := range previews {
+				previews[i] = clonePointer(p)
+			}
+			c.previews[turn] = previews
+		}
+	}
+	return &c
+}
+
+// clone copies an entry, and the call and the outcome of its tool.
+func (e *Entry) clone() *Entry {
+	c := *e
+	c.Tool = e.Tool.clone()
+	c.Images, c.Files = slices.Clone(e.Images), slices.Clone(e.Files)
+	return &c
+}
+
+func (tool *Tool) clone() *Tool {
+	if tool == nil {
+		return nil
+	}
+	c := *tool
+	c.ExitCode, c.Image = clonePointer(tool.ExitCode), clonePointer(tool.Image)
+	c.Syntax, c.Calls, c.Files = slices.Clone(tool.Syntax), cloneCalls(tool.Calls), slices.Clone(tool.Files)
+	if tool.Change != nil {
+		change := *tool.Change
+		change.Syntax = slices.Clone(change.Syntax)
+		c.Change = &change
+	}
+	c.outcomes = slices.Clone(tool.outcomes)
+	for i := range c.outcomes {
+		o := &c.outcomes[i]
+		o.errors, o.files, o.calls = slices.Clone(o.errors), slices.Clone(o.files), cloneCalls(o.calls)
+		o.exitCode, o.info = clonePointer(o.exitCode), clonePointer(o.info)
+	}
+	return &c
+}
+
+func cloneCalls(calls []CodeCall) []CodeCall {
+	calls = slices.Clone(calls)
+	for i := range calls {
+		calls[i].ExitCode = clonePointer(calls[i].ExitCode)
+	}
+	return calls
+}
+
+func clonePointer[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	copied := *p
+	return &copied
 }
 
 // Entry returns the entry with the given ID, or nil.
@@ -289,6 +418,8 @@ func (t *Transcript) Finish(err error, stopped bool, at time.Time) []*Entry {
 		delete(t.active, e.ID)
 		changed = append(changed, t.touch(e))
 	}
+	// A response that never came leaves what streamed of it.
+	changed = append(changed, t.voidPreviews("")...)
 	switch {
 	case stopped:
 		// A stop the session recorded has its notice, with the reason.
@@ -337,6 +468,10 @@ func (t *Transcript) Apply(line []byte) ([]*Entry, error) {
 			ID: t.liveID("error"), Kind: KindError, At: time.Now().UTC(), Text: Clean(envelope.Message),
 		})}, nil
 	case "session":
+		return nil, nil
+	case "delta", "output":
+		// What streams before the session records it (-stream) is for
+		// Live, which front-ends that show it call first.
 		return nil, nil
 	case "item":
 		var record struct {
@@ -400,14 +535,18 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 		return []*Entry{e}
 	case session.Turn:
 		t.retrying = ""
+		// The runner records a turn as it sends the model its request.
+		t.turn, t.began = data.ID, at
 		if data.Type == session.TurnCompaction {
 			t.compaction[data.ID] = true
 			t.Activity = "Compacting context"
 		} else {
 			t.Activity = "Thinking"
 		}
+		// A turn starts once the one before has its response, or will
+		// have none: what streamed of a response it never got is void.
+		changed := t.voidPreviews(data.ID)
 		// The prompts waiting for this turn were answered by its model.
-		var changed []*Entry
 		for _, e := range t.awaiting {
 			if data.Model != "" && e.Model != data.Model {
 				e.Model = data.Model
@@ -440,6 +579,18 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 	t.Usage.Reasoning += response.Usage.ReasoningTokens
 	t.Usage.Context = response.Usage.InputTokens
 	t.Usage.Turns++
+	// The response of the latest turn says how fast its model wrote: the
+	// output tokens it reports over the time from the request. A response
+	// without them, as some providers send, says nothing of it.
+	if t.turn != "" && data.TurnID == t.turn {
+		t.turn = ""
+		took := at.Sub(t.began).Milliseconds()
+		if output := response.Usage.OutputTokens; output > 0 && took > 0 && !t.began.IsZero() {
+			t.Usage.TimedOutput += output
+			t.Usage.TimedMillis += took
+			t.Usage.LastOutput, t.Usage.LastMillis = output, took
+		}
+	}
 
 	var changed []*Entry
 	if t.compaction[data.TurnID] {
@@ -462,9 +613,13 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 			t.compactable = false
 		}
 		changed = append(changed, t.put(notice))
+		changed = append(changed, t.voidTurn(data.TurnID)...)
 	} else {
 		t.compactable = t.compactable || len(response.Output) != 0
 		calls := 0
+		// The text the response made, which takes the place of what
+		// streamed of it.
+		var texts []*Entry
 		for index, output := range response.Output {
 			id := fmt.Sprintf("output:%d.%d", sequence, index)
 			switch value := output.Data.(type) {
@@ -473,13 +628,17 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 				if value.Role != llm.RoleAssistant && value.Role != "" || strings.TrimSpace(text) == "" {
 					continue
 				}
-				changed = append(changed, t.put(&Entry{ID: id, Kind: KindAssistant, At: at, Text: text, Phase: value.Phase}))
+				e := t.put(&Entry{ID: id, Kind: KindAssistant, At: at, Text: text, Phase: value.Phase})
+				texts = append(texts, e)
+				changed = append(changed, e)
 			case llm.Reasoning:
 				text := Clean(strings.Join(value.Summary, "\n\n"))
 				if strings.TrimSpace(text) == "" {
 					continue
 				}
-				changed = append(changed, t.put(&Entry{ID: id, Kind: KindReasoning, At: at, Text: text}))
+				e := t.put(&Entry{ID: id, Kind: KindReasoning, At: at, Text: text})
+				texts = append(texts, e)
+				changed = append(changed, e)
 			case llm.ToolCall:
 				calls++
 				e := t.tool(value.CallID, at)
@@ -491,6 +650,7 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 				changed = append(changed, t.touch(e))
 			}
 		}
+		changed = append(changed, t.replacePreviews(data.TurnID, texts)...)
 		if calls == 0 {
 			t.Activity = "Wrapping up"
 		} else {
@@ -514,7 +674,7 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 		}))
 	case llm.StopRefused:
 		changed = append(changed, t.put(&Entry{
-			ID: fmt.Sprintf("stop:%d", sequence), Kind: KindNotice, At: at, Text: "The model refused to respond",
+			ID: fmt.Sprintf("stop:%d", sequence), Kind: KindNotice, At: at, Text: RefusedNotice,
 		}))
 	}
 	return changed
@@ -553,6 +713,7 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 	tool := e.Tool
 	tool.Output, tool.Stderr, tool.Error, tool.ExitCode, tool.Image = "", "", "", nil, nil
 	tool.Calls, tool.Logs, tool.Value, tool.Files, tool.threw = nil, "", "", nil, false
+	tool.file = fileOp{}
 	state := ToolDone
 	if tool.callError != "" {
 		state, tool.Error = ToolFailed, Clean(tool.callError)
@@ -601,10 +762,12 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 	// is what the run waits for.
 	t.Activity = cmp.Or(t.retrying, t.runningActivity())
 	tool.highlightCode()
+	tool.drawChange()
 }
 
-// highlightTime bounds the highlighting of a Code call's code: what is not
-// done by then shows plain.
+// highlightTime bounds the highlighting of the code a call shows — a Code
+// call's, what a Write wrote, an Edit's strings: what is not done by then
+// shows plain.
 const highlightTime = 100 * time.Millisecond
 
 // highlightCode highlights a Code call's code, once for each code it shows.
@@ -614,6 +777,17 @@ func (tool *Tool) highlightCode() {
 	}
 	tool.highlighted = tool.Input
 	tool.Syntax = highlight.Highlight("code.js", tool.Input, time.Now().Add(highlightTime)).Runs
+}
+
+// drawChange draws what a Write or an Edit call does (Change), once for
+// each thing it does.
+func (tool *Tool) drawChange() {
+	switch {
+	case tool.file.kind == "":
+		tool.Change, tool.drawn = nil, fileOp{}
+	case tool.Change == nil || tool.drawn != tool.file:
+		tool.Change, tool.drawn = tool.file.view(), tool.file
+	}
 }
 
 func (t *Transcript) runningActivity() string {
@@ -651,6 +825,7 @@ type outcome struct {
 	info           *ImageInfo // the picture
 	picture        string     // the picture's bytes in base64, if transcripts keep them (KeepPictures)
 	files          []string
+	file           fileOp // what a Write or an Edit call does
 	calls          []CodeCall
 	code           bool // a Code call's result: logs and value are the call's
 	logs, value    string
@@ -719,6 +894,8 @@ func outcomeOf(value operation.Operation) outcome {
 		}
 		o.read = true
 		o.input = Clean(cmp.Or(state.Path, state.Query, Headline(state.Patch, 200)))
+		// What a call that failed tried shows too, under why it failed.
+		o.file = fileOpOf(state)
 		if state.TerminalError != "" {
 			o.errors = append(o.errors, Clean(state.TerminalError))
 			return o
@@ -799,6 +976,9 @@ func (o *outcome) apply(tool *Tool) (output, stderr string) {
 		}
 	}
 	tool.Files = append(tool.Files, o.files...)
+	if o.file.kind != "" {
+		tool.file = o.file
+	}
 	tool.Calls = append(tool.Calls, o.calls...)
 	if o.code {
 		tool.Logs, tool.Value = o.logs, o.value

@@ -110,16 +110,18 @@ func GatewayAPI(model string) API {
 // model in place of their own, "" keeping theirs. Through the gateway the API
 // follows the model, since a session may go from one provider's model to
 // another's: a protocol chosen for the settings' model stays with it alone.
+// Settings that name no model, as Accounts saves them, chose their protocol
+// for every model.
 func (s Settings) ForModel(model string) Settings {
 	model = strings.TrimSpace(model)
 	// The environment's connection takes the model in the request alone.
 	if model == "" || model == s.Model || s.API == APIEnvironment {
 		return s
 	}
-	s.Model = model
-	if s.API == APIGateway {
+	if s.API == APIGateway && s.Model != "" {
 		s.Protocol = ""
 	}
+	s.Model = model
 	return s
 }
 

@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -29,20 +31,46 @@ const (
 	defaultMessageLimit    = 8 << 10
 	defaultOutputLimit     = 4 << 10
 	maxFieldLimit          = 1 << 20
+	// transcriptBudget bounds the entries of one answer, as JSON: the
+	// agents' tools cut what they are given past 40 000 bytes, and what is
+	// cut there is lost to a reader whose cursor went past it.
+	transcriptBudget = 30 << 10
+	// minTranscriptBudget is what is left for the entries, at least, when
+	// the notes and summaries of the session come with them.
+	minTranscriptBudget = 4 << 10
 )
 
 // transcriptOptions are the bounded, incremental transcript query. The
 // cursor is kept separately because "last" belongs to the reader and target,
 // not to the session file.
 type transcriptOptions struct {
-	After        int64
-	Limit        int
+	After int64
+	Limit int
+	// Tail asks for the last Tail entries that match instead of those after
+	// a cursor.
+	Tail         int
 	Kinds        map[string]bool
 	Tools        map[string]bool
 	Since        *time.Time
 	Until        *time.Time
 	MessageLimit int
 	OutputLimit  int
+	// Budget bounds the size of the entries of an answer (none when 0);
+	// ExplicitLimits says the reader chose the limits of the fields, which
+	// are then kept even where an entry alone is over the budget.
+	Budget         int
+	ExplicitLimits bool
+}
+
+// transcriptPage is what a read of a transcript gives: its entries as the
+// reader is given them, the cursor to read on from, and whether more
+// entries wait after it — of a tail, how many that match come before it.
+type transcriptPage struct {
+	Entries []transcriptEntry
+	Next    int64
+	More    bool
+	Older   int
+	Reset   bool
 }
 
 type transcriptCursor struct {
@@ -121,36 +149,88 @@ func (cache *rawFeedCache) touch(path string) {
 	cache.lru = append(cache.lru, path)
 }
 
-// read folds only complete new lines. It holds the cache lock while folding
-// because cockpit.Transcript is deliberately not safe for concurrent use.
-func (cache *rawFeedCache) read(path string, after int64, options transcriptOptions) ([]rawFeedEntry, int64, int, error) {
+// read folds only complete new lines, and gives the entries after a cursor
+// — or the last options.Tail of them — within options.Limit and
+// options.Budget. It holds the cache lock while folding and while it makes
+// the entries, because cockpit.Transcript is deliberately not safe for
+// concurrent use.
+func (cache *rawFeedCache) read(path string, after int64, options transcriptOptions) (transcriptPage, error) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 	feed := cache.file(path)
 	fileReset, err := feed.refresh()
 	if err != nil {
-		return nil, 0, 0, err
+		return transcriptPage{}, err
 	}
-	reset := 0
-	if fileReset {
-		after = 0
-		reset = 1
-	} else if after < 0 || after > feed.offset || !cursorBoundary(path, after) {
-		after = 0
-		reset = 1
+	var page transcriptPage
+	if options.Tail > 0 {
+		page.Entries, page.Older = feed.tail(options)
+		page.Next = feed.offset
+		return page, nil
 	}
-	entries := feed.entries(after, options)
-	next := feed.offset
-	if len(entries) >= options.Limit {
-		next = entries[len(entries)-1].ChangedAt
-		for _, entry := range feed.entriesAfter(after, options) {
-			if entry.ChangedAt != next {
-				break
-			}
-			next = entry.ChangedAt
+	if fileReset || after < 0 || after > feed.offset || !cursorBoundary(path, after) {
+		after, page.Reset = 0, true
+	}
+	all := feed.entriesAfter(after, options)
+	size, cut := 0, 0
+	for cut < len(all) && cut < options.Limit {
+		// Never split entries changed by one JSONL record: the cursor is a
+		// byte offset, so doing so would make the remaining entry
+		// unobservable.
+		end := cut + 1
+		for end < len(all) && all[end].ChangedAt == all[cut].ChangedAt {
+			end++
 		}
+		group, groupSize := make([]transcriptEntry, 0, end-cut), 0
+		for _, entry := range all[cut:end] {
+			public := entry.fitted(options)
+			group = append(group, public)
+			groupSize += entrySize(public)
+		}
+		// The first record's entries go whatever their size, or the reader
+		// would never get past them.
+		if cut > 0 && options.Budget > 0 && size+groupSize > options.Budget {
+			break
+		}
+		page.Entries = append(page.Entries, group...)
+		size += groupSize
+		cut = end
 	}
-	return entries, next, reset, nil
+	page.Next = feed.offset
+	if cut < len(all) {
+		page.Next, page.More = all[cut-1].ChangedAt, true
+	}
+	return page, nil
+}
+
+// tail is the last options.Tail entries that match, as many of the latest
+// of them as options.Budget holds, and how many that match come before.
+func (feed *rawFeed) tail(options transcriptOptions) ([]transcriptEntry, int) {
+	all := feed.entriesAfter(0, options)
+	start := max(0, len(all)-options.Tail)
+	entries := make([]transcriptEntry, 0, len(all)-start)
+	for _, entry := range all[start:] {
+		entries = append(entries, entry.fitted(options))
+	}
+	keep, size := len(entries), 0
+	for keep > 0 {
+		next := entrySize(entries[keep-1])
+		if keep < len(entries) && options.Budget > 0 && size+next > options.Budget {
+			break
+		}
+		size += next
+		keep--
+	}
+	return entries[keep:], start + keep
+}
+
+// entrySize is how many bytes an entry takes in an answer.
+func entrySize(entry transcriptEntry) int {
+	data, err := json.Marshal(entry)
+	if err != nil {
+		return 0
+	}
+	return len(data) + 1
 }
 
 // refresh adds complete JSONL records after offset. An incomplete last record
@@ -280,7 +360,7 @@ func (feed *rawFeed) entriesAfter(after int64, options transcriptOptions) []rawF
 		if entry == nil {
 			continue
 		}
-		raw := rawFeedEntryOf(entry, changedAt, feed.serial[id], options)
+		raw := rawFeedEntryOf(entry, changedAt, feed.serial[id])
 		if !matchesTranscript(raw, options) {
 			continue
 		}
@@ -295,25 +375,12 @@ func (feed *rawFeed) entriesAfter(after int64, options transcriptOptions) []rawF
 	return entries
 }
 
-func (feed *rawFeed) entries(after int64, options transcriptOptions) []rawFeedEntry {
-	all := feed.entriesAfter(after, options)
-	if len(all) <= options.Limit {
-		return all
-	}
-	// Never split entries changed by one JSONL record: the cursor is a byte
-	// offset, so doing so would make the remaining entry unobservable.
-	cut := options.Limit
-	last := all[cut-1].ChangedAt
-	for cut < len(all) && all[cut].ChangedAt == last {
-		cut++
-	}
-	return all[:cut]
-}
-
-func rawFeedEntryOf(entry *cockpit.Entry, changedAt, serial int64, options transcriptOptions) rawFeedEntry {
+// rawFeedEntryOf is an entry of the fold, whole: public clips its fields
+// for a reader, once, so that what it says was cut is so.
+func rawFeedEntryOf(entry *cockpit.Entry, changedAt, serial int64) rawFeedEntry {
 	return rawFeedEntry{
 		ID: entry.ID, Kind: rawKind(entry), At: entry.At,
-		Text: clipText(entry.Text, options.MessageLimit), Detail: clipText(entry.Detail, options.MessageLimit),
+		Text: entry.Text, Detail: entry.Detail,
 		Phase: entry.Phase, State: entry.State, Model: entry.Model, Forced: entry.Forced,
 		Tool: entry.Tool, ChangedAt: changedAt, Changed: serial,
 	}
@@ -388,7 +455,7 @@ func clipText(text string, limit int) string {
 	head = utf8Boundary(text, head)
 	tailStart := len(text) - tail
 	tailStart = utf8BoundaryAfter(text, tailStart)
-	removed := len(text) - tailStart + head
+	removed := tailStart - head
 	return text[:head] + fmt.Sprintf("\n[… %d bytes cut]\n", removed) + text[tailStart:]
 }
 
@@ -486,6 +553,18 @@ func (entry rawFeedEntry) public(options transcriptOptions) transcriptEntry {
 	return out
 }
 
+// fitted is an entry as its reader is given it: with the default limits of
+// its fields, cut further until it alone fits the budget of an answer.
+func (entry rawFeedEntry) fitted(options transcriptOptions) transcriptEntry {
+	public := entry.public(options)
+	for !options.ExplicitLimits && options.Budget > 0 && options.MessageLimit > 256 && entrySize(public) > options.Budget {
+		options.MessageLimit /= 2
+		options.OutputLimit = max(options.OutputLimit/2, 128)
+		public = entry.public(options)
+	}
+	return public
+}
+
 func parseTranscriptOptions(q map[string][]string) (transcriptOptions, error) {
 	get := func(name string) string {
 		values := q[name]
@@ -494,14 +573,24 @@ func parseTranscriptOptions(q map[string][]string) (transcriptOptions, error) {
 		}
 		return values[0]
 	}
-	options := transcriptOptions{Limit: defaultTranscriptLimit, MessageLimit: defaultMessageLimit, OutputLimit: defaultOutputLimit}
+	options := transcriptOptions{
+		Limit: defaultTranscriptLimit, MessageLimit: defaultMessageLimit, OutputLimit: defaultOutputLimit,
+		Budget: transcriptBudget,
+	}
 	var err error
-	if value := strings.TrimSpace(get("limit")); value != "" {
-		options.Limit, err = strconv.Atoi(value)
-		if err != nil || options.Limit < 1 {
-			return options, fmt.Errorf("limit is a positive integer")
+	for _, field := range []struct {
+		name string
+		to   *int
+	}{
+		{"limit", &options.Limit}, {"tail", &options.Tail},
+	} {
+		if value := strings.TrimSpace(get(field.name)); value != "" {
+			*field.to, err = strconv.Atoi(value)
+			if err != nil || *field.to < 1 {
+				return options, fmt.Errorf("%s is a positive integer", field.name)
+			}
+			*field.to = min(*field.to, maxTranscriptLimit)
 		}
-		options.Limit = min(options.Limit, maxTranscriptLimit)
 	}
 	for _, field := range []struct {
 		name string
@@ -516,6 +605,7 @@ func parseTranscriptOptions(q map[string][]string) (transcriptOptions, error) {
 				return options, fmt.Errorf("%s is a positive integer", field.name)
 			}
 			*field.to = min(*field.to, maxFieldLimit)
+			options.ExplicitLimits = true
 		}
 	}
 	options.Kinds, err = parseFilter(get("kinds"), allowedTranscriptKinds, "kinds")
@@ -599,8 +689,20 @@ func loadTranscriptCursors(dir string) map[string]int64 {
 	return cursors
 }
 
-func (c *Canvas) saveTranscriptCursor(reader, target string, offset int64) error {
+// transcriptCursorKey is where the "last" cursor of a reader of a target is
+// kept: one for each filter of kinds and tools, since a filtered read sees
+// only some of the entries it goes past — and a read of what it left out
+// must still find them.
+func transcriptCursorKey(reader, target string, options transcriptOptions) string {
 	key := reader + "\x00" + target
+	if len(options.Kinds) == 0 && len(options.Tools) == 0 {
+		return key
+	}
+	return key + "\x00" + strings.Join(slices.Sorted(maps.Keys(options.Kinds)), ",") +
+		"|" + strings.Join(slices.Sorted(maps.Keys(options.Tools)), ",")
+}
+
+func (c *Canvas) saveTranscriptCursor(key string, offset int64) error {
 	c.mu.Lock()
 	if c.transcriptCursors == nil {
 		c.transcriptCursors = map[string]int64{}
@@ -614,10 +716,10 @@ func (c *Canvas) saveTranscriptCursor(reader, target string, offset int64) error
 	return err
 }
 
-func (c *Canvas) transcriptCursor(reader, target string) int64 {
+func (c *Canvas) transcriptCursor(key string) int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.transcriptCursors[reader+"\x00"+target]
+	return c.transcriptCursors[key]
 }
 
 func (c *Canvas) transcriptSession(node string) (string, error) {
@@ -690,63 +792,89 @@ func (c *Canvas) transcript(node string, q map[string][]string, reader string) (
 	if err != nil {
 		return nil, errInvalid(err.Error())
 	}
-	after, last, err := parseTranscriptAfter(firstQuery(q, "after"))
+	afterValue := strings.TrimSpace(firstQuery(q, "after"))
+	after, last, err := parseTranscriptAfter(afterValue)
 	if err != nil {
 		return nil, errInvalid(err.Error())
 	}
+	if options.Tail > 0 && afterValue != "" {
+		return nil, errInvalid("tail reads the last entries, wherever a cursor is: give it without after")
+	}
+	key := transcriptCursorKey(reader, node, options)
 	if last {
-		after = c.transcriptCursor(reader, node)
+		after = c.transcriptCursor(key)
 	}
 	path, err := c.transcriptSession(node)
 	if err != nil {
 		return nil, err
 	}
-	entries, next, reset, err := c.e.raw.read(path, after, options)
-	if err != nil {
-		return nil, err
-	}
-	if last {
-		if err := c.saveTranscriptCursor(reader, node, next); err != nil {
-			return nil, fmt.Errorf("save transcript cursor: %w", err)
-		}
-	}
-	public := make([]transcriptEntry, 0, len(entries))
-	for _, entry := range entries {
-		public = append(public, entry.public(options))
-	}
-	result := map[string]any{
-		"node": node, "session": filepath.Base(strings.TrimSuffix(path, ".session.jsonl")),
-		"cursor": strconv.FormatInt(after, 10), "next": strconv.FormatInt(next, 10),
-		"entries": public,
-	}
-	if reset != 0 {
-		result["cursor_reset"] = true
-		result["cursor_reset_reason"] = "the cursor was not at a complete JSONL record"
-	}
+	session := filepath.Base(strings.TrimSuffix(path, ".session.jsonl"))
+	result := map[string]any{"node": node, "session": session}
+	// The notes and the summaries come first: what they take is not left
+	// for the entries.
+	included := 0
 	if q["include"] != nil {
 		include := map[string]bool{}
 		for _, item := range strings.Split(firstQuery(q, "include"), ",") {
 			include[strings.ToLower(strings.TrimSpace(item))] = true
 		}
 		if include["notes"] {
-			file, text, includeErr := includeFile(filepath.Join(c.ws.SessionDir, result["session"].(string)+".notes.md"))
+			file, text, includeErr := includeFile(filepath.Join(c.ws.SessionDir, session+".notes.md"))
 			if includeErr != nil {
 				return nil, includeErr
 			}
 			if file != nil {
 				result["notes"] = map[string]any{"file": file, "text": text}
+				included += len(text)
 			}
 		}
 		if include["summaries"] {
-			path := filepath.Join(c.ws.SessionDir, result["session"].(string)+".summaries.md")
-			file, text, includeErr := includeFile(path)
+			file, text, includeErr := includeFile(filepath.Join(c.ws.SessionDir, session+".summaries.md"))
 			if includeErr != nil {
 				return nil, includeErr
 			}
 			if file != nil {
-				result["summaries"] = map[string]any{"file": file, "text": lastSummaries(text, 3)}
+				text = lastSummaries(text, 3)
+				result["summaries"] = map[string]any{"file": file, "text": text}
+				included += len(text)
 			}
 		}
+	}
+	if options.Budget > 0 {
+		options.Budget = max(options.Budget-included, minTranscriptBudget)
+	}
+	page, err := c.e.raw.read(path, after, options)
+	if err != nil {
+		return nil, err
+	}
+	// A cursor kept for "last" moves past what a read showed only: a tail
+	// shows the end, not what is between, and since and until leave out
+	// entries the filters of the cursor do not.
+	if last && options.Since == nil && options.Until == nil {
+		if err := c.saveTranscriptCursor(key, page.Next); err != nil {
+			return nil, fmt.Errorf("save transcript cursor: %w", err)
+		}
+	}
+	entries := page.Entries
+	if entries == nil {
+		entries = []transcriptEntry{}
+	}
+	result["entries"] = entries
+	result["next"] = strconv.FormatInt(page.Next, 10)
+	if options.Tail > 0 {
+		result["tail"] = options.Tail
+		result["older"] = page.Older
+	} else {
+		result["cursor"] = strconv.FormatInt(after, 10)
+	}
+	if page.More {
+		// The budget of the answer stopped the entries: those after next
+		// are read with after set to it.
+		result["more"] = true
+	}
+	if page.Reset {
+		result["cursor_reset"] = true
+		result["cursor_reset_reason"] = "the cursor was not at a record of the session file as it is now: read from its start"
 	}
 	return result, nil
 }

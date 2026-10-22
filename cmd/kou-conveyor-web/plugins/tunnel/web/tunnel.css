@@ -82,7 +82,8 @@
 }
 .tunnel-facts[hidden] { display: none; }
 .tunnel-facts dt { align-self: center; color: var(--fg-4); }
-.tunnel-facts dd { margin: 0; font: 12px/1.4 var(--mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A long value wraps: all of it shows, to read or to select. */
+.tunnel-facts dd { margin: 0; font: 12px/1.4 var(--mono); color: var(--fg-2); overflow-wrap: anywhere; }
 
 .tunnel-remote { margin: 0; padding: 8px 12px; border-left: 2px solid var(--warn); background: var(--bg); font-size: 12.5px; line-height: 1.5; color: var(--fg-2); }
 .tunnel-remote[hidden] { display: none; }
@@ -118,3 +119,12 @@
 @media (max-width: 560px) {
   .tunnel-pair { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.tunnel-orb, .tunnel-facts, .tunnel-qr { border-radius: var(--radius); }
+.tunnel-chip, .tunnel-qr-veil { border-radius: var(--radius-sm); }
+:root[data-corners="round"] .tunnel-facts { overflow: hidden; }
+/* Round, the warning about a remote relay is a tinted box, with no bar. */
+:root[data-corners="round"] .tunnel-remote { padding-left: 14px; border-left: 0; border-radius: var(--radius); background: color-mix(in srgb, var(--warn) 8%, var(--bg)); }

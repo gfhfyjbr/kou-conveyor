@@ -172,9 +172,25 @@ function table(rows) {
   const [head, ...body] = rows.map(splitRow);
   return h('div', { class: 'table' },
     h('table', null,
-      h('thead', null, h('tr', null, head.map((cell) => h('th', null, inline(cell))))),
-      h('tbody', null, body.map((row) => h('tr', null, head.map((_, n) => h('td', null, inline(row[n] ?? '')))))),
+      h('thead', null, h('tr', null, head.map((text) => cell('th', text)))),
+      h('tbody', null, body.map((row) => h('tr', null, head.map((_, n) => cell('td', row[n] ?? ''))))),
     ));
+}
+
+// A short cell — a number, a range, a date, a name: up to 16 characters, or
+// one word of up to 24 — keeps to one line ("10–16" broken at its dash reads
+// as two). A longer one wraps between its words, or anywhere if it is one
+// (a path, a hash), in a column no narrower than a few words (markdown.css).
+const SHORT = /^(?:.{1,16}|\S{1,24})$/u;
+const SPACELESS = /^\S+$/u;
+
+function cell(tag, text) {
+  const el = h(tag, null, inline(text));
+  const content = el.textContent;
+  if (SHORT.test(content)) el.className = 'short';
+  else if (SPACELESS.test(content)) el.className = 'long spaceless';
+  else if (content) el.className = 'long';
+  return el;
 }
 
 export function codeBlock(text, language, onCopy) {

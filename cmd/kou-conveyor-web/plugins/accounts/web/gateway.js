@@ -131,14 +131,6 @@ export function createAccounts(ctx) {
   const { api, toast, copy, openMenu, $, query, prefs } = ctx;
   // The models plugin's picker and titles, when it is there.
   const modelTitle = (catalog, id, extra = '') => ctx.models()?.titleIn?.(catalog, id, extra) ?? [id, extra].filter(Boolean).join('\n');
-  const openModelPicker = (options) => {
-    const models = ctx.models();
-    if (!models?.openPicker) {
-      toast('Choosing among the models needs the models plugin, which is off.', 'error');
-      return null;
-    }
-    return models.openPicker(options);
-  };
   const ui = {
     open: false,
     data: null, // the latest /api/accounts answer
@@ -152,7 +144,7 @@ export function createAccounts(ctx) {
     quota: new Map(), // name → { loading, quota, error, at }
     queue: [],
     fetching: 0,
-    conn: null, // the connection form's draft: { mode, model, protocol, busy, error, dirty }
+    conn: null, // the connection form's draft: { mode, protocol, busy, error, dirty }
     // modelsSig says which models the gateway served at the latest listing,
     // which lists them with the accounts.
     modelsSig: '',
@@ -185,6 +177,9 @@ export function createAccounts(ctx) {
     ui.loading = false;
     if (!ui.conn?.dirty) ui.conn = null;
     for (const name of [...ui.expanded]) if (!data.accounts.some((a) => a.name === name)) ui.expanded.delete(name);
+    // A provider with no account left is no filter: the rail has no item
+    // for it, and the list would show none of the accounts there are.
+    if (ui.filter.provider && !data.accounts.some((a) => a.provider === ui.filter.provider)) ui.filter.provider = '';
     render();
     // The bar says how the gateway stands on the view's other tab too.
     if (!ui.open) renderHeader();
@@ -409,7 +404,7 @@ export function createAccounts(ctx) {
       return;
     }
     const c = ui.data.connection || { mode: 'environment' };
-    ui.conn ||= { mode: c.mode, model: c.model || '', protocol: c.protocol || '', dirty: false };
+    ui.conn ||= { mode: c.mode, protocol: c.protocol || '', dirty: false };
     const running = g.enabled && g.state === 'running';
     let gateway;
     if (!g.enabled) {
@@ -439,33 +434,15 @@ export function createAccounts(ctx) {
     const body = [];
     switch (draft.mode) {
       case 'gateway': {
-        const chosen = draft.protocol || apiFor(draft.model);
         body.push(h('form', {
           class: 'conn-form', autocomplete: 'off',
           onsubmit: (event) => { event.preventDefault(); saveConnection(); },
         },
-        h('div', { class: 'field conn-model' }, h('label', { class: 'label', for: 'conn-model', text: 'Model' }),
-          h('span', { class: 'conn-model-row' },
-            h('input', {
-              id: 'conn-model', type: 'text', spellcheck: 'false', autocomplete: 'off', value: draft.model,
-              placeholder: running ? 'Choose a model the gateway serves' : 'The gateway is not running',
-              title: 'The model runs use unless a prompt picks another (↓ lists them)',
-              oninput: (event) => { draft.model = event.target.value.trim(); draft.dirty = true; renderProtocols(); renderConnectionHint(); },
-              onkeydown: (event) => {
-                if (event.key === 'ArrowDown' && !event.altKey && !event.metaKey && !event.ctrlKey) {
-                  event.preventDefault();
-                  browseModels();
-                }
-              },
-            }),
-            h('button', {
-              class: 'act', type: 'button', disabled: !running, 'aria-haspopup': 'dialog',
-              title: 'Choose among the models the gateway serves, by provider (↓)', onclick: browseModels,
-            }, 'Browse ▾'))),
+        h('p', { class: 'conn-text', text: 'Models are chosen in the composer: a new session starts with the model last chosen there, else the first the gateway serves. A session keeps its own.' }),
         h('fieldset', { class: 'seg three conn-api', id: 'conn-api' },
           h('legend', { class: 'label', text: 'API' }),
-          protocolChoices(draft, chosen)),
-        h('button', { class: 'primary', type: 'submit', disabled: !!draft.busy || !draft.model || !running }, draft.busy ? 'Saving…' : c.mode === 'gateway' && !draft.dirty ? 'Saved' : 'Use')));
+          protocolChoices(draft)),
+        h('button', { class: 'primary', type: 'submit', disabled: !!draft.busy || !running }, draft.busy ? 'Saving…' : c.mode === 'gateway' && !draft.dirty ? 'Saved' : 'Use')));
         const [hint, kind] = connectionHint();
         body.push(h('p', { class: 'conn-hint', id: 'conn-hint', data: { kind: kind || null }, text: hint }));
         break;
@@ -496,45 +473,35 @@ export function createAccounts(ctx) {
       body);
   }
 
-  function protocolChoices(draft, chosen) {
-    return [['', `Auto · ${chosen === 'messages' ? 'Messages' : 'Responses'}`, 'The API the model speaks natively'],
+  function protocolChoices(draft) {
+    return [['', 'Auto · per model', 'The API each run’s model speaks natively: Messages for Claude, Responses for the others'],
       ['messages', 'Messages', 'Anthropic Messages API'], ['responses', 'Responses', 'OpenAI Responses API']]
       .map(([value, label, title]) => h('label', { title },
         h('input', { type: 'radio', name: 'conn-api', value, checked: (draft.protocol || '') === value, onchange: () => { draft.protocol = value; draft.dirty = true; renderProtocols(); } }),
         h('span', null, h('b', { text: label }))));
   }
 
-  // renderProtocols updates the API choices as the model changes.
+  // renderProtocols updates the API choices.
   function renderProtocols() {
     const box = $('conn-api');
     if (!box || !ui.conn) return;
-    const auto = box.querySelector('input[value=""] + span b');
-    if (auto) auto.textContent = `Auto · ${apiFor(ui.conn.model) === 'messages' ? 'Messages' : 'Responses'}`;
     const button = box.closest('form')?.querySelector('.primary');
     if (button) {
-      button.disabled = !!ui.conn.busy || !ui.conn.model || ui.data?.gateway?.state !== 'running';
+      button.disabled = !!ui.conn.busy || ui.data?.gateway?.state !== 'running';
       button.textContent = ui.conn.dirty ? 'Use' : 'Saved';
     }
   }
 
-  // connectionHint says what the model is to the gateway: [text, kind].
+  // connectionHint says how the gateway is used now that it no longer owns
+  // a default model: [text, kind].
   function connectionHint() {
     const models = ui.data?.models;
-    const model = ui.conn?.model || '';
-    const api = (ui.conn?.protocol || apiFor(model)) === 'messages' ? 'Messages' : 'Responses';
     if (!models) return [ui.data?.gateway?.state === 'running' ? 'Asking the gateway which models it serves…' : 'The gateway lists its models once it runs.', ''];
     const usable = models.filter((m) => !m.media);
     const providers = new Set(usable.map((m) => m.provider_name)).size;
     const all = `${usable.length} model${usable.length === 1 ? '' : 's'} of ${providers} provider${providers === 1 ? '' : 's'}`;
     if (!usable.length) return ['The gateway serves no models yet: sign in with an account or add an endpoint below.', 'warn'];
-    const found = models.find((m) => m.id === model);
-    if (model && !found) return [`The gateway serves no ${model}: its accounts and endpoints serve ${all}.`, 'warn'];
-    if (found?.cooling) return [`${model} is cooling down: every account that serves it waits out a limit, and runs fail until one has. ${all} in all.`, 'warn'];
-    if (model) {
-      const by = found.via?.length ? found.via.join(', ') : found.provider_name;
-      return [`Runs send ${model} to the gateway over the ${api} API${by ? `; ${by} serve${found.via?.length > 1 ? '' : 's'} it` : ''}. Any prompt can pick another of the ${all} in the composer.`, ''];
-    }
-    return [`Choose the model runs use by default, of the ${all} the gateway serves; any prompt can pick another in the composer.`, ''];
+    return [`Prompts can choose any of the ${all} in the composer; new sessions start with the one last chosen.`, ''];
   }
 
   // renderConnectionHint updates the hint as the model is typed.
@@ -546,56 +513,18 @@ export function createAccounts(ctx) {
     if ((el.dataset.kind || '') !== kind) el.dataset.kind = kind;
   }
 
-  // gatewayCatalog is what the gateway serves, as the model picker lists it.
-  function gatewayCatalog() {
-    return { source: 'gateway', default: ui.data?.connection?.mode === 'gateway' ? ui.data.connection.model || '' : '', models: ui.data?.models || [], error: '' };
-  }
-
-  // browseModels opens the models the gateway serves under the connection's
-  // model field.
-  function browseModels() {
-    const input = $('conn-model');
-    if (!input || !ui.conn) return;
-    openModelPicker({
-      anchor: input.closest('.conn-model-row') || input, placement: 'below', title: 'Default model',
-      note: 'of runs through the gateway; a prompt can pick another',
-      catalog: gatewayCatalog(), loading: !ui.data?.models, current: ui.conn.model,
-      onPick: (id) => {
-        const field = $('conn-model');
-        ui.conn.model = id;
-        ui.conn.dirty = true;
-        if (field) {
-          field.value = id;
-          field.focus();
-        }
-        renderProtocols();
-        renderConnectionHint();
-      },
-      onRefresh: async () => {
-        await refresh({ quiet: true });
-        return gatewayCatalog();
-      },
-    });
-  }
-
-  // Claude models speak the Messages API natively; the gateway translates
-  // the Responses API for the others.
-  function apiFor(model) {
-    return /(^|\/)claude/i.test(model || '') ? 'messages' : 'responses';
-  }
-
   async function saveConnection() {
     const draft = ui.conn;
     draft.busy = true;
     draft.error = '';
     renderTop();
     try {
-      const body = draft.mode === 'gateway' ? { mode: 'gateway', model: draft.model, protocol: draft.protocol || '' } : { mode: 'environment' };
+      const body = draft.mode === 'gateway' ? { mode: 'gateway', protocol: draft.protocol || '' } : { mode: 'environment' };
       const answer = await api('/api/connection', { method: 'PUT', body });
       ui.data.connection = answer.connection;
       ui.data.gateway = answer.gateway;
       ui.conn = null;
-      toast(body.mode === 'gateway' ? `Runs go through the gateway · ${body.model}` : 'Runs use the environment');
+      toast(body.mode === 'gateway' ? 'Runs go through the gateway · choose the model in the composer' : 'Runs use the environment');
       ctx.onConnection();
     } catch (error) {
       draft.error = error.message;
@@ -1167,7 +1096,9 @@ export function createAccounts(ctx) {
       }, h('span', { class: 'ptag', data: { kind: k.id }, text: k.name })))),
       h('p', { class: 'settings-note', text: `${kind.detail}. ${kind.needs_models ? 'The gateway serves the models listed below, and no others.' : 'Without a list, the gateway serves the models it knows for it.'}` }),
       h('div', { class: 'fields' },
-        kind.named ? field('Name', input('name', { placeholder: 'openrouter', maxlength: 40 })) : null,
+        // Each field keeps its place, shown or not: drawn anew in place
+        // (sync), the one being typed in stays the one it is.
+        hide(field('Name', input('name', { placeholder: 'openrouter', maxlength: 40 })), !kind.named),
         field('Base URL', input('base', { type: 'url', inputmode: 'url', placeholder: kind.base_url || 'https://openrouter.ai/api/v1' })),
         field('API key', input('key', {
           class: 'secret', autocapitalize: 'off', 'data-1p-ignore': 'true', 'data-lpignore': 'true',
@@ -1180,22 +1111,36 @@ export function createAccounts(ctx) {
         }, d.models), h('button', {
           class: 'act', type: 'button', disabled: d.fetching, title: 'Ask the endpoint which models it serves', onclick: fetchEndpointModels,
         }, d.fetching ? 'Fetching…' : 'Fetch models')),
-        d.fetched ? h('div', { class: 'picked' },
+        hide(h('div', { class: 'picked' },
           h('div', { class: 'picked-head' },
-            h('span', { text: `${d.fetched.length} models at the endpoint` }),
+            h('span', { text: `${d.fetched?.length || 0} models at the endpoint` }),
             h('button', { class: 'act', type: 'button', onclick: () => pickAll(true) }, 'All'),
             h('button', { class: 'act', type: 'button', onclick: () => pickAll(false) }, 'None')),
-          h('ul', null, d.fetched.map((m) => h('li', null, h('label', null,
+          h('ul', null, (d.fetched || []).map((m) => h('li', null, h('label', null,
             h('input', { type: 'checkbox', value: m, checked: chosen.has(m), onchange: (event) => pickModel(m, event.target.checked) }),
-            h('code', { text: m })))))) : null,
+            h('code', { text: m })))))), !d.fetched),
         field('Prefix', input('prefix', { placeholder: 'Optional: serves the models as prefix/model' }))),
       h('div', { class: 'settings-status', id: 'ep-status', data: { kind: d.error ? 'error' : d.note ? 'ok' : '' }, role: 'status', text: d.error || d.note }),
     ];
-    $('endpoint-body').replaceChildren(...body.filter(Boolean));
-    $('endpoint-foot').replaceChildren(
+    // In place, not anew: the field typed in keeps its caret and what is
+    // typed, a button its focus (a button that is off while it works has
+    // it back once it is on again).
+    const dialog = $('endpoint-dialog');
+    const active = document.activeElement;
+    if (active && active !== document.body && dialog.contains(active)) d.focus = active;
+    sync($('endpoint-body'), body);
+    sync($('endpoint-foot'), [
       h('span', { class: 'settings-path', text: 'The key stays on this machine, in the gateway’s config.yaml' }),
       h('button', { class: 'act', type: 'button', onclick: closeEndpoint }, 'Cancel'),
-      h('button', { class: 'primary', type: 'button', disabled: d.busy, onclick: saveEndpoint }, d.busy ? 'Saving…' : editing ? 'Save' : 'Add'));
+      h('button', { class: 'primary', type: 'button', disabled: d.busy, onclick: saveEndpoint }, d.busy ? 'Saving…' : editing ? 'Save' : 'Add')]);
+    const now = document.activeElement;
+    if ((!now || now === document.body) && d.focus?.isConnected && !d.focus.disabled && dialog.contains(d.focus)) d.focus.focus({ preventScroll: true });
+  }
+
+  // hide hides a node, which keeps its place.
+  function hide(node, hidden) {
+    if (hidden) node.hidden = true;
+    return node;
   }
 
   function syncPicked() {
@@ -1357,7 +1302,9 @@ export function createAccounts(ctx) {
       current.onList = (list) => {
         const added = list.filter((a) => !current.before.has(a.name) && a.provider === current.provider.id);
         if (added.length) current.added = added;
-        if (ui.signin === current) renderSignIn();
+        // Drawn anew only when what it shows of them changes: what is
+        // selected in it, and where the focus is, stay through the looks.
+        if (ui.signin === current && addedKey(current.added) !== current.drawnKey) renderSignIn();
       };
       renderSignIn();
       refresh();
@@ -1400,7 +1347,11 @@ export function createAccounts(ctx) {
       current.callbackError = error.message;
     }
     current.submitting = false;
-    if (ui.signin === current) renderSignIn();
+    if (ui.signin !== current) return;
+    renderSignIn();
+    // Refused: the address is still in the field, to mend.
+    const active = document.activeElement;
+    if (current.callbackError && (!active || active === document.body)) $('signin-callback')?.focus({ preventScroll: true });
   }
 
   function closeSignIn() {
@@ -1420,6 +1371,9 @@ export function createAccounts(ctx) {
     if (ui.signin?.step === 'waiting' || ui.signin?.step === 'starting') return false;
     return closeSignIn();
   }
+
+  // addedKey is what the done step shows of the accounts added.
+  const addedKey = (added) => JSON.stringify([!!ui.watch, ...(added || []).map((a) => [a.name, a.label, a.state, (a.models || []).join(',')])]);
 
   function renderSignIn() {
     const current = ui.signin;
@@ -1467,13 +1421,22 @@ export function createAccounts(ctx) {
           current.submitted ? 'Finishing the sign-in' : `Waiting for ${p.name}`,
           device && login.expires_at ? h('span', { class: 'expires', id: 'signin-expires', text: `Code expires in ${until(login.expires_at).replace(/^in /, '')}` }) : null));
         if (!device) {
-          const manual = h('details', { class: 'manual', open: login.manual || !!current.callbackError },
+          // Open, and what was pasted in it, stay so when it is drawn anew
+          // (Sending…, a refusal).
+          const manual = h('details', {
+            class: 'manual', open: login.manual || !!current.manualOpen || !!current.callbackError,
+            ontoggle: (event) => { current.manualOpen = event.currentTarget.open; },
+          },
             h('summary', null, login.manual ? 'After signing in' : 'Browser shows a page that cannot be reached?'),
             h('p', { class: 'settings-note', text: login.manual
               ? `The ${p.name} page sends the browser to an address on this computer that nothing answers here. Copy that address from the browser's address bar and paste it below.`
               : 'The provider sends the browser back to localhost. If that page does not load — a browser on another machine, or the port was taken — copy its address and paste it here.' }),
             h('div', { class: 'callback-row' },
-              h('input', { id: 'signin-callback', type: 'text', spellcheck: 'false', placeholder: 'http://localhost:…/callback?code=…&state=…', onkeydown: (event) => { if (event.key === 'Enter') { event.preventDefault(); submitCallback(current); } } }),
+              h('input', {
+                id: 'signin-callback', type: 'text', spellcheck: 'false', placeholder: 'http://localhost:…/callback?code=…&state=…', value: current.callbackUrl || '',
+                oninput: (event) => { current.callbackUrl = event.target.value; },
+                onkeydown: (event) => { if (event.key === 'Enter') { event.preventDefault(); submitCallback(current); } },
+              }),
               h('button', { class: 'act strong', type: 'button', disabled: !!current.submitting, onclick: () => submitCallback(current) }, current.submitting ? 'Sending…' : 'Finish')),
             current.callbackError ? h('p', { class: 'settings-status', data: { kind: 'error' }, text: current.callbackError }) : null);
           parts.push(manual);
@@ -1485,6 +1448,7 @@ export function createAccounts(ctx) {
       }
       case 'done': {
         const added = current.added || [];
+        current.drawnKey = addedKey(added);
         body.replaceChildren(h('div', { class: 'signin-done' },
           h('span', { class: 'done-mark', 'aria-hidden': 'true', text: '✓' }),
           h('div', null,
@@ -1494,7 +1458,11 @@ export function createAccounts(ctx) {
         foot.replaceChildren(h('span', { class: 'settings-path' }),
           h('button', { class: 'act', type: 'button', onclick: () => { ui.signin = { step: 'choose' }; renderSignIn(); } }, 'Add another'),
           h('button', { class: 'primary', type: 'button', onclick: closeSignIn }, 'Done'));
-        foot.querySelector('.primary')?.focus();
+        // Done has the focus as the step comes, not each time it is drawn.
+        if (!current.focused) {
+          current.focused = true;
+          foot.querySelector('.primary')?.focus();
+        }
         break;
       }
       case 'failed':
@@ -1612,10 +1580,10 @@ export function createAccounts(ctx) {
   return {
     open, close, destroy, refresh, addAccount, addEndpoint, closeEndpoint, closeSignIn, dismissSignIn, key, summary,
     setRange, importFiles, pickFiles, addMenu,
-    // focusConnection brings the connection's model into view.
+    // focusConnection brings the connection controls into view.
     focusConnection: () => {
       $('accounts-scroll').scrollTo({ top: 0, behavior: 'smooth' });
-      const focus = () => ($('conn-model') || query('.conn-modes [aria-checked="true"]'))?.focus();
+      const focus = () => (query('#conn-api input') || query('.conn-modes [aria-checked="true"]'))?.focus();
       if (ui.data) setTimeout(focus, 50); else refresh().then(() => setTimeout(focus, 50));
     },
     get signingIn() { return !!ui.signin; },

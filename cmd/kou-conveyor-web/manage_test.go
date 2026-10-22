@@ -143,6 +143,9 @@ func TestSessionManagement(t *testing.T) {
 	if res, _ := h.do("PATCH", "/api/sessions/missing", `{"title":"x"}`); res.StatusCode != http.StatusNotFound {
 		t.Fatalf("patch missing: %d", res.StatusCode)
 	}
+	if res, _ := h.do("PATCH", "/api/sessions/missing", `{"effort":"max"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("effort patch missing: %d", res.StatusCode)
+	}
 
 	res, branch := h.do("POST", "/api/sessions/session-1/branch", fmt.Sprintf(`{"message_id":%q}`, second))
 	if res.StatusCode != http.StatusOK || branch["prompt"] != "second question" || branch["session_id"] == nil {
@@ -375,6 +378,98 @@ func TestEffortIsSharedWithTheTerminal(t *testing.T) {
 	}
 }
 
+func TestAppearanceIsSharedWithTheTerminal(t *testing.T) {
+	h := newHarness(t)
+	path := cockpit.PreferencesPath(h.server.opt.SettingsFile)
+	if _, prefs := h.do("GET", "/api/preferences", ""); prefs["accent"] != "orange" || prefs["shade"] != "graphite" || prefs["radius"] != float64(0) || prefs["shared"] != true {
+		t.Fatalf("before any choice: %v", prefs)
+	}
+	res, body := h.do("PUT", "/api/preferences", `{"accent":"#3B82F6","shade":"slate","radius":8}`)
+	if res.StatusCode != http.StatusOK || body["accent"] != "#3b82f6" || body["shade"] != "slate" || body["radius"] != float64(8) {
+		t.Fatalf("save: %d %v", res.StatusCode, body)
+	}
+	if got := cockpit.LoadPreferences(path).Appearance(); got != (cockpit.Appearance{Accent: "#3b82f6", Shade: "slate", Radius: 8}) {
+		t.Fatalf("the terminal cockpit reads %+v", got)
+	}
+	for _, bad := range []string{`{"accent":"chartreuse"}`, `{"shade":"plaid"}`, `{"radius":17}`, `{"radius":-1}`, `{}`} {
+		if res, _ := h.do("PUT", "/api/preferences", bad); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, res.StatusCode)
+		}
+	}
+	if got := cockpit.LoadPreferences(path).Appearance(); got.Shade != "slate" || got.Radius != 8 {
+		t.Fatalf("a refused save changed the appearance: %+v", got)
+	}
+	res, body = h.do("PUT", "/api/preferences", `{"accent":"orange","shade":"graphite","radius":0}`)
+	if res.StatusCode != http.StatusOK || body["accent"] != "orange" || body["shade"] != "graphite" || body["radius"] != float64(0) {
+		t.Fatalf("reset: %d %v", res.StatusCode, body)
+	}
+	if got := cockpit.LoadPreferences(path).Appearance(); got != (cockpit.Appearance{}) {
+		t.Fatalf("after the reset: %+v", got)
+	}
+}
+
+func TestEffortBelongsToItsSession(t *testing.T) {
+	h := newHarness(t)
+	run := func(body string) map[string]any {
+		t.Helper()
+		started := h.start(body)
+		h.stream(started["run_id"].(string), "")
+		_, session := h.do("GET", "/api/sessions/"+started["session_id"].(string), "")
+		return session
+	}
+
+	first := run(`{"prompt":"first","thinking_level":"max"}`)
+	if first["effort"] != "max" {
+		t.Fatalf("first effort = %v", first["effort"])
+	}
+	// A level a prompt asks for is not chosen for new sessions.
+	second := run(`{"prompt":"second"}`)
+	if second["effort"] != "high" {
+		t.Fatalf("new session effort = %v, want high", second["effort"])
+	}
+
+	same := h.start(fmt.Sprintf(`{"prompt":"again","session_id":%q,"resume":true}`, first["id"]))
+	h.stream(same["run_id"].(string), "")
+	_, first = h.do("GET", "/api/sessions/"+first["id"].(string), "")
+	if first["effort"] != "max" {
+		t.Fatalf("same session effort = %v, want max", first["effort"])
+	}
+
+	// A composer chooses: new sessions start with it, those that have their
+	// own keep it.
+	if res, _ := h.do("PUT", "/api/preferences", `{"effort":"low"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("choose: %d", res.StatusCode)
+	}
+	if third := run(`{"prompt":"third"}`); third["effort"] != "low" {
+		t.Fatalf("new session effort = %v, want the one chosen", third["effort"])
+	}
+	for _, s := range []map[string]any{first, second} {
+		again := h.start(fmt.Sprintf(`{"prompt":"again","session_id":%q,"resume":true}`, s["id"]))
+		h.stream(again["run_id"].(string), "")
+		_, after := h.do("GET", "/api/sessions/"+s["id"].(string), "")
+		if after["effort"] != s["effort"] {
+			t.Fatalf("session %v: effort %v, want its own %v", s["id"], after["effort"], s["effort"])
+		}
+	}
+	// So do their queued prompts.
+	id := first["id"].(string)
+	if res, body := h.do("POST", "/api/sessions/"+id+"/queue", `{"text":"print-thinking"}`); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("enqueue: %d %v", res.StatusCode, body)
+	} else {
+		started, _ := body["run"].(map[string]any)
+		got, _ := h.stream(started["id"].(string), "")
+		answer := ""
+		for _, e := range got.entries() {
+			if e.Kind == "assistant" {
+				answer = e.Text
+			}
+		}
+		if answer != "thinking=max" {
+			t.Fatalf("a queued prompt thought with %q, want its session's", answer)
+		}
+	}
+}
+
 func TestEachPromptShowsItsChanges(t *testing.T) {
 	h := newHarness(t)
 	run := func(prompt string) (string, streamed) {
@@ -481,4 +576,47 @@ func TestPinnedSessionsAreOrdered(t *testing.T) {
 	if res, _ := h.do("PUT", "/api/pins", `{"order":"nope"}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad order: %d", res.StatusCode)
 	}
+}
+
+// A brand-new session, whose runner has not written its file yet, goes
+// below the pinned sessions, not above them.
+func TestNewSessionGoesBelowThePinned(t *testing.T) {
+	h := newHarness(t)
+	for _, id := range []string{"s-a", "s-b"} {
+		started := h.start(fmt.Sprintf(`{"prompt":"hello","session_id":%q}`, id))
+		h.stream(started["run_id"].(string), "")
+	}
+	if res, _ := h.do("PATCH", "/api/sessions/s-a", `{"pinned":true}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("pin: %d", res.StatusCode)
+	}
+	runID := h.start(`{"prompt":"wait for it","session_id":"s-new"}`)["run_id"].(string)
+	// The session has no file: as before its runner writes one.
+	path := cockpit.SessionPath(h.server.opt.SessionDir, "s-new")
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(path); err == nil || time.Now().After(deadline) {
+			break
+		}
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.Get(h.http.URL + "/api/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sessions []sessionSummary
+	err = json.UnmarshalRead(res.Body, &sessions)
+	res.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, s := range sessions {
+		ids = append(ids, s.ID)
+	}
+	if got := strings.Join(ids, ","); got != "s-a,s-new,s-b" {
+		t.Fatalf("sessions = %s", got)
+	}
+	h.do("POST", "/api/runs/"+runID+"/cancel", "")
+	h.stream(runID, "")
 }

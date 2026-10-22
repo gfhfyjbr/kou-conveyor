@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"mime"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -162,8 +163,9 @@ func (s *server) handleCheckSettings(w http.ResponseWriter, r *http.Request) {
 
 // ---------------------------------------------------------------- preferences
 
-// effort is what runs think with unless a prompt asks otherwise: the level
-// last chosen in either cockpit, else the server's -thinking-level.
+// effort is what a new session thinks with unless its prompt asks
+// otherwise: the level last chosen in a composer of either cockpit, else
+// the server's -thinking-level. A session that has its own keeps it.
 func (s *server) effort() (level string, saved bool) {
 	if p := cockpit.LoadPreferences(cockpit.PreferencesPath(s.opt.SettingsFile)); p.Effort != "" {
 		return p.Effort, true
@@ -175,12 +177,15 @@ func (s *server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.preferencesView())
 }
 
-// preferencesView is what the cockpit reads of the preferences: the
-// effort, the tool profile and the sandbox of the next runs, and the
-// choices there are.
+// preferencesView is what the cockpit reads of the preferences: the effort
+// and the model last chosen, which new sessions start with, the tool
+// profile and the sandbox of the next runs, and the choices there are; and
+// how both cockpits look. Shared says whether there are preferences to
+// keep: without, what a cockpit chooses stays its own.
 func (s *server) preferencesView() map[string]any {
 	effort, saved := s.effort()
-	p := cockpit.LoadPreferences(cockpit.PreferencesPath(s.opt.SettingsFile))
+	path := cockpit.PreferencesPath(s.opt.SettingsFile)
+	p := cockpit.LoadPreferences(path)
 	profiles := make([]map[string]string, 0, len(tool.Profiles))
 	for _, profile := range tool.Profiles {
 		profiles = append(profiles, map[string]string{"value": string(profile), "description": profile.Description()})
@@ -190,19 +195,26 @@ func (s *server) preferencesView() map[string]any {
 		sandboxes = append(sandboxes, map[string]string{"value": mode, "description": runconfig.SandboxDescription(mode)})
 	}
 	return map[string]any{
-		"effort": effort, "saved": saved,
+		"effort": effort, "saved": saved, "last_model": p.LastModel,
 		"tool_profile": cmp.Or(p.ToolProfile, string(tool.ProfileAuto)), "tool_profiles": profiles,
 		"sandbox": cmp.Or(p.Sandbox, runconfig.SandboxOff), "sandboxes": sandboxes,
+		"accent": cmp.Or(p.Accent, cockpit.DefaultAccent), "shade": cmp.Or(p.Shade, cockpit.DefaultShade), "radius": p.Radius,
+		"shared": path != "",
 	}
 }
 
-// handleSavePreferences records the effort, the tool profile or the
-// sandbox for both cockpits: the terminal one picks them up too.
+// handleSavePreferences records the effort or the model last chosen in a
+// composer, the tool profile or the sandbox, or how the cockpits look, for
+// both cockpits: the terminal one picks them up too.
 func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	var change struct {
 		Effort      *string `json:"effort"`
+		LastModel   *string `json:"last_model"`
 		ToolProfile *string `json:"tool_profile"`
 		Sandbox     *string `json:"sandbox"`
+		Accent      *string `json:"accent"`
+		Shade       *string `json:"shade"`
+		Radius      *int    `json:"radius"`
 	}
 	if !decodeJSON(w, r, &change) {
 		return
@@ -210,6 +222,12 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	if change.Effort != nil && !cockpit.ValidThinkingLevel(*change.Effort) {
 		writeError(w, http.StatusBadRequest, "effort must be low, medium, high, xhigh or max")
 		return
+	}
+	if change.LastModel != nil {
+		if *change.LastModel = strings.TrimSpace(*change.LastModel); *change.LastModel == "" || cockpit.ValidModel(*change.LastModel) != nil {
+			writeError(w, http.StatusBadRequest, "last_model must be a model ID without spaces")
+			return
+		}
 	}
 	if change.ToolProfile != nil {
 		if _, err := tool.ParseProfile(*change.ToolProfile); err != nil {
@@ -223,8 +241,23 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if change.Effort == nil && change.ToolProfile == nil && change.Sandbox == nil {
-		writeError(w, http.StatusBadRequest, "nothing to save: effort, tool_profile or sandbox")
+	if change.Accent != nil {
+		if _, err := cockpit.NormalizeAccent(*change.Accent); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if change.Shade != nil && !cockpit.ValidShade(*change.Shade) {
+		writeError(w, http.StatusBadRequest, "shade must be "+strings.Join(cockpit.Shades(), ", "))
+		return
+	}
+	if change.Radius != nil && !cockpit.ValidRadius(*change.Radius) {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("radius must be 0 to %d", cockpit.MaxRadius))
+		return
+	}
+	if change.Effort == nil && change.LastModel == nil && change.ToolProfile == nil && change.Sandbox == nil &&
+		change.Accent == nil && change.Shade == nil && change.Radius == nil {
+		writeError(w, http.StatusBadRequest, "nothing to save: effort, last_model, tool_profile, sandbox, accent, shade or radius")
 		return
 	}
 	path := cockpit.PreferencesPath(s.opt.SettingsFile)
@@ -237,11 +270,23 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	if change.Effort != nil {
 		err = cockpit.SaveEffort(path, *change.Effort)
 	}
+	if err == nil && change.LastModel != nil {
+		err = cockpit.SaveLastModel(path, *change.LastModel)
+	}
 	if err == nil && change.ToolProfile != nil {
 		err = cockpit.SaveToolProfile(path, *change.ToolProfile)
 	}
 	if err == nil && change.Sandbox != nil {
 		err = cockpit.SaveSandbox(path, *change.Sandbox)
+	}
+	if err == nil && change.Accent != nil {
+		err = cockpit.SaveAccent(path, *change.Accent)
+	}
+	if err == nil && change.Shade != nil {
+		err = cockpit.SaveShade(path, *change.Shade)
+	}
+	if err == nil && change.Radius != nil {
+		err = cockpit.SaveRadius(path, *change.Radius)
 	}
 	s.settingsMu.Unlock()
 	if err != nil {
@@ -279,12 +324,17 @@ func (s *server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	var change struct {
 		Title  *string `json:"title,omitzero"`
 		Pinned *bool   `json:"pinned,omitzero"`
+		Effort *string `json:"effort,omitzero"`
 	}
 	if !cockpit.ValidSessionID(id) {
 		writeError(w, http.StatusNotFound, "session not found")
 		return
 	}
 	if !decodeJSON(w, r, &change) {
+		return
+	}
+	if change.Effort != nil && *change.Effort != "" && !cockpit.ValidThinkingLevel(*change.Effort) {
+		writeError(w, http.StatusBadRequest, "effort must be low, medium, high, xhigh or max")
 		return
 	}
 	if change.Title != nil {
@@ -299,8 +349,22 @@ func (s *server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if change.Effort != nil {
+		// SetSessionEffort also serves a fresh session immediately after a
+		// run is accepted, before its transcript file exists. The HTTP PATCH
+		// is only for an existing session, so do not let an arbitrary ID
+		// create metadata on disk.
+		if _, err := os.Stat(cockpit.SessionPath(ws.opt.SessionDir, id)); err != nil {
+			sessionError(w, err)
+			return
+		}
+		if err := cockpit.SetSessionEffort(ws.opt.SessionDir, id, *change.Effort); err != nil {
+			sessionError(w, err)
+			return
+		}
+	}
 	meta := cockpit.LoadMeta(ws.opt.SessionDir, id)
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": meta.Title, "pinned": meta.Pinned})
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": meta.Title, "pinned": meta.Pinned, "effort": meta.Effort})
 }
 
 // handleOrderPins puts the workspace's pinned sessions in the order the

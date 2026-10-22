@@ -111,6 +111,15 @@ func TestSettingsForModel(t *testing.T) {
 	if got := pinned.ForModel("gemini-3.5-flash").Through(g); got.API != cockpit.APIResponses || got.BaseURL != g.URL+"/v1" {
 		t.Errorf("a Gemini model = %+v, want the Responses API", got)
 	}
+	// Settings that name no model, as Accounts saves them, chose the protocol
+	// for every model.
+	every := cockpit.Settings{API: cockpit.APIGateway, Protocol: cockpit.APIResponses}
+	if got := every.ForModel("claude-sonnet-5").Through(g); got.API != cockpit.APIResponses || got.Model != "claude-sonnet-5" || got.BaseURL != g.URL+"/v1" {
+		t.Errorf("a protocol chosen without a model = %+v, want the Responses API", got)
+	}
+	if got := (cockpit.Settings{API: cockpit.APIGateway}).ForModel("claude-sonnet-5").Through(g); got.API != cockpit.APIMessages {
+		t.Errorf("no protocol chosen = %+v, want the model's", got)
+	}
 	direct := cockpit.Settings{API: cockpit.APIMessages, BaseURL: "https://api.anthropic.com", APIKey: "sk-ant", Model: "claude-opus-5"}
 	if got := direct.ForModel("claude-haiku-4-5"); got.API != cockpit.APIMessages || got.APIKey != "sk-ant" || got.Model != "claude-haiku-4-5" {
 		t.Errorf("a direct connection = %+v, want its endpoint with the model", got)
@@ -148,6 +157,66 @@ func TestListModelsThroughTheGateway(t *testing.T) {
 	off := cockpit.ListModels(t.Context(), "", filepath.Join(t.TempDir(), "settings.json"), s, func(string) string { return "" })
 	if off.Error == "" || off.Source != "gateway" || len(off.Models) != 0 {
 		t.Errorf("without a gateway = %+v", off)
+	}
+	// The settings' model is not the one new sessions start with: the
+	// first served is, until a composer chooses.
+	s.Model = "grok-4.7"
+	if got := cockpit.ListModels(t.Context(), "", settings, s, func(string) string { return "" }).Default; got != "claude-opus-5-5" {
+		t.Errorf("default = %q, want the first served", got)
+	}
+	if err := cockpit.SaveLastModel(cockpit.PreferencesPath(settings), "gpt-6-astra"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cockpit.ListModels(t.Context(), "", settings, s, func(string) string { return "" }).Default; got != "gpt-6-astra" {
+		t.Errorf("default = %q, want the one last chosen", got)
+	}
+}
+
+// A new session starts with the model last chosen, else the one the
+// settings of an endpoint or the environment name, else the first listed
+// that an agent runs on and no account waits out a limit for.
+func TestNewSessionModel(t *testing.T) {
+	listed := cockpit.Catalog{Models: []cockpit.ModelInfo{
+		{ID: "gpt-image-2", Media: true}, {ID: "claude-opus-5-5", Cooling: true}, {ID: "grok-4.7"},
+	}}
+	if got := listed.First(); got != "grok-4.7" {
+		t.Errorf("first = %q", got)
+	}
+	cooling := cockpit.Catalog{Models: []cockpit.ModelInfo{{ID: "gpt-image-2", Media: true}, {ID: "claude-opus-5-5", Cooling: true}}}
+	if got := cooling.First(); got != "claude-opus-5-5" {
+		t.Errorf("first of models all waiting = %q", got)
+	}
+	if got := (cockpit.Catalog{Models: []cockpit.ModelInfo{{ID: "gpt-image-2", Media: true}}}).First(); got != "" {
+		t.Errorf("first of media alone = %q", got)
+	}
+
+	env := func(vars map[string]string) func(string) string { return func(k string) string { return vars[k] } }
+	none := env(nil)
+	gateway := cockpit.ResolveConnection("", cockpit.Settings{API: cockpit.APIGateway, Model: "claude-opus-5-5"}, none)
+	endpoint := cockpit.ResolveConnection("", cockpit.Settings{API: cockpit.APIResponses, BaseURL: "https://example.test/v1", Model: "gpt-6-astra"}, none)
+	unnamed := cockpit.ResolveConnection("", cockpit.Settings{API: cockpit.APIResponses, BaseURL: "https://example.test/v1"}, none)
+	named := cockpit.ResolveConnection("", cockpit.Settings{}, env(map[string]string{"KOU_CONVEYOR_LLM_MODEL": "env-model"}))
+	bare := cockpit.ResolveConnection("", cockpit.Settings{}, none)
+	for _, c := range []struct {
+		name, last string
+		c          cockpit.Connection
+		catalog    cockpit.Catalog
+		want       string
+	}{
+		{"last chosen", "chosen", endpoint, listed, "chosen"},
+		{"endpoint's model", "", endpoint, listed, "gpt-6-astra"},
+		{"environment's model", "", named, listed, "env-model"},
+		{"gateway: first served", "", gateway, listed, "grok-4.7"},
+		{"endpoint without a model: first listed", "", unnamed, listed, "grok-4.7"},
+		{"nothing listed: the provider's default", "", bare, cockpit.Catalog{}, bare.Model},
+		{"gateway, nothing listed", "", gateway, cockpit.Catalog{}, "claude-opus-5-5"},
+	} {
+		if got := cockpit.NewSessionModel(c.last, c.c, c.catalog); got != c.want || got == "" {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+	if gateway.NamedModel() != "" || unnamed.NamedModel() != "" || bare.NamedModel() != "" || bare.Model == "" {
+		t.Errorf("named models: gateway %q, unnamed %q, bare %q (%q)", gateway.NamedModel(), unnamed.NamedModel(), bare.NamedModel(), bare.Model)
 	}
 }
 

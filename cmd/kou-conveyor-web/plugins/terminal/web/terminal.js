@@ -123,9 +123,22 @@ export default function activate(cockpit) {
     hot.closed = hot.closed.filter((entry) => entry.until > Date.now());
     return hot.closed;
   };
-  const undo = h('div', { class: 'term-undo', id: 'terminal-undo', hidden: true, role: 'status' });
+  // The bar is made once: each second changes its count alone, so that a
+  // click on Reopen, the focus on it or its hover is not lost to a tick,
+  // and what a screen reader reads out is what was closed, once.
+  const undoKind = h('b');
+  const undoTitle = h('span');
+  const undoLeft = h('span', { class: 'term-undo-left', 'aria-hidden': 'true' });
+  const undo = h('div', { class: 'term-undo', id: 'terminal-undo', hidden: true },
+    h('span', { class: 'term-undo-what', role: 'status' }, undoKind, undoTitle),
+    undoLeft,
+    h('button', { class: 'act strong', type: 'button', onclick: () => reopen() }, `Reopen ${keys.reopen}`),
+    h('button', { class: 'icon small', type: 'button', 'aria-label': 'Dismiss', onclick: () => { hot.closed = []; drawUndo(); } }, '×'));
   cockpit.ui.mount('overlays', { id: 'terminal-undo', order: 70, node: undo });
   let undoTimer = 0;
+  const put = (el, text) => {
+    if (el.textContent !== text) el.textContent = text;
+  };
   function drawUndo() {
     clearTimeout(undoTimer);
     const list = recent();
@@ -133,11 +146,9 @@ export default function activate(cockpit) {
     undo.hidden = !last;
     if (!last) return;
     const left = Math.max(0, Math.ceil((last.until - Date.now()) / 1000));
-    undo.replaceChildren(
-      h('span', { class: 'term-undo-what' }, h('b', { text: last.kind === 'pane' ? 'Pane closed' : 'Terminal closed' }), ` · ${last.title || 'Terminal'}`),
-      h('span', { class: 'term-undo-left', text: `its shell ends in ${left}s` }),
-      h('button', { class: 'act strong', type: 'button', onclick: () => reopen() }, `Reopen ${keys.reopen}`),
-      h('button', { class: 'icon small', type: 'button', 'aria-label': 'Dismiss', onclick: () => { hot.closed = []; drawUndo(); } }, '×'));
+    put(undoKind, last.kind === 'pane' ? 'Pane closed' : 'Terminal closed');
+    put(undoTitle, ` · ${last.title || 'Terminal'}`);
+    put(undoLeft, `its shell ends in ${left}s`);
     undoTimer = setTimeout(drawUndo, 1000 - ((Date.now() - last.at) % 1000));
   }
   cockpit.onDispose(() => clearTimeout(undoTimer));
@@ -333,13 +344,14 @@ export default function activate(cockpit) {
     },
   });
 
-  // The terminals follow the cockpit's light and dark, those mounted
-  // elsewhere too.
+  // The terminals follow the cockpit's light and dark, and its accent and
+  // shade, those mounted elsewhere too.
   const retheme = () => {
     for (const view of views) cockpit.safely(() => view.applyTheme());
     for (const mounted of mounts) cockpit.safely(() => mounted.applyTheme());
   };
   cockpit.on('theme', retheme);
+  cockpit.on('appearance', retheme);
   const scheme = matchMedia('(prefers-color-scheme: light)');
   cockpit.listen(scheme, 'change', retheme);
 
@@ -366,8 +378,9 @@ export default function activate(cockpit) {
         const loose = (terminals || []).filter((t) => !t.exited && !shown.has(t.id));
         if (!loose.length) return;
         const root = home();
+        const count = h('span', { text: String(loose.length) });
         box.replaceChildren(
-          h('div', { class: 'label' }, h('span', { text: 'Shells without a tab' }), h('span', { text: String(loose.length) })),
+          h('div', { class: 'label' }, h('span', { text: 'Shells without a tab' }), count),
           h('div', { class: 'hello-rows' }, loose.map((t) => h('div', { class: 'hello-row' },
             h('span', { class: 'what' },
               h('b', { text: t.title || (root && t.cwd?.startsWith(root) ? `~${t.cwd.slice(root.length)}` : t.cwd) || t.shell }),
@@ -387,6 +400,10 @@ export default function activate(cockpit) {
                 onclick: (event) => {
                   cockpit.api(`/api/terminals/${encodeURIComponent(t.id)}`, { method: 'DELETE' }).catch((error) => cockpit.toast(error.message, 'error'));
                   event.currentTarget.closest('.hello-row')?.remove();
+                  // The count says what is left; with none, no section.
+                  const left = box.querySelectorAll('.hello-row').length;
+                  count.textContent = String(left);
+                  if (!left) box.hidden = true;
                 },
               }, 'End'))))));
         box.hidden = false;

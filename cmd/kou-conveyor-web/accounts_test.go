@@ -164,7 +164,7 @@ func TestAccountsGateway(t *testing.T) {
 		if err != nil || published.URL != "http://"+address || published.APIKey != key {
 			t.Fatalf("published = %+v, %v", published, err)
 		}
-		if res, _ := h.do("PUT", "/api/connection", `{"mode":"gateway"}`); res.StatusCode != http.StatusBadRequest {
+		if res, _ := h.do("PUT", "/api/connection", `{"mode":"gateway"}`); res.StatusCode != http.StatusOK {
 			t.Errorf("the gateway without a model = %d", res.StatusCode)
 		}
 		if res, _ := h.do("PUT", "/api/connection", `{"mode":"telepathy"}`); res.StatusCode != http.StatusBadRequest {

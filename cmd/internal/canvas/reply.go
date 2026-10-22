@@ -48,6 +48,32 @@ func outputOf(n *Node) string {
 	return OutputReplies
 }
 
+// Whether what an agent answers at the end of a turn goes back, as a
+// reply, to the nodes that sent it messages straight: its config's reply.
+const (
+	// ReplyAuto: it does, unless the sender's CanvasSend waited for it or
+	// an edge takes it there.
+	ReplyAuto = "auto"
+	// ReplyOff: it stays with the user; the agent answers nodes with
+	// CanvasSend. A CanvasSend that waits for its answer has it still.
+	ReplyOff = "off"
+)
+
+// replyOf is a node's reply setting: off by default for a foreman, whose
+// answers are its reports to the user, auto for the others.
+func replyOf(n *Node) string {
+	switch strings.TrimSpace(n.configString("reply")) {
+	case ReplyAuto:
+		return ReplyAuto
+	case ReplyOff:
+		return ReplyOff
+	}
+	if n.Kind == KindAgent && n.Preset == "foreman" {
+		return ReplyOff
+	}
+	return ReplyAuto
+}
+
 // maxPrompts bounds the prompts of an agent's session whose messages are
 // kept until they are answered: those the user drops from the queue are
 // never answered.
@@ -212,6 +238,13 @@ func (c *Canvas) answerLocked(id string, out Output, causes []*Message, reason s
 		for _, m := range asked {
 			c.settleLocked(m.ID, "", reason)
 		}
+		// What waits for its answer to the canvas is told there is none
+		// (CanvasWait): the run is over, no output comes of it.
+		if along {
+			st.unanswered++
+			st.noAnswer = reason
+			st.wake()
+		}
 		return
 	}
 	switch outputOf(n) {
@@ -233,6 +266,9 @@ func (c *Canvas) answerLocked(id string, out Output, causes []*Message, reason s
 	}
 	if along {
 		c.putOutLocked(id, out, chain, answered)
+	}
+	if replyOf(n) == ReplyOff {
+		return
 	}
 	for _, m := range asked {
 		if !answered[m.Actor] && !(along && c.edgeToLocked(id, out.Port, m.Actor)) {
@@ -263,9 +299,12 @@ func (c *Canvas) replyLocked(from *Node, m *Message, text string) {
 		c.noticeLocked("warning", fmt.Sprintf("«%s»'s answer to «%s» was dropped: its chain went over %d hops, which looks like a loop.", from.Title, sender.Title, limit), sender.ID, "")
 		return
 	}
+	// A kou agent reads it at once, between its tool calls: an answer
+	// that waits for its turn to end comes when what it asked is long
+	// settled.
 	reply := &Message{
 		ID: newID("m_", 10), Chain: m.Chain, Hops: hops, From: Port{from.ID, "out"}, To: Port{sender.ID, "in"}, At: now(),
-		Title: "Reply", Text: headerOf("reply from", from) + text, Deliver: DeliverQueue,
+		Title: "Reply", Text: headerOf("reply from", from) + text, Deliver: defaultDelivery(sender),
 		Actor: from.ID, Reply: true, InReplyTo: m.ID, State: MessagePending,
 	}
 	c.longLocked(reply)

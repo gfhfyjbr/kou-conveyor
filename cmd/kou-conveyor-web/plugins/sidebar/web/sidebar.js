@@ -8,7 +8,7 @@
 // icon is SVG markup of the plugin's own; multiple false keeps one tab of
 // the kind; hello false leaves it out of Hello; key is the key that opens
 // it, for Hello to show. create(tab) makes the view of a tab when it first
-// shows — tab is { id, kind, state, save(state), setTitle(text),
+// shows — tab is { id, kind, state, save(state), setTitle(text, detail),
 // setBadge(text), close(), activate(), visible(), sidebar } — and returns
 //
 //   { node, title, focus(), shown(), hidden(), resized(), close(), dispose() }
@@ -18,6 +18,12 @@
 // (returning false keeps it) and dispose whenever the view goes: the tab
 // closed, its plugin loaded anew or the workspace left. What a tab saves
 // comes back to it after a reload, per workspace.
+//
+// A title is short, what tells the tab from the others; setTitle's detail
+// is the whole of it (a shell's path and what runs there), which the tab's
+// tooltip says. The tabs say their titles while all of them fit; else each
+// is its icon, the shown one's title beside them, and those that do not
+// fit even so are in the menu of "⋯ N".
 //
 // With no tab open the sidebar says Hello, which lists the kinds to open
 // and the sections plugins add to "sidebar.hello" ({ id, order, render(tab)
@@ -46,10 +52,21 @@ export default function activate(cockpit) {
   // ---------------------------------------------------------------- the panel
 
   const strip = h('div', { class: 'sb-tabs', id: 'sidebar-tabs', role: 'tablist', 'aria-label': 'Sidebar tabs' });
+  // Where the tabs do not all fit with their names (fitStrip): the menu of
+  // all of them, and the name of the one shown.
+  const more = h('button', {
+    class: 'sb-more', id: 'sidebar-more', type: 'button', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
+    onclick: () => service('menu')?.toggle(more, () => tabItems()),
+  });
+  const captionTitle = h('span', { class: 'sb-caption-title' });
+  const captionBadge = h('span', { class: 'sb-badge' });
+  const caption = h('div', { class: 'sb-caption', id: 'sidebar-caption', hidden: true }, captionTitle, captionBadge,
+    h('button', { class: 'sb-x', type: 'button', tabindex: '-1', 'aria-label': 'Close tab', title: 'Close tab', onclick: () => { const t = activeTab(); if (t) close(t.id); } }, '×'));
+  const bar = h('div', { class: 'sb-bar' }, strip, more, caption);
   const add = h('button', { class: 'icon sb-add', id: 'sidebar-new', type: 'button', title: 'New tab', 'aria-label': 'New tab', onclick: () => open('hello') }, svg(PLUS));
   const body = h('div', { class: 'sb-body', id: 'sidebar-body' });
   const node = h('aside', { class: 'sidebar', id: 'sidebar', 'aria-label': 'Sidebar' },
-    h('header', { class: 'sb-head' }, strip, add,
+    h('header', { class: 'sb-head' }, bar, add,
       h('button', { class: 'icon sb-close', id: 'sidebar-close', type: 'button', 'aria-label': 'Close sidebar', title: 'Close sidebar (S)', onclick: () => hide() }, '×')),
     body);
   cockpit.contribute('layout.panel', {
@@ -68,11 +85,15 @@ export default function activate(cockpit) {
 
   const kinds = () => cockpit.contributions('sidebar.tab', { unique: 'id' });
   const kindOf = (id) => kinds().find((k) => k.id === id) || null;
-  const icon = (kind) => {
+  // icon draws a kind's icon; a kind with none (or gone) is the first
+  // letter of its name.
+  const icon = (kind, name = kind?.title || kind?.id || '') => {
     const markup = kind?.icon;
     if (markup instanceof Node) return markup.cloneNode(true);
     if (typeof markup === 'string' && markup.trim().startsWith('<svg')) return svg(markup);
-    return h('span', { class: 'sb-glyph', text: typeof markup === 'string' ? markup : '◇' });
+    if (typeof markup === 'string' && markup.trim()) return h('span', { class: 'sb-glyph', text: markup });
+    const letter = [...String(name).trim()][0]?.toUpperCase();
+    return letter ? h('span', { class: 'sb-mono', text: letter }) : h('span', { class: 'sb-glyph', text: '◇' });
   };
 
   // ---------------------------------------------------------------- the tabs of a workspace
@@ -91,6 +112,8 @@ export default function activate(cockpit) {
   const tabNamed = (id) => tabs().find((t) => t.id === id) || null;
   const activeTab = () => tabNamed(set().active) || tabs()[0] || null;
 
+  // What is kept of a tab: its title's detail only where it has one.
+  const stored = (t) => ({ id: t.id, kind: t.kind, title: t.title || '', ...(t.detail ? { detail: t.detail } : {}), state: t.state ?? null });
   let saving = 0;
   function save() {
     clearTimeout(saving);
@@ -98,7 +121,7 @@ export default function activate(cockpit) {
       // What each tab saves, and the tabs, per workspace.
       const workspaces = {};
       for (const [ws, s] of Object.entries(hot.sets)) {
-        workspaces[ws] = { active: s.active, tabs: s.tabs.map((t) => ({ id: t.id, kind: t.kind, title: t.title || '', state: t.state ?? null })) };
+        workspaces[ws] = { active: s.active, tabs: s.tabs.map(stored) };
       }
       prefs.set('sidebar', { version: 1, workspaces });
     }, 150);
@@ -106,7 +129,7 @@ export default function activate(cockpit) {
   cockpit.onDispose(() => {
     clearTimeout(saving);
     const workspaces = {};
-    for (const [ws, s] of Object.entries(hot.sets)) workspaces[ws] = { active: s.active, tabs: s.tabs.map((t) => ({ id: t.id, kind: t.kind, title: t.title || '', state: t.state ?? null })) };
+    for (const [ws, s] of Object.entries(hot.sets)) workspaces[ws] = { active: s.active, tabs: s.tabs.map(stored) };
     prefs.set('sidebar', { version: 1, workspaces });
   });
 
@@ -134,15 +157,20 @@ export default function activate(cockpit) {
         record.state = state ?? null;
         save();
       },
-      setTitle(text) {
+      setTitle(text, detail) {
         const title = String(text || '').trim();
-        if (record.title === title) return;
+        const whole = String(detail || '').trim();
+        if (record.title === title && (record.detail || '') === whole) return;
         record.title = title;
+        if (whole) record.detail = whole;
+        else delete record.detail;
         drawStrip();
         save();
       },
       setBadge(text) {
-        record.badge = text == null || text === '' ? '' : String(text);
+        const badge = text == null || text === '' ? '' : String(text);
+        if (record.badge === badge) return;
+        record.badge = badge;
         drawStrip();
       },
       close: () => close(record.id),
@@ -227,7 +255,11 @@ export default function activate(cockpit) {
           onauxclick: (event) => { if (event.button === 1) { event.preventDefault(); close(record.id); } },
           onkeydown: (event) => {
             if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activate(record.id); }
-            if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); close(record.id); }
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+              event.preventDefault();
+              // The focus goes on to the tab shown now, so the arrows go on working.
+              close(record.id).then((ok) => { if (ok) tabNodes.get(set().active)?.focus(); });
+            }
             if (event.key === 'ArrowRight' || event.key === 'ArrowLeft') { event.preventDefault(); next(event.key === 'ArrowRight' ? 1 : -1, true); }
           },
           ondragstart: (event) => {
@@ -256,12 +288,17 @@ export default function activate(cockpit) {
       const iconBox = el.querySelector('.sb-icon');
       if (iconBox.dataset.kind !== `${record.kind}:${kind ? 1 : 0}`) {
         iconBox.dataset.kind = `${record.kind}:${kind ? 1 : 0}`;
-        iconBox.replaceChildren(icon(kind));
+        iconBox.replaceChildren(icon(kind, kind?.title || record.kind));
       }
       const label = el.querySelector('.sb-title');
       if (label.textContent !== title) label.textContent = title;
-      el.querySelector('.sb-badge').textContent = record.badge || '';
-      el.title = title;
+      const badge = el.querySelector('.sb-badge');
+      if (badge.textContent !== (record.badge || '')) badge.textContent = record.badge || '';
+      // The tooltip says what the title leaves out (a terminal's whole path);
+      // the name is the tab's own, for when it shows only its icon.
+      const tip = record.detail || title;
+      if (el.title !== tip) el.title = tip;
+      el.setAttribute('aria-label', record.badge ? `${title} (${record.badge})` : title);
       el.dataset.kind = record.kind;
       el.setAttribute('aria-selected', String(record.id === s.active));
       return el;
@@ -272,8 +309,99 @@ export default function activate(cockpit) {
       if (el === at) at = at.nextSibling;
       else strip.insertBefore(el, at);
     }
-    strip.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // The caption says the name of the tab shown, where the tabs are icons.
+    const shownTab = tabNamed(s.active);
+    const name = shownTab ? shownTab.title || kindOf(shownTab.kind)?.title || shownTab.kind : '';
+    if (captionTitle.textContent !== name) captionTitle.textContent = name;
+    if (captionBadge.textContent !== (shownTab?.badge || '')) captionBadge.textContent = shownTab?.badge || '';
+    caption.title = shownTab?.detail || name;
+    fitStrip();
   }
+
+  // fitStrip fits the tabs to the strip's room. They say their names while
+  // all of them fit so; else each is its icon and the caption beside them
+  // says the shown one's name, and the icons that do not fit either are in
+  // the menu of "⋯ N" — the shown tab's never: it takes the last place.
+  const CAPTION_MIN = 96; // the least room the caption is left, in px
+  const NAMES_SLACK = 12; // the names come back with this much to spare, so the strip does not flap
+  let fittedTo = ''; // the room and the tabs the strip was last fitted to
+  let settling = false; // while the panel's width moves
+  function fitStrip(force = false) {
+    const room = bar.clientWidth;
+    const els = [...strip.children];
+    // The panel closed, or only starting to open: nothing to fit to yet.
+    if (room < 120 || settling || !els.length) return;
+    const s = set();
+    const key = `${room}|${s.active}|${s.tabs.map((t) => `${t.id}:${t.title}:${t.badge || ''}`).join('|')}`;
+    if (key === fittedTo && !force) return;
+    fittedTo = key;
+    const wasIcons = bar.dataset.mode === 'icons';
+    for (const el of els) el.hidden = false;
+    more.hidden = true;
+    caption.hidden = true;
+    strip.scrollLeft = 0;
+    bar.dataset.mode = 'names';
+    bar.dataset.measure = '';
+    // Round corners set the tabs apart (sidebar.css): the gaps take room too.
+    const gap = parseFloat(getComputedStyle(strip).columnGap) || 0;
+    const need = els.reduce((sum, el) => sum + el.getBoundingClientRect().width, 0) + gap * (els.length - 1);
+    delete bar.dataset.measure;
+    if (need + (wasIcons ? NAMES_SLACK : 0) <= room) return;
+    bar.dataset.mode = 'icons';
+    caption.hidden = false;
+    const width = els[0].getBoundingClientRect().width;
+    if (els.length * (width + gap) - gap + CAPTION_MIN <= room) return;
+    more.hidden = false;
+    more.textContent = `⋯ ${els.length}`;
+    const fits = Math.max(1, Math.floor((room - CAPTION_MIN - more.getBoundingClientRect().width + gap) / (width + gap)));
+    if (fits >= els.length) {
+      more.hidden = true;
+      return;
+    }
+    const shownAt = Math.max(0, els.findIndex((el) => el.getAttribute('aria-selected') === 'true'));
+    const visible = els.slice(0, fits);
+    if (shownAt >= fits) visible[fits - 1] = els[shownAt];
+    for (const el of els) el.hidden = !visible.includes(el);
+    const rest = els.length - fits;
+    more.textContent = `⋯ ${rest}`;
+    more.title = `All tabs: ${rest} more`;
+    more.setAttribute('aria-label', `All tabs (${rest} more)`);
+  }
+
+  // The menu of "⋯ N": all the tabs, the shown one marked.
+  function tabItems() {
+    const s = set();
+    return s.tabs.map((record) => {
+      const kind = kindOf(record.kind);
+      const title = record.title || kind?.title || record.kind;
+      // The second line says what the title does not ("npm run dev · ~/app"
+      // under "npm run dev" is "~/app").
+      const whole = record.detail && record.detail !== title ? record.detail : '';
+      return {
+        icon: icon(kind, kind?.title || record.kind), label: record.badge ? `${title} (${record.badge})` : title,
+        detail: whole.startsWith(`${title} · `) ? whole.slice(title.length + 3) : whole,
+        current: record.id === s.active,
+        run: () => activate(record.id),
+      };
+    });
+  }
+
+  // The strip fits its tabs anew when its room changes: once the panel's
+  // width settles, not at each step of it opening.
+  let settleTimer = 0;
+  const settle = (event) => {
+    if (event.propertyName !== 'grid-template-columns' || event.target !== layout()?.shell) return;
+    clearTimeout(settleTimer);
+    settling = event.type === 'transitionrun';
+    // A transition that never says it ended does not stop the fitting.
+    if (settling) settleTimer = setTimeout(() => { settling = false; fitStrip(); }, 600);
+    else fitStrip();
+  };
+  for (const type of ['transitionrun', 'transitionend', 'transitioncancel']) cockpit.listen(document, type, settle);
+  const roomWatch = new ResizeObserver(() => fitStrip());
+  roomWatch.observe(bar);
+  document.fonts?.ready.then(() => fitStrip(true));
+  cockpit.onDispose(() => { roomWatch.disconnect(); clearTimeout(settleTimer); });
 
   function move(id, before, after) {
     const list = tabs();

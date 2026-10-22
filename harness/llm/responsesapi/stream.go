@@ -25,6 +25,10 @@ func (adapter *adapter) exchange(ctx context.Context, body []byte, cacheKey stri
 			return 0, nil, err
 		}
 		request := adapter.remoteRequest(body, cacheKey)
+		if attempt > 1 {
+			// What the attempt before streamed is not the response.
+			llm.ReportStream(ctx, llm.StreamEvent{Reset: true})
+		}
 		result := adapter.exchangeAttempt(ctx, request, events)
 		if !result.retry || attempt >= adapter.maxAttempts {
 			if limit := usageLimit(result, time.Now()); limit != nil {
@@ -79,7 +83,7 @@ func (result responseAttempt) failure() error {
 func (adapter *adapter) exchangeAttempt(ctx context.Context, request primitives.RemoteRequest, events chan primitives.PrimitiveEvent) responseAttempt {
 	adapter.remote.SendRequest(ctx, request, events)
 	var result responseAttempt
-	var state responseState
+	state := responseState{report: func(event llm.StreamEvent) { llm.ReportStream(ctx, event) }}
 	var streaming bool
 	var parseErr error
 	for {
@@ -157,6 +161,8 @@ type responseState struct {
 	items    map[int]jsontext.Value
 	failure  *APIError
 	err      error
+	// report hears the text of the response as it streams; nil drops it.
+	report func(llm.StreamEvent)
 }
 
 func (state *responseState) observe(data []byte) error {
@@ -184,6 +190,11 @@ func (state *responseState) observe(data []byte) error {
 	}
 	if err := json.Unmarshal(data, &event); err != nil {
 		return fmt.Errorf("invalid Responses stream event JSON: %w", err)
+	}
+	switch event.Type {
+	case "response.output_text.delta", "response.reasoning_summary_text.delta", "response.reasoning_summary_part.added":
+		state.stream(event.Type, data, event.OutputIndex)
+		return nil
 	}
 	if event.Type == "response.completed" || event.Type == "response.failed" || event.Type == "response.incomplete" {
 		state.terminal = true
@@ -230,6 +241,33 @@ func (state *responseState) observe(data []byte) error {
 		state.err = &APIError{StatusCode: http.StatusOK, Code: code, Message: message, Param: param, Type: kind, ResetsAt: resetsAt}
 	}
 	return nil
+}
+
+// stream reports a piece of the response's text, which the response states
+// whole once it is complete: a piece that is not as expected is dropped.
+func (state *responseState) stream(kind string, data []byte, index *int) {
+	if state.report == nil || index == nil || *index < 0 {
+		return
+	}
+	var piece struct {
+		Delta        string `json:"delta"`
+		SummaryIndex int    `json:"summary_index"`
+	}
+	if json.Unmarshal(data, &piece) != nil {
+		return
+	}
+	switch kind {
+	case "response.output_text.delta":
+		state.report(llm.StreamEvent{Index: *index, Kind: llm.StreamText, Text: piece.Delta})
+	case "response.reasoning_summary_text.delta":
+		state.report(llm.StreamEvent{Index: *index, Kind: llm.StreamReasoning, Text: piece.Delta})
+	case "response.reasoning_summary_part.added":
+		// The parts of a summary are its paragraphs, as the transcript
+		// joins them.
+		if piece.SummaryIndex > 0 {
+			state.report(llm.StreamEvent{Index: *index, Kind: llm.StreamReasoning, Text: "\n\n"})
+		}
+	}
 }
 
 func (state *responseState) unwrap() ([]byte, error) {

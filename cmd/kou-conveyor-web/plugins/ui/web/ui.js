@@ -4,8 +4,10 @@
 //               later one with the same key replaces the earlier
 //   clipboard   copy(text, label)
 //   menu        open(anchor, items), close(), toggle(anchor, items),
-//               anchor(): a menu of { icon, label, detail, hint, danger,
-//               confirm, disabled, run } or { separator: true }
+//               anchor(): a menu of { icon, label, detail, hint, current,
+//               danger, confirm, disabled, run } or { separator: true } —
+//               icon a glyph or SVG markup, current marking the item that
+//               is the current one
 //   overlays    closeTop(), closeAll(), open(): the dialogs and floating
 //               things plugins contribute to "overlay"
 //
@@ -13,7 +15,7 @@
 // close() }: Esc closes the first open one by order, and while a modal one
 // is open, keys that are not global do nothing.
 export default function activate(cockpit) {
-  const { h } = cockpit;
+  const { h, svg } = cockpit;
 
   // ---------------------------------------------------------------- toasts
 
@@ -58,7 +60,14 @@ export default function activate(cockpit) {
 
   const menu = h('div', { class: 'menu', id: 'menu', role: 'menu', hidden: true });
   cockpit.ui.mount('overlays', { id: 'menu', order: 90, node: menu });
+  // An item's icon is a glyph, or SVG markup (or a node) drawn as large.
+  const glyph = (icon) => {
+    if (icon instanceof Node) return icon;
+    if (typeof icon === 'string' && icon.trim().startsWith('<svg')) return svg(icon);
+    return icon || '';
+  };
   let anchor = null;
+  let anchorAt = null; // where the anchor was when the menu opened
 
   // open opens the menu by anchor. A compact menu has denser rows, and
   // says the items' details in their tooltips (an item's title).
@@ -73,6 +82,7 @@ export default function activate(cockpit) {
       const tip = item.title || (compact ? item.detail : '') || null;
       return h('button', {
         type: 'button', role: 'menuitem', class: item.danger ? 'danger' : null, disabled: !!item.disabled, title: tip,
+        'aria-current': item.current ? 'true' : null,
         onclick: (event) => {
           event.stopPropagation();
           // Destructive items take a second, deliberate click.
@@ -84,16 +94,20 @@ export default function activate(cockpit) {
           close();
           cockpit.safely(item.run);
         },
-      }, h('span', { class: 'i', 'aria-hidden': 'true', text: item.icon || '' }), text, item.hint ? h('kbd', { text: item.hint }) : null);
+      }, h('span', { class: 'i', 'aria-hidden': 'true' }, glyph(item.icon)), text, item.hint ? h('kbd', { text: item.hint }) : null);
     }));
     menu.hidden = false;
+    menu.scrollTop = 0;
     anchor = at;
     at.setAttribute('aria-expanded', 'true');
     const box = at.getBoundingClientRect();
+    anchorAt = box;
     const width = menu.offsetWidth;
-    const height = menu.offsetHeight;
+    const height = Math.min(menu.offsetHeight, window.innerHeight - 16);
     menu.style.left = `${Math.max(8, Math.min(box.right - width, window.innerWidth - width - 8))}px`;
-    menu.style.top = `${box.bottom + height + 8 > window.innerHeight ? Math.max(8, box.top - height - 4) : box.bottom + 4}px`;
+    // Below the anchor, else above it; its foot stays in the window too.
+    const top = box.bottom + height + 8 > window.innerHeight ? box.top - height - 4 : box.bottom + 4;
+    menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - height - 8))}px`;
     menu.querySelector('button:not(:disabled)')?.focus();
   }
 
@@ -120,6 +134,14 @@ export default function activate(cockpit) {
     if (!menu.hidden && !event.target.closest('#menu') && event.target.closest('button') !== anchor) close();
   });
   cockpit.listen(window, 'resize', () => close());
+  // A scroll that carries the anchor away closes the menu, which would hang
+  // apart from it. Other scrolls leave it open: the menu's own, and those of
+  // a transcript or a terminal that follow what runs.
+  cockpit.listen(document, 'scroll', (event) => {
+    if (!anchor || menu.contains(event.target) || !event.target.contains?.(anchor)) return;
+    const now = anchor.getBoundingClientRect();
+    if (Math.abs(now.top - anchorAt.top) > 1 || Math.abs(now.left - anchorAt.left) > 1) close();
+  }, { capture: true, passive: true });
   cockpit.keys.register({
     key: ['ArrowDown', 'ArrowUp'], global: true, priority: 100,
     when: () => !menu.hidden,

@@ -31,3 +31,9 @@
 @media (hover: none) and (pointer: coarse) {
   .think-select { display: block; position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; font-size: 16px; cursor: pointer; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.think { border-radius: var(--radius); }
+.think-bars button { border-radius: min(var(--radius-sm), 2.5px); }

@@ -38,3 +38,11 @@
   .commands footer { display: none; }
   .commands li { padding-top: 11px; padding-bottom: 11px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.commands { border-radius: var(--radius); }
+:root[data-corners="round"] .commands { overflow: hidden; }
+/* Round, the chosen command is a rounded block, with no bar along its edge. */
+:root[data-corners="round"] .commands li { margin: 0 4px; padding-inline: 10px; border-left: 0; border-radius: var(--radius-sm); }

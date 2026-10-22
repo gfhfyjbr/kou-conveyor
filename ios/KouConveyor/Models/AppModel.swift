@@ -22,25 +22,45 @@ final class AppModel {
         case sessions, canvases, files, accounts, relay
     }
 
+    struct PendingSession: Equatable {
+        let workspace: String
+        let id: String
+        let title: String?
+    }
+
     private(set) var relay: RelayConfig?
     private(set) var client: RelayClient?
     private(set) var link: Link = .checking
     private(set) var health: RelayHealth?
     private(set) var workspaces: [Workspace] = []
+    /// Whether the cockpit told its workspaces since the relay was paired:
+    /// until it has, none is not "no workspaces".
+    private(set) var workspacesLoaded = false
     private(set) var tunnel: TunnelStatus?
     private(set) var workspaceID: String?
     /// The cockpit's settings: the effort and its levels, its model.
     private(set) var config: CockpitConfig?
+    /// The classes the colours of a tool call's code are of, as the config
+    /// says them: set only when they change, for the transcripts drawn in
+    /// them are drawn again when they are.
+    private(set) var syntaxClasses: [String]?
     /// What runs go with: the effort, the tools, the sandbox.
     private(set) var preferences: Preferences?
     /// A preference being saved, shown as chosen until the cockpit has it.
     private(set) var saving: PreferencesChange?
+    /// Counts the saves, and the last one the cockpit answered: an answer
+    /// overtaken by a later one's is stale.
+    private var saves = 0
+    private var answered = 0
     private var settingsAt: Date?
     /// The models of each workspace, and when they were asked for.
     private var catalogs: [String: (catalog: ModelCatalog, at: Date)] = [:]
     /// Changes with the relay: screens of the one before start over.
     private(set) var generation = 0
     var tab: Tab = .sessions
+    /// A session a tapped turn-end notification asks to open; the Sessions
+    /// tab reads it and shows the session.
+    var pendingSession: PendingSession?
     /// A pairing link opened while the app is paired with another relay,
     /// which the user is asked about.
     var incomingLink: String?
@@ -48,6 +68,12 @@ final class AppModel {
     var linkError: String?
 
     private static let workspaceKey = "workspace"
+
+    /// The workspace chosen last, as kept: the Sessions tab opens on its
+    /// sessions while the cockpit's workspaces are on their way.
+    static var savedWorkspaceID: String? {
+        UserDefaults.standard.string(forKey: workspaceKey)
+    }
 
     init() {
         if let saved = RelayStore.load() {
@@ -69,6 +95,17 @@ final class AppModel {
         UserDefaults.standard.set(workspace.id, forKey: Self.workspaceKey)
     }
 
+    /// openSession shows a session from outside the list: the Sessions tab,
+    /// its workspace, then the session. A tapped turn-end notification opens
+    /// it here; the Sessions screen reads pendingSession and pushes it.
+    func openSession(workspace: String, id: String, title: String?) {
+        tab = .sessions
+        if workspace != self.workspace?.id, let match = workspaces.first(where: { $0.id == workspace }) {
+            select(workspace: match)
+        }
+        pendingSession = PendingSession(workspace: workspace, id: id, title: title)
+    }
+
     // MARK: Pairing
 
     /// Pairs with the relay of a link, once the relay has taken its token.
@@ -83,7 +120,10 @@ final class AppModel {
         relay = config
         client = candidate
         generation += 1
+        // The runs followed without their screens were the other relay's.
+        DetachedRuns.abandonAll()
         workspaces = []
+        workspacesLoaded = false
         tunnel = nil
         forgetSettings()
         apply(health)
@@ -97,16 +137,20 @@ final class AppModel {
         client = nil
         health = nil
         workspaces = []
+        workspacesLoaded = false
         tunnel = nil
         forgetSettings()
         link = .checking
         generation += 1
+        DetachedRuns.abandonAll()
     }
 
     private func forgetSettings() {
         config = nil
         preferences = nil
         saving = nil
+        saves += 1
+        answered = saves
         settingsAt = nil
         catalogs = [:]
     }
@@ -150,8 +194,12 @@ final class AppModel {
             async let tunnel: TunnelStatus? = try? client.get("/api/tunnel")
             let (list, status) = try await (workspaces, tunnel)
             guard generation == self.generation else { return }
-            self.workspaces = list.filter { $0.missing != true }
-            self.tunnel = status
+            // Assigned only when they changed: every screen that reads them
+            // is drawn again when they are, every few seconds otherwise.
+            let open = list.filter { $0.missing != true }
+            if open != self.workspaces { self.workspaces = open }
+            if !workspacesLoaded { workspacesLoaded = true }
+            if status != self.tunnel { self.tunnel = status }
             if settingsAt.map({ Date().timeIntervalSince($0) > 60 }) ?? true {
                 await loadSettings()
             }
@@ -186,8 +234,9 @@ final class AppModel {
     }
 
     private func apply(_ health: RelayHealth) {
-        self.health = health
-        link = health.agent == true ? .online : .cockpitOffline
+        if health != self.health { self.health = health }
+        let link: Link = health.agent == true ? .online : .cockpitOffline
+        if link != self.link { self.link = link }
     }
 
     // MARK: Settings
@@ -204,6 +253,7 @@ final class AppModel {
         let (settings, chosen) = await (config, preferences)
         guard generation == self.generation else { return }
         if let settings { self.config = settings }
+        if let classes = settings?.syntaxClasses, classes != syntaxClasses { syntaxClasses = classes }
         if let chosen { self.preferences = chosen }
         settingsAt = Date()
     }
@@ -232,11 +282,23 @@ final class AppModel {
     @discardableResult
     func save(_ change: PreferencesChange) async -> String? {
         guard let client else { return "This iPhone is not paired with a relay." }
-        saving = change
-        defer { saving = nil }
+        saves += 1
+        let save = saves
+        // What is still being saved shows as chosen too: a change made
+        // while another is on its way does not hide that one.
+        var pending = saving ?? PreferencesChange()
+        if let effort = change.effort { pending.effort = effort }
+        if let tools = change.toolProfile { pending.toolProfile = tools }
+        if let sandbox = change.sandbox { pending.sandbox = sandbox }
+        saving = pending
+        defer { if save == saves { saving = nil } }
         do {
             let saved: Preferences = try await client.send("PUT", "/api/preferences", body: change)
-            preferences = saved
+            // An answer that comes after a later save's is older than it.
+            if save > answered {
+                answered = save
+                preferences = saved
+            }
             return nil
         } catch {
             noticed(error)
@@ -257,9 +319,12 @@ final class AppModel {
     func loadCatalog(_ workspace: String, fresh: Bool = false) async -> String? {
         guard let client else { return nil }
         if !fresh, let known = catalogs[workspace], Date().timeIntervalSince(known.at) < 120 { return nil }
+        let generation = self.generation
         do {
             let catalog: ModelCatalog = try await client.get(API.workspace(workspace, "models"),
                                                              query: fresh ? [URLQueryItem(name: "fresh", value: "1")] : [])
+            // The models of a relay paired before are not this one's.
+            guard generation == self.generation else { return nil }
             catalogs[workspace] = (catalog, Date())
             return catalog.error.flatMap { $0.isEmpty ? nil : $0 }
         } catch is CancellationError {

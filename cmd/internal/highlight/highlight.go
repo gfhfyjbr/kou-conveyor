@@ -238,6 +238,54 @@ func Highlight(name, text string, deadline time.Time) Result {
 	return result
 }
 
+// Lines splits the runs of a text's highlighting by the text's lines: the
+// runs of each line, its newline left out, which cover the line whole —
+// plain past the last run. A text that ends with a newline has no line
+// after it.
+func Lines(text string, runs []int32) [][]int32 {
+	var lines [][]int32
+	at, used := 0, int32(0) // the run at hand, by its length's index, and what of it went to lines before
+	take := func(n int32) []int32 {
+		var row []int32
+		for n > 0 {
+			if at+1 >= len(runs) {
+				return Append(row, n, 0)
+			}
+			k := min(n, runs[at]-used)
+			row = Append(row, k, runs[at+1])
+			n -= k
+			if used += k; used >= runs[at] {
+				at, used = at+2, 0
+			}
+		}
+		return row
+	}
+	for line := range strings.Lines(text) {
+		body, newline := strings.CutSuffix(line, "\n")
+		lines = append(lines, take(utf16Len(body)))
+		if newline {
+			take(1)
+		}
+	}
+	return lines
+}
+
+// Append appends a run to runs, or lengthens the last one when it is of
+// the same class.
+func Append(runs []int32, length, class int32) []int32 {
+	if length <= 0 {
+		return runs
+	}
+	if n := len(runs); n >= 2 && runs[n-1] == class {
+		runs[n-2] += length
+		return runs
+	}
+	return append(runs, length, class)
+}
+
+// Len is the length of s in UTF-16 code units, as runs count it.
+func Len(s string) int32 { return utf16Len(s) }
+
 // utf16Len is the length of s in UTF-16 code units.
 func utf16Len(s string) int32 {
 	n := int32(0)

@@ -40,6 +40,10 @@ type liveTool struct {
 	mu      sync.RWMutex
 	current tool.Translator // nil once the tool is gone
 	last    tool.Translator // for the results of calls made before
+	// refetch: its results show what a call fetches again (plugin.Tool's
+	// Refetch), as the plugin said last. Set and read on the coordinator's
+	// loop alone: in apply, before a turn, and as the context is pruned.
+	refetch bool
 }
 
 func (live *liveTool) set(translator tool.Translator) {
@@ -83,6 +87,97 @@ func (live *liveTool) TranslateResult(callID string, status tool.CallStatus, ope
 	return translator.TranslateResult(callID, status, operations)
 }
 
+// retiredTool stands for a tool the run has not whose calls the session
+// holds from when it ran: a tool of a plugin the run found but does not
+// run — one turned off, of a workspace not trusted, or that wants what the
+// run has not, as the canvas's tools want a canvas — or a built-in tool the
+// run's profile leaves out, as the patch profile of the GPT models leaves
+// out Edit. A branch of a canvas agent's session, which runs off the
+// canvas, holds the agent's calls of the canvas's tools. The results of
+// the calls read as they did; a new call is turned away, saying why.
+type retiredTool struct {
+	translator tool.Translator
+	refusal    string
+	refetch    bool // as liveTool's
+}
+
+func (retired retiredTool) Translate(tool.Context, llm.ToolCall) tool.CallStatus {
+	return tool.ErrorStatus(retired.refusal, 0)
+}
+
+func (retired retiredTool) TranslateResult(callID string, status tool.CallStatus, operations []operation.Operation) (llm.ToolResult, error) {
+	if status.Error != "" && len(status.WaitingFor) == 0 && len(operations) == 0 {
+		// A call turned away reads as the coordinator gives one of a tool
+		// there is not: the error alone, as such calls read before.
+		return llm.ToolResult{CallID: callID, Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: status.Error}}}, nil
+	}
+	return retired.translator.TranslateResult(callID, status, operations)
+}
+
+func (retired retiredTool) Waits() bool { return tool.Waits(retired.translator) }
+
+// runTools are the tools the coordinator resolves calls with: the
+// registry's, then the retired ones (retiredTool), which the model is not
+// offered and the registry does not list.
+type runTools struct {
+	tool.Registry
+	live     *livePlugins
+	builtins map[string]tool.Translator // every built-in tool's, by name (builtinTranslators)
+}
+
+func (tools runTools) Resolve(name string) (tool.Translator, bool) {
+	if translator, exists := tools.Registry.Resolve(name); exists {
+		return translator, true
+	}
+	if retired, exists := tools.live.resolveRetired(name); exists {
+		return retired, true
+	}
+	// A new call of a built-in tool the profile leaves out is told what
+	// the coordinator tells a call of a tool there is not.
+	if translator, exists := byName(tools.builtins, name); exists && translator != nil {
+		return retiredTool{translator: translator, refusal: tool.Unavailable(tools.Registry, name)}, true
+	}
+	return nil, false
+}
+
+// byName finds a tool by the name a call gives it, as the registry finds
+// its own: by its name, or by the one of the names it ends with
+// (tool.Aliases).
+func byName[T any](tools map[string]T, name string) (T, bool) {
+	if found, exists := tools[name]; exists {
+		return found, true
+	}
+	names := make([]string, 0, len(tools))
+	for known := range tools {
+		names = append(names, known)
+	}
+	if matches := tool.Aliases(name, names); len(matches) == 1 {
+		return tools[matches[0]], true
+	}
+	var none T
+	return none, false
+}
+
+// builtinTranslators are the built-in tools' translators by name, those
+// of the run's profile and the others.
+func builtinTranslators(configured tool.StaticTranslators) map[string]tool.Translator {
+	return map[string]tool.Translator{
+		tool.BashName: configured.Bash, tool.ViewImageName: configured.ViewImage, tool.ReadName: configured.Read,
+		tool.EditName: configured.Edit, tool.WriteName: configured.Write, tool.ApplyPatchName: configured.ApplyPatch,
+		tool.CodeName: configured.Code, tool.TranscriptSearchName: configured.TranscriptSearch,
+	}
+}
+
+// resolveRetired finds a retired tool by the name a call gives it (byName).
+func (live *livePlugins) resolveRetired(name string) (tool.Translator, bool) {
+	live.retiredMu.RLock()
+	defer live.retiredMu.RUnlock()
+	if retired, exists := byName(live.retired, name); exists {
+		return retired, true
+	}
+	return nil, false
+}
+
 // livePlugins is what a run took from plugins and skill directories, to
 // change as they change.
 type livePlugins struct {
@@ -110,6 +205,11 @@ type livePlugins struct {
 	skills           []tool.Skill          // the skills registered, in order
 	skillIDs         []tool.RegistrationID // their registrations
 	shown            string                // what the plugins added, as last said
+
+	// retired are the tools of the plugins found but not run, by name
+	// (retiredTool); retiredMu guards them.
+	retiredMu sync.RWMutex
+	retired   map[string]retiredTool
 }
 
 // apply makes the run's tools, instructions and skills those of found and
@@ -163,6 +263,7 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 				live.tools[definition.Name] = existing
 			}
 			existing.set(translator)
+			existing.refetch = definition.Refetch
 			active[definition.Name] = true
 			tools = append(tools, model)
 		}
@@ -172,6 +273,7 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 			existing.set(nil)
 		}
 	}
+	live.retire(found)
 	live.commandTools = commandTools
 	live.builder.SetTools(tools)
 	systemPrompt := live.systemPrompt
@@ -183,6 +285,48 @@ func (live *livePlugins) apply(found plugin.Found) (pluginProblems, skillProblem
 	}
 	live.builder.SetSystemPrompt(systemPrompt)
 	return problems, skillProblems
+}
+
+// refetches reports whether a tool's results show what a call fetches
+// again, as the plugin that gives it said last: those are pruned first
+// (contextbuilder.PruneOptions.First). It runs on the coordinator's loop,
+// as apply does.
+func (live *livePlugins) refetches(name string) bool {
+	if existing := live.tools[name]; existing != nil {
+		return existing.refetch
+	}
+	live.retiredMu.RLock()
+	defer live.retiredMu.RUnlock()
+	return live.retired[name].refetch
+}
+
+// retire keeps the tools of the plugins found but not run, for the calls
+// of them the session holds (retiredTool): those of the names no tool of
+// the run has.
+func (live *livePlugins) retire(found plugin.Found) {
+	retired := map[string]retiredTool{}
+	for _, current := range found.Plugins {
+		if current.Active || ownTools(current) {
+			continue
+		}
+		for _, definition := range current.Tools {
+			if _, taken := retired[definition.Name]; taken || live.tools[definition.Name] != nil || slices.Contains(tool.AllProfileTools(), definition.Name) {
+				continue
+			}
+			_, translator, err := pluginTool(current, definition, live.sessionID, live.workspace, live.operations)
+			if err != nil {
+				continue
+			}
+			refusal := fmt.Sprintf("tool %q is not available in this run: its plugin, %s, is not active", definition.Name, current.Name)
+			if current.Reason != "" {
+				refusal += " (" + current.Reason + ")"
+			}
+			retired[definition.Name] = retiredTool{translator: translator, refusal: refusal, refetch: definition.Refetch}
+		}
+	}
+	live.retiredMu.Lock()
+	live.retired = retired
+	live.retiredMu.Unlock()
 }
 
 // ownTools reports whether a plugin's tools are the runner's own, which

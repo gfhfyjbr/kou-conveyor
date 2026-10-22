@@ -115,12 +115,64 @@ func TestTranscriptFoldsLiveRun(t *testing.T) {
 	if got := strings.Join(kinds, ","); got != "user,reasoning,tool,assistant" {
 		t.Fatalf("kinds = %s", got)
 	}
-	want := Usage{Input: 250, Cached: 60, Output: 12, Reasoning: 3, Context: 150, Turns: 2}
+	// The turn began at 2s and its first response came at 3s; the second
+	// is no answer of a turn begun since.
+	want := Usage{Input: 250, Cached: 60, Output: 12, Reasoning: 3, Context: 150, Turns: 2,
+		TimedOutput: 7, TimedMillis: 1000, LastOutput: 7, LastMillis: 1000}
 	if tr.Usage != want {
 		t.Fatalf("usage = %#v, want %#v", tr.Usage, want)
 	}
 	if tr.Title() != "run the tests" {
 		t.Fatalf("title = %q", tr.Title())
+	}
+}
+
+// The time from a turn's start to its response is how fast its model wrote
+// the output tokens the response reports: the tokens per second of the
+// latest turn, and of the session's turns together.
+func TestTranscriptTimesTurns(t *testing.T) {
+	tr := NewTranscript()
+	sequence := 0
+	item := func(after time.Duration, kind sessionstore.ItemKind, data any) []byte {
+		sequence++
+		line, err := json.Marshal(sessionstore.Item{
+			Sequence: sessionstore.Sequence(sequence), RecordedAt: recorded.Add(after), Kind: kind, Data: data,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return line
+	}
+	turn := func(after time.Duration, id session.TurnID) []byte {
+		return item(after, sessionstore.ItemTurn, session.Turn{ID: id, Type: session.TurnRegular})
+	}
+	response := func(after time.Duration, id session.TurnID, output int64) []byte {
+		return item(after, sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: id, Response: llm.Response{
+			Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "ok"}}},
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: output},
+		}})
+	}
+	speed := func() [4]int64 {
+		u := tr.Usage
+		return [4]int64{u.TimedOutput, u.TimedMillis, u.LastOutput, u.LastMillis}
+	}
+
+	apply(t, tr, turn(0, "turn-1"), response(2*time.Second, "turn-1", 100))
+	if got := speed(); got != [4]int64{100, 2000, 100, 2000} {
+		t.Fatalf("after a turn: %v", got)
+	}
+	apply(t, tr, turn(3*time.Second, "turn-2"), response(3500*time.Millisecond, "turn-2", 50))
+	if got := speed(); got != [4]int64{150, 2500, 50, 500} {
+		t.Fatalf("after two turns: %v", got)
+	}
+	// A response that reports no output tokens, one to a turn other than
+	// the latest, and one that comes again for its turn say nothing of it.
+	apply(t, tr,
+		turn(4*time.Second, "turn-3"), response(5*time.Second, "turn-3", 0),
+		turn(6*time.Second, "turn-4"), turn(7*time.Second, "turn-5"), response(8*time.Second, "turn-4", 30),
+		response(9*time.Second, "turn-5", 40), response(10*time.Second, "turn-5", 40))
+	if got := speed(); got != [4]int64{190, 4500, 40, 2000} {
+		t.Fatalf("after the turns not timed: %v", got)
 	}
 }
 

@@ -18,6 +18,13 @@ const (
 	// git's files, as the JSON of worktree.Options: untracked paths to copy
 	// or link in, and whether to leave the submodules out.
 	WorktreeEnvironment = "KOU_CONVEYOR_WORKTREE"
+	// WorkdirEnvironment names, out of a sandbox, the folder a run works
+	// in instead of its workspace: its tools', its shell's. Its session
+	// stays the workspace's.
+	WorkdirEnvironment = "KOU_CONVEYOR_WORKDIR"
+	// ContextWindowEnvironment sets the model's context window, in tokens
+	// (200000, 200k, 1M), over the one the runner knows or assumes.
+	ContextWindowEnvironment = "KOU_CONVEYOR_CONTEXT_WINDOW"
 )
 
 // Sandbox modes: where a run works.

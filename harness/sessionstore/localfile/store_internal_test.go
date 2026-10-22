@@ -480,6 +480,184 @@ func TestCompactionHistoryReopensAndForks(t *testing.T) {
 	}
 }
 
+// A run resumes its session, pages the history in, and then writes to it.
+func TestStoreResumesPagesAndAppendsFromOneRead(t *testing.T) {
+	directory := t.TempDir()
+	writer, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Create(t.Context(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	var observed []sessionstore.Item
+	writer.AddObserver(func(_ session.ID, item sessionstore.Item) { observed = append(observed, item) })
+	previous := session.TurnID("")
+	for index := range 5 {
+		turnID := session.TurnID("turn-" + string(rune('a'+index)))
+		if err := writer.AppendTurn(t.Context(), "session-1", session.Turn{
+			ID: turnID, PreviousTurnID: previous, Type: session.TurnRegular,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.AppendModelResponse(t.Context(), "session-1", validResponse(turnID)); err != nil {
+			t.Fatal(err)
+		}
+		previous = turnID
+	}
+
+	store, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Resume(t.Context(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	path := store.sessionPath("session-1")
+	if err := os.Chmod(path, 0o200); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(path, 0o600); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("platform permits reading a write-only file")
+	}
+
+	var paged []sessionstore.Item
+	for after := sessionstore.BeforeFirst; ; {
+		page, err := store.Items(t.Context(), "session-1", after, 3)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, page.Items...)
+		if !page.More {
+			break
+		}
+		after = page.NextAfter
+	}
+	if !reflect.DeepEqual(paged, observed) {
+		t.Fatalf("paged = %#v, want %#v", paged, observed)
+	}
+	if err := store.AppendTurn(t.Context(), "session-1", session.Turn{
+		ID: "turn-last", PreviousTurnID: previous, Type: session.TurnRegular,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := reopened.Items(t.Context(), "session-1", sessionstore.BeforeFirst, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Items) != len(observed)+1 || !reflect.DeepEqual(page.Items[:len(observed)], observed) {
+		t.Fatalf("items after the append = %#v", page.Items)
+	}
+	if turn, ok := page.Items[len(observed)].Data.(session.Turn); !ok || turn.ID != "turn-last" {
+		t.Fatalf("appended item = %#v", page.Items[len(observed)])
+	}
+}
+
+func TestStoreRereadsSessionFilesThatChanged(t *testing.T) {
+	directory := t.TempDir()
+	reader, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Create(t.Context(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendTurn(t.Context(), "session-1", session.Turn{ID: "turn-1", Type: session.TurnRegular}); err != nil {
+		t.Fatal(err)
+	}
+	assertKinds := func(want ...sessionstore.ItemKind) {
+		t.Helper()
+		page, err := reader.Items(t.Context(), "session-1", sessionstore.BeforeFirst, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertItemKinds(t, page.Items, want...)
+	}
+	assertKinds(sessionstore.ItemTurn)
+
+	// Another store appends to the file.
+	if err := writer.AppendModelResponse(t.Context(), "session-1", validResponse("turn-1")); err != nil {
+		t.Fatal(err)
+	}
+	assertKinds(sessionstore.ItemTurn, sessionstore.ItemModelResponse)
+
+	// The store appends to it itself, from what it read.
+	if err := reader.AppendTurn(t.Context(), "session-1", session.Turn{
+		ID: "turn-2", PreviousTurnID: "turn-1", Type: session.TurnRegular,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertKinds(sessionstore.ItemTurn, sessionstore.ItemModelResponse, sessionstore.ItemTurn)
+
+	// Another store replaces the file.
+	if _, err := writer.Create(t.Context(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	assertKinds()
+}
+
+func TestStoreWritesLeaveTheSharedStateAsRead(t *testing.T) {
+	directory := t.TempDir()
+	writer, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Create(t.Context(), "session-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendTurn(t.Context(), "session-1", session.Turn{ID: "turn-1", Type: session.TurnRegular}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.AppendToolCallStatus(t.Context(), "session-1", sessionstore.ToolCallStatus{
+		TurnID: "turn-1", CallID: "call-1",
+		Status:     tool.CallStatus{WaitingFor: []operation.ID{"operation-1"}},
+		Operations: []operation.Operation{validOperation("operation-1", operation.StatusReady)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, _, err := store.sharedState(t.Context(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := cloneStoredState(shared)
+	if err := store.SaveOperation(t.Context(), "session-1", validOperation("operation-1", operation.StatusAwaiting)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendModelResponse(t.Context(), "session-1", validResponse("turn-1")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AppendTurn(t.Context(), "session-1", session.Turn{
+		ID: "turn-2", PreviousTurnID: "turn-1", Type: session.TurnRegular,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(shared, want) {
+		t.Fatalf("writes changed the state read:\n%#v\nwant %#v", shared, want)
+	}
+}
+
 func assertNoTemporaryFiles(t *testing.T, directory string) {
 	t.Helper()
 	entries, err := os.ReadDir(directory)

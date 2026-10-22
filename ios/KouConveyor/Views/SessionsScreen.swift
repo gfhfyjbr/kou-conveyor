@@ -8,6 +8,17 @@ struct SessionRoute: Hashable {
     let fresh: Bool
     /// What the composer starts with: the prompt of a session branched.
     var seed: Seed? = nil
+    /// The session of a canvas node: the canvas reserved its id, and it may
+    /// have no transcript yet.
+    var reserved = false
+    /// The model its prompts run with until one is chosen: the node's.
+    var model: String? = nil
+    /// The title shown instead of the session's own: the node's.
+    var title: String? = nil
+    /// The session's own title as the list had it, shown until the session
+    /// is read: unknown, the screen came in untitled, and its title showed
+    /// only once it was in place.
+    var listedTitle: String? = nil
 
     struct Seed: Hashable {
         let prompt: String
@@ -15,25 +26,132 @@ struct SessionRoute: Hashable {
     }
 }
 
-/// SessionsScreen is the Sessions tab: the workspace's sessions, and the
-/// session opened from them.
+/// SessionsRoute is a page of the Sessions tab, over its workspaces.
+enum SessionsRoute: Hashable {
+    /// The sessions of a workspace.
+    case sessions(String)
+    case session(SessionRoute)
+
+    var isSession: Bool {
+        if case .session = self { true } else { false }
+    }
+}
+
+/// SessionsScreen is the Sessions tab: the cockpit's workspaces, the
+/// sessions of one over them, and the session opened from those. It opens
+/// on the sessions of the workspace shown, as Mail opens on its inbox: a
+/// swipe to the right, anywhere on them, takes them aside for the
+/// workspaces, listed as the sessions are.
 struct SessionsScreen: View {
     @Environment(AppModel.self) private var app
-    @State private var path: [SessionRoute] = []
+    @State private var path: [SessionsRoute]
+    @State private var activity = WorkspacesActivity()
+
+    init() {
+        // The tab opens on the sessions of the workspace shown, not on the
+        // workspaces for a moment: the one chosen last, known before the
+        // cockpit answers, or, none chosen yet, the one the cockpit gives
+        // (no ID until it does).
+        _path = State(initialValue: [.sessions(AppModel.savedWorkspaceID ?? "")])
+    }
 
     var body: some View {
         NavigationStack(path: $path) {
-            CockpitGate { client, workspace in
-                SessionList(client: client, workspace: workspace, path: $path)
-                    .id(workspace.id)
+            CockpitGate { client, _ in
+                WorkspaceList(client: client, activity: activity, path: $path)
             }
-            .navigationTitle("Sessions")
-            .navigationDestination(for: SessionRoute.self) { route in
-                if let client = app.client {
-                    SessionScreen(client: client, route: route) { path.append($0) }
+            .navigationTitle("Workspaces")
+            .navigationDestination(for: SessionsRoute.self) { route in
+                switch route {
+                case let .sessions(id):
+                    WorkspaceSessions(id: id, path: $path, activity: activity)
+                case let .session(route):
+                    if let client = app.client {
+                        SessionScreen(client: client, route: route) { path.append(.session($0)) }
+                    }
                 }
             }
         }
+        // A session takes the whole screen: its composer is where the tab
+        // bar was.
+        .hidesTabBar(when: path.contains(where: \.isSession))
+        // The workspace whose sessions are open is the one the app shows:
+        // its canvases and its files too.
+        .onChange(of: path) { selectOpened() }
+        .onChange(of: app.workspace?.id, initial: true) {
+            follow()
+            openPendingIfReady()
+        }
+        .onChange(of: app.pendingSession) { openPendingIfReady() }
+        // Read before the workspaces page is first shown, once the list the
+        // user came for has come.
+        .task(id: app.workspaces.map(\.id)) {
+            try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled else { return }
+            await activity.prefetch(app)
+        }
+    }
+
+    /// selectOpened makes the workspace whose sessions were opened the one
+    /// the app shows.
+    private func selectOpened() {
+        guard case let .sessions(id)? = path.first, id != app.workspace?.id,
+              let workspace = app.workspaces.first(where: { $0.id == id }) else { return }
+        app.select(workspace: workspace)
+    }
+
+    /// follow keeps the sessions open those of the workspace the app shows:
+    /// given by the cockpit as the tab opened, chosen in another tab, or by
+    /// a tapped notification, it takes the place of the one open here. The
+    /// workspaces page, once the user went back to it, stays.
+    private func follow() {
+        guard let current = app.workspace?.id,
+              case let .sessions(open)? = path.first, open != current else { return }
+        // Put in place, not pushed: it is where the tab is, not a move.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { path = [.sessions(current)] }
+    }
+
+    /// openPendingIfReady shows the session a tapped turn-end notification
+    /// asked for, once its workspace is the one on screen: when the tap
+    /// launched the app, the workspaces come only now, and its own is chosen.
+    private func openPendingIfReady() {
+        guard let pending = app.pendingSession else { return }
+        guard pending.workspace == app.workspace?.id else {
+            if let match = app.workspaces.first(where: { $0.id == pending.workspace }) {
+                // Its change opens the session.
+                app.select(workspace: match)
+            } else if app.workspacesLoaded {
+                // The workspace is closed in the cockpit.
+                app.pendingSession = nil
+            }
+            return
+        }
+        path = [.sessions(pending.workspace),
+                .session(SessionRoute(workspace: pending.workspace, id: pending.id, fresh: false, listedTitle: pending.title))]
+        app.pendingSession = nil
+    }
+}
+
+/// WorkspaceSessions is the sessions page of a workspace, titled with its
+/// name; the workspaces page is under it.
+private struct WorkspaceSessions: View {
+    @Environment(AppModel.self) private var app
+    let id: String
+    @Binding var path: [SessionsRoute]
+    let activity: WorkspacesActivity
+
+    var body: some View {
+        // Closed in the cockpit, or not given yet, it is the workspace
+        // shown, which the stack opens in its place.
+        let workspace = app.workspaces.first { $0.id == id } ?? app.workspace
+        CockpitGate { client, current in
+            let shown = workspace ?? current
+            SessionList(client: client, workspace: shown, path: $path, activity: activity)
+                .id(shown.id)
+        }
+        .navigationTitle(workspace?.name ?? "Sessions")
     }
 }
 
@@ -69,17 +187,20 @@ struct WorkspaceMenu: View {
 struct SessionList: View {
     @Environment(AppModel.self) private var app
     @State private var model: SessionsModel
-    @Binding var path: [SessionRoute]
+    @Binding var path: [SessionsRoute]
     let workspace: Workspace
+    /// The workspaces page's, which learns of the workspace from the list.
+    let activity: WorkspacesActivity
     @State private var query = ""
     @State private var deleting: SessionSummary?
     @State private var renaming: SessionSummary?
     @State private var title = ""
 
-    init(client: RelayClient, workspace: Workspace, path: Binding<[SessionRoute]>) {
+    init(client: RelayClient, workspace: Workspace, path: Binding<[SessionsRoute]>, activity: WorkspacesActivity) {
         _model = State(initialValue: SessionsModel(client: client, workspace: workspace.id))
         _path = path
         self.workspace = workspace
+        self.activity = activity
     }
 
     var body: some View {
@@ -97,9 +218,10 @@ struct SessionList: View {
                 }
             }
         }
+        .groupedBackground()
         .overlay {
             if !model.loaded {
-                ProgressView()
+                LoadingSpinner()
             } else if let error = model.error, model.sessions.isEmpty {
                 ContentUnavailableView("Sessions unavailable", systemImage: "exclamationmark.bubble", description: Text(error))
             } else if model.listed.isEmpty {
@@ -118,11 +240,11 @@ struct SessionList: View {
         .searchable(text: $query, prompt: "Find a session")
         .refreshable { _ = await model.load() }
         .task { await model.poll(noticed: app.noticed) }
+        .onChange(of: model.sessions) { activity.note(workspace.id, model.sessions) }
         .navigationSubtitle(subtitle)
+        // The other workspaces are under the list: back, or a swipe to the
+        // right anywhere on it.
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                WorkspaceMenu()
-            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button("New session", systemImage: "square.and.pencil", action: newSession)
             }
@@ -178,11 +300,11 @@ struct SessionList: View {
     }
 
     private func newSession() {
-        path.append(SessionRoute(workspace: workspace.id, id: UUID().uuidString.lowercased(), fresh: true))
+        path.append(.session(SessionRoute(workspace: workspace.id, id: UUID().uuidString.lowercased(), fresh: true)))
     }
 
     private func row(_ session: SessionSummary) -> some View {
-        NavigationLink(value: SessionRoute(workspace: workspace.id, id: session.id, fresh: false)) {
+        NavigationLink(value: SessionsRoute.session(SessionRoute(workspace: workspace.id, id: session.id, fresh: false, listedTitle: session.title))) {
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Group {
                     if session.running {
@@ -219,18 +341,18 @@ struct SessionList: View {
             }
             .padding(.vertical, 2)
         }
-        .swipeActions(edge: .leading) {
-            Button(session.pinned == true ? "Unpin" : "Pin", systemImage: session.pinned == true ? "pin.slash" : "pin") {
-                pin(session)
-            }
-            .tint(.orange)
-        }
+        // All on the trailing edge: a swipe to the right on a row takes the
+        // whole list aside, for the workspaces.
         .swipeActions(edge: .trailing) {
             if !session.running {
                 Button("Delete", systemImage: "trash", role: .destructive) { deleting = session }
             }
             Button("Rename", systemImage: "pencil") { rename(session) }
                 .tint(.indigo)
+            Button(session.pinned == true ? "Unpin" : "Pin", systemImage: session.pinned == true ? "pin.slash" : "pin") {
+                pin(session)
+            }
+            .tint(.orange)
         }
         .contextMenu {
             Button("Rename…", systemImage: "pencil") { rename(session) }

@@ -22,7 +22,7 @@ struct ScannerSheet: View {
                 } else {
                     QRScannerView(found: found) { problem = $0 }
                         .ignoresSafeArea()
-                    RoundedRectangle(cornerRadius: 28)
+                    RoundedRectangle(cornerRadius: .corner(28))
                         .strokeBorder(.white.opacity(0.85), style: StrokeStyle(lineWidth: 3, dash: [26, 14]))
                         .frame(width: 250, height: 250)
                         .allowsHitTesting(false)
@@ -34,7 +34,7 @@ struct ScannerSheet: View {
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 18)
                     .padding(.vertical, 12)
-                    .glassEffect(.regular, in: .capsule)
+                    .glassEffect(.regular, in: .cornerCapsule)
                     .padding()
             }
             .navigationTitle("Pairing code")

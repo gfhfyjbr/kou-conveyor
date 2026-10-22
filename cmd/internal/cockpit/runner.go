@@ -212,6 +212,10 @@ type Request struct {
 	// Env adds variables to the runner's environment, after all the
 	// others: what a canvas gives the agents of its nodes.
 	Env []string
+	// Stream asks for what the session records later, as it comes: the
+	// model's text as it streams and the output of commands as they run,
+	// which Transcript.Live folds. A runner built before cannot.
+	Stream bool
 }
 
 // Line is one line of runner output.
@@ -381,6 +385,10 @@ type runnerFeatures struct {
 	// stop: it takes a line that stops it and says why, which it records.
 	// One built before is only interrupted.
 	stop bool
+	// stream: it writes the model's text as it streams and the output of
+	// commands as they run (-stream). One built before writes only what
+	// the session records.
+	stream bool
 }
 
 var runnerSteering = struct {
@@ -410,9 +418,10 @@ func featuresOf(runner string) runnerFeatures {
 		return runnerFeatures{} // cannot tell; try again next time
 	}
 	features = runnerFeatures{
-		steer: bytes.Contains(usage.Bytes(), []byte("-steer")),
-		links: bytes.Contains(usage.Bytes(), []byte("files: array of {path")),
-		stop:  bytes.Contains(usage.Bytes(), []byte(`{"stop": {"reason"`)),
+		steer:  bytes.Contains(usage.Bytes(), []byte("-steer")),
+		links:  bytes.Contains(usage.Bytes(), []byte("files: array of {path")),
+		stop:   bytes.Contains(usage.Bytes(), []byte(`{"stop": {"reason"`)),
+		stream: bytes.Contains(usage.Bytes(), []byte(`{"type": "delta"`)),
 	}
 	runnerSteering.Lock()
 	runnerSteering.byBinary[key] = features
@@ -570,10 +579,16 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		return nil, ErrSessionGone
 	}
 	if r.Rewind != "" {
-		if err := rewindSession(o.SessionDir, r.SessionID, r.Rewind); err != nil {
+		if err := rewindSession(o.SessionDir, r.SessionID, r.Rewind, r.MessageID); err != nil {
 			unlock()
 			return nil, err
 		}
+	}
+	// Record the notes and summaries this prompt's run starts from, so a later
+	// rewind to it can restore them. Best effort: without it a rewind keeps the
+	// old behaviour. A compaction takes no prompt, so there is nothing to key on.
+	if !r.Compact {
+		_ = snapshotMemory(o.SessionDir, r.SessionID, r.MessageID)
 	}
 
 	runContext, cancelCause := context.WithCancelCause(ctx)
@@ -586,6 +601,9 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	steers := !r.Compact && features.steer
 	if steers {
 		args = append(args, "-steer")
+	}
+	if r.Stream && features.stream {
+		args = append(args, "-stream")
 	}
 	cmd := exec.CommandContext(runContext, o.Runner, args...)
 	cmd.Dir = o.Workspace

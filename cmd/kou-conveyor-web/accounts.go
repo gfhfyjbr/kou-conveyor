@@ -296,8 +296,9 @@ func (s *server) handleGatewayModels(w http.ResponseWriter, r *http.Request, gat
 	writeJSON(w, http.StatusOK, map[string]any{"models": models})
 }
 
-// handleSaveConnection chooses what runs connect to: the gateway, with a
-// model it serves, or the runner's environment.
+// handleSaveConnection chooses what runs connect to: the gateway, whose
+// models prompts choose in the composer (a model given here is what older
+// clients still send), or the runner's environment.
 func (s *server) handleSaveConnection(w http.ResponseWriter, r *http.Request) {
 	var choice struct {
 		Mode     string      `json:"mode"`

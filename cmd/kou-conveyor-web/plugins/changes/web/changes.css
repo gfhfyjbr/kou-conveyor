@@ -91,3 +91,19 @@
 
 /* On a narrow screen the panel floats over the stage. */
 .changes { --side-narrow: 760px; }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Round, the file shown is a rounded block, with no bar along its edge;
+   its text stays where it was. */
+:root[data-corners="round"] .ct-row { width: calc(100% - 8px); margin: 0 4px; padding: 0 8px 0 calc(10px + var(--depth, 0) * 14px); border-left: 0; border-radius: var(--radius-sm); }
+/* Round, the panel is a block on the page's ground (layout.css), its head
+   level with the stage's bar; beside the stage, the head and the files are
+   blocks apart, as the sidebar's strip and tabs are (sidebar.css). */
+:root[data-corners="round"]:not([data-rail-compact]) .changes-head { height: calc(var(--bar) - 9px); }
+@media (min-width: 1181px) {
+  :root[data-corners="round"]:not([data-rail-compact]) .changes { gap: 8px; background: none; border: 0; border-radius: 0; }
+  :root[data-corners="round"]:not([data-rail-compact]) :is(.changes-head, .changes-body) { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+  :root[data-corners="round"]:not([data-rail-compact]) .changes-head { height: calc(var(--bar) - 8px); }
+  :root[data-corners="round"]:not([data-rail-compact]) .changes-body { overflow: hidden; }
+}

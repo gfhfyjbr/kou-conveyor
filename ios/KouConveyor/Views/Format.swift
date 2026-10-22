@@ -115,8 +115,13 @@ struct RemoteImage: View {
     let path: String
     var query: [URLQueryItem] = []
     var contentMode: ContentMode = .fill
+    /// Whether a picture not there yet is asked for again: the one a tool
+    /// call read comes a moment after the call, once the session file has it.
+    var retryMissing = false
     @State private var image: UIImage?
     @State private var failed = false
+    /// The picture the state is of: another one's is not shown meanwhile.
+    @State private var shown: String?
 
     var body: some View {
         Group {
@@ -129,80 +134,269 @@ struct RemoteImage: View {
                     .font(.title3)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(placeholder)
             } else {
                 ProgressView()
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(placeholder)
             }
         }
         .task(id: key) { await load() }
     }
 
+    /// A thumbnail keeps its place while it loads.
+    @ViewBuilder private var placeholder: some View {
+        if contentMode == .fill {
+            Rectangle().fill(.fill.quaternary)
+        }
+    }
+
     private var key: String {
+        Self.key(path, query)
+    }
+
+    static func key(_ path: String, _ query: [URLQueryItem]) -> String {
         query.isEmpty ? path : path + "?" + query.map { "\($0.name)=\($0.value ?? "")" }.joined(separator: "&")
     }
 
     private func load() async {
-        if let cached = PictureCache.shared.object(forKey: key as NSString) {
-            image = cached
-            return
+        let key = key
+        if shown == key, image != nil { return }
+        if shown != key {
+            shown = key
+            image = nil
         }
+        failed = false
         do {
-            let data = try await client.perform(client.request("GET", path, query: query))
-            guard let picture = UIImage(data: data) else {
-                failed = true
-                return
+            let (picture, fetched) = try await Self.fetch(client: client, path: path, query: query, retryMissing: retryMissing)
+            guard key == self.key else { return }
+            if fetched {
+                withAnimation(.easeOut(duration: 0.2)) { image = picture }
+            } else {
+                image = picture
             }
-            PictureCache.shared.setObject(picture, forKey: key as NSString, cost: data.count)
-            image = picture
+        } catch is CancellationError {
         } catch {
-            if !(error is CancellationError) { failed = true }
+            if !Task.isCancelled { failed = true }
         }
+    }
+
+    /// fetch reads a picture, from the cache when it has it; it says
+    /// whether it came through the relay. A picture lost to the network is
+    /// asked for twice more before it fails; with retryMissing, one the
+    /// cockpit does not have yet too.
+    static func fetch(client: RelayClient, path: String, query: [URLQueryItem],
+                      retryMissing: Bool = false) async throws -> (UIImage, fetched: Bool) {
+        let key = Self.key(path, query) as NSString
+        if let cached = PictureCache.shared.object(forKey: key) { return (cached, false) }
+        var attempt = 0
+        while true {
+            do {
+                let data = try await client.perform(client.request("GET", path, query: query))
+                guard let decoded = UIImage(data: data) else { throw PictureError.unreadable }
+                // Decoded off the main thread, so that a list of them scrolls.
+                let picture = await decoded.byPreparingForDisplay() ?? decoded
+                let pixels = picture.size.width * picture.scale * picture.size.height * picture.scale
+                PictureCache.shared.setObject(picture, forKey: key, cost: Int(pixels) * 4)
+                return (picture, true)
+            } catch let error as RelayError where attempt < 2 && (error.isTransient || retryMissing && error.isMissing) {
+                attempt += 1
+                try await Task.sleep(for: .seconds(attempt))
+            }
+        }
+    }
+
+    enum PictureError: LocalizedError {
+        case unreadable
+        var errorDescription: String? { "This file is not a picture this iPhone reads." }
     }
 }
 
-/// The pictures fetched, kept while memory allows.
+extension RelayError {
+    /// A failure that asking again may not meet: the network, or the
+    /// relay's gateway between it and the cockpit.
+    var isTransient: Bool {
+        switch self {
+        case .network: true
+        case let .http(status, _, _): status == 502 || status == 503 || status == 504
+        default: false
+        }
+    }
+
+    /// Not there: what the cockpit does not have yet, or any more.
+    var isMissing: Bool {
+        if case .http(404, _, _) = self { true } else { false }
+    }
+}
+
+/// The pictures fetched, decoded, kept while memory allows.
 @MainActor
 enum PictureCache {
     static let shared: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
-        cache.totalCostLimit = 64 << 20
+        cache.totalCostLimit = 160 << 20
         return cache
     }()
 }
 
-/// PictureViewer shows a picture whole, to zoom into.
+/// PictureViewer shows a picture whole, to zoom into as Photos does: pinch
+/// or tap twice where to look.
 struct PictureViewer: View {
     let client: RelayClient
     let path: String
     var query: [URLQueryItem] = []
     let title: String
     @Environment(\.dismiss) private var dismiss
-    @State private var zoom: CGFloat = 1
-    @GestureState private var pinch: CGFloat = 1
+    @State private var image: UIImage?
+    @State private var problem: String?
 
     var body: some View {
         NavigationStack {
-            GeometryReader { geometry in
-                ScrollView([.horizontal, .vertical], showsIndicators: false) {
-                    RemoteImage(client: client, path: path, query: query, contentMode: .fit)
-                        .frame(width: geometry.size.width * zoom * pinch, height: geometry.size.height * zoom * pinch)
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if let image {
+                    ZoomableImage(image: image)
+                        .ignoresSafeArea()
+                        .accessibilityLabel(title)
+                } else if let problem {
+                    ContentUnavailableView {
+                        Label("The picture did not load", systemImage: "photo.badge.exclamationmark")
+                    } description: {
+                        Text(problem)
+                    } actions: {
+                        Button("Try again") { Task { await load() } }
+                            .buttonStyle(.glass)
+                    }
+                    .environment(\.colorScheme, .dark)
+                } else {
+                    ProgressView()
+                        .tint(.white)
                 }
-                .defaultScrollAnchor(.center)
             }
-            .gesture(
-                MagnifyGesture()
-                    .updating($pinch) { value, state, _ in state = value.magnification }
-                    .onEnded { value in zoom = min(max(zoom * value.magnification, 1), 6) }
-            )
-            .onTapGesture(count: 2) { withAnimation(.snappy) { zoom = zoom > 1 ? 1 : 2.5 } }
-            .background(Color.black)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
                 }
+                if let image {
+                    ToolbarItem(placement: .primaryAction) {
+                        let picture = Image(uiImage: image)
+                        ShareLink(item: picture, preview: SharePreview(title, image: picture))
+                    }
+                }
             }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        problem = nil
+        do {
+            image = try await RemoteImage.fetch(client: client, path: path, query: query).0
+        } catch is CancellationError {
+        } catch {
+            problem = error.localizedDescription
+        }
+    }
+}
+
+/// ZoomableImage is a picture in a scroll view that zooms it: around the
+/// pinch, to where it was tapped twice, kept in the middle while smaller
+/// than the screen.
+struct ZoomableImage: UIViewRepresentable {
+    let image: UIImage
+
+    func makeUIView(context: Context) -> ZoomingView {
+        ZoomingView()
+    }
+
+    func updateUIView(_ view: ZoomingView, context: Context) {
+        view.show(image)
+    }
+
+    final class ZoomingView: UIScrollView, UIScrollViewDelegate {
+        private let picture = UIImageView()
+        /// The size the picture was fitted to: it is fitted anew when the
+        /// screen turns.
+        private var fitted: CGSize = .zero
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            delegate = self
+            showsVerticalScrollIndicator = false
+            showsHorizontalScrollIndicator = false
+            contentInsetAdjustmentBehavior = .never
+            decelerationRate = .fast
+            bouncesZoom = true
+            picture.isAccessibilityElement = false
+            addSubview(picture)
+            let twice = UITapGestureRecognizer(target: self, action: #selector(tappedTwice(_:)))
+            twice.numberOfTapsRequired = 2
+            addGestureRecognizer(twice)
+        }
+
+        required init?(coder: NSCoder) {
+            nil
+        }
+
+        func show(_ image: UIImage) {
+            guard picture.image !== image else { return }
+            picture.image = image
+            fitted = .zero
+            setNeedsLayout()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let image = picture.image, image.size.width > 0, image.size.height > 0,
+                  bounds.width > 0, bounds.height > 0 else { return }
+            if fitted != bounds.size {
+                fitted = bounds.size
+                zoomScale = 1
+                // Fitted whole, a small picture at most twice its size.
+                let fit = min(bounds.width / image.size.width, bounds.height / image.size.height, 2)
+                let size = CGSize(width: image.size.width * fit, height: image.size.height * fit)
+                picture.frame = CGRect(origin: .zero, size: size)
+                contentSize = size
+                minimumZoomScale = 1
+                // Up to twice its own pixels: four times at least, ten at most.
+                maximumZoomScale = min(max(4, 2 * image.size.width * image.scale / max(size.width, 1)), 10)
+                center()
+                contentOffset = CGPoint(x: -contentInset.left, y: -contentInset.top)
+                return
+            }
+            center()
+        }
+
+        /// center keeps a picture smaller than the screen in its middle.
+        private func center() {
+            let size = picture.frame.size
+            let x = max((bounds.width - size.width) / 2, 0)
+            let y = max((bounds.height - size.height) / 2, 0)
+            let inset = UIEdgeInsets(top: y, left: x, bottom: y, right: x)
+            if contentInset != inset { contentInset = inset }
+        }
+
+        func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+            picture
+        }
+
+        func scrollViewDidZoom(_ scrollView: UIScrollView) {
+            center()
+        }
+
+        @objc private func tappedTwice(_ tap: UITapGestureRecognizer) {
+            if zoomScale > minimumZoomScale + 0.01 {
+                setZoomScale(minimumZoomScale, animated: true)
+                return
+            }
+            let point = tap.location(in: picture)
+            let scale = min(maximumZoomScale, 2.5)
+            let size = CGSize(width: bounds.width / scale, height: bounds.height / scale)
+            zoom(to: CGRect(x: point.x - size.width / 2, y: point.y - size.height / 2,
+                            width: size.width, height: size.height), animated: true)
         }
     }
 }

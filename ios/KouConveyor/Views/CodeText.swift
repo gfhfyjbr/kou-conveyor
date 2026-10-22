@@ -33,12 +33,36 @@ struct CodeText: UIViewRepresentable {
 /// Highlight colors code as the cockpit highlights it, by the classes of its
 /// runs, which the server works out (cmd/internal/highlight); and diffs.
 enum Highlight {
+    /// A text colored off the main thread, handed to it whole: a long file
+    /// takes a while to color, and the screen would stop meanwhile. Nothing
+    /// changes the text once it is made.
+    struct Colored: @unchecked Sendable {
+        let text: NSAttributedString
+    }
+
+    /// colored makes a text off the main thread, in the size of the text the
+    /// main thread reads: away from it, the size the user chose is not known.
+    @MainActor
+    static func colored(_ make: @escaping @Sendable () -> NSAttributedString) async -> Colored {
+        let size = textSize
+        return await Task.detached(priority: .userInitiated) {
+            $pointSize.withValue(size) { Colored(text: make()) }
+        }.value
+    }
+
+    /// The size of the text colored away from the main thread.
+    @TaskLocal private static var pointSize: CGFloat?
+
+    private static var textSize: CGFloat {
+        pointSize ?? UIFont.preferredFont(forTextStyle: .footnote).pointSize
+    }
+
     static var font: UIFont {
-        UIFont.monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
+        UIFont.monospacedSystemFont(ofSize: textSize, weight: .regular)
     }
 
     static var boldFont: UIFont {
-        UIFont.monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .semibold)
+        UIFont.monospacedSystemFont(ofSize: textSize, weight: .semibold)
     }
 
     static func plain(_ text: String) -> NSAttributedString {
@@ -72,7 +96,7 @@ enum Highlight {
     }
 
     /// The color of a class of highlighting, as Pygments names them short.
-    private static func color(for name: String) -> UIColor? {
+    static func color(for name: String) -> UIColor? {
         switch name {
         case "": return nil
         case "kt", "nc", "nn": return .systemTeal

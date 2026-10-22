@@ -203,12 +203,14 @@ body.is-resizing-split { user-select: none; -webkit-user-select: none; }
 .restty-search-ui-root .restty-pane-search-status[data-empty="1"] { display: none; }
 .restty-search-ui-root .restty-pane-search-status[data-active="1"] { color: var(--fg); }
 
-/* A terminal closed, for ⌘⇧T to take back while its shell waits. */
+/* A terminal closed, for ⌘⇧T to take back while its shell waits: over
+   the dock, the composer and the sidebars (30–31), under the image
+   preview (35), the dialogs' overlay (40), menus and toasts. */
 .term-undo {
   position: fixed;
   right: 16px;
   bottom: 16px;
-  z-index: 55;
+  z-index: 34;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -225,3 +227,13 @@ body.is-resizing-split { user-select: none; -webkit-user-select: none; }
 .term-undo-what { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .term-undo-what b { color: var(--fg); font-weight: 600; }
 .term-undo-left { flex: none; color: var(--fg-4); }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…); the
+   panes stay square. */
+.restty-search-ui-root .restty-pane-search, .term-undo { border-radius: var(--radius); }
+.term-status, .restty-search-ui-root .restty-pane-search-input,
+.restty-search-ui-root .restty-pane-search-button { border-radius: var(--radius-sm); }
+/* Round, the offer to undo has no accent bar along its edge. */
+:root[data-corners="round"] .term-undo { padding-left: 15px; border-left-width: 1px; border-left-color: var(--line-2); }

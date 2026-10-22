@@ -2,6 +2,7 @@ package contextbuilder
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -69,6 +70,35 @@ func TestPruneCutsTheOldestResultsPastTheBudget(t *testing.T) {
 	}
 	if current.prune() != 0 {
 		t.Fatal("pruned again without growth")
+	}
+}
+
+func TestPruneCutsWhatIsFetchedAgainFirst(t *testing.T) {
+	current := NewBuilder().(*builder)
+	current.SetPruning(PruneOptions{Budget: 20_000, Keep: 1, First: func(name string) bool { return name == "CanvasTranscript" }})
+	big := strings.Repeat("output line\n", 1330) // ~4,000 tokens
+	tools := []string{"Bash", "Bash", "CanvasTranscript", "CanvasTranscript", "Bash", "Bash"}
+	for index, name := range tools {
+		id := fmt.Sprintf("call-%d", index)
+		current.AddModelResponse(llm.Response{Output: []llm.Item{{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: name, Arguments: "{}"}}}})
+		current.AddToolResult(id, []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: big}}, false)
+		current.Commit()
+	}
+	result, err := current.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ~24,000 tokens: three results go to bring it a quarter of the budget
+	// under it — the transcripts, which a call fetches again, before the
+	// commands older than them, then the oldest command.
+	var pruned []int
+	for index := range tools {
+		if strings.Contains(resultText(t, result, fmt.Sprintf("call-%d", index)), prunedNote) {
+			pruned = append(pruned, index)
+		}
+	}
+	if !slices.Equal(pruned, []int{0, 2, 3}) {
+		t.Fatalf("pruned %v, want [0 2 3]", pruned)
 	}
 }
 

@@ -42,6 +42,43 @@ func TestCompactionRunStreamsTheSummary(t *testing.T) {
 	}
 }
 
+func TestCompactionStreamsItsSummaryAsItIsWritten(t *testing.T) {
+	h := newHarness(t)
+	started := h.start(`{"prompt":"first question"}`)
+	sessionID := started["session_id"].(string)
+	h.stream(started["run_id"].(string), "")
+
+	// Paced, the summary streams while the run is followed.
+	compaction := h.start(`{"compact":true,"instructions":"slow notes","session_id":"` + sessionID + `","resume":true}`)
+	got, status := h.stream(compaction["run_id"].(string), "")
+	if status != http.StatusOK || got.last().Type != "done" || got.last().Error != "" {
+		t.Fatalf("status %d, events %#v", status, got.events)
+	}
+	// What streams is the compaction's, which no entry replaces: the notice
+	// holds the summary, and what streamed goes with it.
+	var text, preview string
+	var noticed, gone bool
+	for _, e := range got.events {
+		switch {
+		case e.Delta != nil:
+			if !e.Delta.Compaction || noticed || preview != "" && e.Delta.ID != preview {
+				t.Fatalf("delta = %#v", e.Delta)
+			}
+			text, preview = text+e.Delta.Text, e.Delta.ID
+		case e.Entry != nil && e.Entry.Replaces != "":
+			t.Fatalf("an entry replaces what streamed: %#v", e.Entry)
+		case e.Entry != nil && e.Entry.Kind == "notice":
+			noticed = e.Entry.Detail == "Summary of the session, focused on slow notes"
+		case e.Entry != nil && e.Entry.Gone:
+			gone = gone || noticed && e.Entry.ID == preview
+		}
+	}
+	want := "<analysis>\nThe user asked questions.\n</analysis>\n\n<summary>\nSummary of the session, focused on slow notes\n</summary>"
+	if text != want || !noticed || !gone {
+		t.Fatalf("streamed %q, noticed %v, gone %v; events %#v", text, noticed, gone, got.events)
+	}
+}
+
 func TestCompactionRequestsAreValidated(t *testing.T) {
 	h := newHarness(t)
 	for body, want := range map[string]int{

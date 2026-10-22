@@ -108,3 +108,12 @@
 }
 .file-view footer { padding: 6px 12px; border-top: 1px solid var(--line); font: 10.5px var(--mono); color: var(--fg-4); }
 .file-view.empty { padding: 10px 12px; font: 11.5px var(--mono); color: var(--fg-3); }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.files-suggest, .prompt-file-open { border-radius: var(--radius); }
+.link-chip, .prompt-file { border-radius: var(--radius-sm); }
+:root[data-corners="round"] .files-suggest { overflow: hidden; }
+/* Round, the chosen file is a rounded block, with no bar along its edge. */
+:root[data-corners="round"] .files-suggest li { margin: 0 4px; padding-inline: 10px; border-left: 0; border-radius: var(--radius-sm); }

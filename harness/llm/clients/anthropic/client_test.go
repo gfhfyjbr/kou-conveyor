@@ -350,6 +350,46 @@ func TestConversationEndsWithAnsweredCalls(t *testing.T) {
 	}
 }
 
+func TestRespondReportsTheTextAsItStreams(t *testing.T) {
+	s := newServer(t,
+		sse(start("claude-opus-5"),
+			block(0, `{"type":"text","text":""}`),
+			delta(0, `{"type":"text_delta","text":"Half"}`),
+			`{"type":"error","error":{"type":"api_error","message":"Internal"}}`),
+		sse(slices.Concat([]string{
+			start("claude-opus-5"),
+			block(0, `{"type":"thinking","thinking":"","signature":""}`),
+			delta(0, `{"type":"thinking_delta","thinking":"Plan"}`),
+			delta(0, `{"type":"signature_delta","signature":"sig-1"}`),
+			stop(0),
+			block(1, `{"type":"text","text":""}`),
+			delta(1, `{"type":"text_delta","text":"Do"}`),
+			delta(1, `{"type":"text_delta","text":"ne."}`),
+			stop(1),
+		}, finish("end_turn"))...),
+	)
+	var reported []llm.StreamEvent
+	ctx := llm.WithStreamReporter(t.Context(), func(event llm.StreamEvent) { reported = append(reported, event) })
+	response, err := newTestClient(t, s, Config{}).Respond(ctx, conversationRequest("claude-opus-5"), llm.RequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Output) != 2 || response.Output[1].Data.(llm.Message).Text != "Done." {
+		t.Fatalf("response = %#v", response)
+	}
+	// What the failed attempt streamed is void.
+	want := []llm.StreamEvent{
+		{Index: 0, Kind: llm.StreamText, Text: "Half"},
+		{Reset: true},
+		{Index: 0, Kind: llm.StreamReasoning, Text: "Plan"},
+		{Index: 1, Kind: llm.StreamText, Text: "Do"},
+		{Index: 1, Kind: llm.StreamText, Text: "ne."},
+	}
+	if !slices.Equal(reported, want) {
+		t.Fatalf("reported = %+v, want %+v", reported, want)
+	}
+}
+
 func TestRetriesTransientFailuresThenRecoversThinking(t *testing.T) {
 	s := newServer(t,
 		apiError(529, "overloaded_error", "Overloaded"),

@@ -33,7 +33,7 @@
 import { createModel } from './model.js';
 import { createSurface } from './surface.js';
 import { createInspector } from './inspector.js';
-import { createRail, outlineRows } from './rail.js';
+import { createRail, outlineRows, outlineKey, keepRows, place } from './rail.js';
 import { createForeman } from './foreman.js';
 import { createAgents } from './agents.js';
 import { form, missing } from './forms.js';
@@ -41,11 +41,16 @@ import { createTerminalBody } from './nodes/terminal.js';
 import { createAgentBody } from './nodes/agent.js';
 import { createSourceBody } from './nodes/source.js';
 import { createNoteBody } from './nodes/note.js';
+import { embedded, activateEmbed } from './embed.js';
+import { settled } from '/kernel/events.js';
 
 const ROUTE = /^#\/w\/([A-Za-z0-9-]{1,80})\/c\/([A-Za-z0-9-]{1,128})$/;
 const MENU = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.4"/></svg>';
 const DOTS = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h1.5M7.25 8h1.5M11.5 8H13" stroke="currentColor" stroke-width="2"/></svg>';
 const FIT = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+// The view's icon, which its rail tab shows when the names do not fit: two
+// nodes, wired together.
+const CANVAS_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 2.5h5v4h-5zM9.5 9.5h5v4h-5zM6.5 4.5H12v5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 // A phone shows the list of the nodes in place of the board.
 const NARROW = 720;
 // How many canvases' views (where the board was left) are kept.
@@ -56,6 +61,9 @@ const UNDO_FOR = 15000;
 const COMPACT = { compact: true };
 
 export default function activate(cockpit) {
+  // The page in an agent node's frame is its chat, not another canvas.
+  const chat = embedded();
+  if (chat) return activateEmbed(cockpit, chat);
   const { h, svg, fmt, prefs } = cockpit;
   const hot = cockpit.hot.data;
   const session = cockpit.use('session');
@@ -273,6 +281,10 @@ export default function activate(cockpit) {
   // The list of the nodes a phone shows in place of the board.
   const narrowList = h('div', { class: 'cv-narrow', role: 'list', 'aria-label': 'The nodes' });
   narrowList.dataset.scroll = 'true';
+  const narrowCount = h('span', { class: 'label' });
+  const narrowHead = h('div', { class: 'cv-narrow-head' }, narrowCount,
+    h('button', { class: 'act', type: 'button', onclick: () => showOutline(false) }, 'The board'));
+  let narrowDrawn = '';
   const outlineBack = h('button', { class: 'act cv-outline-back', type: 'button', hidden: true, onclick: () => showOutline(true) }, '☰ Nodes');
   const undoText = h('span');
   const undoBar = h('div', { class: 'cv-undo', hidden: true, role: 'status' }, undoText,
@@ -286,6 +298,7 @@ export default function activate(cockpit) {
     short,
     openSession: (id) => openAgentSession(id),
     remove: (id) => ui.surface?.removeNodes([id]),
+    select: (id) => ui.surface?.select([id]),
     removeEdge: (id) => {
       ui.surface?.selectEdge(id);
       ui.surface?.removeSelected();
@@ -396,7 +409,10 @@ export default function activate(cockpit) {
     loadTemplates(ws);
     refreshList(ws);
     m.load();
-    await kindsReady;
+    // How many kou agents show their chats depends on how the page's
+    // streams go (lod.js): the board waits until that is known, or its
+    // agents would show their feeds first.
+    await Promise.all([kindsReady, settled()]);
     if (ticket !== ui.ticket || ui.model !== m) return;
     mount(m);
   }
@@ -414,7 +430,7 @@ export default function activate(cockpit) {
       openSession: (sid) => openAgentSession(sid),
       inspect: (target) => inspect(target),
       addMenu: (anchor, at, options) => openAddMenu(anchor, at, options),
-      onSelect: ({ nodes, edge }) => selectionChanged(nodes, edge),
+      onSelect: ({ nodes, edge, framing }) => selectionChanged(nodes, edge, framing),
       onEnter: () => rail.render('outline'),
       onView: (v) => {
         const text = `${Math.round(v.zoom * 100)}%`;
@@ -423,6 +439,8 @@ export default function activate(cockpit) {
       insets: () => insets(),
       savedView: () => savedView(ws, id),
       saveView: (v) => saveView(ws, id, v),
+      savedUsed: () => savedUsed(ws, id),
+      saveUsed: (ids) => saveUsed(ws, id, ids),
       undoBar: (text) => showUndo(text),
     });
     ui.surface = s;
@@ -690,7 +708,7 @@ export default function activate(cockpit) {
     } else if (m.readOnly) {
       kind = 'warn';
       parts.push(h('b', { text: 'Read only' }), h('span', { text: 'A newer kou-conveyor made this canvas: it shows here, but does not change.' }));
-    } else if (m.stream === 'reconnecting') {
+    } else if (m.stream === 'reconnecting' || m.stream === 'closed') {
       kind = 'warn';
       parts.push(h('span', { class: 'meter', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i'), h('i')), h('span', { text: 'Reconnecting…' }));
     }
@@ -798,16 +816,19 @@ export default function activate(cockpit) {
     main.dataset.outline = listing ? 'true' : '';
     outlineBack.hidden = !(narrow && !ui.outline && m);
     if (!listing) return;
+    // The same rows, the same list: a status that changes nothing shown
+    // leaves it be, and a row that changes, changes in place.
+    const selected = ui.surface?.selected() || [];
+    const key = `${m.id}|${outlineKey({ kinds }, m, selected)}`;
+    if (key === narrowDrawn) return;
+    narrowDrawn = key;
     const rows = outlineRows({ h, kinds }, m, {
-      selected: ui.surface?.selected() || [],
+      selected,
       onPick: (id) => focusOnPhone(id),
       onEnter: (id) => focusOnPhone(id),
     });
-    narrowList.replaceChildren(
-      h('div', { class: 'cv-narrow-head' },
-        h('span', { class: 'label', text: `${m.doc.nodes.length} node${m.doc.nodes.length === 1 ? '' : 's'}` }),
-        h('button', { class: 'act', type: 'button', onclick: () => showOutline(false) }, 'The board')),
-      ...(rows.length ? rows : [h('p', { class: 'none', text: 'No nodes yet: + Add, or ask the foreman.' })]));
+    narrowCount.textContent = `${m.doc.nodes.length} node${m.doc.nodes.length === 1 ? '' : 's'}`;
+    place(narrowList, [narrowHead, ...(rows.length ? keepRows(narrowList, rows) : [h('p', { class: 'none', text: 'No nodes yet: + Add, or ask the foreman.' })])]);
   }
 
   function focusOnPhone(id) {
@@ -844,16 +865,21 @@ export default function activate(cockpit) {
   }
   cockpit.onDispose(() => cancelAnimationFrame(inspectorFrame));
 
-  // The inspector follows the selection while it is open.
-  function selectionChanged(nodes, edge) {
+  // The inspector follows the selection while it is open; a frame being
+  // drawn changes it once it is let go.
+  function selectionChanged(nodes, edge, framing) {
     rail.render('outline');
     agents.draw();
     if (narrow) drawNarrow();
-    if (!inspector.isOpen()) return;
+    if (!inspector.isOpen() || framing) return;
     const target = inspector.target();
     if (target?.canvas) return;
-    if (nodes.length === 1 && target?.node !== nodes[0]) inspector.show({ node: nodes[0] });
+    if (nodes.length > 1) {
+      if (target?.nodes?.join(',') !== nodes.join(',')) inspector.show({ nodes: [...nodes] });
+    } else if (nodes.length === 1 && target?.node !== nodes[0]) inspector.show({ node: nodes[0] });
     else if (!nodes.length && edge && target?.edge !== edge) inspector.show({ edge });
+    // Nothing selected now: no "N nodes selected" over the board.
+    else if (!nodes.length && !edge && target?.nodes) inspector.hide();
   }
 
   // reveal selects a node and brings it into view.
@@ -895,9 +921,32 @@ export default function activate(cockpit) {
   }
   function forgetView(ws, id) {
     const all = prefs.get('canvas.views', null);
-    if (!all?.[`${ws}/${id}`]) return;
-    delete all[`${ws}/${id}`];
-    prefs.set('canvas.views', all);
+    if (all?.[`${ws}/${id}`]) {
+      delete all[`${ws}/${id}`];
+      prefs.set('canvas.views', all);
+    }
+    const used = prefs.get('canvas.used', null);
+    if (used?.[`${ws}/${id}`]) {
+      delete used[`${ws}/${id}`];
+      prefs.set('canvas.used', used);
+    }
+  }
+
+  // The kou agents used last, by canvas: opened anew, it gives them their
+  // chats first (surface.js).
+  function savedUsed(ws, id) {
+    const all = prefs.get('canvas.used', null);
+    const ids = all && typeof all === 'object' ? all[`${ws}/${id}`] : null;
+    return Array.isArray(ids) ? ids : [];
+  }
+  function saveUsed(ws, id, ids) {
+    const all = prefs.get('canvas.used', null) || {};
+    const key = `${ws}/${id}`;
+    delete all[key];
+    if (ids.length) all[key] = ids;
+    const keys = Object.keys(all);
+    for (const old of keys.slice(0, Math.max(0, keys.length - VIEWS_KEPT))) delete all[old];
+    prefs.set('canvas.used', all);
   }
 
   // ---------------------------------------------------------------- undo
@@ -1470,7 +1519,7 @@ export default function activate(cockpit) {
   // ---------------------------------------------------------------- what is on only while the server runs canvases
 
   const viewItem = {
-    id: 'canvas', title: 'Canvas', order: 15, rail: rail.element, page,
+    id: 'canvas', title: 'Canvas', icon: CANVAS_ICON, order: 15, rail: rail.element, page,
     tabTitle: 'Canvases: terminals, agents and events, wired together',
     select: () => openLast(),
     shown: () => {

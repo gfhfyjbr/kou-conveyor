@@ -2,10 +2,13 @@
 // reaches, of any provider — through the gateway, every model of every
 // account and endpoint. The composer shows the model the next prompt of the
 // session takes (composer.row): the one chosen for the session, else the
-// one its last prompt ran with, else the connection's. It provides the
-// models service: next(v), default(), catalog(), load({ fresh }), set(v, id),
-// command(arg), toggle(), openPicker(options), closePicker(), find(id),
-// provider(id), title(id, extra), contextLabel(tokens), info().
+// one its last prompt ran with. A new session starts with the model last
+// chosen in a composer of either cockpit, else the first the connection
+// lists; choosing one is for this session and the new ones, and changes no
+// other. It provides the models service: next(v), default(), catalog(),
+// load({ fresh }), set(v, id), command(arg), toggle(), openPicker(options),
+// closePicker(), find(id), provider(id), title(id, extra),
+// contextLabel(tokens), info().
 import { closeModelPicker, contextLabel, findModel, modelPickerOpen, modelTitle, openModelPicker, providerOf } from './picker.js';
 
 const STALE = 60_000;
@@ -17,6 +20,7 @@ export default function activate(cockpit) {
   const view = () => session.view?.();
   const hot = cockpit.hot.data;
   const ui = hot.ui ??= { catalog: null, ws: null, at: 0, ticket: 0 };
+  ui.chosen ??= 0; // when a model was last chosen here (performance.now())
   let loading = null;
   let picker = null;
 
@@ -25,16 +29,39 @@ export default function activate(cockpit) {
   const catalog = () => (ui.ws === state().ws ? ui.catalog : null);
 
   // next is the model the next prompt of v runs with; '' leaves it to the
-  // connection.
+  // server, which starts a new session with the default.
   function next(v) {
     return v ? v.model || session.lastModel(v) : '';
   }
 
-  // fallback is the connection's model, which prompts that choose none run
-  // with.
+  // fallback is the model a new session starts with, as the server says:
+  // the one last chosen in a composer, else the first the connection lists.
+  // Before the list comes, the connection's.
   function fallback() {
     return (ui.ws === state().ws && ui.catalog?.default) || session.currentWorkspace?.()?.connection?.model || state().config?.model || '';
   }
+
+  // remember makes id the model new sessions start with, in every cockpit:
+  // the server keeps it where the terminal one reads it too.
+  async function remember(id) {
+    const ticket = ui.chosen = performance.now();
+    if (ui.ws === state().ws && ui.catalog) ui.catalog.default = id;
+    try {
+      await cockpit.api('/api/preferences', { method: 'PUT', body: { last_model: id } });
+    } catch (error) {
+      if (ticket === ui.chosen) cockpit.toast(`New sessions do not start with ${id}: ${error.message}`, 'warn', 'model-default');
+    }
+  }
+
+  // A model chosen in another window, or the terminal, is what new sessions
+  // start with here too; asked tells when the preferences were asked for,
+  // to drop an answer older than a choice made here.
+  cockpit.on('preferences', (saved, asked) => {
+    const id = String(saved?.last_model || '').trim();
+    if (!id || !(asked > ui.chosen) || ui.ws !== state().ws || !ui.catalog || ui.catalog.default === id) return;
+    ui.catalog.default = id;
+    cockpit.render();
+  });
 
   // load asks which models the workspace's prompts can run with. fresh asks
   // an endpoint again instead of the server's recent answer.
@@ -92,9 +119,13 @@ export default function activate(cockpit) {
     if (name.textContent !== text) name.textContent = text;
     button.title = [
       id ? modelTitle(list, id) : 'The runner picks the model: its environment names none',
-      { chosen: 'Chosen for this session', session: 'The model the last prompt of this session ran with', default: 'The connection’s model' }[source],
+      {
+        chosen: 'Chosen for this session',
+        session: 'The model the last prompt of this session ran with',
+        default: 'New sessions start with the model last chosen, else the first the connection lists',
+      }[source],
       unlisted ? 'The connection does not list it: runs try it anyway' : '',
-      'Click or press M for another, of any provider',
+      'Click or press M for another, of any provider: new sessions start with it too',
     ].filter(Boolean).join('\n');
   }
   cockpit.on('render', render);
@@ -111,7 +142,8 @@ export default function activate(cockpit) {
     const stale = ui.ws !== state().ws || Date.now() - ui.at > STALE / 2;
     picker = openModelPicker({
       anchor: button, placement: 'above', title: 'Model',
-      note: v.run ? 'for the next prompts · the running agent keeps its own' : v.fresh ? 'for this new session' : 'for the next prompts of this session',
+      note: v.run ? 'for the next prompts and new sessions · the running agent keeps its own'
+        : v.fresh ? 'for this session and new ones' : 'for this session’s next prompts and new sessions',
       catalog: catalog(), loading: stale || !!loading,
       current: next(v) || fallback(),
       onPick: (id) => {
@@ -129,18 +161,21 @@ export default function activate(cockpit) {
     if (stale && !loading) load();
   }
 
-  // set chooses the model the session's next prompts run with.
+  // set chooses the model the session's next prompts run with, and new
+  // sessions start with; the other sessions keep theirs.
   function set(v, id) {
     if (!v) return;
     id = String(id || '').trim();
     const before = next(v) || fallback();
     v.model = id;
     prefs.set(modelKey(v), id || null);
+    if (id) remember(id);
     cockpit.render();
     if (!id || id === before) return;
     const m = findModel(ui.catalog, id);
     const running = v.run ? ' — the running agent keeps its own model' : '';
-    cockpit.toast(`Next prompts: ${m?.name || id}${m?.provider_name ? ` · ${m.provider_name}` : ''}${running}`, 'info', 'model');
+    const scope = v.fresh ? 'This session and new ones' : 'Next prompts and new sessions';
+    cockpit.toast(`${scope}: ${m?.name || id}${m?.provider_name ? ` · ${m.provider_name}` : ''}${running}`, 'info', 'model');
   }
 
   // command is /model: with an ID, it chooses the model; without one, it
@@ -178,7 +213,7 @@ export default function activate(cockpit) {
   cockpit.onDispose(() => closeModelPicker());
 
   cockpit.commands.register({
-    name: 'model', args: '[model]', help: 'The model the next prompts run with: any the connection reaches, of any provider; alone, the list',
+    name: 'model', args: '[model]', help: 'The model the next prompts and new sessions run with: any the connection reaches, of any provider; alone, the list',
     order: 140, run: (arg) => command(String(arg).trim()),
     complete: () => {
       const { current, default: byDefault, list } = info();

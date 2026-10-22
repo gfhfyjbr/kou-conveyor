@@ -22,6 +22,14 @@ function ratioOf(el) {
 }
 
 const home = (path, root) => (root && path?.startsWith(root) ? `~${path.slice(root.length)}` : path || '');
+// shortTitle is what a tab says of a shell's title: of a path, its last
+// folder ("~/src/app" → "app"); else the title as it is, less a
+// "user@host:" before it.
+const shortTitle = (text) => {
+  const title = String(text || '').replace(/^[^\s@:]+@[^\s:]+:\s*/, '');
+  if (title === '~' || title === '/') return title;
+  return /^[~/]/.test(title) ? title.replace(/\/+$/, '').split('/').pop() || title : title;
+};
 
 // createTerminal makes the view of a terminal tab. env gives what the
 // plugin shares between its tabs: restty, the fonts, the settings.
@@ -181,7 +189,7 @@ export function createTerminal(env, tab) {
       live = false;
       attempts++;
       const wait = Math.min(5000, 150 * 2 ** Math.min(attempts, 6));
-      if (attempts > 1) say(error ? `Reconnecting… ${error}` : 'Reconnecting to the shell…', 'wait');
+      if (attempts > 1) sayOf(state, error ? `Reconnecting… ${error}` : 'Reconnecting to the shell…', 'wait');
       clearTimeout(timer);
       timer = setTimeout(attach, wait);
     }
@@ -279,7 +287,7 @@ export function createTerminal(env, tab) {
           muted = false;
           live = true;
           attempts = 0;
-          say('');
+          sayOf(state, '');
           callbacks?.onConnect?.();
           sendSize();
           break;
@@ -331,7 +339,7 @@ export function createTerminal(env, tab) {
           opacityTransitionMs: 120, dividerColor: c.line, dividerThicknessPx: 1,
         },
         events: {
-          onPaneClosed: (pane) => { panes.delete(pane.id); news(); saveLayout(); },
+          onPaneClosed: (pane) => { panes.delete(pane.id); paneNotes.delete(pane.id); showNote(); news(); saveLayout(); },
           onActivePaneChange: () => news(),
           onLayoutChanged: () => { syncSize(); saveLayout(); },
         },
@@ -379,7 +387,9 @@ export function createTerminal(env, tab) {
     where.title = state?.cwd || '';
     const count = restty.panes().length;
     const title = state?.title && state.title !== state.cwd ? home(state.title, root) : place;
-    tab.setTitle(title || 'Terminal');
+    // The tab says the folder, or what runs; its tooltip, the whole of it.
+    const whole = title || 'Terminal';
+    tab.setTitle(shortTitle(whole), place && !whole.includes(place) ? `${whole} · ${place}` : whole);
     tab.setBadge(count > 1 ? String(count) : '');
     refreshRunning();
   }
@@ -404,10 +414,42 @@ export function createTerminal(env, tab) {
     runningTimer = setTimeout(refreshRunning, 2500);
   }
 
+  // The status line says what the tab does (it starts, its font size), or
+  // else what a pane's shell does. Each pane keeps its own word, so a pane
+  // that connects does not clear another's "Reconnecting…". In a split, the
+  // word names the pane's folder.
+  let tabNote = null; // { text, kind }
+  const paneNotes = new Map(); // restty pane ID → { text, kind }
+
   function say(text, kind = '') {
+    tabNote = text ? { text, kind } : null;
+    showNote();
+  }
+
+  function sayOf(state, text, kind = '') {
+    if (text) paneNotes.set(state.pane, { text, kind });
+    else paneNotes.delete(state.pane);
+    showNote();
+  }
+
+  function showNote() {
+    let note = tabNote;
+    if (!note) {
+      for (const [id, n] of paneNotes) {
+        const state = panes.get(id);
+        if (!state) {
+          paneNotes.delete(id);
+          continue;
+        }
+        const place = panes.size > 1 ? home(state.cwd, env.home()) : '';
+        note = { text: place ? `${place}: ${n.text}` : n.text, kind: n.kind };
+        break;
+      }
+    }
+    const text = note?.text || '';
     status.hidden = !text;
-    status.textContent = text;
-    status.dataset.kind = kind;
+    if (status.textContent !== text) status.textContent = text;
+    status.dataset.kind = note?.kind || '';
   }
 
   // ended takes a pane whose shell ended away; the last one closes the tab.
@@ -601,7 +643,7 @@ export function createTerminal(env, tab) {
     saveLayout();
     say(`${fontSize()} px`, 'zoom');
     clearTimeout(zoomTimer);
-    zoomTimer = setTimeout(() => { if (status.dataset.kind === 'zoom') say(''); }, 900);
+    zoomTimer = setTimeout(() => { if (tabNote?.kind === 'zoom') say(''); }, 900);
   }
   let zoomTimer = 0;
 

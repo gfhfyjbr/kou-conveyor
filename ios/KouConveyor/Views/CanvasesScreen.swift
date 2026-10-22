@@ -6,24 +6,37 @@ struct CanvasRoute: Hashable {
     let title: String
 }
 
-/// CanvasesScreen is the Canvases tab: the workspace's canvases, and the
-/// canvas opened from them.
+/// CanvasesScreen is the Canvases tab: the workspace's canvases, a canvas
+/// opened from them, and the chats of its agents.
 struct CanvasesScreen: View {
     @Environment(AppModel.self) private var app
-    @State private var path: [CanvasRoute] = []
+    @State private var path = NavigationPath()
 
     var body: some View {
         NavigationStack(path: $path) {
             CockpitGate { client, workspace in
-                CanvasList(client: client, workspace: workspace)
+                CanvasList(client: client, workspace: workspace) { path.append($0) }
                     .id(workspace.id)
             }
             .navigationTitle("Canvases")
             .navigationDestination(for: CanvasRoute.self) { route in
                 if let client = app.client {
-                    CanvasScreen(client: client, route: route)
+                    CanvasScreen(client: client, route: route,
+                                 openChat: { path.append($0) },
+                                 openSession: { path.append($0) })
                 }
             }
+            .navigationDestination(for: SessionRoute.self) { route in
+                if let client = app.client {
+                    SessionScreen(client: client, route: route) { path.append($0) }
+                }
+            }
+        }
+        // A canvas takes the whole screen, and the chats opened from it.
+        .hidesTabBar(when: !path.isEmpty)
+        // What was open is another workspace's.
+        .onChange(of: app.workspace?.id) {
+            path = NavigationPath()
         }
     }
 }
@@ -31,11 +44,18 @@ struct CanvasesScreen: View {
 struct CanvasList: View {
     @Environment(AppModel.self) private var app
     @State private var model: CanvasesModel
+    @State private var creating = false
+    @State private var renaming: CanvasSummary?
+    @State private var newTitle = ""
+    @State private var deleting: CanvasSummary?
+    @State private var failure: String?
     let workspace: Workspace
+    var open: (CanvasRoute) -> Void
 
-    init(client: RelayClient, workspace: Workspace) {
+    init(client: RelayClient, workspace: Workspace, open: @escaping (CanvasRoute) -> Void) {
         _model = State(initialValue: CanvasesModel(client: client, workspace: workspace.id))
         self.workspace = workspace
+        self.open = open
     }
 
     var body: some View {
@@ -43,15 +63,33 @@ struct CanvasList: View {
             NavigationLink(value: CanvasRoute(workspace: workspace.id, id: canvas.id, title: canvas.title)) {
                 CanvasRow(canvas: canvas)
             }
+            .contextMenu { menu(for: canvas) }
+            .swipeActions(edge: .trailing) {
+                Button("Delete", systemImage: "trash") { deleting = canvas }
+                    .tint(.red)
+            }
+            .swipeActions(edge: .leading) {
+                Button(canvas.live == true ? "Pause" : "Go live", systemImage: canvas.live == true ? "pause.fill" : "play.fill") {
+                    setLive(canvas, canvas.live != true)
+                }
+                .tint(canvas.live == true ? .orange : .green)
+            }
         }
+        .groupedBackground()
         .overlay {
             if !model.loaded {
-                ProgressView()
+                LoadingSpinner()
             } else if let error = model.error, model.canvases.isEmpty {
                 ContentUnavailableView("Canvases unavailable", systemImage: "point.3.connected.trianglepath.dotted", description: Text(error))
             } else if model.canvases.isEmpty {
-                ContentUnavailableView("No canvases", systemImage: "point.3.connected.trianglepath.dotted",
-                                       description: Text("Canvases made in the cockpit show here: terminals and agents, wired together."))
+                ContentUnavailableView {
+                    Label("No canvases", systemImage: "point.3.connected.trianglepath.dotted")
+                } description: {
+                    Text("A canvas wires terminals, agents and sources together: what one puts out, the next is given.")
+                } actions: {
+                    Button("New canvas") { creating = true }
+                        .buttonStyle(.glassProminent)
+                }
             }
         }
         .refreshable { _ = await model.load() }
@@ -60,6 +98,196 @@ struct CanvasList: View {
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 WorkspaceMenu()
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("New canvas", systemImage: "plus") { creating = true }
+                    .disabled(model.unavailable)
+            }
+        }
+        .sheet(isPresented: $creating) {
+            NewCanvasSheet(model: model) { made in
+                open(CanvasRoute(workspace: workspace.id, id: made.id, title: made.title))
+            }
+        }
+        .alert("Rename the canvas", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Title", text: $newTitle)
+            Button("Rename") {
+                if let canvas = renaming { rename(canvas, to: newTitle) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .confirmationDialog(deleting.map { "Delete «\($0.title)»?" } ?? "Delete the canvas?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } }),
+                            titleVisibility: .visible, presenting: deleting) { canvas in
+            Button("Delete, keep its agents' sessions", role: .destructive) { delete(canvas, keepSessions: true) }
+            Button("Delete with its agents' sessions", role: .destructive) { delete(canvas, keepSessions: false) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("Its terminals stop and its messages go. Sessions kept stay in the sessions list.")
+        }
+        .alert("It did not work", isPresented: Binding(get: { failure != nil }, set: { if !$0 { failure = nil } })) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(failure ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private func menu(for canvas: CanvasSummary) -> some View {
+        Button("Rename…", systemImage: "pencil") {
+            newTitle = canvas.title
+            renaming = canvas
+        }
+        Button(canvas.live == true ? "Pause" : "Go live", systemImage: canvas.live == true ? "pause.circle" : "play.circle") {
+            setLive(canvas, canvas.live != true)
+        }
+        Divider()
+        Button("Delete…", systemImage: "trash", role: .destructive) { deleting = canvas }
+    }
+
+    private func rename(_ canvas: CanvasSummary, to title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, title != canvas.title else { return }
+        perform { try await model.rename(canvas, to: title) }
+    }
+
+    private func setLive(_ canvas: CanvasSummary, _ live: Bool) {
+        perform { try await model.setLive(canvas, live) }
+    }
+
+    private func delete(_ canvas: CanvasSummary, keepSessions: Bool) {
+        perform { try await model.delete(canvas, keepSessions: keepSessions) }
+    }
+
+    private func perform(_ work: @escaping @MainActor () async throws -> Void) {
+        Task {
+            do {
+                try await work()
+            } catch is CancellationError {
+            } catch {
+                app.noticed(error)
+                failure = error.localizedDescription
+            }
+        }
+    }
+}
+
+/// NewCanvasSheet makes a canvas: empty, or from a template.
+struct NewCanvasSheet: View {
+    let model: CanvasesModel
+    var made: (CanvasSummary) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @State private var template = "empty"
+    @State private var working = false
+    @State private var error: String?
+    /// The templates are being asked for; once they are not, a canvas
+    /// without them starts empty.
+    @State private var loading = true
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    TextField("Title", text: $title, prompt: Text(defaultName))
+                        .focused($focused)
+                        .submitLabel(.done)
+                } footer: {
+                    Text("Left empty, it is called «\(defaultName)».")
+                }
+                Section {
+                    if model.templates.isEmpty {
+                        HStack {
+                            Text("Empty")
+                            Spacer()
+                            if loading {
+                                ProgressView()
+                            } else {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundStyle(Color.kouAccent)
+                            }
+                        }
+                    }
+                    ForEach(model.templates) { item in
+                        Button {
+                            template = item.id
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name)
+                                        .foregroundStyle(Color.primary)
+                                    if let description = item.description, !description.isEmpty {
+                                        Text(description)
+                                            .font(.caption)
+                                            .foregroundStyle(Color.secondary)
+                                    }
+                                }
+                                Spacer(minLength: 8)
+                                if template == item.id {
+                                    Image(systemName: "checkmark")
+                                        .font(.body.weight(.semibold))
+                                        .foregroundStyle(Color.kouAccent)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Start from")
+                }
+                if let error {
+                    Section {
+                        Text(error)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .navigationTitle("New canvas")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") { create() }
+                        .disabled(working)
+                }
+            }
+            .task {
+                focused = true
+                defer { loading = false }
+                do {
+                    try await model.loadTemplates()
+                    if !model.templates.contains(where: { $0.id == template }), let first = model.templates.first {
+                        template = first.id
+                    }
+                } catch is CancellationError {
+                } catch {
+                    self.error = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private var chosen: CanvasTemplate? { model.templates.first { $0.id == template } }
+
+    /// The title of a canvas given none: its template's, or plainly Canvas.
+    private var defaultName: String { template == "empty" ? "Canvas" : (chosen?.name ?? "Canvas") }
+
+    private func create() {
+        var name = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { name = defaultName }
+        working = true
+        Task {
+            defer { working = false }
+            do {
+                let canvas = try await model.create(title: name, template: template == "empty" ? nil : template)
+                dismiss()
+                if let canvas { made(canvas) }
+            } catch is CancellationError {
+            } catch {
+                self.error = error.localizedDescription
             }
         }
     }
@@ -85,8 +313,15 @@ struct CanvasRow: View {
                             .font(.system(size: 9, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.kouAccent.opacity(0.18), in: .capsule)
+                            .background(Color.kouAccent.opacity(0.18), in: .cornerCapsule)
                             .foregroundStyle(Color.kouAccent)
+                    } else {
+                        Text("PAUSED")
+                            .font(.system(size: 9, weight: .bold, design: .monospaced))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.secondary.opacity(0.14), in: .cornerCapsule)
+                            .foregroundStyle(Color.secondary)
                     }
                 }
                 HStack(spacing: 10) {
@@ -115,165 +350,6 @@ struct CanvasRow: View {
             Label("\(value)", systemImage: symbol)
                 .labelStyle(.titleAndIcon)
         }
-    }
-}
-
-/// CanvasScreen is one canvas, live: the board, or its nodes as a list, or
-/// the messages between them.
-struct CanvasScreen: View {
-    enum Mode: String, CaseIterable, Identifiable {
-        case board = "Board", nodes = "Nodes", messages = "Messages"
-        var id: String { rawValue }
-    }
-
-    @Environment(AppModel.self) private var app
-    @State private var model: CanvasModel
-    @State private var mode: Mode = .board
-    @State private var opened: CanvasNode?
-    let title: String
-
-    init(client: RelayClient, route: CanvasRoute) {
-        _model = State(initialValue: CanvasModel(client: client, workspace: route.workspace, id: route.id))
-        title = route.title
-    }
-
-    var body: some View {
-        Group {
-            if model.deleted {
-                ContentUnavailableView("Canvas deleted", systemImage: "trash", description: Text("It was deleted in the cockpit."))
-            } else if model.doc == nil {
-                if let error = model.error {
-                    ContentUnavailableView("Canvas unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
-                } else {
-                    ProgressView("Opening the canvas…")
-                }
-            } else {
-                switch mode {
-                case .board:
-                    CanvasBoard(model: model) { opened = $0 }
-                case .nodes:
-                    NodeList(model: model) { opened = $0 }
-                case .messages:
-                    MessageList(model: model)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .safeAreaBar(edge: .bottom) {
-            if model.doc != nil {
-                Picker("View", selection: $mode) {
-                    ForEach(Mode.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .padding(6)
-                .glassEffect(.regular, in: .capsule)
-                .frame(maxWidth: 360)
-                .padding(.bottom, 8)
-            }
-        }
-        .navigationTitle(model.doc?.title ?? title)
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationSubtitle(subtitle)
-        .toolbar(.hidden, for: .tabBar)
-        .task { await model.follow() }
-        .sheet(item: $opened) { node in
-            NodeSheet(model: model, nodeID: node.id)
-                .presentationDetents([.medium, .large])
-                .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        }
-    }
-
-    private var subtitle: String {
-        if model.reconnecting { return "Reconnecting…" }
-        let busy = model.status.values.count(where: { $0.state == "busy" })
-        let waiting = model.status.values.count(where: { $0.state == "waiting" || $0.state == "paused" })
-        var parts = ["\(model.nodes.count) nodes"]
-        if busy > 0 { parts.append("\(busy) busy") }
-        if waiting > 0 { parts.append("\(waiting) waiting") }
-        if model.readOnly { parts.append("read-only") }
-        return parts.joined(separator: " · ")
-    }
-}
-
-/// NodeList is the canvas's nodes, for a screen too small for its board.
-struct NodeList: View {
-    let model: CanvasModel
-    var open: (CanvasNode) -> Void
-
-    var body: some View {
-        List(model.nodes) { node in
-            Button {
-                open(node)
-            } label: {
-                HStack(spacing: 12) {
-                    NodeKindIcon(kind: node.kind)
-                        .frame(width: 28)
-                    VStack(alignment: .leading, spacing: 3) {
-                        // Color.primary, not .primary: in a button's label
-                        // .primary is the button's tint.
-                        Text(node.title.isEmpty ? node.kind.capitalized : node.title)
-                            .font(.body.weight(.medium))
-                            .foregroundStyle(Color.primary)
-                        if let status = model.status[node.id] {
-                            Text(status.activity ?? status.detail ?? status.state)
-                                .font(.caption)
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                    Spacer()
-                    if let status = model.status[node.id] {
-                        StateBadge(state: status.state)
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// MessageList is what the canvas's nodes sent each other.
-struct MessageList: View {
-    let model: CanvasModel
-
-    var body: some View {
-        List(model.messages.reversed()) { message in
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 6) {
-                    Text(name(message.from?.node))
-                    Image(systemName: "arrow.right")
-                    Text(name(message.to?.node))
-                    Spacer()
-                    if let at = message.at {
-                        Text(at, format: .dateTime.hour().minute().second())
-                    }
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                if let title = message.title, !title.isEmpty {
-                    Text(title).font(.subheadline.weight(.semibold))
-                }
-                Text(message.text ?? "")
-                    .font(.subheadline)
-                    .lineLimit(8)
-                if let state = message.state, state != "delivered" {
-                    Text(message.reason.map { "\(state): \($0)" } ?? state)
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-            .padding(.vertical, 2)
-        }
-        .overlay {
-            if model.messages.isEmpty {
-                ContentUnavailableView("No messages yet", systemImage: "arrow.left.arrow.right",
-                                       description: Text("What the nodes send each other along their edges shows here."))
-            }
-        }
-    }
-
-    private func name(_ node: String?) -> String {
-        guard let node else { return "?" }
-        return model.node(node)?.title ?? node
     }
 }
 
@@ -306,7 +382,7 @@ struct StateBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .foregroundStyle(Self.color(state))
-            .background(Self.color(state).opacity(0.15), in: .capsule)
+            .background(Self.color(state).opacity(0.15), in: .cornerCapsule)
     }
 
     static func color(_ state: String) -> Color {

@@ -246,7 +246,7 @@ func (m *uiModel) linksBox(width, room int) []string {
 		title += st.ghost.Render("+")
 	}
 	title = " " + title + " "
-	top := corner.Render("┌") + border.Render("─") + title + border.Render(strings.Repeat("─", max(0, inner-1-ansi.StringWidth(title)))) + corner.Render("┐")
+	top := corner.Render(corners.tl) + border.Render("─") + title + border.Render(strings.Repeat("─", max(0, inner-1-ansi.StringWidth(title)))) + corner.Render(corners.tr)
 	lines := []string{top}
 	for i := l.top; i < l.top+shown; i++ {
 		item := l.items[i]
@@ -277,7 +277,7 @@ func (m *uiModel) linksBox(width, room int) []string {
 	if ansi.StringWidth(hint) > inner-2 {
 		hint = ""
 	}
-	bottom := corner.Render("└") + border.Render(strings.Repeat("─", max(0, inner-1-ansi.StringWidth(hint)))) + st.faint.Render(hint) + border.Render("─") + corner.Render("┘")
+	bottom := corner.Render(corners.bl) + border.Render(strings.Repeat("─", max(0, inner-1-ansi.StringWidth(hint)))) + st.faint.Render(hint) + border.Render("─") + corner.Render(corners.br)
 	return append(lines, bottom)
 }
 

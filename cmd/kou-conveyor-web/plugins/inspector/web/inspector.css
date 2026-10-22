@@ -168,3 +168,11 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.ins-select, .tally, .ins-fold.level-2, .log-text { border-radius: var(--radius); }
+/* Round, a panel of its own is a block on the page's ground (layout.css),
+   its head level with the stage's bar. */
+:root[data-corners="round"]:not([data-rail-compact]) .ins-head { height: calc(var(--bar) - 9px); }

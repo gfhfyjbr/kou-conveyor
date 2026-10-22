@@ -66,6 +66,12 @@ enum TunnelState {
 struct TunnelChip: View {
     let state: TunnelState
     var showsWord = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    /// A tunnel not up blinks, as the cockpit's does; still, with less motion.
+    private var blinks: Bool {
+        state != .up && !reduceMotion
+    }
 
     var body: some View {
         HStack(spacing: 5) {
@@ -80,9 +86,9 @@ struct TunnelChip: View {
         .foregroundStyle(state.color)
         .padding(.horizontal, 7)
         .padding(.vertical, 4)
-        .background(state.color.opacity(0.12), in: .rect(cornerRadius: 6))
-        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(state.color.opacity(0.55), lineWidth: 1))
-        .phaseAnimator(state == .up ? [1.0] : [1.0, 0.45]) { content, opacity in
+        .background(state.color.opacity(0.12), in: .rect(cornerRadius: .corner(6)))
+        .overlay(RoundedRectangle(cornerRadius: .corner(6)).strokeBorder(state.color.opacity(0.55), lineWidth: 1))
+        .phaseAnimator(blinks ? [1.0, 0.45] : [1.0]) { content, opacity in
             content.opacity(opacity)
         } animation: { _ in
             .easeInOut(duration: 0.8)

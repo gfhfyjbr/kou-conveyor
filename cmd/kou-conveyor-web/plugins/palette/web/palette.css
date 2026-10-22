@@ -35,3 +35,9 @@
 @media (max-width: 820px) {
   #palette-open { display: none; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Round, the chosen option is a rounded block inside the list, with no bar
+   along its edge; its text stays where it was. */
+:root[data-corners="round"] .palette li[role="option"] { margin: 0 6px; padding: 0 10px 0 12px; border-left: 0; border-radius: var(--radius); }

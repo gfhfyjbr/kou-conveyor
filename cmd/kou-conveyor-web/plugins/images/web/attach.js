@@ -409,6 +409,7 @@ export function createPreview(node, area) {
 
   function open(att, by, sticky, keepClear = null) {
     avoid = keepClear;
+    watch();
     place();
     if (img.getAttribute('src') !== att.url) img.src = att.url;
     img.alt = att.label;
@@ -442,6 +443,17 @@ export function createPreview(node, area) {
   document.addEventListener('keydown', onKey, true);
   window.addEventListener('resize', onResize);
   document.addEventListener('scroll', onScroll, { capture: true, passive: true });
+  // The transcript resizes with the layout too, while the window keeps its
+  // size: a rail or a panel shown or hidden, a divider dragged.
+  const watcher = typeof ResizeObserver === 'function' ? new ResizeObserver(onResize) : null;
+  let watched = null;
+  function watch() {
+    const scroller = area();
+    if (!watcher || scroller === watched) return;
+    if (watched) watcher.unobserve(watched);
+    watched = scroller;
+    if (scroller) watcher.observe(scroller);
+  }
 
   return {
     show(att, by, keepClear) { if (!pinned) open(att, by, false, keepClear); },
@@ -453,6 +465,8 @@ export function createPreview(node, area) {
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('resize', onResize);
       document.removeEventListener('scroll', onScroll, { capture: true });
+      watcher?.disconnect();
+      watched = null;
       close();
     },
   };

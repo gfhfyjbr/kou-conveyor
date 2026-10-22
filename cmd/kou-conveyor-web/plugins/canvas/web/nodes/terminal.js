@@ -72,12 +72,18 @@ export function createTerminalBody(node, ctx) {
       scale: () => ctx.zoom(),
       onFocus: () => ctx.touch(),
       onReady: () => {
+        // It draws now: "… starts…" no longer covers it.
+        if (liveTerminal === id) drawCover();
         const back = refocus && (!document.activeElement || document.activeElement === document.body);
         refocus = false;
         if ((focusWhenLive || back) && live) {
           focusWhenLive = false;
           live.focus();
         }
+      },
+      // The connection was lost: the cover says what is so meanwhile.
+      onDrop: () => {
+        if (liveTerminal === id) drawCover();
       },
       onExit: () => {
         // The shell ended: its status says so, and what it last showed stays.

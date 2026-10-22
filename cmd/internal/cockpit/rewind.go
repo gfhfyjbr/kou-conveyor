@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
+	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore"
@@ -29,18 +30,22 @@ var ErrPromptGone = errors.New("the prompt is no longer in the session")
 // given message ID was sent. The prompt's run and everything after it leave
 // the session, with the output their commands left behind. Commands started
 // before the prompt keep the outcome they reached later, so resuming never
-// runs one twice. Files the agent changed in the workspace stay as they are.
+// runs one twice. The model's notes and the summaries of the session's
+// compactions go back too (restoreMemory). Files the agent changed in the
+// workspace stay as they are.
 func RewindSession(dir, id, messageID string) error {
 	unlock, err := LockSession(dir, id)
 	if err != nil {
 		return err
 	}
 	defer unlock()
-	return rewindSession(dir, id, messageID)
+	return rewindSession(dir, id, messageID, "")
 }
 
 // rewindSession is RewindSession for a caller that holds the session's lock.
-func rewindSession(dir, id, messageID string) error {
+// next is the message ID of the prompt the caller runs in the rewound
+// session, "" for none.
+func rewindSession(dir, id, messageID, next string) error {
 	if !ValidSessionID(id) {
 		return fmt.Errorf("invalid session ID %q", id)
 	}
@@ -49,23 +54,38 @@ func rewindSession(dir, id, messageID string) error {
 	if err != nil {
 		return err
 	}
-	kept, dropped, err := rewindLog(data, messageID, time.Now().UTC())
+	cut, err := cutLog(data, messageID, time.Now().UTC())
 	if err != nil {
 		return err
 	}
+	// The model's notes and the summaries of the session's compactions are
+	// kept beside the log, and the harness shows the model the notes and
+	// points it at both: they go back to how they were before the prompt's
+	// run, so that the rewound run does not read what its discarded future
+	// wrote (memory.go). This comes before the log is cut, so that a failure
+	// leaves the session as it was.
+	if err := restoreMemory(dir, id, messageID, cut); err != nil {
+		return fmt.Errorf("rewind session memory: %w", err)
+	}
 	// A new file rather than a truncated one: readers see the old history or
 	// the new one, and caches keyed by the file notice the change.
-	if err := replaceFile(path, kept); err != nil {
+	if err := replaceFile(path, cut.kept); err != nil {
 		return fmt.Errorf("rewind session: %w", err)
 	}
 	titles.Delete(path)
 	// Raw output of the commands the removed runs started; the session no
 	// longer refers to it.
-	for _, op := range dropped {
+	for _, op := range cut.dropped {
 		if ValidSessionID(string(op)) {
 			_ = os.RemoveAll(filepath.Join(dir, "operations", id, string(op)))
 		}
 	}
+	// What was recorded of the removed runs goes too: the memory they started
+	// from, and the snapshots of the workspace they took, which the runner
+	// shows the model. Best effort: the session is rewound already, and a
+	// failure here must not keep the edited prompt from running.
+	_ = pruneMemory(dir, id, cut.messages)
+	_ = pruneChangeRecords(dir, id, next, cut.messages)
 	return nil
 }
 
@@ -99,7 +119,33 @@ type logRecord struct {
 
 // rewindLog cuts a session log before the run that sent the prompt with the
 // given message ID. It returns the log that remains and the operations only
-// the removed part started.
+// the removed part started (cutLog).
+func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operation.ID, error) {
+	cut, err := cutLog(data, messageID, now)
+	return cut.kept, cut.dropped, err
+}
+
+// logCut is a session log cut before the run of a prompt (cutLog).
+type logCut struct {
+	kept    []byte         // the log that remains
+	dropped []operation.ID // the operations only the removed part started
+	// removedCalls are the arguments of the model's tool calls in what is
+	// cut off, a line each.
+	removedCalls []byte
+	// messages are the IDs of the prompts that remain.
+	messages map[string]bool
+	at       time.Time // when the first record cut off was recorded
+	// compactions is how many compactions the part cut off made.
+	compactions int
+	// shown are the notes as the conversation that remains last showed the
+	// model them whole, at shownAt (notesShownIn); shownAt is zero when it
+	// never did.
+	shown   string
+	shownAt time.Time
+}
+
+// cutLog cuts a session log before the run that sent the prompt with the
+// given message ID.
 //
 // A run starts by recording its settings, then its prompt, so the cut falls
 // before those settings: what remains is the log as the previous run left
@@ -107,7 +153,7 @@ type logRecord struct {
 // for operations started before the cut keep their latest outcome. And when
 // the cut falls in history inherited from another session, a fork item marks
 // what remains as inherited again, as the store requires.
-func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operation.ID, error) {
+func cutLog(data []byte, messageID string, now time.Time) (logCut, error) {
 	// Only whole records count: the store discards a record whose write was
 	// cut short.
 	data = data[:bytes.LastIndexByte(data, '\n')+1]
@@ -116,10 +162,10 @@ func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operatio
 		n := bytes.IndexByte(data, '\n') + 1
 		record, err := decodeLogRecord(data[:n])
 		if err != nil {
-			return nil, nil, fmt.Errorf("read session record %d: %w", len(records)+1, err)
+			return logCut{}, fmt.Errorf("read session record %d: %w", len(records)+1, err)
 		}
 		if header := record.item == nil && !record.checkpoint; header != (len(records) == 0) {
-			return nil, nil, fmt.Errorf("read session record %d: the session header must come first, and only once", len(records)+1)
+			return logCut{}, fmt.Errorf("read session record %d: the session header must come first, and only once", len(records)+1)
 		}
 		records = append(records, record)
 		data = data[n:]
@@ -132,11 +178,16 @@ func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operatio
 		}
 	}
 	if cut < 0 {
-		return nil, nil, ErrPromptGone
+		return logCut{}, ErrPromptGone
 	}
 	for cut > 1 && isSettings(records[cut-1]) {
 		cut--
 	}
+	result := logCut{messages: map[string]bool{}}
+	if item := records[cut].item; item != nil {
+		result.at = item.RecordedAt
+	}
+	result.removedCalls = toolCallArguments(records[cut:])
 
 	var out bytes.Buffer
 	items, sinceFork := 0, 0
@@ -160,6 +211,13 @@ func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operatio
 			for _, op := range record.operations {
 				started[op], owned[op] = true, true
 			}
+		case inbox.Input:
+			if data.Kind == inbox.InputExternal {
+				result.messages[string(data.ID)] = true
+			}
+		}
+		if notes, ok := notesShownIn(record); ok {
+			result.shown, result.shownAt = notes, record.item.RecordedAt
 		}
 	}
 	for _, record := range records[cut:] {
@@ -178,14 +236,13 @@ func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operatio
 				Data: sessionstore.Fork{ParentID: fork.ParentID, PreviousTurnID: latest},
 			})
 			if err != nil {
-				return nil, nil, err
+				return logCut{}, err
 			}
 			out.Write(line)
 			clear(owned)
 		}
 		break
 	}
-	var dropped []operation.ID
 	for _, record := range records[cut:] {
 		switch {
 		case record.checkpoint:
@@ -196,12 +253,35 @@ func rewindLog(data []byte, messageID string, now time.Time) ([]byte, []operatio
 			for _, op := range record.operations {
 				if !started[op] {
 					started[op] = true
-					dropped = append(dropped, op)
+					result.dropped = append(result.dropped, op)
 				}
+			}
+			if response, ok := record.item.Data.(sessionstore.ModelResponse); ok && response.Compacted != nil {
+				result.compactions++
 			}
 		}
 	}
-	return out.Bytes(), dropped, nil
+	result.kept = out.Bytes()
+	return result, nil
+}
+
+// toolCallArguments joins the arguments of the model's tool calls in records,
+// a line each.
+func toolCallArguments(records []logRecord) []byte {
+	var out bytes.Buffer
+	for _, record := range records {
+		response, ok := itemData[sessionstore.ModelResponse](record)
+		if !ok {
+			continue
+		}
+		for _, item := range response.Response.Output {
+			if call, ok := item.Data.(llm.ToolCall); ok {
+				out.WriteString(call.Arguments)
+				out.WriteByte('\n')
+			}
+		}
+	}
+	return out.Bytes()
 }
 
 func decodeLogRecord(line []byte) (logRecord, error) {

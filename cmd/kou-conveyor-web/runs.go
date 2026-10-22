@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"uuid"
 
@@ -34,8 +36,12 @@ type run struct {
 	job                  *cockpit.Job
 	tracker              *cockpit.Tracker // what the run changes; nil when it is not recorded
 
-	mu       sync.Mutex
-	events   eventLog      // encoded events; event i has SSE ID i+1
+	mu     sync.Mutex
+	events eventLog // encoded events; event i has SSE ID i+1
+	// streams are the texts that stream now, by the ID of what they go
+	// into (a preview, a tool call's entry): each is over once that is
+	// recorded whole, and browsers that read the log later skip its pieces.
+	streams  map[string]*atomic.Bool
 	wake     chan struct{} // closed and replaced whenever the log grows
 	readers  int           // the browsers that read the log now
 	retired  bool          // the run is gone from the server: its log goes with its last reader
@@ -45,16 +51,23 @@ type run struct {
 }
 
 // event is what browsers receive. Entry events are complete snapshots keyed by
-// entry ID, so applying one twice is harmless.
+// entry ID, so applying one twice is harmless. Delta and output events are
+// not: they are pieces of text that streams, which browsers add up, each
+// once, as they read the log from its start.
 type event struct {
-	Type     string         `json:"type"` // entry, status, log or done
-	Entry    *cockpit.Entry `json:"entry,omitempty"`
-	Usage    *cockpit.Usage `json:"usage,omitempty"`
-	Activity string         `json:"activity,omitempty"`
-	Stopping bool           `json:"stopping,omitempty"`
-	Text     string         `json:"text,omitempty"`
-	Error    string         `json:"error,omitempty"`
-	Stopped  bool           `json:"stopped,omitempty"`
+	Type  string         `json:"type"` // entry, delta, output, status, log or done
+	Entry *cockpit.Entry `json:"entry,omitempty"`
+	// Delta: text that streamed of the model's response, for a preview
+	// that an entry replaces once the response is recorded (Entry.Replaces).
+	Delta *cockpit.Delta `json:"delta,omitempty"`
+	// Output: what a running tool call's command wrote, for its entry.
+	Output   *cockpit.Output `json:"output,omitempty"`
+	Usage    *cockpit.Usage  `json:"usage,omitempty"`
+	Activity string          `json:"activity,omitempty"`
+	Stopping bool            `json:"stopping,omitempty"`
+	Text     string          `json:"text,omitempty"`
+	Error    string          `json:"error,omitempty"`
+	Stopped  bool            `json:"stopped,omitempty"`
 	// Interrupted (done) says that the run left its prompt unfinished, as the
 	// session says when it is read again; a run that ends without an error
 	// can, when the model stops short of an answer.
@@ -80,7 +93,7 @@ func (r *run) publish(e event) {
 	if r.done {
 		return
 	}
-	r.events.append(data)
+	r.events.append(data, r.stream(e))
 	if e.Type == "done" {
 		r.done = true
 	}
@@ -89,6 +102,41 @@ func (r *run) publish(e event) {
 	}
 	close(r.wake)
 	r.wake = make(chan struct{})
+}
+
+// stream returns, for a piece of text that streams, what says when its
+// stream is over; nil for any other event. An entry that records what a
+// stream went into whole has the stream over: the final entry of a preview
+// (Replaces), a void preview (Gone), a tool call that ended.
+func (r *run) stream(e event) *atomic.Bool {
+	var id string
+	switch {
+	case e.Delta != nil:
+		id = e.Delta.ID
+	case e.Output != nil:
+		id = e.Output.ID
+	case e.Entry != nil:
+		ended := e.Entry.Replaces
+		if e.Entry.Gone || e.Entry.Tool != nil && e.Entry.Tool.Terminal() {
+			ended = e.Entry.ID
+		}
+		if over := r.streams[ended]; over != nil {
+			over.Store(true)
+			delete(r.streams, ended)
+		}
+		return nil
+	default:
+		return nil
+	}
+	over := r.streams[id]
+	if over == nil {
+		if r.streams == nil {
+			r.streams = make(map[string]*atomic.Bool)
+		}
+		over = new(atomic.Bool)
+		r.streams[id] = over
+	}
+	return over
 }
 
 // since returns where the events after the first n are, whether the log is
@@ -238,15 +286,16 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 	} else if !req.Compact {
 		req.MessageID = uuid.New().String()
 	}
+	sessionProvided := req.SessionID != ""
 	if req.SessionID == "" {
 		req.SessionID = uuid.New().String()
 	}
-	if req.Thinking == "" {
-		req.Thinking, _ = s.effort()
+	if req.Thinking == "" && sessionProvided {
+		// A session keeps its own effort; a new one starts with the effort
+		// last chosen (launch).
+		req.Thinking = cockpit.LoadMeta(ws.opt.SessionDir, req.SessionID).Effort
 	}
-	if req.Model = strings.TrimSpace(req.Model); req.Model == "" {
-		req.Model = s.opt.model
-	}
+	req.Model = strings.TrimSpace(req.Model)
 	images, err := prepareImages(req.Prompt, req.Images)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "images: "+err.Error())
@@ -260,7 +309,7 @@ func (s *server) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"run_id": current.id, "session_id": req.SessionID, "message_id": req.MessageID, "workspace": ws.ID,
-		"compact": req.Compact,
+		"model": current.model, "compact": req.Compact,
 	})
 }
 
@@ -285,12 +334,9 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	}
 
 	now := time.Now().UTC()
-	// A prompt that names no model runs with the connection's.
-	model := req.Model
-	if model == "" {
-		settings, _ := s.settings()
-		model = s.connection(settings, ws).Model
-	}
+	// A prompt that names no model runs with the server's -model, else with
+	// the model of its session (below, once the session is read).
+	model := cmp.Or(strings.TrimSpace(req.Model), s.opt.model)
 	current := &run{
 		id: uuid.New().String(), sessionID: req.SessionID, title: cockpit.Headline(req.Prompt, 80),
 		message: req.MessageID, compact: req.Compact, model: model, ws: ws, started: now, wake: make(chan struct{}),
@@ -343,13 +389,41 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		release()
 		return nil, err
 	}
+	// A session goes on with the model its last prompt ran with; a new one
+	// starts with the model last chosen in a composer, else the first the
+	// connection lists. Choosing in one session changes no other.
+	if model == "" {
+		model = tr.LastModel()
+	}
+	if model == "" {
+		settings, _ := s.settings()
+		model = s.newSessionModel(ctx, settings, ws)
+	}
+	if req.Thinking == "" {
+		// Likewise the effort: the session's own, else, as for a new
+		// session, the effort last chosen. Queued prompts come this way
+		// without handleStart.
+		req.Thinking = cockpit.LoadMeta(ws.opt.SessionDir, req.SessionID).Effort
+	}
+	if req.Thinking == "" {
+		req.Thinking, _ = s.effort()
+	}
+	// The runner is given the model resolved here rather than fall back to
+	// the connection's, so that the transcript says which model ran.
+	req.Model = model
+	current.model = model
 	var prompt *cockpit.Entry
 	var tracker *cockpit.Tracker
+	briefed := false
 	if req.Compact {
 		// A compaction changes no files, and its only entry is the notice
 		// with the summary.
 		tr.Begin(current.id, "Compacting context")
 	} else {
+		// The agent of a canvas's node is told of the canvas with the first
+		// prompt of its session — written in the node's chat as well as sent
+		// by the canvas.
+		req.Prompt, briefed = s.canvas.Brief(ws.ID, req.SessionID, req.Prompt, !hasPrompt(tr))
 		prompt = tr.SubmitModel(req.MessageID, req.Prompt, model, now)
 		if len(req.Images) != 0 {
 			tr.WithImages(prompt, req.Images)
@@ -369,8 +443,12 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		Resume: req.Resume, Rewind: req.Rewind, Compact: req.Compact, Instructions: req.Instructions,
 		Images: req.Images,
 		// The agent of a canvas's node is given the canvas's variables; every
-		// agent, where the tunnel's configuration is (tunnel.go).
-		Env: append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...),
+		// agent, where the tunnel's configuration is (tunnel.go), and the
+		// context window set for its model on the Accounts page (contexts.go).
+		Env: append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), s.contextEnv(req.Model)...),
+		// Browsers show the model's text as it streams and the output of
+		// commands as they run (pump).
+		Stream: true,
 	})
 	if err != nil {
 		if tracker != nil {
@@ -379,6 +457,15 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		release()
 		return nil, err
 	}
+	// The session keeps the effort it ran with. Neither it nor the model is
+	// recorded for new sessions: that is what the user chooses in a
+	// composer, not what runs, a canvas's agents' and queued ones among them,
+	// start with.
+	if !req.Compact {
+		if err := cockpit.SetSessionEffort(ws.opt.SessionDir, req.SessionID, req.Thinking); err != nil {
+			log.Printf("save session effort: %v", err)
+		}
+	}
 	// The queue's handlers find the run by its session before it is
 	// registered: they read job under s.mu.
 	s.mu.Lock()
@@ -386,6 +473,12 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	queue := s.queueSnapshot(key)
 	s.runs[current.id] = current
 	s.mu.Unlock()
+	if briefed {
+		s.canvas.Briefed(ws.ID, req.SessionID)
+	}
+	if req.Rewind != "" {
+		s.canvas.Rewound(ws.ID, req.SessionID)
+	}
 	s.canvas.RunStarted(ws.ID, req.SessionID)
 	if prompt != nil {
 		current.publish(event{Type: "entry", Entry: prompt})
@@ -398,6 +491,16 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	}
 	go s.pump(current, tr)
 	return current, nil
+}
+
+// hasPrompt says whether a session's agent was given a prompt of it.
+func hasPrompt(tr *cockpit.Transcript) bool {
+	for _, e := range tr.Entries {
+		if e.Kind == cockpit.KindUser && e.State != cockpit.Undelivered {
+			return true
+		}
+	}
+	return false
 }
 
 // launchError reports why a run could not start.
@@ -458,6 +561,16 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 			if retry, ok := cockpit.ParseRetry(text); ok {
 				tr.Retrying(retry)
 			}
+		} else if streamed, ok := tr.Live([]byte(line.Text)); ok {
+			// What streams goes out in pieces, which browsers add up: the
+			// log would grow with the whole of the text for each.
+			if streamed.Delta != nil {
+				current.publish(event{Type: "delta", Delta: streamed.Delta})
+			}
+			if streamed.Output != nil {
+				current.publish(event{Type: "output", Output: streamed.Output})
+			}
+			changed = streamed.Changed
 		} else {
 			var err error
 			if changed, err = tr.Apply([]byte(line.Text)); err != nil {
@@ -467,6 +580,9 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		}
 		for _, e := range changed {
 			current.publish(event{Type: "entry", Entry: e})
+			if e.Gone {
+				continue // a preview, which only browsers show
+			}
 			s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
 			// A finished tool call may have changed files.
 			if e.Kind == cockpit.KindTool && e.Tool.Terminal() && current.tracker != nil {
@@ -494,7 +610,9 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 	stopped := errors.Is(err, context.Canceled)
 	for _, e := range tr.Finish(err, stopped, time.Now().UTC()) {
 		current.publish(event{Type: "entry", Entry: e})
-		s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
+		if !e.Gone {
+			s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
+		}
 	}
 	// The session is free (the runner released its lock when it exited)
 	// before browsers hear that the run is done, so they can start the next
@@ -579,10 +697,10 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
 	for {
-		id := next
-		err := current.events.each(events, func(data []byte) error {
-			id++
-			_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", id, data)
+		// The pieces of a stream that is over are not sent (each): what they
+		// went into comes after them whole.
+		err := current.events.each(events, func(i int, data []byte) error {
+			_, err := fmt.Fprintf(w, "id: %d\ndata: %s\n\n", next+i+1, data)
 			return err
 		})
 		if err != nil {

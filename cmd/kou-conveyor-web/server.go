@@ -62,6 +62,9 @@ type server struct {
 	// follows plugins for the pages open (pluginevents.go).
 	assets *assets
 	watch  *pluginWatch
+	// sockets are the event streams pages read over WebSockets
+	// (eventsocket.go).
+	sockets eventSockets
 	// rebuild builds the server anew as its Go code changes (rebuild.go),
 	// nil when it does not run from a checkout or -rebuild is off; instance
 	// tells pages one run of the server from another.
@@ -190,6 +193,10 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/usage/prices", s.withGateway(s.handleRemovePrice))
 	mux.HandleFunc("PUT /api/usage/unit", s.withGateway(s.handleSetUnit))
 	mux.HandleFunc("POST /api/usage/prices/refresh", s.withGateway(s.handleRefreshPrices))
+	mux.HandleFunc("GET /api/context-windows", s.withGateway(s.handleContextWindows))
+	mux.HandleFunc("POST /api/context-windows", s.withGateway(s.handleSetContextWindow))
+	mux.HandleFunc("DELETE /api/context-windows", s.withGateway(s.handleRemoveContextWindow))
+	mux.HandleFunc("GET /api/context-windows/openrouter", s.withGateway(s.handleOpenRouterWindow))
 	// The gateway's version, and taking its latest release up
 	// (gatewayupdate.go).
 	mux.HandleFunc("GET /api/gateway/update", s.handleGatewayVersion)
@@ -219,6 +226,8 @@ func (s *server) handler() http.Handler {
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/images/{message}/{n}", s.handlePromptImage)
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/queue/{item}/images/{n}", s.handleQueuedImage)
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/tools/{call}/image", s.handleToolImage)
+		// The live HTML of a surface's Html, which its card frames (surfaceframe.go).
+		mux.HandleFunc("GET "+prefix+"/sessions/{id}/surfaces/{surface}/html/{component}", s.handleSurfaceFrame)
 		// The files prompts link: what the model saw, and for the composer,
 		// what a $ completes to and what a text links (files.go).
 		mux.HandleFunc("GET "+prefix+"/sessions/{id}/files/{message}", s.handlePromptFiles)
@@ -243,6 +252,9 @@ func (s *server) handler() http.Handler {
 		mux.HandleFunc("GET "+prefix+"/plugins/{name}/v/{version}/{path...}", s.handlePluginFile)
 	}
 	mux.HandleFunc("GET /api/runs/{id}/events", s.handleEvents)
+	// Whether a page's streams may come over sockets (eventsocket.go): a
+	// socket opened to it says so; it has nothing to say itself.
+	mux.HandleFunc("GET "+eventSocketProbe, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("GET /api/terminals/{id}", s.handleTerminal)
 	mux.HandleFunc("DELETE /api/terminals/{id}", s.handleKillTerminal)
@@ -264,14 +276,23 @@ func (s *server) handler() http.Handler {
 	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "cross-origin request rejected")
 	}))
-	return logRequests(s.secure(protection.Handler(mux)))
+	return logRequests(s.secure(protection.Handler(s.eventSockets(mux))))
 }
 
 func (s *server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("X-Frame-Options", "DENY")
+		// No page of another site frames the cockpit. Only the chat of a
+		// canvas's agent is framed, by the canvas, a page of this origin
+		// (plugins/canvas/web/embed.js).
+		ancestors := "'none'"
+		if chatEmbed(r) {
+			ancestors = "'self'"
+			h.Set("X-Frame-Options", "SAMEORIGIN")
+		} else {
+			h.Set("X-Frame-Options", "DENY")
+		}
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		// What comes through the tunnel names the relay's host; the relay
@@ -287,9 +308,15 @@ func (s *server) secure(next http.Handler) http.Handler {
 		// name in every browser. The one inline style allowed is the empty
 		// one: the markers that tell restty its styles are in place.
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' data: blob:; "+
-			"connect-src 'self'"+sockets(r.Host)+"; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+			"connect-src 'self'"+sockets(r.Host)+"; object-src 'none'; frame-ancestors "+ancestors+"; base-uri 'none'; form-action 'none'")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// chatEmbed says a request is for the page of an agent's chat in a canvas
+// node: the cockpit's page itself, at /?embed=canvas-chat.
+func chatEmbed(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/" && r.URL.Query().Get("embed") == "canvas-chat"
 }
 
 // sockets names the WebSocket addresses of a host for connect-src: a host
@@ -323,11 +350,12 @@ func (s *server) handleConfig(w http.ResponseWriter, r *http.Request) {
 		"session_dir":    startup.opt.SessionDir,
 		// The effort runs use unless a prompt asks for another; saved is set
 		// when a cockpit chose it, rather than the server's flag.
-		"thinking":        effort,
-		"effort_saved":    saved,
-		"thinking_levels": cockpit.ThinkingLevels,
-		"settings":        s.opt.SettingsFile != "",
-		"accounts":        s.gatewayView(),
+		"thinking":         effort,
+		"default_thinking": s.opt.thinking,
+		"effort_saved":     saved,
+		"thinking_levels":  cockpit.ThinkingLevels,
+		"settings":         s.opt.SettingsFile != "",
+		"accounts":         s.gatewayView(),
 		// The classes of tokens the runs of a Code call's syntax name.
 		"syntax_classes": highlight.Classes,
 		// Whether the canvases run (-canvas).
@@ -404,7 +432,12 @@ func (s *server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	slices.SortFunc(unlisted, func(a, b sessionSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
-	writeJSON(w, http.StatusOK, append(unlisted, out...))
+	// They head the sessions not pinned: the pinned ones stay on top.
+	pinned := 0
+	for pinned < len(out) && out[pinned].Pinned {
+		pinned++
+	}
+	writeJSON(w, http.StatusOK, slices.Insert(out, pinned, unlisted...))
 }
 
 // attachable returns the session's run once browsers can stream it: a run is
@@ -481,7 +514,7 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"id": id, "workspace": ws.ID, "title": titleOf(dir, id, tr, reserved), "entries": tr.Entries, "usage": tr.Usage,
 		"run": summary, "size": tr.Size, "external": external,
-		"pinned": meta.Pinned, "queue": queue,
+		"pinned": meta.Pinned, "effort": meta.Effort, "queue": queue,
 		// A title of the user's choosing; otherwise the title is the first
 		// prompt and changes with it.
 		"renamed":     meta.Title != "",
@@ -574,7 +607,7 @@ func logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		recorder := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(recorder, r)
-		if r.Method == http.MethodGet && recorder.status < 400 && !strings.HasSuffix(r.URL.Path, "/events") {
+		if r.Method == http.MethodGet && recorder.status < 400 && (!strings.HasSuffix(r.URL.Path, "/events") || r.URL.Path == eventSocketProbe) {
 			return
 		}
 		fmt.Printf("%s %-6s %-44s %d %s\n", start.Format("15:04:05"), r.Method, r.URL.Path, recorder.status,

@@ -1,6 +1,7 @@
 package canvas
 
 import (
+	"encoding/json/v2"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,9 @@ type transcriptHTTPPage struct {
 	Cursor      string            `json:"cursor"`
 	Next        string            `json:"next"`
 	CursorReset bool              `json:"cursor_reset"`
+	More        bool              `json:"more"`
+	Tail        int               `json:"tail"`
+	Older       int               `json:"older"`
 	Entries     []transcriptEntry `json:"entries"`
 }
 
@@ -121,6 +125,95 @@ func TestWorkspaceRawTranscriptCursorAndSearchRoutes(t *testing.T) {
 		if status, body := te.call(t, "GET", tc.path, "", ""); status != tc.want {
 			t.Errorf("GET %s: %d %s, want %d", tc.path, status, body, tc.want)
 		}
+	}
+}
+
+// TestTranscriptCursorsKeepToTheirFilters: a filtered read with after=last
+// moves the cursor of its filter only, a tail and a read with since move
+// none, and every entry is still found by the reads that ask for it.
+func TestTranscriptCursorsKeepToTheirFilters(t *testing.T) {
+	te := newEngine(t)
+	id, c := te.newCanvas(t, "Transcript cursors")
+	agent := te.ops(t, id, `[{"op":"node.add","node":{"kind":"agent","title":"Worker"}}]`).IDs["0"]
+	session, _ := agentTranscriptFile(t, c, agent,
+		errorRecord("e1"), searchModelRecord(t, 2, "a1"), errorRecord("e2"), searchModelRecord(t, 4, "a2"))
+	path := cockpit.SessionPath(c.ws.SessionDir, session)
+	base := "/api/w/w1/canvases/" + id + "/nodes/" + agent + "/transcript?raw=1"
+	read := func(query string) transcriptHTTPPage {
+		t.Helper()
+		var page transcriptHTTPPage
+		te.must(t, http.StatusOK, "GET", base+query, "", "", &page)
+		return page
+	}
+	got := func(page transcriptHTTPPage) string {
+		var out []string
+		for _, entry := range page.Entries {
+			out = append(out, entry.Text)
+		}
+		return strings.Join(out, ",")
+	}
+
+	if page := read("&tail=1"); got(page) != "a2" || page.Tail != 1 || page.Older != 3 || page.Cursor != "" {
+		t.Fatalf("tail: %+v", page)
+	}
+	if page := read("&after=last&kinds=assistant"); got(page) != "a1,a2" {
+		t.Fatalf("filtered read: %q", got(page))
+	}
+	// Neither the tail nor the filtered read moved the cursor of the reads
+	// of everything.
+	if page := read("&after=last"); got(page) != "e1,a1,e2,a2" {
+		t.Fatalf("unfiltered read after a tail and a filtered read: %q", got(page))
+	}
+	if page := read("&after=last&kinds=assistant"); got(page) != "" {
+		t.Fatalf("filtered read again: %q", got(page))
+	}
+
+	appendAgentTranscript(t, path, errorRecord("e3"))
+	if page := read("&after=last&since=2099-01-01T00:00:00Z"); got(page) != "" {
+		t.Fatalf("read since a later time: %q", got(page))
+	}
+	if page := read("&after=last"); got(page) != "e3" {
+		t.Fatalf("read after a read with since: %q, want the entry since did not show", got(page))
+	}
+	if status, body := te.call(t, "GET", base+"&tail=2&after=0", "", ""); status != http.StatusBadRequest {
+		t.Errorf("tail with after: %d %s, want %d", status, body, http.StatusBadRequest)
+	}
+}
+
+// TestTranscriptAnswersStayWithinTheBudget: a transcript too big for one
+// answer is given in pages that say there is more.
+func TestTranscriptAnswersStayWithinTheBudget(t *testing.T) {
+	te := newEngine(t)
+	id, c := te.newCanvas(t, "Transcript budget")
+	agent := te.ops(t, id, `[{"op":"node.add","node":{"kind":"agent","title":"Worker"}}]`).IDs["0"]
+	var records []any
+	for index := range 40 {
+		records = append(records, searchModelRecord(t, uint64(index+1), strings.Repeat(strconv.Itoa(index%10), 3000)))
+	}
+	agentTranscriptFile(t, c, agent, records...)
+	base := "/api/w/w1/canvases/" + id + "/nodes/" + agent + "/transcript?raw=1&limit=500"
+	after, total, pages := "0", 0, 0
+	for {
+		status, body := te.call(t, "GET", base+"&after="+after, "", "")
+		if status != http.StatusOK {
+			t.Fatalf("page %d: %d %s", pages, status, body)
+		}
+		if len(body) > transcriptBudget+4096 {
+			t.Fatalf("page %d is %d bytes, over the budget", pages, len(body))
+		}
+		var page transcriptHTTPPage
+		if err := json.Unmarshal(body, &page); err != nil {
+			t.Fatal(err)
+		}
+		pages++
+		total += len(page.Entries)
+		if !page.More {
+			break
+		}
+		after = page.Next
+	}
+	if total != len(records) || pages < 4 {
+		t.Fatalf("%d entries in %d pages, want all %d in 4 or more", total, pages, len(records))
 	}
 }
 

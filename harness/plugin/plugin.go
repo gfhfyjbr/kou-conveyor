@@ -106,6 +106,11 @@ type Tool struct {
 	// meanwhile: while all that runs is such calls, the harness does not
 	// ask the agent for progress reports, and checks in on it less often.
 	Waits bool `json:"waits,omitzero"`
+	// Refetch says that the tool's results show what is kept elsewhere —
+	// another agent's transcript, a search —, which a call fetches again:
+	// once the conversation outgrows its budget, they are pruned before
+	// the other tools' results.
+	Refetch bool `json:"refetch,omitzero"`
 }
 
 // Command is a slash command. Prompt is what it asks the agent: {{args}}

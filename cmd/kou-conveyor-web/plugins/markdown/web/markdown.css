@@ -47,8 +47,23 @@
 .code pre { margin: 0; padding: 12px 14px; overflow-x: auto; font: 12.5px/1.6 var(--mono); tab-size: 4; }
 .code pre code { padding: 0; border: 0; background: none; font-size: inherit; overflow-wrap: normal; }
 
+/* A column is not narrowed to a letter, as the prose's breaking anywhere
+   would let its neighbours do: a short cell (a number, a range, a date, a
+   name) keeps to one line; a longer one breaks between its words — a path,
+   a link or a hash anywhere — and is no narrower than 120px (.short, .long
+   and .spaceless, markdown.js). A table that does not fit scrolls sideways. */
 .table { overflow-x: auto; border: 1px solid var(--line); }
 .table table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.5; }
-.table th, .table td { padding: 7px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+.table th, .table td { padding: 7px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: normal; }
 .table th { font: 700 10px/1.4 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-3); background: var(--bg-2); }
+.table a, .table .spaceless { overflow-wrap: anywhere; }
+.table .short { white-space: nowrap; }
+.table .long { min-width: 120px; }
 .table tr:last-child td { border-bottom: 0; }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…): a
+   table scrolls, which clips its head to its corners. */
+.code, .table { border-radius: var(--radius); }
+.prose code { border-radius: var(--radius-sm); }

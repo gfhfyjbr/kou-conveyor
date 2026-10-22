@@ -89,3 +89,25 @@
 .session-row[data-drop="before"]::after { top: -1px; }
 .session-row[data-drop="after"]::after { bottom: -1px; }
 .session-row[draggable="true"] .n { cursor: grab; }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.sessions-toggle { border-radius: var(--radius); }
+.rename { border-radius: var(--radius-sm); }
+.session[data-running] .n::before { border-radius: min(var(--radius-sm), 3.5px); }
+/* Round, the session in view is a rounded block: no bar along its edge,
+   its number in the accent says it. */
+:root[data-corners="round"] .session { border-left-color: transparent; border-radius: var(--radius); }
+/* …tinted with the accent, as the row under the pointer is not (it is lit
+   while the pointer is on its ⋯ too). No lines between the rows: a gap
+   keeps the two apart when they are next to each other, and the line that
+   shows where a dragged row goes fills it. */
+:root[data-corners="round"] .session-row:hover > .session { background: var(--bg-3); }
+:root[data-corners="round"] .session[aria-current="true"] { background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); }
+:root[data-corners="round"] .session-row:hover > .session[aria-current="true"] { background: color-mix(in srgb, var(--accent) 19%, var(--bg-2)); }
+:root[data-corners="round"] .session-row + .session-row { margin-top: 2px; }
+:root[data-corners="round"] .session-row[data-drop="before"]::after { top: -2px; }
+:root[data-corners="round"] .session-row[data-drop="after"]::after { bottom: -2px; }
+/* The rail in blocks (layout.css): the rows keep close to its edges. */
+:root[data-corners="round"]:not([data-rail-compact]) .sessions { padding: 0 6px 8px; }

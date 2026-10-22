@@ -99,7 +99,7 @@ plugins read these:
 
 | Point | Item | Read by |
 | --- | --- | --- |
-| `layout.view` | `{ id, title, order, badge, rail, page, select(), shown(), hidden() }`: a view with a tab in the rail; `rail` shows in the rail while it is the view, `page`, if any, in the stage in place of the session | layout |
+| `layout.view` | `{ id, title, icon, order, badge, rail, page, select(), shown(), hidden() }`: a view with a tab in the rail; `rail` shows in the rail while it is the view, `page`, if any, in the stage in place of the session; `icon` (SVG markup, 16×16) is what the tab shows when the rail is too narrow for the tabs' names — without one, the title's first letter | layout |
 | `layout.panel` | `{ id, order, width, minWidth, node, opened(), closed() }`: a side panel, one open at a time; the user drags its edge, and the width is kept | layout |
 | `timeline.renderer` | `{ kind, order, render(entry, ctx) }`: draws a kind of entry (`user`, `assistant`, `reasoning`, `tool`, `notice`, `error`); the latest that returns a node wins | timeline |
 | `timeline.action` | `{ id, kinds, label, title, order, shown(entry, ctx), run(entry, ctx) }`: a button in an entry's header | timeline |
@@ -163,9 +163,12 @@ cockpit.contribute('sidebar.tab', {
 });
 ```
 
-`tab` is `{ id, kind, state, save(state), setTitle(text), setBadge(text),
-close(), activate(), visible() }`; tabs are kept per workspace with what
-each saves.
+`tab` is `{ id, kind, state, save(state), setTitle(text, detail),
+setBadge(text), close(), activate(), visible() }`; tabs are kept per
+workspace with what each saves. A title is short — what tells the tab from
+the others — and `detail`, the whole of it, is the tab's tooltip: the tabs
+say their titles while all of them fit, else they are their icons, the shown
+one's title beside them, the rest in the menu of "⋯ N".
 
 ## Services
 
@@ -180,12 +183,12 @@ off.
 | `session` | session | `view()`, `summary()`, `state`, `submit(text, options)`, `prompt(text)`, `compact(focus)`, `stop()`, `newSession()`, `openSession(id)`, `branch(ws, id, message)`, `rename(ws, id, title)`, `menuItems(ws, id)`, `runBlocked(v)`, `switchWorkspace(id)`, `refreshSessions()` |
 | `layout` | layout | `view()`, `show(id)`, `openPanel(id)`, `closePanel(id)`, `togglePanel(id)`, `panelOpen(id)`, `rail(open)`, `scroller()`, `width(id)`, `setWidth(id, px)` |
 | `sidebar` | sidebar | `open(kind, { state, reuse, focus })`, `close(id)`, `activate(id)`, `toggle(kind)`, `show()`, `hide()`, `isOpen()`, `tabs()`, `active()`, `kinds()`, `view(id)` |
-| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`, `dismiss(key)`; `open(anchor, items)`, `toggle(anchor, items)`, `close()`; `copy(text, label)`; `closeTop()`, `closeAll()` |
+| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`, `dismiss(key)`; `open(anchor, items)`, `toggle(anchor, items)`, `close()` — an item is `{ icon, label, detail, hint, current, danger, confirm, disabled, run }`, `icon` a glyph or SVG markup; `copy(text, label)`; `closeTop()`, `closeAll()` |
 | `timeline` | timeline | `schedule(id)`, `flushNow()`, `reveal(id)`, `scrollToBottom()`, `promptInView(v)`, `setAllTools(open)`, `toolState(entry, running)` |
 | `composer` | composer | `value()`, `set(text, { focus, end })`, `focus()`, `clear()`, `submit({ force })`, `input`, `form` |
 | `commands` | commands | `list()`, `named(name)`, `parse(text)`, `run(parsed)` |
 | `models` | models | `next(v)`, `default()`, `catalog()`, `load()`, `set(v, id)`, `openPicker(options)`, `title(id)` |
-| `effort` | effort | `current()`, `levels()`, `set(level)`, `cycle(step)` |
+| `effort` | effort | `current(v)`, `levels()`, `set(level)`, `cycle(step)`, `refresh()` |
 | `images` | images | `take(text)`, `encode(list)`, `attach({ input })`, `imageURL(v, entry, n)`, `toolImageURL(v, entry)`, `openToolImage(v, entry)` |
 | `files` | files | `attach({ input, container })`, `complete(query)`, `links(text)`, `query(before)`, `label(path)` |
 | `explorer` | explorer | `open(path)`: the Files tab, at a file of the workspace |
@@ -195,7 +198,7 @@ off.
 | `markdown` | markdown | `render(text, { onCopy })`, `inline(text)`, `codeBlock(text, language)` |
 | `inspector` | inspector | `toggle()`, `open()`, `show()`, `expand(id, open)`, `fold({ id, title, hint, meta, level, beforeOpen })` — a bar for a section to hold: `{ node, body, isOpen(), set(open), meta(parts) }` |
 | `plugins`, `skills` | plugins, skills | `show()`, `trust(trusted)`, `enable(name, enabled)`, `reload()`; `show()` |
-| `changes`, `palette`, `help`, `theme` | the plugins of those names | `toggle()`, `open()`; `open()`, `close()`; `open()`, `close()`; `current()`, `set(theme)`, `toggle()` |
+| `changes`, `palette`, `help`, `theme` | the plugins of those names | `toggle()`, `open()`; `open()`, `close()`; `open()`, `close()`; `current()`, `set(theme)`, `toggle()`, `appearance()` — `{ accent, shade, radius, compact }` —, `choose(change)` |
 | `accounts`, `connection`, `workspaces`, `session-list` | the plugins of those names | `show()`, `showUsage(range)`, …; `open()`, `viaGateway(url)`, …; `openMenu(anchor)`, `command(query)`, …; `rename(ws, id)`, … |
 | `tunnel` | tunnel | `status()` — what `GET /api/tunnel` said last: `{ state, wanted, configured, url, host, error, remote, … }`, `state` one of `off`, `setup`, `connecting`, `up`, `retrying`, `unavailable` —, `open()`, `close()`, `start()`, `stop()`, `setup()` (hands the setting up of the relay to the agent, in a session of its own), `refresh()` |
 
@@ -205,11 +208,12 @@ off.
 | --- | --- |
 | `render` | none: redraw what you show |
 | `entry`, `session`, `finish`, `plugins` | an entry and the view; the view; `{ kind, compact, view }`; the plugin listing |
-| `session:view`, `session:leave`, `session:entry`, `session:event`, `session:dirty`, `session:loaded`, `session:finish`, `session:changes`, `session:queue`, `session:gone`, `session:before-run`, `session:sessions`, `session:workspaces`, `session:workspace`, `session:config` | the session plugin's model as it changes |
+| `session:view`, `session:leave`, `session:entry`, `session:event`, `session:dirty`, `session:loaded`, `session:started`, `session:finish`, `session:changes`, `session:queue`, `session:gone`, `session:before-run`, `session:sessions`, `session:workspaces`, `session:workspace`, `session:config` | the session plugin's model as it changes |
 | `composer:input`, `composer:focus`, `composer:blur`, `composer:ready` | the composer |
 | `timeline:flush`, `timeline:scroll` | the transcript |
 | `layout:view`, `layout:panel`, `layout:resize`, `sidebar:tab` | the layout: the view, the open panel, the stage's new width, the sidebar's tab |
-| `models`, `theme` | the models; the theme |
+| `models`, `theme`, `appearance` | the models; the theme; the appearance as it changes, `{ accent, shade, radius, compact }` |
+| `preferences` | what new sessions start with, `{ effort, last_model, … }` as saved, and when it was asked for, from the effort plugin |
 | `service`, `point:<name>`, `store:<key>`, `slots` | a service came or went; a contribution point changed; a stored key; a slot |
 | `plugin-reloaded`, `plugin-restyled`, `plugin-error`, `online`, `ready` | the kernel |
 
@@ -220,13 +224,17 @@ off.
 | `composer.submit` | `({ raw, text, force, view })`: the first hook to return true takes what was written — the commands plugin takes `/commands`, the queue a message while the agent works |
 | `composer.key` | `(event)`: the first to return true takes a key pressed in the composer |
 | `run.request` | `(body, view)`, async: every prompt's request passes through, and may be changed on its way: `cockpit.hooks.tap('run.request', (body) => ({ ...body, prompt: body.prompt + '\n\nAnswer briefly.' }))` |
+| `session.missing` | `({ id, ws })`: a session the server does not know is opened — the first hook to return true has it shown as a new session under its ID, its first prompt making it, with no error; the canvas so shows the chat of an agent node before its first run |
 
 ## Changing the interface
 
 - **Restyle** with a plugin that has only a style sheet: the colours are the
   tokens `--bg`, `--bg-2`…`--bg-4`, `--fg`, `--fg-2`…`--fg-4`, `--line`,
   `--line-2`, `--accent`, `--ok`, `--warn`, `--err`, with the fonts
-  `--mono` and `--sans`, redefined by the light and dark themes.
+  `--mono` and `--sans`, redefined by the light and dark themes and the
+  user's appearance; corners take `--radius` (`--radius-sm`,
+  `--radius-lg`), 0 unless the user rounds them, when the root has
+  `data-corners="round"`.
 - **Take a part's place** by mounting a node with its id in its slot:
   `cockpit.ui.mount('bar.end', { id: 'palette-open', order: 50, node })`;
   `cockpit.ui.hide('bar.end', 'run-state')` takes one away.

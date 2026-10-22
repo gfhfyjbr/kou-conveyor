@@ -130,3 +130,22 @@ func TestTerminalPreferencesSurviveTheEffort(t *testing.T) {
 		t.Fatalf("a negative width = %+v", p)
 	}
 }
+
+func TestLastModelPreference(t *testing.T) {
+	path := cockpit.PreferencesPath(filepath.Join(t.TempDir(), "settings.json"))
+	if err := cockpit.SaveLastModel(path, "claude-opus-5-5"); err != nil {
+		t.Fatal(err)
+	}
+	if p := cockpit.LoadPreferences(path); p.LastModel != "claude-opus-5-5" {
+		t.Fatalf("last model = %+v", p)
+	}
+	if err := cockpit.SaveLastModel(path, "two words"); err == nil {
+		t.Fatal("saved a model with spaces")
+	}
+	if err := cockpit.SaveEffort(path, "max"); err != nil {
+		t.Fatal(err)
+	}
+	if p := cockpit.LoadPreferences(path); p.LastModel != "claude-opus-5-5" || p.Effort != "max" {
+		t.Fatalf("saving effort changed preferences = %+v", p)
+	}
+}

@@ -29,13 +29,23 @@ export default function activate(cockpit) {
     ]));
   }
 
+  // The sheet gives the focus back to where it was when it closes.
+  let before = null;
+
   function open() {
+    if (overlay.hidden) before = document.activeElement !== document.body ? document.activeElement : null;
     render();
     overlay.hidden = false;
     close.focus();
   }
   function hide() {
+    if (overlay.hidden) return;
     overlay.hidden = true;
+    if (overlay.contains(document.activeElement)) {
+      if (before?.isConnected && before.getClientRects().length) before.focus();
+      else document.activeElement.blur();
+    }
+    before = null;
   }
 
   const button = h('button', { class: 'icon', id: 'help-open', type: 'button', title: 'Keyboard shortcuts (?)', 'aria-label': 'Keyboard shortcuts', onclick: open }, '?');

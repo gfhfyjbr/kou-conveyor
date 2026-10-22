@@ -26,10 +26,20 @@ type cachedWriteState struct {
 	committedSize int64
 }
 
+// cachedReadState is a session file as last decoded, with what the file was
+// when it was read: which file, its size, and its modification time.
+type cachedReadState struct {
+	state         storedState
+	committedSize int64
+	file          os.FileInfo
+}
+
 type Store struct {
 	directory            string
 	writeStateCacheMutex sync.Mutex
 	writeStateCache      map[session.ID]cachedWriteState
+	readStateCacheMutex  sync.Mutex
+	readStateCache       map[session.ID]cachedReadState
 	observers            map[sessionstore.ObserverID]sessionstore.Observer
 	observerOrder        []sessionstore.ObserverID
 }
@@ -50,6 +60,7 @@ func New(directory string) (*Store, error) {
 	return &Store{
 		directory:       absolute,
 		writeStateCache: make(map[session.ID]cachedWriteState),
+		readStateCache:  make(map[session.ID]cachedReadState),
 		observers:       make(map[sessionstore.ObserverID]sessionstore.Observer),
 	}, nil
 }
@@ -101,7 +112,7 @@ func (store *Store) Items(
 		return sessionstore.Page{}, fmt.Errorf("item page limit must be positive")
 	}
 
-	state, _, err := store.readState(ctx, id)
+	state, _, err := store.sharedState(ctx, id)
 	if err != nil {
 		return sessionstore.Page{}, err
 	}
@@ -229,7 +240,7 @@ func (store *Store) SaveOperation(
 }
 
 func (store *Store) Resume(ctx context.Context, id session.ID) (sessionstore.ResumeState, error) {
-	state, _, err := store.readState(ctx, id)
+	state, _, err := store.sharedState(ctx, id)
 	if err != nil {
 		return sessionstore.ResumeState{}, err
 	}
@@ -248,7 +259,7 @@ func (store *Store) Fork(
 	if id == parentID {
 		return sessionstore.Snapshot{}, fmt.Errorf("fork session %q onto itself", id)
 	}
-	parent, _, err := store.readState(ctx, parentID)
+	parent, _, err := store.sharedState(ctx, parentID)
 	if err != nil {
 		return sessionstore.Snapshot{}, fmt.Errorf("fork parent %q: %w", parentID, err)
 	}
@@ -299,6 +310,63 @@ func (store *Store) readState(
 	return state, committedSize, nil
 }
 
+// sharedState reads a session like readState, but it keeps what it decoded
+// and returns that again while the file stays the same file with the same
+// size and modification time. A run starts by resuming its session and paging
+// its whole history in, and so decodes the file once rather than once a page:
+// on a session of thousands of items, a fraction of a second rather than tens
+// of seconds.
+//
+// The state is shared by every caller: none may change it.
+func (store *Store) sharedState(
+	ctx context.Context,
+	id session.ID,
+) (storedState, int64, error) {
+	if err := validateSessionID(id); err != nil {
+		return storedState{}, 0, err
+	}
+	if err := context.Cause(ctx); err != nil {
+		return storedState{}, 0, err
+	}
+	// The file is examined before it is read, so one that grows while it is
+	// read is remembered as it was before and read again the next time.
+	file, statErr := os.Stat(store.sessionPath(id))
+	if statErr == nil {
+		store.readStateCacheMutex.Lock()
+		cached, ok := store.readStateCache[id]
+		store.readStateCacheMutex.Unlock()
+		if ok && sameFileVersion(cached.file, file) {
+			return cached.state, cached.committedSize, nil
+		}
+	}
+	state, committedSize, err := store.readState(ctx, id)
+	if err != nil {
+		return storedState{}, 0, err
+	}
+	if statErr == nil {
+		store.readStateCacheMutex.Lock()
+		store.readStateCache[id] = cachedReadState{
+			state:         state,
+			committedSize: committedSize,
+			file:          file,
+		}
+		store.readStateCacheMutex.Unlock()
+	}
+	return state, committedSize, nil
+}
+
+func sameFileVersion(cached, current os.FileInfo) bool {
+	return os.SameFile(cached, current) &&
+		cached.Size() == current.Size() &&
+		cached.ModTime().Equal(current.ModTime())
+}
+
+func (store *Store) evictCachedReadState(id session.ID) {
+	store.readStateCacheMutex.Lock()
+	delete(store.readStateCache, id)
+	store.readStateCacheMutex.Unlock()
+}
+
 func (store *Store) loadWriteState(
 	ctx context.Context,
 	id session.ID,
@@ -312,12 +380,14 @@ func (store *Store) loadWriteState(
 	if head, committedSize, ok := store.getCachedWriteState(id); ok {
 		return head, committedSize, nil
 	}
-	state, committedSize, err := store.readState(ctx, id)
+	state, committedSize, err := store.sharedState(ctx, id)
 	if err != nil {
 		return sessionHead{}, 0, err
 	}
-	store.putCachedWriteState(id, state.sessionHead, committedSize)
-	return state.sessionHead, committedSize, nil
+	// Writes change the head in place, and the state read is shared.
+	head := state.sessionHead.clone()
+	store.putCachedWriteState(id, head, committedSize)
+	return head, committedSize, nil
 }
 
 func (store *Store) publishInitialState(state storedState) error {
@@ -325,6 +395,7 @@ func (store *Store) publishInitialState(state storedState) error {
 	if err != nil {
 		return err
 	}
+	store.evictCachedReadState(state.Snapshot.Session.ID)
 	if err := publishFile(store.directory, store.sessionPath(state.Snapshot.Session.ID), encoded); err != nil {
 		store.evictCachedWriteState(state.Snapshot.Session.ID)
 		return err
@@ -345,6 +416,7 @@ func (store *Store) append(
 		store.evictCachedWriteState(id)
 		return err
 	}
+	store.evictCachedReadState(id)
 	if err := appendFile(store.sessionPath(id), committedSize, encoded); err != nil {
 		store.evictCachedWriteState(id)
 		return err

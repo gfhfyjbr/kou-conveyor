@@ -2,6 +2,7 @@ package highlight
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -80,6 +81,38 @@ func TestCacheFinishesInTheBackground(t *testing.T) {
 	}
 	if again := c.Get("k", "big.go", text, time.Nanosecond); !again.Complete {
 		t.Fatal("not kept")
+	}
+}
+
+func TestLinesSplitsRunsByLine(t *testing.T) {
+	for _, c := range []struct {
+		name, text string
+		runs       []int32
+		want       [][]int32
+	}{
+		// Plain past the last run; an empty line has no runs.
+		{"lines", "ab\ncd\n\nef", []int32{2, 1, 1, 0, 2, 2, 3, 0}, [][]int32{{2, 1}, {2, 2}, nil, {2, 0}}},
+		// A comment over two lines colours both.
+		{"run over lines", "/*a\nb*/", []int32{7, 5}, [][]int32{{3, 5}, {3, 5}}},
+		// A newline at the end makes no line after it.
+		{"newline at the end", "a\n", []int32{1, 3, 1, 0}, [][]int32{{1, 3}}},
+		// Lengths count UTF-16 units: 😀 is two.
+		{"utf-16", "é😀\nx", []int32{3, 2, 2, 0}, [][]int32{{3, 2}, {1, 0}}},
+		{"no runs", "a\nb", nil, [][]int32{{1, 0}, {1, 0}}},
+	} {
+		if got := Lines(c.text, c.runs); !reflect.DeepEqual(got, c.want) {
+			t.Errorf("%s: Lines = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestAppendLengthensARunOfTheSameClass(t *testing.T) {
+	runs := Append(nil, 2, 1)
+	runs = Append(runs, 3, 1)
+	runs = Append(runs, 0, 4)
+	runs = Append(runs, 1, 0)
+	if want := []int32{5, 1, 1, 0}; !reflect.DeepEqual(runs, want) {
+		t.Fatalf("runs = %v, want %v", runs, want)
 	}
 }
 

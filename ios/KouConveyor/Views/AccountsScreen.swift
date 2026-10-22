@@ -30,12 +30,17 @@ final class AccountsModel {
     }
 
     func load() async {
+        let range = self.range
         do {
             let view: AccountsView = try await client.get("/api/accounts", query: [URLQueryItem(name: "range", value: range)])
+            // The answer for a range no longer chosen is not shown: the
+            // poll's may land after the one the new range asked for.
+            guard range == self.range else { return }
             self.view = view
             error = nil
         } catch is CancellationError {
         } catch {
+            guard range == self.range else { return }
             self.error = error.localizedDescription
         }
     }
@@ -43,7 +48,7 @@ final class AccountsModel {
     func poll() async {
         while !Task.isCancelled {
             await load()
-            try? await Task.sleep(for: .seconds(20))
+            await AppFront.poll(.seconds(20))
         }
     }
 
@@ -244,12 +249,13 @@ struct AccountsList: View {
                 ConnectionSection(connection: view.connection)
             }
         }
+        .groupedBackground()
         .overlay {
             if model.view == nil {
                 if let error = model.error {
                     ContentUnavailableView("Accounts unavailable", systemImage: "person.2.slash", description: Text(error))
                 } else {
-                    ProgressView()
+                    LoadingSpinner()
                 }
             }
         }
@@ -362,7 +368,7 @@ struct AccountStateBadge: View {
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
             .foregroundStyle(color)
-            .background(color.opacity(0.15), in: .capsule)
+            .background(color.opacity(0.15), in: .cornerCapsule)
     }
 
     private var title: String {
@@ -1013,7 +1019,7 @@ struct UsageList: View {
                 if let error = usage.error {
                     ContentUnavailableView("Usage unavailable", systemImage: "chart.bar.xaxis", description: Text(error))
                 } else {
-                    ProgressView()
+                    LoadingSpinner()
                 }
             }
         }
@@ -1118,7 +1124,7 @@ struct UsageTile: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
-        .background(.fill.quaternary, in: .rect(cornerRadius: 14))
+        .background(.fill.quaternary, in: .rect(cornerRadius: .corner(14)))
     }
 }
 
@@ -1138,7 +1144,8 @@ struct UsageChart: View {
         let high: Double
     }
 
-    private static let palette: [Color] = [.kouAccent, .blue, .green, .purple, .teal, .gray]
+    /// The colours of the models, the first the accent as chosen (Look).
+    private static var palette: [Color] { [.kouAccent, .blue, .green, .purple, .teal, .gray] }
 
     var body: some View {
         let (points, order) = series()

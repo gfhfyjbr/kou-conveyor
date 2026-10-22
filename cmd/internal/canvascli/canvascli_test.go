@@ -30,6 +30,7 @@ type fakeCanvas struct {
 	mu       sync.Mutex
 	requests []recorded
 	server   *httptest.Server
+	self     string // what /api/canvas/self answers, when not a kou agent's
 }
 
 func newFakeCanvas(t *testing.T) *fakeCanvas {
@@ -44,6 +45,7 @@ func newFakeCanvas(t *testing.T) *fakeCanvas {
 		}
 		f.mu.Lock()
 		f.requests = append(f.requests, req)
+		self := f.self
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -71,6 +73,8 @@ func newFakeCanvas(t *testing.T) *fakeCanvas {
 				{"node":"n_b","title":"tests","status":{"state":"busy","activity":"go test"},"outputs":0}]}`)
 		case r.URL.Path == "/api/canvas/emit":
 			io.WriteString(w, `{"ok":true}`)
+		case r.URL.Path == "/api/canvas/self" && self != "":
+			io.WriteString(w, self)
 		case r.URL.Path == "/api/canvas/self":
 			io.WriteString(w, `{"canvas":{"id":"c1","title":"Triage","live":true},"node":{"id":"n_me","kind":"agent","title":"Triage","x":0,"y":0,"w":440,"h":560},"scope":"build","brief":"You are node «Triage».","workspace":"/w","page":"http://x/#/w/1/c/c1"}`)
 		default:
@@ -88,6 +92,19 @@ func (f *fakeCanvas) take() []recorded {
 	requests := f.requests
 	f.requests = nil
 	return requests
+}
+
+// added is the node the requests since the last take added.
+func (f *fakeCanvas) added(t *testing.T) map[string]any {
+	t.Helper()
+	requests := f.take()
+	for _, r := range requests {
+		if r.method == "POST" && r.path == "/api/canvas/ops" {
+			return r.body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
+		}
+	}
+	t.Fatalf("no node added: %+v", requests)
+	return nil
 }
 
 // run runs kou-canvas against the fake server, as node n_me.
@@ -149,6 +166,37 @@ func TestSpawnFromTheCommandLine(t *testing.T) {
 	}
 }
 
+// TestSpawnAKouAgentFromTheCommandLine: with no preset, kou-canvas spawn
+// makes a kou agent, and --worktree takes a name or a preset after it.
+func TestSpawnAKouAgentFromTheCommandLine(t *testing.T) {
+	f := newFakeCanvas(t)
+	for _, test := range []struct {
+		args            []string
+		kind, preset    string
+		sandbox, wtName any
+	}{
+		{[]string{"spawn", "--title", "w", "--worktree", "fix-a"}, "agent", "", "worktree", nil},
+		{[]string{"spawn", "--worktree", "shell", "--title", "s"}, "", "shell", nil, ""},
+		{[]string{"spawn", "--title", "w", "--config", `{"effort":"high"}`}, "agent", "", nil, nil},
+	} {
+		if code, _, errOut := f.run(t, "", test.args...); code != 0 {
+			t.Fatalf("%v: exit %d: %s", test.args, code, errOut)
+		}
+		node := f.added(t)
+		kind, _ := node["kind"].(string)
+		preset, _ := node["preset"].(string)
+		config, _ := node["config"].(map[string]any)
+		if kind != test.kind || preset != test.preset || config["sandbox"] != test.sandbox {
+			t.Errorf("%v: node %v", test.args, node)
+		}
+		if test.wtName != nil {
+			if spec, _ := config["worktree"].(map[string]any); spec == nil || spec["name"] != nil {
+				t.Errorf("%v: worktree %v, want one named after the node", test.args, config["worktree"])
+			}
+		}
+	}
+}
+
 func TestSpawnAnAgentInAWorktree(t *testing.T) {
 	f := newFakeCanvas(t)
 	tool, _ := toolNamed("CanvasSpawn")
@@ -171,11 +219,94 @@ func TestSpawnAnAgentInAWorktree(t *testing.T) {
 	if config["sandbox"] != "worktree" || fmt.Sprint(spec["include"]) != "[vendor/]" || fmt.Sprint(spec["link"]) != "[fonts tools/oracle]" || spec["name"] != nil {
 		t.Fatalf("node = %v", node)
 	}
-	if _, err := tool.call(context.Background(), c, []byte(`{"title":"x"}`)); err == nil {
-		t.Fatal("a node without a preset was made")
+	// No preset: a kou agent; no preset but a command: a terminal running it.
+	if _, err := tool.call(context.Background(), c, []byte(`{"title":"x","config":{"effort":"high"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	node = f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
+	if node["kind"] != "agent" || node["preset"] != nil || node["config"].(map[string]any)["effort"] != "high" {
+		t.Fatalf("a node of no preset: %v", node)
+	}
+	if _, err := tool.call(context.Background(), c, []byte(`{"title":"x","command":"make test"}`)); err != nil {
+		t.Fatal(err)
+	}
+	node = f.take()[0].body["ops"].([]any)[0].(map[string]any)["node"].(map[string]any)
+	if node["kind"] != nil || node["preset"] != "command" || node["config"].(map[string]any)["command"] != "make test" {
+		t.Fatalf("a node of a command: %v", node)
 	}
 	if _, err := tool.call(context.Background(), c, []byte(`[1]`)); err == nil {
 		t.Fatal("arguments that are not an object were taken")
+	}
+}
+
+// TestSpawnWiresAnAgentToItsSpawner: an agent an agent spawns answers it —
+// its output is wired to the spawner's input — unless connect says
+// otherwise; nothing else is wired by itself, nor what a shell spawns.
+func TestSpawnWiresAnAgentToItsSpawner(t *testing.T) {
+	f := newFakeCanvas(t)
+	tool, _ := toolNamed("CanvasSpawn")
+	c := &client{base: f.server.URL, token: "kc1.test", node: "n_me", http: f.server.Client()}
+	for _, test := range []struct {
+		args, connect string
+	}{
+		{`{"title":"coder"}`, `map[to:self]`},
+		{`{"preset":"agent","title":"coder","prompt":"go"}`, `map[to:self]`},
+		{`{"preset":"codex","title":"codex"}`, `map[to:self]`},
+		{`{"preset":"claude-code","title":"claude"}`, `map[to:self]`},
+		{`{"preset":"foreman","title":"lead"}`, `map[to:self]`},
+		{`{"title":"coder","connect":{}}`, `<nil>`},
+		{`{"title":"coder","connect":{"from":"self"}}`, `map[from:self]`},
+		{`{"title":"coder","connect":{"to":"n_b:in"}}`, `map[to:n_b:in]`},
+		{`{"preset":"shell","title":"sh"}`, `<nil>`},
+		{`{"title":"tests","command":"go test ./..."}`, `<nil>`},
+		{`{"preset":"note","prompt":"plan"}`, `<nil>`},
+		{`{"preset":"acme/feed","title":"feed"}`, `<nil>`},
+	} {
+		if _, err := tool.call(context.Background(), c, []byte(test.args)); err != nil {
+			t.Fatalf("%s: %v", test.args, err)
+		}
+		if node := f.added(t); fmt.Sprint(node["connect"]) != test.connect {
+			t.Errorf("%s: connect %v, want %s", test.args, node["connect"], test.connect)
+		}
+	}
+
+	// From the command line, as a tool: for an agent's program.
+	for _, test := range []struct {
+		args    []string
+		connect string
+	}{
+		{[]string{"spawn", "--title", "coder"}, `map[to:self]`},
+		{[]string{"spawn", "codex", "--title", "codex"}, `map[to:self]`},
+		{[]string{"spawn", "--title", "coder", "--no-connect"}, `<nil>`},
+		{[]string{"spawn", "--title", "coder", "--connect-from", "self"}, `map[from:self]`},
+		{[]string{"spawn", "shell", "--title", "sh"}, `<nil>`},
+	} {
+		if code, _, errOut := f.run(t, "", test.args...); code != 0 {
+			t.Fatalf("%v: exit %d: %s", test.args, code, errOut)
+		}
+		if node := f.added(t); fmt.Sprint(node["connect"]) != test.connect {
+			t.Errorf("%v: connect %v, want %s", test.args, node["connect"], test.connect)
+		}
+	}
+
+	// A shell's command line spawns an agent unwired: the agent's answers
+	// would be typed in as commands. A coding agent's terminal is wired.
+	for _, test := range []struct {
+		self, connect string
+	}{
+		{`{"node":{"id":"n_me","kind":"terminal","preset":"shell","title":"sh"}}`, `<nil>`},
+		{`{"node":{"id":"n_me","kind":"terminal","preset":"command","title":"make"}}`, `<nil>`},
+		{`{"node":{"id":"n_me","kind":"terminal","preset":"claude-code","title":"claude"}}`, `map[to:self]`},
+	} {
+		f.mu.Lock()
+		f.self = test.self
+		f.mu.Unlock()
+		if code, _, errOut := f.run(t, "", "spawn", "--title", "coder"); code != 0 {
+			t.Fatalf("%s: exit %d: %s", test.self, code, errOut)
+		}
+		if node := f.added(t); fmt.Sprint(node["connect"]) != test.connect {
+			t.Errorf("as %s: connect %v, want %s", test.self, node["connect"], test.connect)
+		}
 	}
 }
 
@@ -294,6 +425,36 @@ func TestSendWaitsForTheAnswer(t *testing.T) {
 	}
 	if body := f.take()[0].body; body["wait"] != nil {
 		t.Fatalf("CanvasSend without wait = %v", body)
+	}
+}
+
+// replace asks the server to put the text in place of the sender's last
+// prompt; it takes text only.
+func TestSendReplacesTheLastPrompt(t *testing.T) {
+	f := newFakeCanvas(t)
+	code, out, errOut := f.run(t, "", "send", "worker", "put", "otherwise", "--replace", "--wait")
+	if code != 0 || !strings.HasPrefix(out, "your last prompt to n_new is replaced") || !strings.Contains(out, "n_new answered:\npong") {
+		t.Fatalf("send --replace: %d %q %s", code, out, errOut)
+	}
+	if body := f.take()[0].body; body["text"] != "put otherwise" || body["replace"] != true || body["wait"] != true {
+		t.Fatalf("send --replace = %v", body)
+	}
+	tool, _ := toolNamed("CanvasSend")
+	c := &client{base: f.server.URL, token: "kc1.test", node: "n_me", http: f.server.Client()}
+	if _, err := tool.call(context.Background(), c, []byte(`{"node":"worker","text":"again","replace":"true"}`)); err != nil {
+		t.Fatalf("CanvasSend with replace: %v", err)
+	}
+	if body := f.take()[0].body; body["replace"] != true {
+		t.Fatalf("CanvasSend with replace = %v", body)
+	}
+	if _, err := tool.call(context.Background(), c, []byte(`{"node":"worker","keys":["C-c"],"replace":true}`)); err == nil || !strings.Contains(err.Error(), "not keys") {
+		t.Fatalf("CanvasSend with keys and replace: %v", err)
+	}
+	if res, err := tool.call(context.Background(), c, []byte(`{"node":"worker","text":"plain"}`)); err != nil || strings.Contains(res.text, "replaced") {
+		t.Fatalf("CanvasSend without replace: %q, %v", res.text, err)
+	}
+	if requests := f.take(); len(requests) != 1 || requests[0].body["replace"] != nil {
+		t.Fatalf("the requests after: %v", requests)
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 )
 
 // canvasHarness starts a server that runs the canvases, its engine's
@@ -137,3 +139,84 @@ func TestCanvasAgentNode(t *testing.T) {
 		t.Fatalf("the prompt did not say where it came from: %q", text)
 	}
 }
+
+// The chat of an agent node is there before the node's first run: what is
+// written in it first makes the session — the node's ID its own — and its
+// agent is told of the canvas with it, as with a first message from the
+// canvas, and only then.
+func TestCanvasAgentsChatBriefsItsFirstPrompt(t *testing.T) {
+	h := canvasHarness(t)
+	res, applied := h.do("POST", "/api/canvases/board/ops", `{"create":true,"title":"Board","ops":[
+		{"op":"node.add","node":{"kind":"agent","title":"Helper"}}]}`)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("ops: %d %v", res.StatusCode, applied)
+	}
+	ids, _ := applied["ids"].(map[string]any)
+	agent, _ := ids["0"].(string)
+	runtime := func() map[string]any {
+		_, snapshot := h.do("GET", "/api/canvases/board", "")
+		doc, _ := snapshot["doc"].(map[string]any)
+		nodes, _ := doc["nodes"].([]any)
+		for _, n := range nodes {
+			if n, _ := n.(map[string]any); n["id"] == agent {
+				r, _ := n["runtime"].(map[string]any)
+				return r
+			}
+		}
+		return nil
+	}
+	session, _ := runtime()["session"].(string)
+	if session == "" {
+		t.Fatalf("the agent has no session: %v", runtime())
+	}
+	if res, _ := h.do("GET", "/api/sessions/"+session, ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("the session is there before a run: %d", res.StatusCode)
+	}
+	// texts are a session's entries of a kind, as they read.
+	texts := func(body map[string]any, kind string) []string {
+		var out []string
+		entries, _ := body["entries"].([]any)
+		for _, raw := range entries {
+			if e, _ := raw.(map[string]any); e["kind"] == kind {
+				text, _ := e["text"].(string)
+				out = append(out, text)
+			}
+		}
+		return out
+	}
+	idleWith := func(prompts int) map[string]any {
+		t.Helper()
+		return h.waitFor(session, func(b map[string]any) bool {
+			return b["run"] == nil && len(texts(b, cockpit.KindUser)) == prompts && len(texts(b, cockpit.KindAssistant)) == prompts
+		})
+	}
+
+	// Written in the node's chat, as a new session's prompt.
+	h.start(`{"prompt":"hi from the chat","session_id":"` + session + `"}`)
+	body := idleWith(1)
+	if first := texts(body, cockpit.KindUser)[0]; !strings.HasPrefix(first, "You are node «Helper»") || !strings.HasSuffix(first, "\n\nhi from the chat") {
+		t.Fatalf("the first prompt: %q", first)
+	}
+	if answer := texts(body, cockpit.KindAssistant)[0]; !strings.HasPrefix(answer, "echo: You are node «Helper»") {
+		t.Fatalf("the agent was given: %q", answer)
+	}
+	if runtime()["briefed"] != true {
+		t.Fatalf("the node is not told it was briefed: %v", runtime())
+	}
+
+	// Then a message from the canvas, and the chat's next prompt, are as
+	// written.
+	if res, sent := h.do("POST", "/api/canvases/board/nodes/"+agent+"/send", `{"text":"from the canvas"}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("send: %d %v", res.StatusCode, sent)
+	}
+	idleWith(2)
+	h.start(`{"prompt":"from the chat again","session_id":"` + session + `","resume":true}`)
+	body = idleWith(3)
+	prompts := texts(body, cockpit.KindUser)
+	if strings.Contains(prompts[1], briefOpening) || !strings.HasSuffix(prompts[1], "from the canvas") || prompts[2] != "from the chat again" {
+		t.Fatalf("the prompts after the first: %q", prompts[1:])
+	}
+}
+
+// briefOpening is how a node's brief starts (canvas.briefStart).
+const briefOpening = "You are node «"

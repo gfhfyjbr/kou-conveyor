@@ -73,6 +73,9 @@ const (
 	// probeEvery is how often the program in the foreground of a shell is
 	// looked at.
 	probeEvery = 2 * time.Second
+	// asksLines is how many of the last lines a harness printed show the
+	// question it asks as it starts: its choices come last.
+	asksLines = 8
 )
 
 // agentInput is how an agent found in a shell without a preset of its own
@@ -88,6 +91,12 @@ type terminalInstance struct {
 	// its own; else it runs a harness.
 	shell bool
 	ready *regexp.Regexp
+	// asks is what the harness's screen shows as it starts when it asks the
+	// user a question of its own — a folder to trust —; asking, that it
+	// does now: nothing is typed into it then, as a message's Enter would
+	// answer the question.
+	asks   *regexp.Regexp
+	asking atomic.Bool
 
 	signal   chan struct{}
 	quit     chan struct{}
@@ -190,6 +199,9 @@ func (c *Canvas) startTerminal(n *Node, start bool, resume bool) {
 	}
 	if def.Harness.Ready != "" {
 		t.ready, _ = regexp.Compile(def.Harness.Ready)
+	}
+	if def.Harness.Asks != "" {
+		t.asks, _ = regexp.Compile(def.Harness.Asks)
 	}
 	t.lastOutput.Store(at.UnixNano())
 	if fresh {
@@ -687,6 +699,9 @@ func (t *terminalInstance) heuristics() {
 		t.probe()
 	}
 	st := t.c.status(t.id)
+	if t.asks != nil && t.agent == nil && !t.shell && t.followAsks(st) {
+		return
+	}
 	switch {
 	case t.agent != nil:
 		t.followAgent(at, st)
@@ -695,6 +710,57 @@ func (t *terminalInstance) heuristics() {
 	default:
 		t.followHarness(at, st)
 	}
+}
+
+// asksDetail is the detail of a node whose harness asks the user a
+// question of its own as it starts.
+func (t *terminalInstance) asksDetail() string {
+	return t.def.Harness.Title + " asks a question of its own as it starts: answer it in its terminal"
+}
+
+// followAsks tells whether the harness, as it starts, asks the user a
+// question of its own — whether to trust the folder, to accept a mode —,
+// and reports whether it does: the node waits for the user then, and
+// nothing is typed into it. Once the question is gone, or its hooks say
+// it started, it starts as it would have.
+func (t *terminalInstance) followAsks(st Status) bool {
+	detail := t.asksDetail()
+	if t.asking.Load() {
+		if st.State != StateWaiting || st.Detail != detail {
+			// Something else moved it on: its hooks, its end.
+			t.asking.Store(false)
+			return false
+		}
+		if t.asked() {
+			return true
+		}
+		// The status first: a node that starts takes no message, one that
+		// waits might.
+		t.c.setStatus(t.id, StateStarting, "starting "+t.def.Harness.Title)
+		t.asking.Store(false)
+		return true
+	}
+	if st.State != StateStarting || !t.asked() {
+		return false
+	}
+	t.asking.Store(true)
+	t.c.setStatus(t.id, StateWaiting, detail)
+	return true
+}
+
+// asked reports whether the end of what the harness showed since it was
+// launched is a question it asks: what an earlier run left on the screen
+// is no question of this one's.
+func (t *terminalInstance) asked() bool {
+	if !t.capturing {
+		// A shell that marks no command's start: its screen is all there is.
+		return t.asks.MatchString(t.session.Tail(asksLines))
+	}
+	shown := t.capture
+	if len(shown) > 16<<10 {
+		shown = shown[len(shown)-16<<10:]
+	}
+	return t.asks.MatchString(terminal.LastLines(terminal.Render(shown), asksLines))
 }
 
 // probe looks at the program in the foreground of the shell: an agent

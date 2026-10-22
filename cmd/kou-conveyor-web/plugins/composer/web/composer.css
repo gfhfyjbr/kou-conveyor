@@ -39,6 +39,71 @@
 .activity-hint kbd { margin: 0; }
 .activity-hint kbd:last-of-type { margin-right: 6px; }
 
+/* While the run compacts the context, the summary it writes streams over the
+   prompt, on the composer like a tray a little narrower than it: three lines
+   at most, the end of it, those before fading out at the top; three bars
+   until it starts. */
+.compacting {
+  margin: 0 24px -1px;
+  padding: 0 12px 9px;
+  border: 1px solid var(--line-2);
+  background: var(--bg);
+  clip-path: inset(0 0 1px); /* its bottom border is the top one of what follows */
+  transition: margin-bottom 0.5s cubic-bezier(0.22, 1, 0.36, 1), clip-path 0.5s cubic-bezier(0.22, 1, 0.36, 1), display 0.5s;
+  transition-behavior: allow-discrete;
+}
+/* It comes out from under the prompt, the dock growing with it, and goes
+   back under it when it goes: out of sight, its bottom margin takes its
+   height back (85px: its head, three lines, its padding and borders) and its
+   clip cuts off as much of it, what is under the queue or the composer,
+   whichever of them is drawn over the other. */
+@starting-style { .compacting { margin-bottom: -85px; clip-path: inset(0 0 85px); } }
+.compacting[hidden] { margin-bottom: -85px; clip-path: inset(0 0 85px); transition-duration: 0.24s; }
+.compacting-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  font: 11px/1 var(--mono);
+  color: var(--fg-3);
+}
+.compacting-mark { flex: none; width: 6px; height: 6px; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.compacting-part { margin-left: auto; color: var(--fg-4); }
+.compacting-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end; /* what does not fit goes out at the top */
+  height: 48px; /* three lines */
+  overflow: hidden;
+  font: 11px/16px var(--mono);
+  color: var(--fg-2);
+}
+.compacting-body[data-over="true"] {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, #000 16px);
+  mask-image: linear-gradient(to bottom, transparent, #000 16px);
+}
+.compacting-text { flex: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.compacting[data-kind="reasoning"] .compacting-text { color: var(--fg-4); }
+.compacting-text::after {
+  content: '';
+  display: inline-block;
+  width: 0.55em;
+  height: 1.1em;
+  margin-left: 2px;
+  vertical-align: -0.2em;
+  background: var(--accent);
+  animation: blink 1.1s steps(2, jump-none) infinite;
+}
+.compacting-bars { display: grid; grid-auto-rows: 16px; align-items: center; }
+.compacting-bars i {
+  height: 3px;
+  background: linear-gradient(90deg, var(--bg-4) 0 35%, var(--line-2) 50%, var(--bg-4) 65% 100%) 0 0 / 300% 100%;
+  animation: compacting-shimmer 1.6s linear infinite;
+}
+.compacting-bars i:nth-child(2) { width: 82%; animation-delay: 0.12s; }
+.compacting-bars i:nth-child(3) { width: 56%; animation-delay: 0.24s; }
+@keyframes compacting-shimmer { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
 .composer {
   /* The height of the row's controls — the model, the effort, the buttons
      that send — which a touch screen makes a finger's. */
@@ -122,3 +187,22 @@
 @media (max-width: 480px) {
   .composer-row { gap: 8px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.composer { border-radius: var(--radius-lg); }
+.send, .resume { border-radius: var(--radius); }
+/* The summary of a compaction is a tray on what is under it: rounded on
+   top only. */
+.compacting { border-radius: var(--radius) var(--radius) 0 0; }
+/* Round, the offer to resume says its kind by its border, with no bar. */
+:root[data-corners="round"] .resume { padding-left: 13px; border-left-width: 1px; border-left-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+:root[data-corners="round"] .resume:is([data-kind="gone"], [data-kind="missing"]) { border-left-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+/* Round, the prompt has no corner marks (theme.css, .ticks): its corners
+   bend, and its border says it has the focus. */
+:root[data-corners="round"] .composer::before { display: none; }
+/* Round, the summary sits on the composer's straight edge, clear of its
+   corners, as wide as the queue (queue.css), which goes on from it when it
+   shows under it. Only its sides: its foot comes and goes (above). */
+:root[data-corners="round"] .compacting { margin-inline: calc(9px + var(--radius-lg)); }

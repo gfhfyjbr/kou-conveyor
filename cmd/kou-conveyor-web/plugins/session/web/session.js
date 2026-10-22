@@ -23,6 +23,8 @@
 // or resurrect a stale one. The state is kept across versions of this
 // plugin: loaded anew, it picks up the session in view and its run.
 
+import { openEvents } from '/kernel/events.js';
+
 // What Continue sends; the transcript keeps it like any other prompt.
 export const CONTINUE = 'Continue where you left off.';
 
@@ -92,9 +94,19 @@ export default function activate(cockpit) {
       editAfterStop: false, // Esc Esc while stopping: edit the last prompt once stopped
       queue: { items: [], paused: false }, // what waits for the agent, kept by the server
       // model is the model chosen for the session's next prompts; '' leaves
-      // them the model its last prompt ran with, else the connection's.
+      // them the model its last prompt ran with, else, for a new session,
+      // the model last chosen (the models plugin's default).
       model: '',
+      // effort is the session's own; '' until it is known, and for a new
+      // session not chosen in, which starts with the effort last chosen.
+      effort: '',
       arrived: new Set(), // forced prompts the agent just read, to light up once
+      // live is what the commands of the tool calls that run printed so far,
+      // by their entries' IDs: { out, err, all, skipped, cut }.
+      live: new Map(),
+      // compaction is what streamed of the summary of the compaction the run
+      // makes now — { pieces }: by their IDs, { kind, text } — or null.
+      compaction: null,
     };
   }
 
@@ -149,7 +161,7 @@ export default function activate(cockpit) {
   // they are there.
   const nextModel = (v) => service('models')?.next?.(v) ?? (v ? v.model || lastModel(v) : '');
   const defaultModel = () => service('models')?.default?.() ?? (currentWorkspace()?.connection?.model || state.config?.model || '');
-  const effort = () => service('effort')?.current?.() || state.config?.thinking || '';
+  const effort = (v) => service('effort')?.current?.(v) || v?.effort || state.config?.thinking || state.config?.default_thinking || '';
 
   // summary is what plugins see of a view.
   function summary(v = view()) {
@@ -175,17 +187,135 @@ export default function activate(cockpit) {
 
   function upsert(v, entry) {
     if (!entry?.id) return;
+    // A preview that came to nothing goes; the entry the agent's text was
+    // recorded as takes its preview's place (replaces), and the preview goes.
+    if (entry.gone) return drop(v, entry.id);
     entry.text ??= '';
+    const preview = entry.replaces && v.entries.get(entry.replaces)?.streaming ? entry.replaces : '';
     if (!v.entries.has(entry.id)) {
-      v.order.push(entry.id);
+      const at = preview ? v.order.indexOf(preview) : -1;
+      if (at >= 0) {
+        // A new order, which the timeline sees changed; the timeline has
+        // the entry take the preview's drawing, and it stays open or closed.
+        v.order = v.order.slice();
+        v.order[at] = entry.id;
+        v.entries.delete(preview);
+        if (v.expanded.has(preview)) v.expanded.set(entry.id, v.expanded.get(preview));
+        v.expanded.delete(preview);
+      } else {
+        v.order.push(entry.id);
+      }
       if (entry.kind === 'user') v.users.set(entry.id, v.users.size + 1);
     }
+    if (preview && v.entries.has(preview)) drop(v, preview);
+    // A tool call that ended shows what it printed in full.
+    if (entry.kind === 'tool' && ['done', 'failed', 'canceled'].includes(entry.tool?.state)) v.live?.delete(entry.id);
     v.entries.set(entry.id, entry);
     if (v === view()) {
       cockpit.emit('session:entry', v, entry);
       touch(v, entry.id);
       cockpit.emit('entry', copyEntry(entry), summary(v));
     }
+  }
+
+  // drop takes an entry out: a preview of the agent's text that came to
+  // nothing, or that the entry it was recorded as took the place of.
+  function drop(v, id) {
+    if (!v.entries.delete(id)) return;
+    const at = v.order.lastIndexOf(id);
+    if (at >= 0) v.order = [...v.order.slice(0, at), ...v.order.slice(at + 1)];
+    if (v === view()) {
+      service('timeline')?.forget?.([id]);
+      touch(v, id);
+    }
+  }
+
+  // streamDelta adds a piece of what the agent writes to its preview: an
+  // entry (streaming) that shows the answer, or the thinking, as it comes.
+  // The entry the text is recorded as replaces it once the model is done.
+  function streamDelta(v, delta) {
+    if (!delta?.id || !delta.text) return;
+    const before = v.entries.get(delta.id);
+    if (before && !before.streaming) return;
+    if (!before) v.order.push(delta.id);
+    // The model goes on to another part of its response (its answer after
+    // its thinking): the parts before it are written.
+    if (!before || before.settled) settle(v, delta.id);
+    v.entries.set(delta.id, {
+      id: delta.id, kind: delta.kind === 'reasoning' ? 'reasoning' : 'assistant', at: before?.at || delta.at,
+      text: (before?.text || '') + delta.text, streaming: true,
+    });
+    touch(v, delta.id);
+  }
+
+  // settle has the previews but the one the model writes now (except) show
+  // as written (settled), though their entries are not recorded yet: the
+  // model's response is recorded once it is done. A preview settled that
+  // gets a piece again is written again.
+  function settle(v, except) {
+    for (const [id, entry] of v.entries) {
+      if (id === except || !entry.streaming || entry.settled) continue;
+      v.entries.set(id, { ...entry, settled: true });
+      touch(v, id);
+    }
+  }
+
+  // COMPACTING is a run's activity while it compacts the context.
+  const COMPACTING = 'Compacting context';
+
+  // What a compaction writes is the summary that stands in for the
+  // conversation, which the compaction's notice holds once it is done: it
+  // streams to a block of its own over the prompt (the composer's), not to
+  // the transcript, and goes with the notice.
+  function streamSummary(v, delta) {
+    if (!delta.id || !delta.text) return;
+    const { pieces } = v.compaction ??= { pieces: new Map() };
+    const kind = delta.kind === 'reasoning' ? 'reasoning' : 'assistant';
+    pieces.set(delta.id, { kind, text: (pieces.get(delta.id)?.text || '') + delta.text });
+    if (v === view()) cockpit.render();
+  }
+
+  // compactionEntry follows the compaction into what the run records: a
+  // piece that came to nothing (its response started over) goes, and the
+  // notice ends the compaction.
+  function compactionEntry(v, entry) {
+    if (!v.compaction || !entry?.id) return;
+    if (entry.id.startsWith('compaction:')) v.compaction = null;
+    else if (!entry.gone || !v.compaction.pieces.delete(entry.id)) return;
+    if (v === view()) cockpit.render();
+  }
+
+  // compacting follows the run's activity: the run that starts compacting
+  // opens the compaction's block, and closes it as it goes on to something
+  // else — but for a request to the model that is tried again, which goes
+  // on with the same compaction.
+  function compacting(v, activity) {
+    if (!activity || activity === v.run?.activity) return;
+    if (activity === COMPACTING) v.compaction ??= { pieces: new Map() };
+    else if (!activity.startsWith('Model request failed')) v.compaction = null;
+  }
+
+  // LIVE_KEEP is how much of what a command prints a running call keeps of
+  // each stream: the end of it, from the start of a line.
+  const LIVE_KEEP = 64 * 1024;
+
+  function keepEnd(text) {
+    if (text.length <= LIVE_KEEP) return [text, false];
+    const line = text.indexOf('\n', text.length - LIVE_KEEP);
+    return [line >= 0 && line < text.length - 1 ? text.slice(line + 1) : text.slice(-LIVE_KEEP), true];
+  }
+
+  // streamOutput adds what the command of a running tool call printed.
+  function streamOutput(v, output) {
+    const entry = v.entries.get(output?.id);
+    if (!entry || entry.kind !== 'tool' || ['done', 'failed', 'canceled'].includes(entry.tool?.state)) return;
+    const live = v.live ??= new Map();
+    const was = live.get(entry.id) || { out: '', err: '', all: '', skipped: 0, cut: false };
+    const stream = output.stream === 'err' ? 'err' : 'out';
+    const [text, cut] = keepEnd(was[stream] + (output.text || ''));
+    const [all] = keepEnd(was.all + (output.text || ''));
+    live.set(entry.id, { ...was, [stream]: text, all, skipped: was.skipped + (output.skipped || 0), cut: was.cut || cut });
+    touch(v, entry.id);
   }
 
   // Some entries render differently with and without a live run: unfinished
@@ -248,8 +378,24 @@ export default function activate(cockpit) {
     // Another tab started a run, or a terminal appended to the session: the
     // file only grows, so a size other than the one this view read means there
     // is more to show.
-    const stale = !v.run && (mine.run_id || v.external || (v.size >= 0 && mine.size !== v.size));
+    const stale = !v.run && (mine.run_id || (v.size >= 0 && mine.size !== v.size));
     if (stale) openSession(v.id, { push: false, quiet: true });
+    else if (!v.run && v.external) await probeExternal(v);
+  }
+
+  // probeExternal reloads the view of a session another window or terminal
+  // runs once that run ends, which the list does not tell: the file stays as
+  // it was. It asks for the session's last entry only — not, every few
+  // seconds, for a transcript that runs to megabytes.
+  async function probeExternal(v) {
+    let data;
+    try {
+      data = await api(wsPath(v.ws, `/sessions/${encodeURIComponent(v.id)}?last=1`));
+    } catch {
+      return;
+    }
+    if (v !== view() || v.run) return;
+    if (data.run || data.size !== v.size || !!data.external !== v.external) openSession(v.id, { push: false, quiet: true });
   }
 
   function schedulePoll() {
@@ -314,6 +460,7 @@ export default function activate(cockpit) {
       v.expanded = previous.expanded;
       v.logs = previous.logs;
       v.edit = previous.edit;
+      v.effort = previous.effort;
     }
     v.loading = !quiet;
     const controller = new AbortController();
@@ -331,6 +478,15 @@ export default function activate(cockpit) {
       if (quiet) return; // keep showing what we have
       v.loading = false;
       if (error.status === 404) {
+        // A session to come — the chat of a canvas's agent before its first
+        // run (canvas/embed.js) — is a new one under its ID: its first prompt
+        // makes it.
+        if (cockpit.hooks.first('session.missing', { id, ws: v.ws })) {
+          v.fresh = true;
+          touch(v);
+          cockpit.emit('session', summary(v));
+          return;
+        }
         toast('Session not found', 'error');
         newSession({ push: false });
         history.replaceState(null, '', workspaceHash(state.ws));
@@ -358,6 +514,8 @@ export default function activate(cockpit) {
     v.pinned = !!data.pinned;
     v.interrupted = !!data.interrupted;
     v.queue = data.queue || { items: [], paused: false };
+    if (data.effort) v.effort = data.effort;
+    else if (!v.effort) v.effort = prefs.get(`effort.${v.ws || 'default'}.${v.id || 'new'}`, '');
     if (quiet) v.resumeDismissed = previous.resumeDismissed;
     for (const entry of data.entries) upsert(v, entry);
     // An edit outlives a reload only while its prompt is there and nothing
@@ -404,13 +562,16 @@ export default function activate(cockpit) {
 
   function attach(v, run) {
     detach(v);
-    const source = new EventSource(`/api/runs/${encodeURIComponent(run.id)}/events`);
+    const source = openEvents(`/api/runs/${encodeURIComponent(run.id)}/events`);
     v.run = {
       id: run.id, phase: run.stopping ? 'stopping' : 'running',
       started: run.started_at ? Date.parse(run.started_at) : Date.now(),
       activity: run.activity || (run.stopping ? 'Stopping' : run.compact ? 'Compacting context' : 'Working'), source,
       compact: !!run.compact,
     };
+    // The events come from the start of the run: what streamed of a
+    // compaction going on comes again.
+    v.compaction = v.run.activity === COMPACTING ? { pieces: new Map() } : null;
     refreshTools(v);
     setStream('connecting');
     source.onopen = () => { if (v === view() && v.run?.source === source) setStream('live'); };
@@ -445,13 +606,22 @@ export default function activate(cockpit) {
       case 'entry':
         // A forced prompt shows up where the agent read it, and lights up.
         if (event.entry.forced && !v.entries.has(event.entry.id)) v.arrived.add(event.entry.id);
+        compactionEntry(v, event.entry);
         upsert(v, event.entry);
         if (!v.title && event.entry.kind === 'user') v.title = firstPrompt(v);
+        break;
+      case 'delta':
+        if (event.delta?.compaction) streamSummary(v, event.delta);
+        else streamDelta(v, event.delta);
+        break;
+      case 'output':
+        streamOutput(v, event.output);
         break;
       case 'queue':
         setQueue(v, event.queue);
         break;
       case 'status':
+        compacting(v, event.activity);
         if (event.activity) v.run.activity = event.activity;
         if (event.usage) v.usage = event.usage;
         if (event.stopping) v.run.phase = 'stopping';
@@ -475,7 +645,11 @@ export default function activate(cockpit) {
     const compact = !!v.run?.compact;
     detach(v);
     v.run = null;
+    v.compaction = null;
     v.fresh = false;
+    // What streamed and was not recorded goes with the run.
+    v.live?.clear();
+    for (const [id, entry] of [...v.entries]) if (entry.streaming) drop(v, id);
     if (event.queue) setQueue(v, event.queue);
     if (event.size) v.size = event.size;
     if (event.usage) v.usage = event.usage;
@@ -568,7 +742,7 @@ export default function activate(cockpit) {
     let started;
     try {
       let body = {
-        prompt: text, session_id: v.id, message_id: messageID, thinking_level: effort() || undefined, resume: !v.fresh,
+        prompt: text, session_id: v.id, message_id: messageID, thinking_level: effort(v) || undefined, resume: !v.fresh,
         rewind: rewind || undefined, model: model || undefined,
         images: sent.length ? await pictures.encode(sent) : undefined,
       };
@@ -608,6 +782,7 @@ export default function activate(cockpit) {
     if (v !== view()) return refreshSessions();
     const stopAsked = v.run?.stopAsked;
     if (v.fresh) history.replaceState(null, '', sessionHash(v.ws, v.id));
+    cockpit.emit('session:started', v, started);
     attach(v, { id: started.run_id, started_at: new Date(v.run.started).toISOString() });
     if (stopAsked) stop();
     refreshSessions();
@@ -625,6 +800,7 @@ export default function activate(cockpit) {
     const composer = fromComposer ? service('composer') : null;
     if (fromComposer) composer?.clear?.({ images: false });
     v.run = { id: null, phase: 'starting', started: Date.now(), activity: 'Compacting context', source: null, stopAsked: false, compact: true };
+    v.compaction = { pieces: new Map() };
     state.outcome = null;
     cockpit.render();
     let started;
@@ -639,6 +815,7 @@ export default function activate(cockpit) {
     } catch (error) {
       if (v !== view()) return;
       v.run = null;
+      v.compaction = null;
       if (fromComposer) composer?.restore?.(`/compact ${focus}`.trim(), null);
       if (error.status === 409 && error.body?.run_id) {
         toast('This session is already running elsewhere. Following that run.');
@@ -917,7 +1094,7 @@ export default function activate(cockpit) {
     const v = view();
     for (let i = v.order.length - 1; i >= 0; i--) {
       const entry = v.entries.get(v.order[i]);
-      if (entry?.kind === 'assistant') return copy(entry.text, 'Answer copied');
+      if (entry?.kind === 'assistant' && !entry.streaming) return copy(entry.text, 'Answer copied');
     }
     return toast('There is no answer to copy yet.');
   }
@@ -1066,7 +1243,9 @@ export default function activate(cockpit) {
     run: (entry, ctx) => branch(ctx.view.ws, ctx.view.id, entry.id.replace(/^input:/, '')),
   });
 
-  cockpit.keys.register({ key: 'n', run: () => newSession() });
+  // Only in the Sessions view: elsewhere, as on a canvas, N is not taken
+  // from under the user to switch to Sessions.
+  cockpit.keys.register({ key: 'n', views: ['sessions'], run: () => newSession() });
   cockpit.contribute('help.keys', { keys: ['N'], text: 'New session', order: 100 });
   cockpit.contribute('help.keys', { keys: ['Esc', 'Esc'], text: 'Stop the run · edit the last prompt', order: 50 });
 

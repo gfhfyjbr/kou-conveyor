@@ -55,23 +55,36 @@ const usage = `kou-canvas: see the canvas this program runs on, and act on it.
 
   kou-canvas self                                   who you are: node, canvas, access, brief
   kou-canvas view [--full] [--json]                 the nodes, where they are, how they are wired
-  kou-canvas spawn <preset> [--title T] [--cmd C] [--cwd D] [--worktree [name]] [--base B]
-                   [--include a,b] [--link c]
+  kou-canvas spawn [<preset>] [--title T] [--cmd C] [--cwd D] [--worktree[=name]] [--base B]
+                   [--include a,b] [--link c] [--config JSON]
                    [--prompt P] [--right-of|--below|--left-of|--above <node|self>]
-                   [--x X --y Y --w W --h H] [--connect-to N] [--connect-from N] [--access A]
-                                                    presets: shell, command, claude-code, codex,
-                                                    opencode, agent, note, or plugin/preset
+                   [--x X --y Y --w W --h H] [--connect-to N] [--connect-from N] [--no-connect]
+                   [--access A]
+                                                    presets: agent (the default: a kou agent),
+                                                    shell, command, claude-code, codex,
+                                                    opencode, note, or plugin/preset;
+                                                    an agent spawned by an agent is wired to
+                                                    answer it (--connect-to self) unless
+                                                    told otherwise
   kou-canvas rm <node> [--keep-session]
-  kou-canvas connect <node>[:port] <node>[:port] [--template T] [--approve] [--now]
+  kou-canvas connect <node>[:port] <node>[:port] [--template T] [--approve] [--now|--queue]
   kou-canvas disconnect <edge> | <node>[:port] <node>[:port]
   kou-canvas move <node> [--x X] [--y Y] [--w W] [--h H]
-  kou-canvas send <node> "text" [--wait [--timeout 600]] [--no-enter] [--now]
-                                                    --wait prints the node's answer
+  kou-canvas send <node> "text" [--wait [--timeout 600]] [--no-enter] [--now|--idle] [--replace]
+                                                    --wait prints the node's answer; a kou
+                                                    agent reads it at once (--idle: when its
+                                                    turn ends), a terminal once idle;
+                                                    --replace: the text takes the place of
+                                                    your last prompt to a kou agent, its
+                                                    session rewound to before that prompt
   kou-canvas keys <node> C-c Escape Up Enter …
   kou-canvas read <node> [--screen|--tail N|--output|--answer] [--wait idle|output|exit]
                   [--after N] [--timeout 600]
-  kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b]
-                      [--since RFC3339] [--until RFC3339] [--include notes,summaries]
+  kou-canvas transcript <node> [--tail N | --after cursor|last] [--limit N] [--kinds a,b]
+                      [--tools a,b] [--since RFC3339] [--until RFC3339]
+                      [--include notes,summaries] [--format text|json]
+                                                    tail: the last N entries; an answer that
+                                                    says more goes on after its next
   kou-canvas search [<node>] <query> [--children] [--limit N]
   kou-canvas wait <node> [--until idle|output|exit] [--after N] [--timeout 600]
   kou-canvas wait [<node> <node>…] [--until answer|idle|exit|any] [--after cursor]

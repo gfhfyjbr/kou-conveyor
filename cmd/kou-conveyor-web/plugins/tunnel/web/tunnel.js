@@ -109,8 +109,15 @@ export default function activate(cockpit) {
     say.dataset.kind = kind;
   }
 
+  // The dialog gives the focus back to what opened it when it closes.
+  let opener = null;
+
   function open() {
     service('overlays')?.closeTop?.();
+    if (overlay.hidden) {
+      const active = document.activeElement;
+      opener = active && active !== document.body && !overlay.contains(active) ? active : null;
+    }
     overlay.hidden = false;
     note('');
     render();
@@ -120,9 +127,15 @@ export default function activate(cockpit) {
   }
 
   function close() {
+    const had = overlay.contains(document.activeElement);
     overlay.hidden = true;
     showCode(false);
     schedule();
+    if (had) {
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+      if (overlay.contains(document.activeElement)) document.activeElement.blur();
+    }
+    opener = null;
   }
 
   // showCode shows the pairing code, or hides it: it holds the token, and
@@ -136,13 +149,20 @@ export default function activate(cockpit) {
   }
 
   function fact(label, value, title) {
-    return [h('dt', { class: 'label', text: label }), h('dd', { text: value, title: title || value })];
+    return [label, value, title || value];
   }
+
+  // put writes a text only when it changes: what the user selects in the
+  // dialog to copy it stays selected through the looks at the server.
+  const put = (el, text) => {
+    if (el.textContent !== text) el.textContent = text;
+  };
+  let factsDrawn = '';
 
   function render() {
     const status = current;
     overlay.dataset.state = status.state;
-    headline.textContent = HEADLINE[status.state] || status.state;
+    put(headline, HEADLINE[status.state] || status.state);
     let text = '';
     switch (status.state) {
       case 'up': text = `Through ${status.url}: the iPhone app and browsers elsewhere reach this cockpit, which goes on here as it was.`; break;
@@ -154,23 +174,27 @@ export default function activate(cockpit) {
         ? `The relay at ${status.url} is set up. Start carries the cockpit through it.`
         : 'Carry this cockpit to the iPhone app and to browsers elsewhere, through a relay on a host of yours: the agent installs it there.';
     }
-    detail.textContent = text;
+    put(detail, text);
     const rows = [];
-    if (status.url) rows.push(...fact('Relay', status.url));
-    if (status.host) rows.push(...fact('Host', status.host));
-    if (status.fingerprint) rows.push(...fact('Certificate', `sha-256 ${fingerprint(status.fingerprint)}`, status.fingerprint));
-    facts.replaceChildren(...rows);
+    if (status.url) rows.push(fact('Relay', status.url));
+    if (status.host) rows.push(fact('Host', status.host));
+    if (status.fingerprint) rows.push(fact('Certificate', `sha-256 ${fingerprint(status.fingerprint)}`, status.fingerprint));
+    const key = JSON.stringify(rows);
+    if (key !== factsDrawn) {
+      factsDrawn = key;
+      facts.replaceChildren(...rows.flatMap(([label, value, title]) => [h('dt', { class: 'label', text: label }), h('dd', { text: value, title })]));
+    }
     facts.hidden = rows.length === 0;
     remote.hidden = !status.remote;
     pair.hidden = !status.configured;
     if (!status.configured && ui.code) showCode(false);
-    where.textContent = status.config || '';
-    toggle.textContent = status.wanted ? 'Stop' : 'Start';
+    put(where, status.config || '');
+    put(toggle, status.wanted ? 'Stop' : 'Start');
     toggle.disabled = ui.busy || status.state === 'unavailable';
     checkButton.disabled = ui.busy || !status.configured;
     checkButton.hidden = !status.configured;
     setupButton.disabled = ui.busy || status.state === 'unavailable';
-    setupButton.textContent = status.configured ? 'Set up again with the agent' : 'Set up with the agent';
+    put(setupButton, status.configured ? 'Set up again with the agent' : 'Set up with the agent');
   }
 
   function apply(status) {
@@ -244,6 +268,9 @@ export default function activate(cockpit) {
   // ---------------------------------------------------------------- the actions
 
   async function act(action) {
+    // The button pressed is off while it acts, and the browser takes the
+    // focus from it: it has it back after.
+    const pressed = dialog.contains(document.activeElement) ? document.activeElement : null;
     ui.busy = true;
     render();
     try {
@@ -258,6 +285,8 @@ export default function activate(cockpit) {
       ui.busy = false;
       render();
       schedule();
+      const lost = !document.activeElement || document.activeElement === document.body || document.activeElement === pressed;
+      if (pressed && lost && !overlay.hidden && pressed.isConnected && !pressed.disabled && !pressed.hidden) pressed.focus({ preventScroll: true });
     }
   }
 

@@ -10,10 +10,11 @@
 //
 // A wheel over a node pans the board, unless the node is the one selected
 // or in use: then what can scroll in it scrolls — its feed, its terminal.
-import { GRID, snap, clampZoom, boundsOf, overlaps, sizeOf, MIN_ZOOM, MAX_ZOOM } from './geometry.js';
+import { GRID, snap, clampZoom, boundsOf, overlaps, sizeOf, portsOf, MIN_ZOOM, MAX_ZOOM } from './geometry.js';
 import { createEdges } from './edges.js';
 import { createFrame } from './frame.js';
-import { levelOf, createBudget, LIVE, LOW } from './lod.js';
+import { levelOf, createBudget, chatsFor, LIVE, LOW, PROTOCOL } from './lod.js';
+import { onStreams, streams } from '/kernel/events.js';
 
 // The least size of a node, as the engine has it.
 const MIN_W = 160;
@@ -25,6 +26,11 @@ const SEND_EVERY = 100;
 const PAD = 48;
 // The zooms ⌘= and ⌘− step through.
 const STEPS = [0.1, 0.15, 0.25, 0.35, 0.5, 0.6, 0.75, 1, 1.25, 1.5, 2];
+// How many of the agents used last a canvas keeps.
+const USED_KEPT = 24;
+// A node's ports show while a mouse is this near the side they are on, in
+// pixels of the screen, within the node or out of it.
+const PORTS_NEAR = 24;
 
 const typing = (el) => el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName));
 const reduced = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -38,6 +44,14 @@ export function createSurface(model, env) {
   const frames = new Map(); // node → { id, frame, body, visible, level, granted, w, h }
   const selection = new Set();
   const budget = createBudget();
+  // The nodes used last, as the canvas was left: the chats go to them again.
+  budget.restore(env.savedUsed?.() || []);
+  // How many kou agents show their whole chat at once (lod.js): more once
+  // the page's streams go over sockets.
+  const coarse = matchMedia('(pointer: coarse)').matches;
+  let chatLimit = 1;
+  const limitChats = () => { chatLimit = chatsFor(PROTOCOL, streams() === 'sockets', coarse); };
+  limitChats();
   let edgeSelected = null;
   let entered = null; // the node whose body has the keys
   let pinned = null; // the node in focus, live however far the board is zoomed out
@@ -46,6 +60,8 @@ export function createSurface(model, env) {
   let spaceHeld = false;
   let pointer = null; // where the pointer was last over the board
   let gesture = null; // the drag going on: { abort() }
+  let hoverAt = null; // where a mouse is over the board: the ports by it show
+  let near = new Map(); // the frames the pointer is by → which side: data-near
   let pendingSelect = null; // nodes to select once they are drawn
   let disposed = false;
 
@@ -64,6 +80,7 @@ export function createSurface(model, env) {
     world: () => world,
     viewport: () => viewport,
     worldAt: (x, y) => worldAt(x, y),
+    zoom: () => view.zoom,
   });
   const world = h('div', { class: 'cv-world' }, edges.element, layer);
   const marquee = h('div', { class: 'cv-marquee', hidden: true });
@@ -94,6 +111,8 @@ export function createSurface(model, env) {
     env.onView?.({ ...view });
     scheduleLod();
     saveView();
+    // The board moves under a pointer that stays: other ports are by it.
+    findNear();
   }
 
   let animation = 0;
@@ -230,7 +249,7 @@ export function createSurface(model, env) {
     const a = area();
     pinned = id;
     setSelection([id]);
-    budget.touch(id);
+    touch(id);
     const z = Math.min(1, (a.width - 32) / n.w, (a.height - 32) / n.h);
     center(id, { zoom: Math.max(LOW, z) });
     scheduleLod(260);
@@ -240,6 +259,31 @@ export function createSurface(model, env) {
 
   let lodTimer = 0;
   let lodZoom = 0;
+  // touch marks a node as the one used last: a kou agent so takes the whole
+  // chat from the one that had it (lod.js). Another node used ends focus
+  // mode: the node that was in it shows as the zoom has it again.
+  function touch(id) {
+    budget.touch(id);
+    const unpinned = pinned !== null && pinned !== id;
+    if (unpinned) pinned = null;
+    if (unpinned || model.node(id)?.kind === 'agent') scheduleLod(60);
+    saveUsed();
+  }
+
+  // The agents used last are kept with the canvas: opened anew, it gives
+  // them their chats first.
+  let usedTimer = 0;
+  function saveUsed() {
+    clearTimeout(usedTimer);
+    usedTimer = setTimeout(flushUsed, 400);
+  }
+  function flushUsed() {
+    if (!usedTimer) return;
+    clearTimeout(usedTimer);
+    usedTimer = 0;
+    env.saveUsed?.(budget.order().filter((id) => model.node(id)?.kind === 'agent').slice(0, USED_KEPT));
+  }
+
   function scheduleLod(delay = 150) {
     clearTimeout(lodTimer);
     lodTimer = setTimeout(lodNow, delay);
@@ -256,16 +300,26 @@ export function createSurface(model, env) {
     const margin = 160;
     const box = { x: (-margin - view.x) / view.zoom, y: (-margin - view.y) / view.zoom, w: (r.width + margin * 2) / view.zoom, h: (r.height + margin * 2) / view.zoom };
     const wanting = [];
+    const chatting = [];
     const next = new Map();
     for (const [id] of frames) {
       const n = model.node(id);
       const visible = !!n && pageShown && r.width > 0 && overlaps(n, box);
       const own = id === pinned && level !== 'low' ? 'full' : level;
       next.set(id, { visible, level: own });
-      if (visible && own === 'full' && n.kind === 'terminal' && !n.proposed) wanting.push(id);
+      if (!visible || own === 'low' || n.proposed) continue;
+      // A terminal draws live where its text can be read; an agent's chat,
+      // as its feed, wherever a node has more than its header.
+      if (n.kind === 'terminal' && own === 'full') wanting.push(id);
+      else if (n.kind === 'agent' && n.runtime?.session) chatting.push(id);
     }
     const granted = budget.grant(wanting);
     if (pinned && wanting.includes(pinned)) granted.add(pinned);
+    // An agent's whole chat goes to those used last (lod.js) — not to one
+    // that has just come, as children do. The one in focus mode was used
+    // last: it has one, and the others keep theirs, room permitting.
+    const chats = budget.grant(chatting, chatLimit, { behind: true });
+    for (const id of chats) granted.add(id);
     for (const [id, item] of frames) {
       const { visible, level: own } = next.get(id);
       if (item.frame.el.dataset.lod !== own) item.frame.el.dataset.lod = own;
@@ -321,7 +375,7 @@ export function createSurface(model, env) {
     return {
       cockpit, h, fmt: env.fmt, model, kinds: env.kinds,
       zoom: () => view.zoom,
-      touch: () => budget.touch(id),
+      touch: () => touch(id),
       toast: (text, kind) => cockpit.toast(text, kind),
       update: (set, label = '') => model.apply([{ op: 'node.update', id, set }], { label }).catch((error) => cockpit.toast(error.message, 'error')),
       apply: (ops, options) => model.apply(ops, options),
@@ -332,6 +386,17 @@ export function createSurface(model, env) {
       select: () => setSelection([id]),
       focus: () => enter(id),
       center: () => center(id),
+      // What a body in a frame of its own (an agent's chat) is told by it:
+      // it has the keys now, gives them back (Esc), or zooms the board.
+      entered: () => {
+        touch(id);
+        setEntered(id);
+      },
+      exit: () => { if (entered === id) exit(); },
+      zoomBy: (deltaY, clientX, clientY) => {
+        const d = Math.max(-60, Math.min(60, deltaY));
+        zoomAt(view.zoom * Math.exp(-d * 0.006), clientX, clientY);
+      },
     };
   }
 
@@ -455,7 +520,9 @@ export function createSurface(model, env) {
 
   // ---------------------------------------------------------------- selection
 
-  const selected = () => env.onSelect?.({ nodes: [...selection], edge: edgeSelected });
+  // framing: a frame is being drawn, its selection not final yet.
+  let framing = false;
+  const selected = () => env.onSelect?.({ nodes: [...selection], edge: edgeSelected, framing });
 
   function setSelection(ids, { edge = null } = {}) {
     const next = new Set(ids);
@@ -476,7 +543,7 @@ export function createSurface(model, env) {
   // pick selects the node a click was on: with Shift, it joins the
   // selection or leaves it.
   function pick(id, event) {
-    budget.touch(id);
+    touch(id);
     if (event?.shiftKey) {
       const next = new Set(selection);
       if (next.has(id)) next.delete(id);
@@ -502,7 +569,7 @@ export function createSurface(model, env) {
       if (item) item.frame.el.dataset.entered = entered === x ? 'true' : '';
     }
     if (id) {
-      budget.touch(id);
+      touch(id);
       if (!selection.has(id) || selection.size > 1) setSelection([id]);
     }
     env.onEnter?.(id);
@@ -522,7 +589,7 @@ export function createSurface(model, env) {
     const n = model.node(id);
     if (!item || !n) return false;
     setSelection([id]);
-    budget.touch(id);
+    touch(id);
     if (n.kind === 'terminal' && !call(item, 'live')) {
       if (view.zoom < LIVE || !inSight(n)) focusMode(id);
       else {
@@ -580,7 +647,9 @@ export function createSurface(model, env) {
     }
     viewport.focus({ preventScroll: true });
     const shells = list.some((n) => n.kind === 'terminal');
-    env.undoBar?.(`Deleted ${what}${shells ? ' · a shell ends in 15s' : ''}`);
+    // An agent's session goes with its node, unless kept or the user's own.
+    const sessions = !keep?.session && list.some((n) => n.kind === 'agent' && n.runtime?.session && !n.runtime?.adopted);
+    env.undoBar?.(`Deleted ${what}${shells ? ' · a shell ends in 15s' : ''}${sessions ? ' · its session goes in 15s' : ''}`);
   }
 
   function removeSelected() {
@@ -603,6 +672,8 @@ export function createSurface(model, env) {
         x: n.x + 32, y: n.y + 32, w: n.w, h: n.h,
         ...(n.config && Object.keys(n.config).length ? { config: n.config } : {}),
         ...(n.access ? { access: n.access } : {}),
+        // A kou agent's copy goes on from a copy of its whole session.
+        ...(n.kind === 'agent' && n.runtime?.session ? { branch: n.id } : {}),
       },
     }));
     try {
@@ -642,6 +713,9 @@ export function createSurface(model, env) {
     const result = await model.apply([{ op: 'node.add', node }], { label: label || `Add ${spec.title || spec.preset || spec.kind}` });
     const made = result?.ids?.['0'] || '';
     if (made) {
+      // What the user puts on the board is what they have to do with: a kou
+      // agent takes the chat (lodNow), as a node that comes by itself does not.
+      touch(made);
       pendingSelect = [made];
       if (model.node(made)) sync();
     }
@@ -724,6 +798,9 @@ export function createSurface(model, env) {
     if (!item || !n || !cockpit.has('menu')) return;
     const own = (call(item, 'menu') || []).filter(Boolean);
     const editable = !model.readOnly;
+    // A session the canvas made for an agent goes with its node by default;
+    // one the user put on the canvas (adopted) always stays.
+    const ownSession = n.kind === 'agent' && !!n.runtime?.session && !n.runtime?.adopted;
     const items = [
       ...own,
       own.length ? { separator: true } : null,
@@ -733,14 +810,14 @@ export function createSurface(model, env) {
       { icon: '⚙', label: 'Inspect', detail: 'Its settings, what waits for it', run: () => env.inspect?.({ node: id }) },
       editable ? { icon: '⧉', label: 'Duplicate', hint: '⌘D', run: () => { setSelection([id]); duplicateSelected(); } } : null,
       editable ? { separator: true } : null,
-      editable && n.kind === 'agent' && n.runtime?.session
-        ? { icon: '×', label: 'Delete the node', detail: 'Its session stays in the list', danger: true, run: () => removeNodes([id]) }
+      editable && ownSession
+        ? { icon: '×', label: 'Delete it and its session', hint: '⌫', danger: true, run: () => removeNodes([id]) }
         : null,
-      editable && n.kind === 'agent' && n.runtime?.session
-        ? { icon: '×', label: 'Delete it and its session', danger: true, confirm: 'Delete the session too?', run: () => removeNodes([id], { session: false }) }
+      editable && ownSession
+        ? { icon: '×', label: 'Delete the node, keep its session', detail: 'Its session stays in the list', danger: true, run: () => removeNodes([id], { session: true }) }
         : null,
-      editable && !(n.kind === 'agent' && n.runtime?.session)
-        ? { icon: '×', label: 'Delete', hint: '⌫', danger: true, run: () => removeNodes([id]) }
+      editable && !ownSession
+        ? { icon: '×', label: 'Delete', hint: '⌫', danger: true, ...(n.runtime?.adopted ? { detail: 'Its session stays in the list' } : {}), run: () => removeNodes([id]) }
         : null,
     ].filter(Boolean);
     cockpit.use('menu').open(at, items, { compact: true });
@@ -815,6 +892,7 @@ export function createSurface(model, env) {
       move: (e) => {
         if (!moved && Math.hypot(e.clientX - event.clientX, e.clientY - event.clientY) < 4) return;
         moved = true;
+        framing = true;
         marquee.style.left = `${Math.min(e.clientX, event.clientX) - r.left}px`;
         marquee.style.top = `${Math.min(e.clientY, event.clientY) - r.top}px`;
         marquee.style.width = `${Math.abs(e.clientX - event.clientX)}px`;
@@ -829,7 +907,13 @@ export function createSurface(model, env) {
       up: () => {
         if (!moved && !additive) setSelection([]);
       },
-      end: () => { marquee.hidden = true; },
+      end: () => {
+        marquee.hidden = true;
+        if (!framing) return;
+        // Let go: what it took is the selection now.
+        framing = false;
+        selected();
+      },
     });
   }
 
@@ -842,7 +926,7 @@ export function createSurface(model, env) {
     } else if (!selection.has(id) || edgeSelected) {
       setSelection([id]);
     }
-    budget.touch(id);
+    touch(id);
     if (model.readOnly) return;
     const ids = [...selection].filter((x) => model.node(x));
     const start = new Map(ids.map((x) => [x, { x: model.node(x).x, y: model.node(x).y }]));
@@ -972,13 +1056,43 @@ export function createSurface(model, env) {
     viewport.addEventListener('pointercancel', done, { signal: g.signal });
   }
 
+  // A node's ports show only where they may be wanted (canvas.css): by the
+  // side of a node a mouse is near — inputs on the left edge, outputs on
+  // the right — the node has data-near="in" or "out". Not during a drag: a
+  // wire being drawn shows the ports it can end in itself (edges.js).
+  function findNear() {
+    const next = new Map();
+    if (hoverAt && !model.readOnly && !gesture && !world.dataset.connecting) {
+      const p = worldAt(hoverAt.x, hoverAt.y);
+      const reach = PORTS_NEAR / view.zoom;
+      for (const [id, item] of frames) {
+        const n = item.visible ? model.node(id) : null;
+        if (!n || p.y < n.y - reach || p.y > n.y + n.h + reach) continue;
+        const { inputs, outputs } = portsOf(n, env.kinds);
+        const left = inputs.length ? Math.abs(p.x - n.x) : Infinity;
+        const right = outputs.length ? Math.abs(p.x - n.x - n.w) : Infinity;
+        if (Math.min(left, right) <= reach) next.set(item.frame.el, left <= right ? 'in' : 'out');
+      }
+    }
+    for (const el of near.keys()) if (!next.has(el)) delete el.dataset.near;
+    for (const [el, side] of next) if (el.dataset.near !== side) el.dataset.near = side;
+    near = next;
+  }
+
   on(viewport, 'pointermove', (event) => {
     pointer = { x: event.clientX, y: event.clientY };
     if (event.pointerType === 'touch' && touches.has(event.pointerId)) touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (event.pointerType !== 'touch') {
+      hoverAt = pointer;
+      findNear();
+    }
   });
   on(viewport, 'pointerup', (event) => touches.delete(event.pointerId));
   on(viewport, 'pointercancel', (event) => touches.delete(event.pointerId));
-  on(viewport, 'pointerleave', () => { pointer = null; });
+  on(viewport, 'pointerleave', () => {
+    pointer = hoverAt = null;
+    findNear();
+  });
 
   on(viewport, 'pointerdown', (event) => {
     pointer = { x: event.clientX, y: event.clientY };
@@ -1000,6 +1114,7 @@ export function createSurface(model, env) {
     const port = target.closest('.cv-port');
     if (port) {
       if (!model.readOnly) edges.beginConnect(event, port);
+      findNear();
       return;
     }
     const el = target.closest('.cv-node');
@@ -1041,7 +1156,8 @@ export function createSurface(model, env) {
 
   // scrollsInside says whether a wheel scrolls something in the node it is
   // over, rather than the board: in a node selected or in use, a part that
-  // can still scroll that way — or its terminal, which scrolls its own.
+  // can still scroll that way (as the markdown's code blocks and tables do
+  // sideways) — or its terminal, which scrolls its own.
   function scrollsInside(event) {
     const el = event.target instanceof Element ? event.target : null;
     const frameEl = el?.closest('.cv-node');
@@ -1051,7 +1167,7 @@ export function createSurface(model, env) {
     if (el.closest('.term-mount')) return true;
     const d = delta(event);
     for (let x = el; x && x !== frameEl; x = x.parentElement) {
-      if (!(x.dataset?.scroll || x.tagName === 'TEXTAREA' || x.tagName === 'PRE')) continue;
+      if (!(x.dataset?.scroll || x.tagName === 'TEXTAREA' || x.tagName === 'PRE' || x.classList.contains('table'))) continue;
       if (d.y > 0 && x.scrollTop + x.clientHeight < x.scrollHeight - 1) return true;
       if (d.y < 0 && x.scrollTop > 0) return true;
       if (d.x > 0 && x.scrollLeft + x.clientWidth < x.scrollWidth - 1) return true;
@@ -1201,6 +1317,8 @@ export function createSurface(model, env) {
         call(item, 'update', n);
         call(item, 'runtime');
         checkEntered();
+        // An agent with a session now may have its chat (lodNow).
+        if (n.kind === 'agent') scheduleLod();
       } else if (what === 'load' || what === 'ops') {
         sync();
         if (what === 'load') placeOnce();
@@ -1228,6 +1346,11 @@ export function createSurface(model, env) {
       // Something typed into a shell: the node says who.
       const from = m.from?.node && model.node(m.from.node);
       if (m.state === 'delivered' && from && model.node(m.to.node)?.kind === 'terminal') item.frame.showTyping(from.title || from.id);
+    }),
+    // The page's streams went over sockets, or back: as many chats as fit.
+    onStreams(() => {
+      limitChats();
+      scheduleLod(0);
     }),
   ];
 
@@ -1313,6 +1436,7 @@ export function createSurface(model, env) {
     dispose() {
       if (disposed) return;
       flushView();
+      flushUsed();
       disposed = true;
       stop.abort();
       endGesture();

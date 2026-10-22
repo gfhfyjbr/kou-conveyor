@@ -56,6 +56,11 @@ type CanvasHarness struct {
 	// its screen shows when it does.
 	IdleMS int    `json:"idle_ms,omitzero"`
 	Ready  string `json:"ready,omitzero"`
+	// Asks is a pattern its screen shows as it starts when it asks the
+	// user a question of its own — a folder to trust, a mode to accept —,
+	// which a message typed in would answer: while it shows, the node
+	// waits for the user and nothing is typed into it.
+	Asks string `json:"asks,omitzero"`
 	// Output is where its answer comes from: hooks, notify, osc133,
 	// screen or none.
 	Output string `json:"output,omitzero"`
@@ -199,6 +204,11 @@ func (current Plugin) validateCanvas() []error {
 		if harness.Ready != "" {
 			if _, err := regexp.Compile(harness.Ready); err != nil {
 				problems = append(problems, fmt.Errorf("%s: ready: %w", where, err))
+			}
+		}
+		if harness.Asks != "" {
+			if _, err := regexp.Compile(harness.Asks); err != nil {
+				problems = append(problems, fmt.Errorf("%s: asks: %w", where, err))
 			}
 		}
 		if harness.IdleMS < 0 || harness.IdleMS > 600000 {

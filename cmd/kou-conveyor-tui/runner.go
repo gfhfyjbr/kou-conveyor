@@ -26,11 +26,26 @@ func runHeadless(ctx context.Context, o options, out, diagnostics io.Writer) err
 		id = uuid.New().String()
 	}
 	request := cockpit.Request{SessionID: id, Model: o.model, Thinking: o.thinking}
-	// A session goes on with the model its last prompt ran with, unless
-	// -model names another.
-	if request.Model == "" && o.session != "" {
-		if tr, err := cockpit.LoadSession(o.SessionDir, id); err == nil {
+	// A session goes on with the model its last prompt ran with and its own
+	// effort, unless -model and -thinking-level name others.
+	if o.session != "" {
+		if tr, err := cockpit.LoadSession(o.SessionDir, id); err == nil && request.Model == "" {
 			request.Model = tr.LastModel()
+		}
+		if effort := cockpit.LoadMeta(o.SessionDir, id).Effort; !o.effortFlag && cockpit.ValidThinkingLevel(effort) {
+			request.Thinking = effort
+		}
+	}
+	// Otherwise, as a new session, with the model last chosen in a composer
+	// of either cockpit (the effort, too, is the last chosen: parseOptions),
+	// else, through the gateway, which names no model, the first it serves.
+	if request.Model == "" {
+		request.Model = cockpit.LoadPreferences(o.preferences).LastModel
+	}
+	if request.Model == "" && o.SettingsFile != "" {
+		settings, err := cockpit.LoadSettings(o.SettingsFile)
+		if err == nil && cockpit.ResolveConnection(o.Provider, settings, cockpit.WorkspaceEnv(o.Workspace)).Source == "gateway" {
+			request.Model = cockpit.ListModels(ctx, o.Provider, o.SettingsFile, settings, cockpit.WorkspaceEnv(o.Workspace)).Default
 		}
 	}
 	if compact {
@@ -59,6 +74,12 @@ func runHeadless(ctx context.Context, o options, out, diagnostics io.Writer) err
 	}
 	if err != nil {
 		return err
+	}
+	if !compact {
+		// The session keeps the effort it ran with.
+		if err := cockpit.SetSessionEffort(o.SessionDir, id, request.Thinking); err != nil {
+			fmt.Fprintln(diagnostics, err)
+		}
 	}
 	defer func() {
 		job.Cancel()

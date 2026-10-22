@@ -26,8 +26,12 @@ import (
 type options struct {
 	cockpit.Options
 	session, historyFile, model, thinking, prompt string
-	// preferences holds the effort, shared with the web cockpit, and the
-	// layout the cockpit starts in.
+	// effortFlag: -thinking-level chose thinking, the effort of the session
+	// the cockpit starts with, whatever effort that session had.
+	effortFlag bool
+	// preferences holds the effort and the model last chosen in a composer,
+	// which new sessions of either cockpit start with, and the layout the
+	// cockpit starts in.
 	preferences string
 	noColor     bool
 	// compact lays the cockpit out below the command instead of in a screen
@@ -141,6 +145,7 @@ func parseOptions(args []string, output io.Writer) (options, error) {
 		return o, err
 	}
 	o.preferences = cockpit.PreferencesPath(o.SettingsFile)
+	o.effortFlag = o.thinking != ""
 	if o.thinking == "" {
 		o.thinking = cockpit.LoadPreferences(o.preferences).Effort
 	}

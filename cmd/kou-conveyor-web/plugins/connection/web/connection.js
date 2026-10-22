@@ -39,10 +39,9 @@ export default function activate(cockpit) {
   }
 
   function describe(link) {
-    if (link?.source === 'gateway') return ['gateway', link.model, API_LABEL[link.provider_type]].filter(Boolean).join(' · ');
+    if (link?.source === 'gateway') return ['gateway', API_LABEL[link.provider_type]].filter(Boolean).join(' · ');
     if (!link?.provider) return 'unknown';
     const parts = [link.provider];
-    if (link.model) parts.push(link.model);
     if (link.base_url) parts.push(viaGateway(link.base_url) ? 'accounts gateway' : host(link.base_url));
     parts.push(link.key ? `key from ${link.key}` : 'no key');
     return parts.join(' · ');
@@ -50,17 +49,27 @@ export default function activate(cockpit) {
 
   // ---------------------------------------------------------------- the rail
 
+  // The foot says it in two parts (connection.css): the caption, on the
+  // row of the foot's buttons, which labels the button under it, the
+  // summary, the whole width of the foot. Either opens the connection.
   const summary = h('span', { id: 'conn-summary', text: '—' });
-  const link = h('button', { class: 'link-state', id: 'conn-open', type: 'button', title: 'Connection settings (,)', onclick: () => open() },
-    h('span', { class: 'label', text: 'Connection' }), summary);
-  cockpit.ui.mount('rail.foot', { id: 'connection', order: 10, node: link });
+  const link = h('button', {
+    class: 'link-state', id: 'conn-open', type: 'button', title: 'Connection settings (,)',
+    'aria-labelledby': 'conn-label conn-summary', onclick: () => open(),
+  }, summary);
+  const foot = h('div', { class: 'conn-foot' },
+    h('label', { class: 'label conn-label', id: 'conn-label', for: 'conn-open', text: 'Connection' }), link);
+  cockpit.ui.mount('rail.foot', { id: 'connection', order: 10, node: foot });
   cockpit.ui.mount('rail.actions', {
     id: 'settings-open', order: 10,
     node: h('button', { class: 'icon', id: 'settings-open', type: 'button', title: 'Connection settings (,)', 'aria-label': 'Connection settings', onclick: () => open() }, svg(SLIDERS)),
   });
   cockpit.on('render', () => {
     const text = describe(session.currentWorkspace?.()?.connection || state().config?.connection);
-    if (summary.textContent !== text) summary.textContent = text;
+    if (summary.textContent === text) return;
+    summary.textContent = text;
+    // The rail may cut the summary short: the tooltip says it whole.
+    link.title = `${text} — Connection settings (,)`;
   });
 
   // open shows where runs connect: the Accounts view's connection, which
@@ -81,12 +90,9 @@ export default function activate(cockpit) {
   const base = h('input', { id: 'settings-base', type: 'url', inputmode: 'url', spellcheck: 'false', autocomplete: 'off' });
   const keyClear = h('button', { class: 'act', id: 'settings-key-clear', type: 'button' }, 'Remove saved key');
   const key = h('input', { id: 'settings-key', class: 'secret', type: 'text', spellcheck: 'false', autocomplete: 'off', autocapitalize: 'off', 'data-1p-ignore': true, 'data-lpignore': 'true' });
-  const models = h('datalist', { id: 'settings-models' });
-  const model = h('input', { id: 'settings-model', type: 'text', list: 'settings-models', spellcheck: 'false', autocomplete: 'off' });
   const fields = h('div', { class: 'fields', id: 'settings-fields' },
     h('label', { class: 'field' }, h('span', { class: 'label', text: 'Base URL' }), base),
-    h('label', { class: 'field' }, h('span', { class: 'label' }, 'API key ', keyClear), key),
-    h('label', { class: 'field' }, h('span', { class: 'label', text: 'Model' }), model, models));
+    h('label', { class: 'field' }, h('span', { class: 'label' }, 'API key ', keyClear), key));
   const status = h('div', { class: 'settings-status', id: 'settings-status', role: 'status', 'aria-live': 'polite' });
   const where = h('span', { class: 'settings-path', id: 'settings-path' });
   const check = h('button', { class: 'act', id: 'settings-check', type: 'button' }, 'Check connection');
@@ -110,8 +116,12 @@ export default function activate(cockpit) {
   };
   const wsQuery = () => `ws=${encodeURIComponent(state().ws || '')}`;
 
+  // The dialog gives the focus back to where it was when it closes.
+  let before = null;
+
   async function openDirect() {
     service('overlays')?.closeTop?.();
+    if (overlay.hidden) before = document.activeElement !== document.body ? document.activeElement : null;
     const ticket = ++ui.ticket;
     overlay.hidden = false;
     say('Loading…');
@@ -130,9 +140,16 @@ export default function activate(cockpit) {
 
   function closeDirect() {
     ui.ticket++;
+    const shown = !overlay.hidden;
     overlay.hidden = true;
     // A typed key never outlives the dialog.
     key.value = '';
+    if (!shown) return;
+    if (overlay.contains(document.activeElement)) {
+      if (before?.isConnected && before.getClientRects().length) before.focus();
+      else document.activeElement.blur();
+    }
+    before = null;
   }
 
   function fill(data) {
@@ -140,9 +157,7 @@ export default function activate(cockpit) {
     ui.clearKey = false;
     for (const radio of form.querySelectorAll('input[name="api"]')) radio.checked = radio.value === data.provider_type;
     base.value = data.base_url || '';
-    model.value = data.model || '';
     key.value = '';
-    models.replaceChildren();
     renderForm();
   }
 
@@ -154,7 +169,7 @@ export default function activate(cockpit) {
     const connection = data.connection || {};
     fields.hidden = api === '';
     base.placeholder = defaults.base_url || '';
-    model.placeholder = defaults.model ? `${defaults.model} (default)` : '';
+    // Models are chosen in the composer; Connection no longer stores one.
 
     // The saved key goes only to the endpoint it was saved for.
     const sameEndpoint = api === data.provider_type && sameURL(base.value || defaults.base_url, data.base_url || defaults.base_url);
@@ -173,7 +188,7 @@ export default function activate(cockpit) {
       text = 'Anthropic Messages API, or a gateway that implements it. Claude models get adaptive thinking and prompt caching.';
     }
     if (data.provider_flag) text += ` The server was started with -provider ${data.provider_flag}, which takes precedence until it restarts without it.`;
-    if (data.gateway_in_use) text += ' These settings point runs at the accounts gateway; the Accounts tab (A) changes its model.';
+    if (data.gateway_in_use) text += ' These settings point runs at the accounts gateway; choose the model for a prompt in the composer.';
     else if (data.gateway && api !== '') text += ` The accounts gateway at ${host(data.gateway)} serves signed-in subscriptions: Accounts tab (A) → Use for runs.`;
     note.textContent = text;
     where.textContent = data.available ? `Saved to ${data.path} · applies to the next run` : 'Settings need a user config directory; set KOU_CONVEYOR_CONFIG';
@@ -181,7 +196,7 @@ export default function activate(cockpit) {
   }
 
   function draft() {
-    const body = { provider_type: selectedAPI(), base_url: base.value.trim(), model: model.value.trim() };
+    const body = { provider_type: selectedAPI(), base_url: base.value.trim() };
     const typed = key.value.trim();
     if (typed) body.api_key = typed;
     else if (ui.clearKey) body.api_key = '';
@@ -199,7 +214,6 @@ export default function activate(cockpit) {
       const result = await cockpit.api(`/api/settings/check?${wsQuery()}`, { method: 'POST', body: draft() });
       if (!current()) return;
       say(result.message, result.ok ? 'ok' : 'error');
-      models.replaceChildren(...(result.models || []).map((id) => h('option', { value: id })));
     } catch (error) {
       if (current()) say(error.message, 'error');
     }
@@ -230,13 +244,10 @@ export default function activate(cockpit) {
   });
   cockpit.listen(form, 'change', (event) => {
     if (event.target.name === 'api') {
-      // A base URL and model belong to their API: the saved ones come back
-      // with it, and another API starts from its defaults.
+      // A base URL belongs to its API; models are chosen in the composer.
       ui.checks++; // a check still running answered for the old type
       const saved = ui.data?.provider_type === event.target.value;
       base.value = saved ? ui.data.base_url || '' : '';
-      model.value = saved ? ui.data.model || '' : '';
-      models.replaceChildren();
       say('');
     }
     renderForm();

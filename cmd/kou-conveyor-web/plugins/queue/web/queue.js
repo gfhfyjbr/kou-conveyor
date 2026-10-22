@@ -353,9 +353,25 @@ export default function activate(cockpit) {
     event.dataTransfer.effectAllowed = 'move';
     event.dataTransfer.setData('text/plain', li.querySelector('.queue-text')?.textContent || '');
   });
+  // endDrag forgets a drag. The row dragged may be redrawn away while it
+  // is dragged — the run took it, another prompt came — and its dragend
+  // never reaches the list then: the document's ends it, and a drag whose
+  // row is gone is stale.
+  const endDrag = () => {
+    ui.drag = null;
+    for (const el of list.querySelectorAll('[data-drop], [data-dragging]')) {
+      delete el.dataset.drop;
+      delete el.dataset.dragging;
+    }
+  };
+  const stale = () => {
+    if (!ui.drag || list.querySelector('[data-dragging]')) return false;
+    endDrag();
+    return true;
+  };
   cockpit.listen(list, 'dragover', (event) => {
     const li = event.target.closest('.queue-item');
-    if (!ui.drag || !li || li.dataset.forced) return;
+    if (!ui.drag || stale() || !li || li.dataset.forced) return;
     event.preventDefault();
     const rect = li.getBoundingClientRect();
     for (const other of list.querySelectorAll('[data-drop]')) if (other !== li) delete other.dataset.drop;
@@ -364,22 +380,19 @@ export default function activate(cockpit) {
   cockpit.listen(list, 'drop', (event) => {
     const li = event.target.closest('.queue-item');
     const id = ui.drag;
-    if (!id || !li) return;
+    if (!id || stale() || !li) return;
     event.preventDefault();
     const v = view();
     const from = position(v, id);
     let to = position(v, li.dataset.id) + (li.dataset.drop === 'after' ? 1 : 0);
     if (from < to) to--;
     delete li.dataset.drop;
-    if (from !== to && to >= 0) moveQueued(id, to);
+    if (from !== to && to >= 0 && from >= 0) moveQueued(id, to);
   });
-  cockpit.listen(list, 'dragend', () => {
-    ui.drag = null;
-    for (const el of list.querySelectorAll('[data-drop], [data-dragging]')) {
-      delete el.dataset.drop;
-      delete el.dataset.dragging;
-    }
-  });
+  cockpit.listen(list, 'dragend', endDrag);
+  cockpit.listen(document, 'dragend', endDrag, { capture: true });
+  // After the list's own drop, which still needs the drag.
+  cockpit.listen(document, 'drop', () => { if (ui.drag) setTimeout(endDrag); }, { capture: true });
 
   // ---------------------------------------------------------------- the composer
 

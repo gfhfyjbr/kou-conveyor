@@ -157,16 +157,20 @@
 .rail-label span { font: 600 10.5px/1 var(--mono); letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-3); }
 .rail-label span + span { color: var(--fg-4); letter-spacing: 0; }
 
+/* The foot is a row: its parts, the buttons to the right. A part may put
+   a line of its own under the row, the whole width (the connection's
+   summary: connection.css). */
 .rail-foot {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 6px;
   flex: none;
-  padding: 14px 12px 14px 16px;
+  padding: 6px 8px 10px 16px;
   border-top: 1px solid var(--line);
 }
 
-.rail-actions { display: flex; gap: 2px; }
+.rail-actions { display: flex; gap: 2px; margin-left: auto; }
 
 /* ---------------------------------------------------------------- stage */
 
@@ -281,13 +285,18 @@
 .dock-inner { max-width: calc(var(--measure) - 48px); margin: 0 auto; }
 
 /* The views' tabs head the rail, sharing its width: the sessions, the
-   canvases, the accounts of the gateway. */
+   canvases, the accounts of the gateway. Where a name does not fit its
+   tab (data-dense), the tabs say their icons instead: the names stay for
+   assistive technology and the tooltips, and a count goes to the icon's
+   corner. */
 .rail-tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); flex: none; border-bottom: 1px solid var(--line); }
 .rail-tab {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
   height: 36px;
   margin-bottom: -1px;
   border-bottom: 2px solid transparent;
@@ -300,6 +309,24 @@
 .rail-tab + .rail-tab { border-left: 1px solid var(--line); }
 .rail-tab:hover { color: var(--fg); background: var(--bg-3); }
 .rail-tab[aria-selected="true"] { color: var(--fg); background: var(--bg); border-bottom-color: var(--accent); }
+.rail-tab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.rail-tab-label { white-space: nowrap; }
+.rail-tab-icon { display: none; place-items: center; flex: none; width: 16px; height: 16px; }
+.rail-tab-icon svg { width: 16px; height: 16px; }
+.rail-tab[aria-selected="true"] .rail-tab-icon { color: var(--accent); }
+/* A view without an icon: the first letter of its name, in a square. */
+.rail-tab-mono { display: grid; place-items: center; width: 15px; height: 15px; border: 1px solid currentColor; font: 700 9px/1 var(--mono); letter-spacing: 0; }
+.rail-tab-glyph { font: 14px/1 var(--mono); letter-spacing: 0; }
+.rail-tabs[data-dense] .rail-tab-icon { display: inline-grid; }
+.rail-tabs[data-dense] .rail-tab-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+}
+.rail-tabs[data-dense] .rail-tab > .tab-count { position: absolute; top: calc(50% - 13px); left: calc(50% + 9px); gap: 3px; font-size: 9.5px; }
+.rail-tabs[data-dense] .rail-tab > .tab-count::before { width: 5px; height: 5px; }
 .tab-count { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; letter-spacing: 0; color: var(--fg-4); }
 .tab-count:empty { display: none; }
 .tab-count[data-health="warn"], .tab-count[data-health="bad"] { color: var(--warn); }
@@ -344,4 +371,59 @@
 
 @media (max-width: 480px) {
   .run-state time { display: none; }
+}
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…): what
+   is pressed and typed in; the rail, the bars and the panels stay square. */
+.new, .search { border-radius: var(--radius); }
+.pin-tag, .badge, .run-state, .rail-tab-mono { border-radius: var(--radius-sm); }
+.run-state i, .tab-count::before { border-radius: min(var(--radius-sm), 3.5px); }
+
+/* Round, the views' tabs are a segmented control: no rules between them,
+   the chosen one raised. */
+:root[data-corners="round"] .rail-tabs { gap: 4px; padding: 6px; }
+:root[data-corners="round"] .rail-tab { height: 30px; margin: 0; border: 0; border-radius: var(--radius); }
+:root[data-corners="round"] .rail-tab[aria-selected="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-2); }
+/* Round, no rule under a view's tools (the new session, the filter, …):
+   the label under them heads what follows. */
+:root[data-corners="round"] .rail-tools { border-bottom: 0; }
+
+/* Round, the rail's parts stand apart on the page's ground: the head with
+   the tabs, the view, the foot. A compact rail (data-rail-compact, which
+   theme.js sets) stays one panel. */
+:root[data-corners="round"]:not([data-rail-compact]) .rail { padding: 8px; background: var(--bg); border-right: 0; }
+:root[data-corners="round"]:not([data-rail-compact]) :is(.rail-head, .rail-tabs, .rail-view, .rail-foot) { background: var(--bg-2); border: 1px solid var(--line); }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-head { height: calc(var(--bar) - 8px); border-bottom: 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-head:has(+ .rail-tabs[hidden]) { border-bottom: 1px solid var(--line); border-radius: var(--radius-lg); }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-tabs { border-top: 0; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-view { margin: 8px 0; border-radius: var(--radius-lg); overflow: hidden; }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-foot { padding-left: 14px; border-radius: var(--radius-lg); }
+/* In their blocks, the tools and the sessions keep close to the edges, the
+   label over the sessions level with their numbers (session-list.css). */
+:root[data-corners="round"]:not([data-rail-compact]) .rail-tools { gap: 6px; padding: 6px; }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-view[data-view="sessions"] > .rail-tools + .rail-label { padding: 12px 14px 6px; }
+
+/* So do the stage's bar, level with the rail's head, and the open panel:
+   the ground shows round them, to the right of the stage too. The panel's
+   column is as much wider as its margins (--side stays its width, as the
+   edge measures it); a panel may part its block further (sidebar.css).
+   The edges are the gaps between the blocks, their lines as tall. */
+:root[data-corners="round"]:not([data-rail-compact]) .shell { grid-template-columns: var(--rail) minmax(0, 1fr) calc(var(--side) + 8px + min(var(--side), 8px)); }
+:root[data-corners="round"]:not([data-rail-compact]) .bar { margin-top: 8px; padding: 0 6px 0 14px; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+:root[data-corners="round"]:not([data-rail-compact]) :where(.shell:not([data-page]) .side-panel[data-open]) { margin: 8px; border: 1px solid var(--line); border-radius: var(--radius-lg); }
+:root[data-corners="round"]:not([data-rail-compact]) .resizer[data-edge="rail"] { left: calc(var(--rail) - 8px); }
+:root[data-corners="round"]:not([data-rail-compact]) .resizer[data-edge="side"] { right: calc(var(--edge, 0px) + 8px); }
+:root[data-corners="round"]:not([data-rail-compact]) .resizer::after { top: 8px; bottom: 8px; left: 3px; border-radius: 1px; }
+/* A panel that floats over the stage floats off its edges, its edge's line
+   on its border, along the straight of it; with the rail gone to a drawer,
+   the ground shows to the left of the stage as well. */
+@media (max-width: 1180px) {
+  :root[data-corners="round"]:not([data-rail-compact]) .shell { grid-template-columns: var(--rail) minmax(0, 1fr) 8px; }
+  :root[data-corners="round"]:not([data-rail-compact]) .resizer[data-edge="side"] { right: calc(var(--edge, 0px) + 4px); }
+  :root[data-corners="round"]:not([data-rail-compact]) .resizer[data-edge="side"]::after { top: calc(8px + var(--radius-lg)); bottom: calc(8px + var(--radius-lg)); }
+}
+@media (max-width: 820px) {
+  :root[data-corners="round"]:not([data-rail-compact]) .shell { grid-template-columns: 8px minmax(0, 1fr) 8px; }
 }

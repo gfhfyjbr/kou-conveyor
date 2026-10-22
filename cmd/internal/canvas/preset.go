@@ -329,13 +329,27 @@ func (c *Canvas) brief(id string) string {
 	if len(targets) > 0 {
 		along = "your edges take it to " + strings.Join(targets, ", ")
 	}
+	// With reply off, what it answers goes to no node that messaged it.
+	off := replyOf(n) == ReplyOff
 	switch outputOf(n) {
 	case OutputAll:
-		b.WriteString("Every answer you end a turn with goes out — " + along + " —, the user's too; a node that messaged you gets its answer back.\n")
+		if off {
+			b.WriteString("Every answer you end a turn with goes out — " + along + " —, the user's too, but not back to a node that messaged you: answer a node with CanvasSend.\n")
+		} else {
+			b.WriteString("Every answer you end a turn with goes out — " + along + " —, the user's too; a node that messaged you gets its answer back.\n")
+		}
 	case OutputExplicit:
-		b.WriteString("Your answers go back to the nodes that message you, and no further: what you put out with CanvasEmit goes along your edges (" + along + ").\n")
+		if off {
+			b.WriteString("Your answers stay with the user: answer a node with CanvasSend; what you put out with CanvasEmit goes along your edges (" + along + ").\n")
+		} else {
+			b.WriteString("Your answers go back to the nodes that message you, and no further: what you put out with CanvasEmit goes along your edges (" + along + ").\n")
+		}
 	default:
-		b.WriteString("The answer you end a turn with goes where the turn's message came from: a node's message is answered back to that node, and on along your edges (" + along + "); the user's prompts (those without a [canvas] line) and replies are answered to the user alone — that answer goes to no node.\n")
+		if off {
+			b.WriteString("The answer you end a turn with is for the user: it goes back to no node that messaged you — answer a node with CanvasSend —, though a node's message is answered on along your edges (" + along + ").\n")
+		} else {
+			b.WriteString("The answer you end a turn with goes where the turn's message came from: a node's message is answered back to that node, and on along your edges (" + along + "); the user's prompts (those without a [canvas] line) and replies are answered to the user alone — that answer goes to no node.\n")
+		}
 	}
 	if talks {
 		b.WriteString("To message a node, call the kou-canvas tool CanvasSend once — {\"node\":\"<id or title>\",\"text\":\"…\",\"wait\":true} —: with wait its answer is the call's result; without, it comes to you later as a reply. In a shell: kou-canvas send <node> \"text\" --wait.\n")

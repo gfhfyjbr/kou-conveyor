@@ -2,6 +2,7 @@ package contextbuilder
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
@@ -12,10 +13,12 @@ import (
 // conversation outgrows a budget, the oldest results beyond it are cut to a
 // note that says what was there and, for a shell command, where the whole
 // output still is; the model can read it again if it needs it, and the
-// transcript search finds it. Pruning changes the committed conversation
-// in place, in batches, so the prefix the provider caches changes once a
-// batch rather than a little every turn. The latest turns are never pruned:
-// what the model just asked for stays in view.
+// transcript search finds it. Results that show what is kept elsewhere — a
+// transcript read, a search — go before the others (PruneOptions.First).
+// Pruning changes the committed conversation in place, in batches, so the
+// prefix the provider caches changes once a batch rather than a little
+// every turn. The latest turns are never pruned: what the model just asked
+// for stays in view.
 
 // PruneOptions say when and how the conversation is pruned.
 type PruneOptions struct {
@@ -27,6 +30,11 @@ type PruneOptions struct {
 	// Bytes is what a result is cut to when it is pruned: its head, before
 	// the note. Zero keeps nothing of it.
 	Bytes int
+	// First tells the tools whose results are pruned before the others',
+	// oldest first: those that show what is kept elsewhere — another
+	// agent's transcript, a search — which a call fetches again. Nil prunes
+	// every result by its age alone.
+	First func(tool string) bool
 }
 
 // prunedNote marks a pruned result.
@@ -92,6 +100,14 @@ func (current *builder) prune() int {
 		results = append(results, index)
 	}
 	results = results[:max(len(results)-options.Keep, 0)]
+	if options.First != nil {
+		// What a call fetches again goes first; each part stays oldest first.
+		first := func(index int) bool {
+			return options.First(current.calls[current.committedPrefix[index].Data.(llm.ToolResult).CallID].Name)
+		}
+		results = append(slices.DeleteFunc(slices.Clone(results), func(index int) bool { return !first(index) }),
+			slices.DeleteFunc(results, first)...)
+	}
 	target := options.Budget - options.Budget/4
 	cut := make(map[int]llm.Item)
 	var saved int64

@@ -201,6 +201,9 @@ type Runtime struct {
 	Epoch int `json:"epoch,omitzero"`
 	// Briefed is set once the node's program was told of the canvas.
 	Briefed bool `json:"briefed,omitzero"`
+	// Effort is the effort the canvas last gave a kou agent's session, as
+	// its config's effort said (applyEffort).
+	Effort string `json:"effort,omitzero"`
 }
 
 // Edge carries messages from a node's output port to another's input.
@@ -214,8 +217,9 @@ type Edge struct {
 	// Mode is auto (the default), approve (each message waits for the
 	// user) or off.
 	Mode string `json:"mode,omitzero"`
-	// Deliver is queue (the default: the message waits for the node to be
-	// idle) or now.
+	// Deliver is queue (the message waits for the node to be idle) or now
+	// (it goes at once: a kou agent reads it between its tool calls); when
+	// empty, now to a kou agent and queue to anything else (deliverTo).
 	Deliver string `json:"deliver,omitzero"`
 	// Header puts where the message comes from before its text; by
 	// default for agents, not for shells.
@@ -248,11 +252,24 @@ func (e *Edge) mode() string {
 	return e.Mode
 }
 
-func (e *Edge) deliver() string {
-	if e.Deliver == "" {
-		return DeliverQueue
+// deliverTo is how the edge delivers to its target: as it says, else at
+// once to a kou agent — which reads a message between its tool calls, not
+// after a turn that may go on for an hour — and to anything else when it
+// is idle, as a terminal would type it into what runs.
+func (e *Edge) deliverTo(target *Node) string {
+	if e.Deliver != "" {
+		return e.Deliver
 	}
-	return e.Deliver
+	return defaultDelivery(target)
+}
+
+// defaultDelivery is how a message goes to a node when nothing says how:
+// now to a kou agent, queue to anything else.
+func defaultDelivery(target *Node) string {
+	if target != nil && target.Kind == KindAgent {
+		return DeliverNow
+	}
+	return DeliverQueue
 }
 
 // Rect is a node's place.

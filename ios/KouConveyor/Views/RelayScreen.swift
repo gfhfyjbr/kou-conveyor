@@ -8,6 +8,9 @@ struct RelayScreen: View {
     @State private var scanning = false
     @State private var unpairing = false
     @State private var checking = false
+    @AppStorage(BackgroundSettings.keepAliveKey) private var keepAlive = true
+    @AppStorage(BackgroundSettings.notifyKey) private var notifyTurnEnd = true
+    @AppStorage(StreamSettings.motionKey) private var streamMotion = true
 
     var body: some View {
         NavigationStack {
@@ -20,8 +23,12 @@ struct RelayScreen: View {
                 if !model.workspaces.isEmpty {
                     workspaceSection
                 }
+                appearanceSection
+                transcriptSection
+                backgroundSection
                 pairingSection
             }
+            .groupedBackground()
             .navigationTitle("Relay")
             .navigationSubtitle(model.relay?.address ?? "")
             .refreshable { await model.refresh() }
@@ -83,7 +90,18 @@ struct RelayScreen: View {
                 }
             }
             if let version = model.health?.version, !version.isEmpty {
-                LabeledContent("Version", value: version)
+                // A build's version is long: one line, its ends kept, and
+                // whole when copied.
+                LabeledContent("Version") {
+                    Text(version)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .contextMenu {
+                    Button("Copy version", systemImage: "doc.on.doc") {
+                        UIPasteboard.general.string = version
+                    }
+                }
             }
         } header: {
             Text("Relay")
@@ -143,6 +161,44 @@ struct RelayScreen: View {
             Text("Workspace")
         } footer: {
             Text("Sessions and canvases are this workspace's.")
+        }
+    }
+
+    private var appearanceSection: some View {
+        Section {
+            NavigationLink {
+                AppearanceScreen()
+            } label: {
+                LabeledContent {
+                    Text(Look.shared.summary)
+                        .lineLimit(1)
+                } label: {
+                    Label("Appearance", systemImage: "paintpalette")
+                }
+            }
+        } footer: {
+            Text("The accent, the shade of the greys and the corners: the cockpits' choices, for this iPhone.")
+        }
+    }
+
+    private var transcriptSection: some View {
+        Section {
+            Toggle("Animate text as it streams", isOn: $streamMotion)
+        } header: {
+            Text("Transcript")
+        } footer: {
+            Text("The agent's answer and thinking show as they are written: new words fade in and a caret ends them. Off, the text just appears. The system's Reduce Motion turns the animation off too.")
+        }
+    }
+
+    private var backgroundSection: some View {
+        Section {
+            Toggle("Keep runs connected in the background", isOn: $keepAlive)
+            Toggle("Notify when a turn ends", isOn: $notifyTurnEnd)
+        } header: {
+            Text("Notifications & background")
+        } footer: {
+            Text("While a run is going, the app holds the connection for up to 20 minutes after you leave it, so it need not reconnect — iOS may end this sooner. The turn-end notice is the app's own.")
         }
     }
 

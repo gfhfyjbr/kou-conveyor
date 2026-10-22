@@ -20,6 +20,8 @@
 // A canvas the page has not saved yet — one just made from New session —
 // is not on the server: its first batch makes it ("create").
 
+import { openEvents } from '/kernel/events.js';
+
 const WAITING = new Set(['pending', 'awaiting_approval']);
 const KEEP_MESSAGES = 200;
 const KEEP_ACTIVITY = 200;
@@ -44,6 +46,12 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
     messages: [],
     activity: [],
     feeds: new Map(),
+    // ran: whether the session of an agent node has a transcript (true) or
+    // not yet (false), by session; not there till a read or an event says.
+    // A node has its session's ID from when it is made, the transcript only
+    // once a run of it began: till then there is no chat to show
+    // (nodes/agent.js).
+    ran: new Map(),
     outputs: new Map(),
     logs: new Map(),
     // dragging: the nodes the user moves now, whose places the server's
@@ -54,6 +62,17 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
   };
   let source = null;
   let closed = false;
+  // shown: a document is in view (read, or a fresh canvas's), which a
+  // reload keeps there; retry is the pause before the next read, after
+  // one failed, the longer the more fail.
+  let shown = false;
+  let retry = 0;
+  let retryTimer = 0;
+  // The events of agents' runs so far, and the count at each node's last:
+  // a read of a transcript that an event of its run came after may be from
+  // before the transcript was (learn).
+  let events = 0;
+  const heard = new Map();
 
   function on(kind, fn) {
     if (!listeners.has(kind)) listeners.set(kind, new Set());
@@ -76,8 +95,13 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
   const titleOf = (nid) => node(nid)?.title || nid;
 
   async function load() {
-    m.loading = true;
-    emit('change', 'loading');
+    clearTimeout(retryTimer);
+    retryTimer = 0;
+    // A reload leaves what is shown as it is till the new one comes.
+    if (!shown) {
+      m.loading = true;
+      emit('change', 'loading');
+    }
     let data;
     try {
       data = await api('');
@@ -86,9 +110,21 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
       m.loading = false;
       if (error.status === 404) {
         // Not saved yet: a fresh canvas.
+        shown = true;
         m.exists = false;
         m.doc = blank();
         emit('change', 'load');
+        return;
+      }
+      if (shown && !m.deleted) {
+        // The server is away a while (it rebuilds itself, a relay is
+        // down): the board stays, reconnecting, and it is read again.
+        retry = Math.min(retry ? retry * 2 : 2000, 30000);
+        setStream('reconnecting');
+        retryTimer = setTimeout(() => {
+          retryTimer = 0;
+          if (!closed && !source) load();
+        }, retry);
         return;
       }
       m.failed = error.message || 'The canvas did not load';
@@ -96,17 +132,26 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
       return;
     }
     if (closed) return;
+    retry = 0;
     m.exists = true;
     snapshot(data);
     connect();
   }
 
   function snapshot(data) {
+    shown = true;
     m.loading = false;
     m.failed = '';
+    // The nodes the user moves now keep where the pointer has them.
+    const moving = new Map();
+    for (const nid of m.dragging) {
+      const n = node(nid);
+      if (n) moving.set(nid, { x: n.x, y: n.y, w: n.w, h: n.h });
+    }
     m.doc = data.doc || blank();
     m.doc.nodes ||= [];
     m.doc.edges ||= [];
+    for (const n of m.doc.nodes) if (moving.has(n.id)) Object.assign(n, moving.get(n.id));
     m.readOnly = !!data.read_only;
     m.status = new Map(Object.entries(data.status || {}));
     m.terminals = new Map(Object.entries(data.terminals || {}));
@@ -121,7 +166,7 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
   function connect() {
     if (source || closed || !m.exists) return;
     setStream('connecting');
-    const s = new EventSource(path('/events'));
+    const s = openEvents(path('/events'));
     source = s;
     s.onopen = () => { if (source === s) setStream('live'); };
     s.onerror = () => {
@@ -130,7 +175,13 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
       setStream(s.readyState === EventSource.CLOSED ? 'closed' : 'reconnecting');
       if (s.readyState === EventSource.CLOSED) {
         source = null;
-        if (!closed && !m.deleted) setTimeout(() => { if (!closed && !source) load(); }, 2000);
+        if (!closed && !m.deleted) {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => {
+            retryTimer = 0;
+            if (!closed && !source) load();
+          }, 2000);
+        }
       }
     };
     s.onmessage = (message) => {
@@ -153,6 +204,8 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
 
   function close() {
     closed = true;
+    clearTimeout(retryTimer);
+    retryTimer = 0;
     source?.close();
     source = null;
     listeners.clear();
@@ -195,6 +248,9 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
         emit('output', event);
         return;
       case 'agent': {
+        // A run of its session is under way: there is a transcript.
+        heard.set(event.node, ++events);
+        noteRan(node(event.node)?.runtime?.session, true);
         const list = m.feeds.get(event.node);
         if (list && event.entry) {
           const at = list.findIndex((e) => e.id === event.entry.id);
@@ -465,14 +521,22 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
     if (m.feeds.has(nid)) return m.feeds.get(nid);
     const list = [];
     m.feeds.set(nid, list);
+    const mark = events;
     try {
       const data = await api(`/nodes/${encodeURIComponent(nid)}/transcript?tail=${tail}`);
       const known = new Set(list.map((e) => e.id));
       list.unshift(...(data.entries || []).filter((e) => !known.has(e.id)));
       list.running = !!data.running;
       list.session = data.session || '';
-    } catch {
-      /* not an agent yet, or gone: its events fill it */
+      learn(nid, data, mark);
+    } catch (error) {
+      // Not an agent yet, or gone: its events fill it. Any other failure
+      // (a relay away, the server restarting) is not kept: it is read
+      // again the next time it is asked for.
+      if (error?.status !== 404 && error?.status !== 400) {
+        if (m.feeds.get(nid) === list) m.feeds.delete(nid);
+        list.error = true;
+      }
     }
     return list;
   }
@@ -480,8 +544,24 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
   // hasSession says an agent node's session has a transcript: none has
   // before a run of it began.
   async function hasSession(nid) {
+    const mark = events;
     const data = await api(`/nodes/${encodeURIComponent(nid)}/transcript?tail=1`);
+    learn(nid, data, mark);
     return !!data?.exists;
+  }
+
+  // learn takes what a read of a node's transcript says of its session: a
+  // session being run has one to show, even before its file is written (the
+  // server's handleSession).
+  function learn(nid, data, mark) {
+    const yes = !!(data?.exists || data?.running);
+    if (yes || (heard.get(nid) || 0) <= mark) noteRan(data?.session, yes);
+  }
+
+  function noteRan(sid, yes) {
+    if (!sid || m.ran.get(sid) === yes) return;
+    m.ran.set(sid, yes);
+    emit('ran', sid, yes);
   }
 
   // made says the canvas is on the server now, made by a request other

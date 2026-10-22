@@ -14,22 +14,23 @@ import (
 // reaches, of any provider — through the gateway, every model of every
 // account and endpoint it has. The composer rule shows the model the next
 // prompt of the session takes: the one chosen for the session (ctrl+p,
-// /model), else the one its last prompt ran with, else -model's, else the
-// connection's. Every prompt shows the model that answered it.
+// /model), else the one its last prompt ran with. A new session starts with
+// the model last chosen in a composer of either cockpit (else -model's),
+// else the connection's. Every prompt shows the model that answered it.
 
 // nextModel is the model the next prompt of the session runs with; "" is
 // the connection's.
 func (m *uiModel) nextModel() string {
-	if model := m.chosen[m.sessionID]; model != "" {
+	model := cmp.Or(m.chosen[m.sessionID], m.tr.LastModel(), m.lastModel, m.opt.model)
+	if model != "" || m.conn.NamedModel() != "" || m.catalog == nil {
 		return model
 	}
-	if model := m.tr.LastModel(); model != "" {
-		return model
-	}
-	return m.opt.model
+	// A connection that names no model, the gateway's: the first it lists.
+	return m.catalog.First()
 }
 
-// chooseModel chooses the model the next prompts of the session run with.
+// chooseModel chooses the model the next prompts of the session run with,
+// and new sessions of either cockpit start with; other sessions keep theirs.
 func (m *uiModel) chooseModel(id string) tea.Cmd {
 	id = strings.TrimSpace(id)
 	if id == "" || cockpit.ValidModel(id) != nil {
@@ -39,7 +40,15 @@ func (m *uiModel) chooseModel(id string) tea.Cmd {
 		m.chosen = make(map[string]string)
 	}
 	m.chosen[m.sessionID] = id
-	text, level := "model of the next prompts: "+id, "info"
+	m.lastModel, m.prefs.LastModel = id, id
+	text, level := "model of the next prompts and new sessions: "+id, "info"
+	if m.opt.preferences != "" {
+		if err := cockpit.SaveLastModel(m.opt.preferences, id); err != nil {
+			text, level = text+" — new sessions here only: "+err.Error(), "warn"
+		} else {
+			m.prefsSeen, _ = cockpit.PreferencesChanged(m.opt.preferences, nil)
+		}
+	}
 	if c := m.catalog; c != nil && c.Source != "" && len(c.Models) != 0 {
 		if info, ok := c.Find(id); ok {
 			text += " · " + info.ProviderName
@@ -54,6 +63,16 @@ func (m *uiModel) chooseModel(id string) tea.Cmd {
 		text += " · the running agent keeps its own"
 	}
 	return m.notify(text, level)
+}
+
+// modelsForNewSessions lists the connection's models in the background when
+// a new session would start with the first of them: nothing was chosen in a
+// composer, and the connection, the gateway, names no model.
+func (m *uiModel) modelsForNewSessions() tea.Cmd {
+	if m.lastModel != "" || m.opt.model != "" || m.conn.Source != "gateway" || m.conn.NamedModel() != "" {
+		return nil
+	}
+	return m.listModels()
 }
 
 // listModels asks the connection which models it has, for the models

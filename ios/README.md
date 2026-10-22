@@ -75,12 +75,32 @@ host's firewall and in its provider's security group.
   - Choose the model (from the workspace's models, searchable), the effort,
     the tool profile and the sandbox.
   - Attach photos, or paste images.
+  - See the pictures the agent looked at, under its ViewImage calls. Tap
+    one, or a prompt's image, to see it large over the dimmed transcript,
+    as the cockpit shows it; a tap anywhere puts it back.
   - Rename, pin, duplicate or delete a session, branch one from any prompt,
     and see its token usage.
   - Open what a prompt changed in the workspace, with diffs.
-- **Canvases.** The board, live, with its nodes and edges. Open a node for
-  its state, output and transcript, send it text, or restart or stop it.
-  The board also has lists of its nodes and its messages.
+  - Swipe right on the sessions for all the workspaces, the most recently
+    active first, each with its latest session and how many are running;
+    tap one to open its sessions, or hold it to start a session there.
+- **Canvases.** The board, live, with its nodes and wires, and lists of its
+  nodes, its messages and its log.
+  - Create a canvas (empty or from a template), rename it, pause it or let
+    it go live, change its settings (what its agents may add, its limits),
+    save it as a template, or delete it, with or without its agents'
+    sessions. Ask its foreman for nodes.
+  - A kou agent's node opens its whole chat, as a session's, with the
+    node's model and its details a tap away. One that never ran starts with
+    its first prompt, which brings it the canvas's brief.
+  - Add agents, existing sessions, terminals of the installed harnesses,
+    sources and notes; rename, set up, wire, give access to or remove them
+    (a removal can be undone for a few seconds).
+  - A terminal shows its screen and takes keys and commands; a manual
+    source fires; a webhook shows its address; a note is edited.
+  - Messages that wait for you are sent as they are or edited, or dropped;
+    nodes that agents proposed are approved or discarded. A wire can make
+    its messages wait for you, go at once, or stop, with a template.
 - **Files.** Browse and search the workspace, with git status. Files open
   highlighted; pictures open as pictures.
 - **Accounts.** The accounts gateway's accounts and endpoints, with their
@@ -92,7 +112,8 @@ host's firewall and in its provider's security group.
 
 These stay in the browser cockpit for now:
 
-- the terminals;
+- the cockpit's terminals (a canvas's terminals work here);
+- moving a canvas's nodes about its board;
 - adding, signing in to and removing accounts and endpoints;
 - editing prices;
 - reordering pins;

@@ -40,6 +40,11 @@ type Host interface {
 	// at work. id, a UUID, is the prompt's: RunFinished names the prompts a
 	// run answered by it. model, when not empty, is the model it runs with.
 	Enqueue(ctx context.Context, ws Workspace, session, id, text, model string, force bool) error
+	// Resend runs a prompt in place of the session's prompt rewind, as a
+	// prompt edited in the session's page does: the session goes back to
+	// how it was before rewind was sent, and the prompt runs from there.
+	// It fails when the session runs a prompt. id and model are Enqueue's.
+	Resend(ctx context.Context, ws Workspace, session, rewind, id, text, model string) error
 	// StopRun stops the session's run, if one goes on; RunActive reports
 	// whether one does.
 	StopRun(ws Workspace, session string) bool
@@ -304,6 +309,34 @@ func (e *Engine) RunEnv(wsID, session string) []string {
 	return ref.canvas.agentEnv(ref.node)
 }
 
+// Brief is the prompt of a run of a session as its agent is to be given
+// it: for the agent of a canvas's node not told of the canvas yet, or the
+// session's first prompt (first: none before it, as when the first one is
+// edited), the node's brief comes first — whether the prompt comes from
+// the canvas or from a composer. It says whether the prompt has the brief:
+// once the run starts, Briefed is told so.
+func (e *Engine) Brief(wsID, session, prompt string, first bool) (string, bool) {
+	if e == nil {
+		return prompt, false
+	}
+	ref, ok := e.session(wsID, session, true)
+	if !ok {
+		return prompt, false
+	}
+	return ref.canvas.briefRun(ref.node, session, prompt, first)
+}
+
+// Briefed is told that a run of a session started with a prompt that has
+// its node's brief (Brief).
+func (e *Engine) Briefed(wsID, session string) {
+	if e == nil {
+		return
+	}
+	if ref, ok := e.session(wsID, session, false); ok {
+		ref.canvas.setRuntime(ref.node, func(r *Runtime) { r.Briefed = true })
+	}
+}
+
 // RunStarted is told when a run of a session starts.
 func (e *Engine) RunStarted(wsID, session string) {
 	if e == nil {
@@ -311,6 +344,18 @@ func (e *Engine) RunStarted(wsID, session string) {
 	}
 	if ref, ok := e.session(wsID, session, false); ok {
 		ref.canvas.agentRunStarted(ref.node)
+	}
+}
+
+// Rewound is told when a session was rewound before one of its prompts, to
+// run it edited (cockpit.RewindSession): the last answer of its node may be
+// one of a run the rewind removed.
+func (e *Engine) Rewound(wsID, session string) {
+	if e == nil {
+		return
+	}
+	if ref, ok := e.session(wsID, session, false); ok {
+		ref.canvas.agentRewound(ref.node)
 	}
 }
 
@@ -336,7 +381,8 @@ func (e *Engine) RunActivity(wsID, session, activity string) {
 }
 
 // RunFinished is told when a run of a session ends: its answer, how it
-// ended (done, stopped or failed), and the IDs of the prompts it answered,
+// ended (done, refused — the model refused to answer, which leaves no
+// answer —, stopped or failed), and the IDs of the prompts it answered,
 // as Host.Enqueue was given them — the user's prompts have others.
 func (e *Engine) RunFinished(wsID, session, answer, outcome string, prompts []string) {
 	if e == nil {

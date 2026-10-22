@@ -7,18 +7,21 @@ import Foundation
 
 // MARK: Effort and preferences
 
-/// What /api/config says that the app uses: the effort and its levels, and
-/// the model of the connection.
+/// What /api/config says that the app uses: the effort and its levels, the
+/// model of the connection, and the classes the colours of code are of.
 struct CockpitConfig: Decodable, Sendable {
     let thinking: String?
     let thinkingLevels: [String]?
     let effortSaved: Bool?
     let model: String?
     let provider: String?
+    /// The classes of tokens the runs of a tool call's code name, by their
+    /// index (cmd/internal/highlight).
+    let syntaxClasses: [String]?
 
     enum CodingKeys: String, CodingKey {
         case thinking, model, provider
-        case thinkingLevels = "thinking_levels", effortSaved = "effort_saved"
+        case thinkingLevels = "thinking_levels", effortSaved = "effort_saved", syntaxClasses = "syntax_classes"
     }
 }
 

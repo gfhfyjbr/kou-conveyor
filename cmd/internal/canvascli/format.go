@@ -120,6 +120,9 @@ func formatView(v view, full bool) string {
 		if n.Pending > 0 {
 			extras = append(extras, fmt.Sprintf("%d pending", n.Pending))
 		}
+		if n.QuietS > 0 {
+			extras = append(extras, fmt.Sprintf("quiet for %dm: a long command, or stuck — read its transcript", n.QuietS/60))
+		}
 		if n.Proposed {
 			extras = append(extras, "waits for the user's approval")
 		}

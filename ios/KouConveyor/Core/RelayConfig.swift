@@ -129,15 +129,22 @@ enum RelayStore {
 
     static func save(_ config: RelayConfig) throws {
         let data = try JSONEncoder().encode(config)
-        clear()
-        let item: [String: Any] = [
+        // The relay paired before is replaced in place, not removed first:
+        // should the keychain refuse the new one, the old one stays paired.
+        let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: data,
         ]
-        let status = SecItemAdd(item as CFDictionary, nil)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+        ]
+        var status = SecItemUpdate(query as CFDictionary, update as CFDictionary)
+        if status == errSecItemNotFound {
+            let item = query.merging(update) { _, new in new }
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
         guard status == errSecSuccess else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [
                 NSLocalizedDescriptionKey: "The keychain did not keep the relay (\(status)).",

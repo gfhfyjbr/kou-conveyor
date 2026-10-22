@@ -1,5 +1,16 @@
 /* connection: where runs connect, at the foot of the rail. */
 
-.link-state { display: grid; gap: 6px; min-width: 0; flex: 1; text-align: left; padding: 2px 0; }
-.link-state span:last-child { font: 11px/1.3 var(--mono); color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.link-state:hover span:last-child { color: var(--fg); }
+/* Its caption takes the foot's row, beside the canvases that run and the
+   rail's buttons (layout.css, .rail-foot); the summary goes under it, the
+   whole width of the foot, and ends in an ellipsis where the rail cuts it
+   short: the tooltip says the whole. Under the row, not into it: the
+   boxes of that row (the canvases' badge, a button under the pointer)
+   would cut across its text. The caption labels the summary's button, so
+   either opens the connection. */
+.conn-foot { display: contents; }
+.conn-foot[hidden] { display: none; }
+.conn-label { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.link-state { order: 1; flex: 1 0 100%; min-width: 0; display: grid; padding: 0; text-align: left; }
+.link-state > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font: 11px/1.3 var(--mono); color: var(--fg-3); }
+.conn-foot:has(> :hover) > .conn-label { color: var(--fg-2); }
+.conn-foot:has(> :hover) > .link-state > span { color: var(--fg); }

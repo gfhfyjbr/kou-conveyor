@@ -89,7 +89,8 @@ func Main() {
 //
 // A compaction request writes a compaction turn whose summary names the
 // instructions; with "wait" in them it blocks until interrupted, and with
-// "nothing" the summary is empty.
+// "nothing" the summary is empty. With -stream its answer streams first, a
+// word at a time, paced with "slow" in the instructions.
 func Runner(t testing.TB) string {
 	t.Helper()
 	t.Setenv(enable, "1")
@@ -108,6 +109,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	flags.String("log-directory", "", "")
 	flags.Duration("tool-heartbeat-interval", 0, "")
 	providers := flags.Bool("providers", false, "")
+	stream := flags.Bool("stream", false, `also write {"type": "delta", ...} lines with the text of a compaction's answer as it streams`)
 	steer := new(bool)
 	if os.Getenv(NoSteer) != "1" {
 		steer = flags.Bool("steer", false, "keep reading stdin for messages")
@@ -155,7 +157,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		model = os.Getenv("KOU_CONVEYOR_LLM_MODEL")
 	}
 	if request.Compact {
-		return compact(*sessions, request.SessionID, request.Instructions, model, stdout, stderr)
+		return compact(*sessions, request.SessionID, request.Instructions, model, *stream, stdout, stderr)
 	}
 	prompt := request.Messages[0].Content
 	// A canvas node's first prompt starts with its brief, a paragraph about
@@ -401,13 +403,16 @@ func (s *store) look(turn session.TurnID) session.TurnID {
 	return s.turn()
 }
 
-func compact(dir, id, instructions, model string, stdout, stderr io.Writer) int {
+func compact(dir, id, instructions, model string, stream bool, stdout, stderr io.Writer) int {
 	s, err := openStore(dir, id, stdout)
 	if err != nil {
 		fmt.Fprintln(stderr, "fake-runner:", err)
 		return 1
 	}
 	s.model = model
+	if strings.Contains(instructions, "slow") {
+		s.pace = 150 * time.Millisecond
+	}
 	control, _ := json.Marshal(inbox.ControlMessage{Mode: inbox.Compact, Reason: instructions})
 	s.emit(sessionstore.ItemInput, inbox.Input{ID: inbox.ID(uuid.New().String()), Kind: inbox.InputControl, Payload: control})
 	turn := s.nextTurn(session.TurnCompaction)
@@ -426,6 +431,21 @@ func compact(dir, id, instructions, model string, stdout, stderr io.Writer) int 
 			summary += ", focused on " + instructions
 		}
 		answer += "\n\n<summary>\n" + summary + "\n</summary>"
+	}
+	// The answer streams before the session records it, as the runner's
+	// does.
+	if stream {
+		for _, word := range strings.SplitAfter(answer, " ") {
+			time.Sleep(s.pace)
+			delta, _ := json.Marshal(struct {
+				Type  string         `json:"type"`
+				Turn  session.TurnID `json:"turn"`
+				Index int            `json:"index"`
+				Kind  string         `json:"kind"`
+				Text  string         `json:"text"`
+			}{"delta", turn, 0, "text", word})
+			stdout.Write(append(delta, '\n'))
+		}
 	}
 	s.emit(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn, Response: llm.Response{
 		Stop:   llm.StopComplete,

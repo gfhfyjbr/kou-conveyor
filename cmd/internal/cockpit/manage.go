@@ -21,12 +21,14 @@ import (
 )
 
 // Meta is what the cockpits add to a session the runner owns: a title of the
-// user's choosing and a pin, with the pinned session's place among the
-// pinned ones. It lives beside the session store, which never reads it.
+// user's choosing, its effort, and a pin, with the pinned session's place
+// among the pinned ones. It lives beside the session store, which never reads it.
 type Meta struct {
 	Title    string `json:"title,omitzero"`
 	Pinned   bool   `json:"pinned,omitzero"`
 	PinOrder int    `json:"pin_order,omitzero"`
+	// Effort belongs to this session, never to the next one.
+	Effort string `json:"effort,omitzero"`
 	// Canvas and Node name the canvas, and the node on it, whose agent the
 	// session is: the canvas made it, or, Adopted, the user put a session
 	// of theirs on it — which the canvas never deletes, and the session
@@ -81,7 +83,24 @@ func LoadMeta(dir, id string) Meta {
 		_ = json.Unmarshal(data, &m)
 	}
 	m.Title = Headline(Clean(m.Title), 120)
+	if !ValidThinkingLevel(m.Effort) {
+		m.Effort = ""
+	}
 	return m
+}
+
+// SetSessionEffort keeps the effort with this session. It also works before
+// the runner has created the session file, which is needed for a fresh view.
+func SetSessionEffort(dir, id, level string) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("invalid session ID %q", id)
+	}
+	if level != "" && !ValidThinkingLevel(level) {
+		return fmt.Errorf("unknown effort %q", level)
+	}
+	m := LoadMeta(dir, id)
+	m.Effort = level
+	return saveMeta(dir, id, m)
 }
 
 // loadMetas reads the metadata of every session that has any.
@@ -216,6 +235,7 @@ func DeleteSession(dir, id string) error {
 		return err
 	}
 	titles.Delete(path)
+	loaded.forget(path, nil)
 	if err := os.Remove(metaPath(dir, id)); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("delete session metadata: %w", err)
 	}
@@ -228,6 +248,8 @@ func DeleteSession(dir, id string) error {
 	if err := os.Remove(filepath.Join(dir, ".changes", id+".jsonl")); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return fmt.Errorf("delete change records: %w", err)
 	}
+	// So do the snapshots that let a rewind restore its notes and summaries.
+	forgetMemory(dir, id)
 	return nil
 }
 

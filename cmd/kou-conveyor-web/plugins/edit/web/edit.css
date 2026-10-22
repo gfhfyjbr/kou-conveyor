@@ -63,3 +63,11 @@
   .edit-row kbd { display: none; }
   .edit-row .act, .edit-row .run { height: 40px; padding: 0 14px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.edit, .edit-row .run { border-radius: var(--radius); }
+/* Round, no accent bar along the edge: the focus tints the whole border. */
+:root[data-corners="round"] .edit { padding-left: 15px; border-left-width: 1px; border-left-color: var(--line-2); }
+:root[data-corners="round"] .edit:focus-within { border-left-color: color-mix(in srgb, var(--accent) 45%, var(--line-2)); }

@@ -28,10 +28,16 @@
 // It provides the timeline service: schedule(id), flushNow(), reveal(id),
 // scrollToBottom(), nearBottom(), promptInView(v), node(id), forget(ids),
 // setAllTools(open), scroller().
-import { fmt, h } from '/kernel/dom.js';
+import { fmt, h, svg } from '/kernel/dom.js';
 
+// RUN_LIGHT is the light that goes round the card of a call that runs
+// (timeline.css, .tool-run): its trail and its head, on the card's edge.
+const RUN_LIGHT = '<svg class="tool-run" aria-hidden="true"><rect class="tool-run-tail" width="100%" height="100%" pathLength="100"/><rect class="tool-run-head" width="100%" height="100%" pathLength="100"/></svg>';
 const TOOL_GLYPH = { queued: '□', running: '■', done: '✓', failed: '✕', canceled: '⊘', interrupted: '◌' };
 const TOOL_WORD = { queued: 'Queued', running: 'Running', done: 'Done', failed: 'Failed', canceled: 'Stopped', interrupted: 'Interrupted' };
+// TAIL is how many of the last lines its command printed a call that runs
+// shows, closed.
+const TAIL = 6;
 
 const STARTERS = [
   ['Survey', 'Map the architecture, entry points and how to build and test.', 'Map this repository: its architecture, entry points, and how to build and test it.'],
@@ -73,7 +79,9 @@ export default function activate(cockpit) {
   const loadError = h('div', { class: 'load-error', id: 'load-error', hidden: true },
     h('b', { text: 'Could not load this session' }), errorText,
     h('button', { class: 'act', id: 'load-retry', type: 'button', onclick: () => session.openSession(view().id, { push: false }) }, 'Retry'));
-  const list = h('ol', { class: 'entries', id: 'entries', 'aria-live': 'polite' });
+  // Not a live region: the stream would be read out piece by piece, and the
+  // entries drawn as the view scrolls with it. The header says the run's state.
+  const list = h('ol', { class: 'entries', id: 'entries' });
   const log = h('div', { class: 'log' }, empty, loading, loadError, list);
   cockpit.ui.mount('stage.main', { id: 'timeline', order: 0, node: log });
 
@@ -109,6 +117,37 @@ export default function activate(cockpit) {
   let held = null; // the entry that holds the view in place: { id, offset }
   let following = true; // whether the view keeps to the end
   let lastTop = 0;
+  let lastGap = 0; // how far the view was from the end when last looked at
+  // The item a press is on, kept as it is drawn until its click, and
+  // whether it was to be drawn anew meanwhile (the press listeners).
+  const press = { item: null, stale: false };
+
+  // What the agent writes comes as it writes it: a preview (entry.streaming)
+  // shows the answer or the thinking so far, drawn again as each piece
+  // comes, until the entry it is recorded as takes its place (replaces).
+  // Each piece fades in where it is, for FADE milliseconds from when it
+  // came however often its entry is drawn again meanwhile, and a caret
+  // ends the text. The motion is the user's to turn off (Settings), and
+  // the system's reduced motion turns it off as well.
+  const MOTION = 'timeline.stream-motion';
+  const FADE = 420;
+  const RISE = 320; // how long a preview takes to rise into place
+  let motion = cockpit.prefs.get(MOTION, true) !== false;
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+  const moving = () => motion && !reduced?.matches;
+  // id → { shown, pieces: [{ from, to, at }], born, gist, gistAt }: how
+  // much of a preview's text was drawn, and the pieces still fading in.
+  const written = new Map();
+  // `${id}:${stream}` → where the user scrolled the output of a running
+  // command to (its scrollTop), away from its end; output the user did not
+  // scroll keeps to its end as it grows.
+  const liveScroll = new Map();
+  list.classList.toggle('still', !motion);
+  if (reduced?.addEventListener) {
+    const changed = () => schedule();
+    reduced.addEventListener('change', changed);
+    cockpit.onDispose(() => reduced.removeEventListener('change', changed));
+  }
 
   // An item drawn, or the scroller, that changes its height moves what is
   // in view: the view keeps to the end, or its entry where it was. Only the
@@ -173,6 +212,13 @@ export default function activate(cockpit) {
     return el.scrollHeight - el.scrollTop - el.clientHeight < 2;
   }
 
+  // gapOf is how far the view is from the end. Holding an entry in place as
+  // what is above it changes keeps it; what comes in below makes it bigger;
+  // only scrolling down makes it smaller.
+  function gapOf(el) {
+    return el.scrollHeight - el.scrollTop - el.clientHeight;
+  }
+
   function nearBottom() {
     const el = scroller();
     return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 96;
@@ -197,8 +243,9 @@ export default function activate(cockpit) {
 
   function flush(v, el) {
     const live = usable(el);
-    // A session just opened shows its end.
-    const stick = !live || pending.fresh || nearBottom();
+    // A session just opened shows its end. A view scrolled up from the end,
+    // however little, stays where it is.
+    const stick = !live || pending.fresh || (following && nearBottom());
     const at = stick ? null : anchorAt(el, v);
     const ctx = context(v);
     // Drawing an entry again moves what has the focus in it (an editor),
@@ -209,6 +256,8 @@ export default function activate(cockpit) {
       // Another session: nothing of the one before is of use.
       for (const [id, node] of nodes) letGo(id, node);
       heights.clear();
+      written.clear();
+      liveScroll.clear();
       heightsOf = `${v.ws}/${v.id}`;
       model.order = null;
     }
@@ -220,15 +269,31 @@ export default function activate(cockpit) {
       }
     }
     let added = 0;
-    for (const id of pending.ids) if (!model.index.has(id) && v.entries.has(id)) added++;
+    for (const id of pending.ids) {
+      const entry = v.entries.get(id);
+      if (!entry) continue;
+      // The entry a preview is recorded as, in the preview's place, is not
+      // new: it takes the preview's item, to be drawn again where it is.
+      if (entry.replaces) adopt(v, entry);
+      if (!model.index.has(id) && !(entry.replaces && model.index.has(entry.replaces))) added++;
+    }
     // What changed is drawn again, if it is drawn; how all entries look
     // changed, every one drawn is.
     const keep = keptIds(v);
+    const marks = markSelection();
     const fresh = [];
     for (const id of pending.all ? new Set([...nodes.keys(), ...keep]) : pending.ids) {
       const entry = v.entries.get(id);
       if (!entry) continue;
+      // Pressed on, it is drawn anew after its click.
+      if (press.item && nodes.get(id) === press.item) {
+        press.stale = true;
+        continue;
+      }
       if (nodes.has(id) || keep.has(id)) fresh.push([id, redraw(id, entry, ctx)]);
+      // What streams grows where it is not drawn: its height is guessed from
+      // what it says, not as it was when it was drawn last.
+      else if (entry.streaming || v.live?.has(id)) heights.delete(id);
       resized(id);
     }
     if (pending.all) model.from = 0;
@@ -236,6 +301,7 @@ export default function activate(cockpit) {
     pending.fresh = false;
     pending.ids.clear();
     commit(v);
+    putSelectionBack(marks);
     for (const [id, node] of fresh) remember(id, node);
     if (active && active.isConnected && document.activeElement !== active) {
       active.focus({ preventScroll: true });
@@ -254,6 +320,7 @@ export default function activate(cockpit) {
         jump.hidden = false;
       }
     }
+    if (live) lastGap = gapOf(el);
     cockpit.emit('timeline:flush', v);
   }
 
@@ -267,6 +334,7 @@ export default function activate(cockpit) {
     settle(el, v, at, performance.now() + BUDGET);
     held = anchorAt(el, v);
     if (following && !atEnd(el)) scrollToBottom();
+    lastGap = gapOf(el);
   }
 
   // settle fills the view until what is drawn in it keeps its height,
@@ -333,7 +401,9 @@ export default function activate(cockpit) {
       }
     }
     if (!changed && !fresh.length) return false;
+    const marks = markSelection();
     commit(v);
+    putSelectionBack(marks);
     let moved = false;
     for (const [id, node, before] of fresh) if (Math.abs(remember(id, node) - before) >= 0.5) moved = true;
     return moved;
@@ -395,6 +465,7 @@ export default function activate(cockpit) {
       cursor.remove();
       cursor = after;
     }
+    followLive();
   }
 
   // sync has the model follow the session's order, and work out where the
@@ -533,9 +604,13 @@ export default function activate(cockpit) {
         if (tool.input && (tool.input.includes('\n') || tool.input.length > 90)) height += stream(tool.input);
         if (calls) height += 38 + calls * 24;
         if (tool.error) height += 20 + wrapped(tool.error, 200) * 18.6;
-        for (const text of [tool.output, tool.stderr, tool.logs, tool.value]) if (text) height += stream(text);
+        // What a Write or an Edit call did shows in place of what it said,
+        // but for a line.
+        const changed = changeText(tool.change);
+        if (changed != null) height += stream(changed) + 34;
+        for (const text of [changed == null && tool.output, tool.stderr, tool.logs, tool.value]) if (text) height += stream(text);
         if (tool.files?.length) height += 34;
-        if (!tool.output && !tool.stderr && !tool.error && !calls && !tool.value && !tool.logs) height += 38;
+        if (!tool.output && !tool.stderr && !tool.error && !calls && !tool.value && !tool.logs && changed == null) height += 38;
         return height;
       }
       case 'user': return 71 + wrapped(entry.text) * 23.2;
@@ -640,6 +715,16 @@ export default function activate(cockpit) {
         return entry.kind === 'tool' && entry.tool?.state === 'failed' && !!entry.tool?.error;
       },
       toggle: (id, open) => {
+        // A preview kept as it was drawn while pressed on, as the entry it
+        // was recorded as came (replaces): the click is that entry's.
+        if (!v.entries.has(id)) {
+          for (const other of v.entries.values()) {
+            if (other.replaces === id) {
+              id = other.id;
+              break;
+            }
+          }
+        }
         v.expanded.set(id, open);
         schedule(id);
       },
@@ -707,6 +792,56 @@ export default function activate(cockpit) {
     };
   }
 
+  // The page clicks what a press began and ended on, and an item drawn
+  // anew is other elements: what the press began on is gone, and so is the
+  // click. What streams is drawn anew with each piece that comes, which a
+  // fast model sends more often than a click takes — its Thinking, or a
+  // command that prints, would not open. An item pressed on stays as it is
+  // drawn until its click, and is drawn anew in the frame after. A mouse's
+  // click comes as the button is let go; a tap's a little after, or none
+  // does: it is waited for TAP milliseconds.
+  const TAP = 400;
+  let tapping = null; // cancels the wait
+  cockpit.listen(list, 'pointerdown', (event) => {
+    release();
+    let item = event.isPrimary && event.button === 0 ? event.target : null;
+    while (item && item.parentNode !== list) item = item.parentNode;
+    if (item && owner.has(item)) press.item = item;
+  }, { capture: true });
+  function release() {
+    tapping?.();
+    tapping = null;
+    const { item, stale } = press;
+    press.item = null;
+    press.stale = false;
+    const id = item ? owner.get(item) : undefined;
+    if (stale && id !== undefined) schedule(id);
+  }
+  cockpit.listen(document, 'pointerup', (event) => {
+    if (!press.item) return;
+    tapping?.();
+    tapping = cockpit.timeout(release, event.pointerType === 'mouse' ? 0 : TAP);
+  }, { capture: true });
+  for (const type of ['click', 'pointercancel', 'contextmenu']) cockpit.listen(document, type, release, { capture: true });
+  cockpit.listen(window, 'blur', release);
+  // A press that ended where the page did not see it (a menu took it): the
+  // pointer moves with no button down.
+  cockpit.listen(document, 'pointermove', (event) => { if (press.item && !tapping && !(event.buttons & 1)) release(); }, { capture: true, passive: true });
+
+  // A click on a head opens or closes it, but not one that ends selecting
+  // text in it: the command or path a head shows can be selected to copy.
+  // A selection already there when the button went down does not count.
+  let selectedAtPress = '';
+  cockpit.listen(list, 'mousedown', () => { selectedAtPress = String(document.getSelection?.() || ''); }, { capture: true });
+  function unlessSelecting(fn) {
+    return (event) => {
+      const selection = document.getSelection?.();
+      const text = selection && !selection.isCollapsed ? selection.toString() : '';
+      if (text.trim() && text !== selectedAtPress && event.currentTarget.contains(selection.anchorNode)) return;
+      fn();
+    };
+  }
+
   const builtin = {
     user(entry, ctx) {
       const { li, gutter, body, time } = shell(entry);
@@ -747,30 +882,41 @@ export default function activate(cockpit) {
       const { li, gutter, body, time } = shell(entry);
       gutter.append(h('span', { class: 'tick', text: fmt.short(entry.at) }));
       if (entry.phase) li.dataset.phase = entry.phase;
+      const prose = h('div', { class: 'prose' }, ctx.markdown(entry.text, { onCopy: (text) => ctx.copy(text, 'Code copied') }));
+      // A preview has no actions: what it says is not all said yet.
       body.append(
         h('header', { class: 'meta' }, h('span', { class: 'who', text: 'Agent' }),
-          entry.phase === 'commentary' && h('span', { class: 'tag', text: 'Note' }), time, ctx.actions(entry)),
-        h('div', { class: 'prose' }, ctx.markdown(entry.text, { onCopy: (text) => ctx.copy(text, 'Code copied') })),
-        ...decorations(entry, ctx));
+          entry.phase === 'commentary' && h('span', { class: 'tag', text: 'Note' }), time, !entry.streaming && ctx.actions(entry)),
+        prose,
+        ...(entry.streaming ? [] : decorations(entry, ctx)));
+      streamText(entry, li, prose);
       return li;
     },
     reasoning(entry, ctx) {
       const { li, gutter, body } = shell(entry);
       gutter.append(h('span', { class: 'tick', text: fmt.short(entry.at) }));
       const open = ctx.expanded(entry);
-      const gist = entry.text.split('\n').find((line) => line.trim()) || '';
+      // Closed, thinking as it comes shows what it is about now; written
+      // (the model went on to its answer), it shows as it is recorded.
+      const writing = entry.streaming && !entry.settled;
+      const gist = writing ? latestGist(entry.text) : entry.text.split('\n').find((line) => line.trim()) || '';
       const toggle = () => ctx.toggle(entry.id, !open);
+      const about = h('span', { class: 'gist', text: gist.replace(/\*\*/g, '') });
       body.append(h('div', { class: 'fold', role: 'button', tabindex: 0, 'aria-expanded': String(open), onclick: toggle, onkeydown: activateKeys(toggle) },
-        h('span', { class: 'who', text: 'Thinking' }),
-        h('span', { class: 'gist', text: gist.replace(/\*\*/g, '') }),
+        h('span', { class: writing && moving() ? 'who shimmer' : 'who', text: 'Thinking' }),
+        about,
         h('span', { class: 'chev', 'aria-hidden': 'true' })));
-      if (open) body.append(h('div', { class: 'prose thought' }, ctx.markdown(entry.text)));
+      const prose = open ? h('div', { class: 'prose thought' }, ctx.markdown(entry.text)) : null;
+      if (prose) body.append(prose);
+      streamText(entry, li, prose);
       return li;
     },
     tool(entry, ctx) {
       const { li, gutter, body } = shell(entry);
       gutter.append(h('span', { class: 'tick', text: fmt.short(entry.at) }));
       body.append(renderTool(entry, ctx), ...decorations(entry, ctx));
+      // A call that runs is drawn again as its command prints.
+      if (entry.tool?.state === 'running' || entry.tool?.state === 'queued') clocked(li);
       return li;
     },
     notice(entry, ctx) {
@@ -816,8 +962,14 @@ export default function activate(cockpit) {
     const codeTool = (tool.name || '').toLowerCase() === 'code';
     const failed = state === 'failed';
     const exit = tool.exit_code;
+    // What the command of a call that runs printed so far, as it prints it.
+    const live = state === 'running' || state === 'queued' ? ctx.view?.live?.get(entry.id) : null;
+    if (!live) {
+      liveScroll.delete(`${entry.id}:out`);
+      liveScroll.delete(`${entry.id}:err`);
+    }
 
-    const meta = h('span', { class: 'tmeta' });
+    const meta = h('span', { class: 'tmeta' }, changeStat(tool.change));
     if (state === 'running' && tool.started) {
       meta.append(h('span', { class: 'live', data: { since: tool.started }, text: fmt.duration(Date.now() - Date.parse(tool.started)) }));
     } else if (tool.started && tool.finished) {
@@ -830,7 +982,7 @@ export default function activate(cockpit) {
     const toggle = () => ctx.toggle(entry.id, !open);
     // Closed, the calls a Code call's code made hang from its state glyph.
     const card = h('div', { class: 'tool', data: { state, exit: exit != null && exit !== 0 ? 'nonzero' : null, tree: calls && !open ? 'hung' : null } },
-      h('div', { class: 'tool-head', role: 'button', tabindex: 0, 'aria-expanded': String(open), onclick: toggle, onkeydown: activateKeys(toggle) },
+      h('div', { class: 'tool-head', role: 'button', tabindex: 0, 'aria-expanded': String(open), onclick: unlessSelecting(toggle), onkeydown: activateKeys(toggle) },
         h('span', { class: 'tstate', 'aria-label': TOOL_WORD[state], text: TOOL_GLYPH[state] }),
         h('span', { class: 'tname', text: tool.name || 'Tool' }),
         h('span', { class: `tinput${shellTool ? ' cmd' : ''}`, title: tool.input || '', text: typeof summary === 'string' ? summary : (tool.input || '').split('\n')[0] }),
@@ -853,12 +1005,22 @@ export default function activate(cockpit) {
           renderCalls(entry, tool, ctx, state, true)));
       }
       if (tool.error) panel.append(h('div', { class: 'tool-error', text: tool.error }));
-      if (tool.output) panel.append(stream('Output', tool.output, 'out'));
+      // What a Write call wrote, or an Edit call changed, shows in place of
+      // what it said of it, but for the first line.
+      const change = changeView(entry, tool.change, state, ctx);
+      if (change) panel.append(change);
+      // Until the call ends, what its command prints shows as it prints it.
+      const out = !tool.output && live?.out ? terminal(live.out) : '';
+      const err = !tool.stderr && live?.err ? terminal(live.err) : '';
+      if (tool.output) panel.append(change ? h('div', { class: 'fc-said', text: saidLine(tool.output) }) : stream('Output', tool.output, 'out'));
+      else if (out) panel.append(tailed(stream('Output', out, 'out'), `${entry.id}:out`));
       if (tool.stderr) panel.append(stream('Stderr', tool.stderr, 'err'));
+      else if (err) panel.append(tailed(stream('Stderr', err, 'err'), `${entry.id}:err`));
+      if (live && (live.skipped > 0 || live.cut)) panel.append(h('div', { class: 'tool-skip', text: skippedNote(live) }));
       if (tool.logs) panel.append(stream('Console', tool.logs, 'out'));
       if (tool.value) panel.append(stream('Return value', tool.value, 'out'));
       if (tool.files?.length) panel.append(h('div', { class: 'tool-files' }, tool.files.map((file) => h('code', { text: file }))));
-      if (!tool.output && !tool.stderr && !tool.error && !calls && !tool.value && !tool.logs) {
+      if (!tool.output && !tool.stderr && !tool.error && !calls && !tool.value && !tool.logs && !out && !err && !change) {
         panel.append(h('div', { class: 'tool-empty', text: state === 'running' || state === 'queued' ? 'Waiting for output…' : 'No output' }));
       }
       card.append(panel);
@@ -867,9 +1029,14 @@ export default function activate(cockpit) {
       card.append(h('div', { class: 'tool-tree' },
         failed && tool.error && h('div', { class: 'tool-peek', text: tool.error.split('\n')[0] }),
         renderCalls(entry, tool, ctx, state, false)));
+    } else if (live && terminal(live.all).trim()) {
+      // Closed, a call that runs shows the last lines its command printed.
+      card.append(liveTail(live.all, unlessSelecting(toggle)));
     } else if (failed && tool.error) {
       card.append(h('div', { class: 'tool-peek', text: tool.error.split('\n')[0] }));
     }
+    // While the call runs, a light goes round its card.
+    if (state === 'running') card.append(svg(RUN_LIGHT));
     return card;
   }
 
@@ -922,7 +1089,7 @@ export default function activate(cockpit) {
       schedule(entry.id);
     };
     const item = h('li', { class: 'call', data: { state, exit: nonzero ? 'nonzero' : null, open: String(shown) } },
-      h('div', { class: 'call-head', role: 'button', tabindex: 0, 'aria-expanded': String(shown), onclick: toggle, onkeydown: activateKeys(toggle) },
+      h('div', { class: 'call-head', role: 'button', tabindex: 0, 'aria-expanded': String(shown), onclick: unlessSelecting(toggle), onkeydown: activateKeys(toggle) },
         h('span', { class: 'tstate', 'aria-label': TOOL_WORD[state] || state, text: TOOL_GLYPH[state] || TOOL_GLYPH.done }),
         h('span', { class: 'cname', title: call.name, text: call.name }),
         h('span', { class: `cinput${call.name === 'bash' ? ' cmd' : ''}`, title: input }, gist, more && h('span', { class: 'cmore', text: ' …' })),
@@ -957,7 +1124,7 @@ export default function activate(cockpit) {
       schedule(entry.id);
     };
     return h('li', { class: 'call folded' },
-      h('div', { class: 'call-head', role: 'button', tabindex: 0, title: 'Show every call', onclick: expand, onkeydown: activateKeys(expand) },
+      h('div', { class: 'call-head', role: 'button', tabindex: 0, title: 'Show every call', onclick: unlessSelecting(expand), onkeydown: activateKeys(expand) },
         h('span', { class: 'tstate', text: '⋯' }),
         h('span', { class: 'cfold', text: `${hidden.length} more calls` }),
         failed && h('span', { class: 'cfold-failed', text: `${failed} failed` })));
@@ -1038,6 +1205,357 @@ export default function activate(cockpit) {
       syntax?.length && classes ? h('pre', { class: 'syntax' }, highlighted(text, syntax, classes)) : h('pre', { text }));
   }
 
+  // ---------------------------------------------------------------- files written and edited
+
+  // CHANGE_ROWS is how many lines of what a Write call wrote, or of what an
+  // Edit call changed, an open call shows until asked for all of them.
+  const CHANGE_ROWS = 400;
+
+  // changeText is what changeView shows of a Write or an Edit call
+  // (tool.change): what it wrote, or its diff; null if nothing.
+  function changeText(change) {
+    if (change?.kind === 'write') return change.content || '';
+    return change?.kind === 'edit' && change.diff ? change.diff : null;
+  }
+
+  // changeView is what a Write call wrote, its lines numbered, or what an
+  // Edit call changed: the lines it took out and put in, among the lines
+  // around them, numbered as in the file where the edit said where it was;
+  // the code in the colours of its tokens. A call that failed shows what it
+  // was to do. Null when there is nothing to show.
+  //
+  //   DIFF · +2 −1                                       COPY
+  //   41  41    func main() {
+  //   42      -   println(1)
+  //       42  +   println(2)
+  //       43  +   println(3)
+  //   43  44    }
+  function changeView(entry, change, state, ctx) {
+    const text = changeText(change);
+    if (text == null) return null;
+    const write = change.kind === 'write';
+    const key = `${entry.id}:change`;
+    const total = fmt.lines(text);
+    const limit = ctx.view.expanded.get(key) === true ? Infinity : CHANGE_ROWS;
+    const lines = codeLines(text, change.syntax, session.state?.config?.syntax_classes, limit);
+    const failed = state === 'failed';
+    let label;
+    let body;
+    if (write) {
+      label = `${failed ? 'Not written' : 'Content'} · ${total} ${total === 1 ? 'line' : 'lines'}`;
+      body = text
+        ? h('div', { class: 'fc-rows', data: { kind: 'write' } }, lines.map((pieces, i) => h('div', { class: 'fc-row' },
+          h('span', { class: 'fc-n', text: String(i + 1) }),
+          h('span', { class: 'fc-c' }, pieces))))
+        : h('div', { class: 'fc-empty', text: 'An empty file' });
+      body.style.setProperty('--n', `${Math.max(2, String(lines.length).length)}ch`);
+    } else {
+      const { added, removed } = diffCounts(text);
+      const numbered = change.line > 0;
+      label = [failed ? 'Not applied' : 'Diff', `+${added} −${removed}`, change.replacements > 1 && `${change.replacements} replacements`].filter(Boolean).join(' · ');
+      const { rows, last } = diffRows(text, lines, numbered);
+      body = h('div', { class: 'fc-rows', data: { kind: 'edit', numbered: String(numbered) } }, rows);
+      body.style.setProperty('--n', `${Math.max(2, String(last).length)}ch`);
+    }
+    const hidden = total - lines.length;
+    const more = () => {
+      ctx.view.expanded.set(key, true);
+      schedule(entry.id);
+    };
+    return h('section', { class: 'stream fchange', data: { failed: failed ? 'true' : null } },
+      h('header', null,
+        h('span', { text: label }),
+        button('Copy', () => cockpit.copy(text, write ? 'Content copied' : 'Diff copied'), write ? 'Copy what was written' : 'Copy the diff')),
+      body,
+      hidden > 0 ? h('button', { class: 'fc-more', type: 'button', onclick: more, text: `Show ${hidden} more ${hidden === 1 ? 'line' : 'lines'}` }) : null);
+  }
+
+  // diffRows draws the lines of an Edit call's diff (FileView.diff in
+  // cmd/internal/cockpit), as codeLines gives them: a line taken out, put in
+  // or kept, with its numbers before the edit and after where numbered, and
+  // between two hunks a row for the lines left out. last is the largest
+  // number.
+  function diffRows(diff, lines, numbered) {
+    const rows = [];
+    let before = 0;
+    let after = 0;
+    diff.split('\n', lines.length).forEach((line, i) => {
+      const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+      if (hunk) {
+        const skipped = +hunk[1] - before;
+        if (rows.length) rows.push(h('div', { class: 'fc-row hunk', text: `⋯ ${skipped} ${skipped === 1 ? 'line' : 'lines'}` }));
+        before = +hunk[1];
+        after = +hunk[2];
+        return;
+      }
+      const sign = line.charAt(0);
+      const kind = sign === '-' ? 'del' : sign === '+' ? 'add' : 'kept';
+      rows.push(h('div', { class: `fc-row ${kind}` },
+        numbered && h('span', { class: 'fc-n', text: kind === 'add' ? '' : String(before) }),
+        numbered && h('span', { class: 'fc-n', text: kind === 'del' ? '' : String(after) }),
+        h('span', { class: 'fc-s', text: kind === 'kept' ? ' ' : sign }),
+        h('span', { class: 'fc-c' }, unsigned(lines[i]))));
+      if (kind !== 'add') before++;
+      if (kind !== 'del') after++;
+    });
+    return { rows, last: Math.max(before, after) - 1 };
+  }
+
+  // unsigned is the pieces of a line of a diff without its sign, the first
+  // character: plain, so the start of the first piece.
+  function unsigned(pieces = []) {
+    const [first, ...rest] = pieces;
+    if (first instanceof Node) {
+      first.textContent = first.textContent.slice(1);
+      return pieces;
+    }
+    return first && first.length > 1 ? [first.slice(1), ...rest] : rest;
+  }
+
+  // diffCounts counts the lines a diff puts in and takes out.
+  function diffCounts(diff) {
+    let added = 0;
+    let removed = 0;
+    for (const line of diff.split('\n')) {
+      if (line.startsWith('+')) added++;
+      else if (line.startsWith('-')) removed++;
+    }
+    return { added, removed };
+  }
+
+  // codeLines is code as its lines, the first limit of them, each the pieces
+  // of its tokens, as highlighted makes them: a token over lines, a comment
+  // of many, has a piece in each. A newline at the end starts no line.
+  function codeLines(text, syntax, classes, limit = Infinity) {
+    const lines = [[]];
+    const put = (piece, cls) => {
+      for (let start = 0; lines.length <= limit;) {
+        const end = piece.indexOf('\n', start);
+        const part = end < 0 ? piece.slice(start) : piece.slice(start, end);
+        if (part) lines[lines.length - 1].push(cls ? h('span', { class: `tk-${cls}`, text: part }) : part);
+        if (end < 0) return;
+        lines.push([]);
+        start = end + 1;
+      }
+    };
+    let at = 0;
+    if (syntax?.length && classes) {
+      for (let i = 0; i + 1 < syntax.length && at < text.length && lines.length <= limit; i += 2) {
+        put(text.slice(at, at + syntax[i]), classes[syntax[i + 1]]);
+        at += syntax[i];
+      }
+    }
+    if (at < text.length) put(text.slice(at), '');
+    return lines.slice(0, Math.min(limit, fmt.lines(text)));
+  }
+
+  // changeStat says in the head of a Write or an Edit call how much it
+  // changed: the lines it put in and took out, or the lines it wrote.
+  function changeStat(change) {
+    if (change?.kind === 'edit' && change.diff) {
+      const { added, removed } = diffCounts(change.diff);
+      return h('span', { class: 'fstat', title: `${added} added, ${removed} removed` },
+        h('span', { class: 'add', text: `+${added}` }),
+        h('span', { class: 'del', text: `−${removed}` }));
+    }
+    if (change?.kind !== 'write') return null;
+    const n = fmt.lines(change.content || '');
+    return h('span', { class: 'fstat', text: `${n} ${n === 1 ? 'line' : 'lines'}` });
+  }
+
+  // saidLine is the first line of what a Write or an Edit call said it did:
+  // the lines around the change after it, the diff shows.
+  function saidLine(output) {
+    return output.split('\n', 1)[0].replace(/\s*The file now reads around the first change:\s*$/, '');
+  }
+
+  // ---------------------------------------------------------------- what streams
+
+  // adopt has the entry a preview was recorded as take the preview's item,
+  // to be drawn again in its place, and the height it stood in at.
+  function adopt(v, entry) {
+    const preview = entry.replaces;
+    if (!preview || preview === entry.id || v.entries.has(preview)) return;
+    const node = nodes.get(preview);
+    if (node !== undefined && !nodes.has(entry.id)) {
+      nodes.delete(preview);
+      nodes.set(entry.id, node);
+      owner.set(node, entry.id);
+    }
+    const known = heights.get(preview);
+    if (known && !heights.has(entry.id)) heights.set(entry.id, known);
+    heights.delete(preview);
+    pending.ids.delete(preview);
+  }
+
+  // streamText draws a preview's text as it comes: the pieces of it that
+  // came within FADE fade in, each as far into its fading as it is, and a
+  // caret ends it. root is where the text is drawn (null: it is not, the
+  // entry is closed). A preview written (settled: the model went on to
+  // another part of its response) is drawn as no more to come: no caret,
+  // and what of it was not drawn, as it was closed, shows as it is. The
+  // entry a preview is recorded as has the preview's last pieces fade in
+  // to the end.
+  function streamText(entry, li, root) {
+    const now = performance.now();
+    if (!entry.streaming) {
+      const was = entry.replaces ? written.get(entry.replaces) : null;
+      if (!was) return;
+      written.delete(entry.replaces);
+      if (root && moving()) fadeIn(textNodes(root), was.pieces.filter((p) => now - p.at < FADE), now);
+      return;
+    }
+    let rec = written.get(entry.id);
+    if (!rec) written.set(entry.id, (rec = { shown: 0, pieces: [], born: now, drawn: false }));
+    const drawn = rec.drawn; // whether its text was drawn the time before
+    rec.drawn = !!root;
+    if (!entry.settled) {
+      li.dataset.streaming = 'true';
+      clocked(li);
+    }
+    if (moving() && now - rec.born < RISE) {
+      li.classList.add('rising');
+      li.style.animationDelay = `${Math.round(rec.born - now)}ms`;
+    }
+    if (!root) return;
+    const texts = textNodes(root);
+    let length = 0;
+    for (const text of texts) length += text.length;
+    if (entry.settled && !drawn) rec.shown = length;
+    // Markdown drawn again may come out shorter ("**" becomes bold): what
+    // was shown past the end is not any more.
+    if (length > rec.shown) rec.pieces.push({ from: rec.shown, to: length, at: now });
+    rec.shown = length;
+    rec.pieces = rec.pieces
+      .filter((p) => now - p.at < FADE && p.from < length)
+      .map((p) => (p.to > length ? { ...p, to: length } : p));
+    if (moving()) fadeIn(texts, rec.pieces, now);
+    if (entry.settled) return;
+    const caret = h('span', { class: 'stream-caret', 'aria-hidden': 'true' });
+    const last = textNodes(root).pop();
+    if (!last) (root.lastElementChild || root).append(caret);
+    else {
+      // After the text, not in a piece that fades in: the caret shows whole.
+      const at = last.parentElement?.classList.contains('fresh') ? last.parentElement : last;
+      at.after(caret);
+    }
+  }
+
+  // textNodes are the text of a preview drawn, in order, but for the
+  // labels and buttons of its code blocks.
+  function textNodes(root) {
+    const out = [];
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.parentElement?.closest('figcaption, button, .stream-caret') ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) out.push(node);
+    return out;
+  }
+
+  // fadeIn puts each piece of the text, as far into it as it is, in a span
+  // that fades in, as far into its fading as it is.
+  function fadeIn(texts, pieces, now) {
+    if (!pieces.length) return;
+    let at = 0;
+    for (const node of texts) {
+      const from = at;
+      const to = at + node.length;
+      at = to;
+      const parts = [];
+      for (const piece of pieces) {
+        const start = Math.max(piece.from, from);
+        const end = Math.min(piece.to, to);
+        if (start < end) parts.push([start - from, end - from, piece.at]);
+      }
+      if (!parts.length) continue;
+      const text = node.data;
+      const out = [];
+      let cursor = 0;
+      for (const [start, end, when] of parts) {
+        if (start > cursor) out.push(text.slice(cursor, start));
+        const span = h('span', { class: 'fresh', text: text.slice(start, end) });
+        span.style.animationDelay = `${Math.round(when - now)}ms`;
+        out.push(span);
+        cursor = end;
+      }
+      if (cursor < text.length) out.push(text.slice(cursor));
+      node.replaceWith(...out);
+    }
+  }
+
+  // latestGist is what thinking as it comes is about now: the title of its
+  // last part (a line in bold), or else its last line.
+  function latestGist(text) {
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const title = /^\s*\*\*(.+?)\*\*:?\s*$/.exec(lines[i]);
+      if (title) return title[1];
+    }
+    for (let i = lines.length - 1; i >= 0; i--) if (lines[i].trim()) return lines[i].trim();
+    return '';
+  }
+
+  // clocked has the animations that loop in an item drawn again, which
+  // would start over, go on from where they were: their delay (--clock) is
+  // the page's clock.
+  function clocked(li) {
+    li.style.setProperty('--clock', `${-Math.round(performance.now())}ms`);
+  }
+
+  // tailed has the output of a command that runs, drawn again as it grows,
+  // keep to its end, unless the user scrolled up in it: then it stays
+  // where they put it (followLive).
+  function tailed(section, key) {
+    const pre = section.querySelector('pre');
+    if (!pre) return section;
+    pre.dataset.follow = key;
+    pre.addEventListener('scroll', () => {
+      if (!pre.isConnected) return;
+      if (pre.scrollHeight - pre.scrollTop - pre.clientHeight < 4) liveScroll.delete(key);
+      else liveScroll.set(key, pre.scrollTop);
+    }, { passive: true });
+    return section;
+  }
+
+  // followLive scrolls the output of each command that runs, as drawn, to
+  // its end, or to where the user scrolled it.
+  function followLive() {
+    for (const pre of list.querySelectorAll('pre[data-follow]')) {
+      const kept = liveScroll.get(pre.dataset.follow);
+      const top = kept === undefined ? pre.scrollHeight - pre.clientHeight : kept;
+      if (Math.abs(pre.scrollTop - top) >= 1) pre.scrollTop = top;
+    }
+  }
+
+  // terminal is what a terminal shows of what a command printed: of a line
+  // it wrote over (a progress bar, after \r), what it wrote last.
+  function terminal(text) {
+    if (!text.includes('\r')) return text;
+    return text.replace(/\r\n/g, '\n').split('\n').map((line) => {
+      if (!line.includes('\r')) return line;
+      const parts = line.split('\r');
+      for (let i = parts.length - 1; i >= 0; i--) if (parts[i]) return parts[i];
+      return '';
+    }).join('\n');
+  }
+
+  // liveTail is the last lines (TAIL) the command of a call that runs
+  // printed, under the call closed.
+  function liveTail(text, onclick) {
+    const lines = terminal(text).replace(/\s+$/, '').split('\n');
+    return h('div', { class: 'tool-live', onclick },
+      h('pre', { data: { more: lines.length > TAIL ? 'true' : null }, text: lines.slice(-TAIL).join('\n') }));
+  }
+
+  // skippedNote says what of a command's output does not show while it runs.
+  function skippedNote(live) {
+    const notes = [];
+    if (live.skipped > 0) notes.push(`${fmt.bytes(live.skipped)} it printed faster than it could be shown were skipped`);
+    if (live.cut) notes.push('only the end of the output shows until the command is done');
+    const text = notes.join('; ');
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
   // highlighted is code as the pieces of its tokens: syntax is runs of a
   // length, in UTF-16 code units as a string counts them, and a class, by
   // its index in the classes the server names (cmd/internal/highlight).
@@ -1084,13 +1602,132 @@ export default function activate(cockpit) {
     const el = scroller();
     if (event.target !== el) return;
     const top = el.scrollTop;
+    const gap = gapOf(el);
+    const nearer = gap < lastGap - 1; // a pixel's rounding is not a scroll
+    lastGap = gap;
     if (atEnd(el)) following = true;
     else if (top < lastTop) following = false;
     lastTop = top;
     request();
-    if (unseen && nearBottom()) scrollToBottom();
+    // Scrolled down near the end, the view catches up with what came
+    // meanwhile; scrolled up from there, or held in place as entries above
+    // it change, it stays where the user put it.
+    if (unseen && nearer && nearBottom()) scrollToBottom();
     cockpit.emit('timeline:scroll');
   }, { capture: true, passive: true });
+
+  // A selection dragged from the transcript onto the composer, or onto what
+  // is just over it (the activity line, its clock ticking), ends in the
+  // dock, past the list: what the agent writes next comes in inside it, and
+  // it goes on growing once the button is let go. Let go, it ends at the
+  // transcript's last character instead.
+  cockpit.listen(document, 'pointerup', () => cockpit.timeout(endInList, 0), { capture: true });
+
+  function endInList() {
+    const selection = document.getSelection?.();
+    const stage = scroller()?.parentElement;
+    if (!selection?.rangeCount || selection.isCollapsed || !stage || !list.isConnected) return;
+    const range = selection.getRangeAt(0);
+    const end = document.createRange();
+    end.setStart(list, list.childNodes.length);
+    if (end.comparePoint(range.startContainer, range.startOffset) >= 0) return;
+    if (end.comparePoint(range.endContainer, range.endOffset) <= 0 || !stage.contains(range.endContainer)) return;
+    const text = lastText(list);
+    if (!text || range.comparePoint(text, text.length) !== 0) return;
+    const forward = selection.anchorNode === range.startContainer && selection.anchorOffset === range.startOffset;
+    if (forward) selection.setBaseAndExtent(range.startContainer, range.startOffset, text, text.length);
+    else selection.setBaseAndExtent(text, text.length, range.startContainer, range.startOffset);
+  }
+
+  // lastText is the last text shown in node.
+  function lastText(node) {
+    let deepest = node;
+    while (deepest.lastChild) deepest = deepest.lastChild;
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    walker.currentNode = deepest;
+    for (let text = deepest.nodeType === Node.TEXT_NODE ? deepest : walker.previousNode(); text; text = walker.previousNode()) {
+      if (text.data.trim() && text.parentElement?.getClientRects().length) return text;
+    }
+    return null;
+  }
+
+  // Drawing an entry again, or laying the list out again, takes an end of
+  // the selection that is in an entry out of it, to the list, where it
+  // keeps to no text: the selection lets go of what it held there, or comes
+  // to hold other entries as the list changes. Each end is marked where it
+  // is in its entry first, and put back there in the entry drawn now.
+  function markSelection() {
+    const selection = document.getSelection?.();
+    // In a text field, the selection is the field's own.
+    if (!selection?.rangeCount || selection.isCollapsed || 'selectionStart' in (document.activeElement || {})) return null;
+    const anchor = markAt(selection.anchorNode, selection.anchorOffset);
+    const focus = markAt(selection.focusNode, selection.focusOffset);
+    return anchor || focus ? { anchor, focus } : null;
+  }
+
+  function putSelectionBack(marks) {
+    const selection = document.getSelection?.();
+    if (!marks || !selection?.rangeCount) return;
+    const back = (mark, node, offset) => {
+      const item = mark && nodes.get(mark.id);
+      if (!item?.isConnected || (item === mark.item && item.contains(node))) return [node, offset];
+      return pointAt(item, mark);
+    };
+    const [anchor, anchorOffset] = back(marks.anchor, selection.anchorNode, selection.anchorOffset);
+    const [focus, focusOffset] = back(marks.focus, selection.focusNode, selection.focusOffset);
+    if (anchor === selection.anchorNode && anchorOffset === selection.anchorOffset && focus === selection.focusNode && focusOffset === selection.focusOffset) return;
+    selection.setBaseAndExtent(anchor, anchorOffset, focus, focusOffset);
+  }
+
+  // markAt is where a point is in the entry it is in, if it is in one: the
+  // way down to the element it is in, each step an element's tag and class
+  // and how many before it have them, and how far into that element's text
+  // it is. Drawn again, an entry has its text in the same elements, though
+  // what is beside them (its actions, its flags) changed.
+  function markAt(node, offset) {
+    let item = node;
+    while (item && item.parentNode !== list) item = item.parentNode;
+    const id = item ? owner.get(item) : undefined;
+    if (id === undefined) return null;
+    let host = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    // A piece of a preview's text that fades in is in a span of its own,
+    // which the preview drawn again has elsewhere, or not at all.
+    while (host !== item && host.classList.contains('fresh')) host = host.parentElement;
+    const path = [];
+    for (let el = host; el && el !== item; el = el.parentElement) {
+      let nth = 0;
+      for (let before = el.previousElementSibling; before; before = before.previousElementSibling) if (kindOf(before) === kindOf(el)) nth++;
+      path.unshift([kindOf(el), nth]);
+    }
+    const before = document.createRange();
+    before.setStart(host, 0);
+    before.setEnd(node, offset);
+    return { id, item, path, chars: before.toString().length };
+  }
+
+  function kindOf(el) {
+    return `${el.tagName}.${el.getAttribute('class') || ''}`;
+  }
+
+  // pointAt is where a mark is in item: as far down its way as item has the
+  // elements, that far into their text.
+  function pointAt(item, mark) {
+    let host = item;
+    for (const [kind, nth] of mark.path) {
+      const next = [...host.children].filter((child) => kindOf(child) === kind)[nth];
+      if (!next) break;
+      host = next;
+    }
+    let chars = mark.chars;
+    let last = null;
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+      if (chars <= text.length) return [text, chars];
+      chars -= text.length;
+      last = text;
+    }
+    return last ? [last, last.length] : [host, host.childNodes.length];
+  }
 
   // One clock drives every elapsed-time readout.
   cockpit.interval(() => {
@@ -1178,8 +1815,32 @@ export default function activate(cockpit) {
         node.remove();
       }
       heights.delete(id);
+      written.delete(id);
+      liveScroll.delete(`${id}:out`);
+      liveScroll.delete(`${id}:err`);
     }
   }
+
+  // ---------------------------------------------------------------- settings
+
+  // setMotion turns the motion of what streams on or off.
+  function setMotion(on) {
+    motion = !!on;
+    cockpit.prefs.set(MOTION, motion);
+    list.classList.toggle('still', !motion);
+    schedule();
+  }
+
+  cockpit.contribute('settings.section', {
+    id: 'transcript', title: 'Transcript', order: 10,
+    render: () => {
+      const input = h('input', { type: 'checkbox', id: 'stream-motion', onchange: (event) => setMotion(event.currentTarget.checked) });
+      input.checked = motion;
+      return h('div', { class: 'set-row' },
+        h('label', { class: 'set-toggle' }, input, 'Animate text as it streams'),
+        h('p', { class: 'set-note', text: 'The agent\'s answer and thinking show as they are written: new words fade in and a caret ends them. Off, the text just appears. The system\'s Reduce motion turns the animation off too.' }));
+    },
+  });
 
   cockpit.provide('timeline', {
     schedule, flushNow, reveal, scrollToBottom, nearBottom, promptInView, forget, setAllTools,

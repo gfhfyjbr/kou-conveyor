@@ -181,15 +181,39 @@ func TestEffortIsSharedWithTheWebCockpit(t *testing.T) {
 	if m.Update(prefsMsg{}); m.note.text != "" {
 		t.Fatalf("notice = %q", m.note.text)
 	}
-	// The web cockpit chooses another level.
+	// The web cockpit chooses another level: new sessions start with it, while
+	// the session that chose its own keeps it.
 	if err := cockpit.SaveEffort(prefs, "low"); err != nil {
 		t.Fatal(err)
 	}
 	m.Update(prefsMsg{})
-	if m.thinking != "low" || !strings.Contains(m.note.text, "another window") {
-		t.Fatalf("effort %q, notice %q", m.thinking, m.note.text)
+	if m.thinking != "max" || m.lastEffort != "low" || m.note.text != "" {
+		t.Fatalf("effort %q, of new sessions %q, notice %q", m.thinking, m.lastEffort, m.note.text)
+	}
+	m.newSession()
+	if m.thinking != "low" {
+		t.Fatalf("a new session's effort = %q", m.thinking)
 	}
 	if controls, _ := m.controls(); !strings.Contains(ansi.Strip(controls), "LOW") {
 		t.Fatalf("controls = %q", ansi.Strip(controls))
+	}
+	// A new session nothing was chosen in takes up a choice made elsewhere.
+	if err := cockpit.SaveEffort(prefs, "medium"); err != nil {
+		t.Fatal(err)
+	}
+	m.Update(prefsMsg{})
+	if m.thinking != "medium" || !strings.Contains(m.note.text, "another window") {
+		t.Fatalf("effort %q, notice %q", m.thinking, m.note.text)
+	}
+	// A session opened goes on with its own effort; one from before sessions
+	// kept theirs, with the last chosen.
+	for own, want := range map[string]string{"xhigh": "xhigh", "": "medium"} {
+		m.thinking = ""
+		const id = "33333333-3333-4333-8333-333333333333"
+		m.load(id) // what it reads is below
+		m.Update(loadedMsg{gen: m.loadGen, id: id, tr: cockpit.NewTranscript(), meta: cockpit.Meta{Effort: own}})
+		if m.thinking != want || m.fresh {
+			t.Fatalf("a session of effort %q opens with %q (new: %v), want %q", own, m.thinking, m.fresh, want)
+		}
 	}
 }

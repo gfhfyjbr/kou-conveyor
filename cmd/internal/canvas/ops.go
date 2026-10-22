@@ -12,7 +12,7 @@ import (
 
 // A canvas changes by batches of operations, all of which apply or none:
 //
-//	node.add      {"node": {kind, preset, plugin, title, x, y, w, h, near, side, exact, config, access, prompt, connect, id, restore, session}}
+//	node.add      {"node": {kind, preset, plugin, title, x, y, w, h, near, side, exact, config, access, prompt, connect, id, restore, session, branch}}
 //	node.update   {"id", "set": {title, x, y, w, h, z, config, access, proposed}}
 //	node.remove   {"id", "keep": {"session"}, "grace_s"}
 //	edge.add      {"edge": {from: {node, port}, to: {node, port}, template, mode, deliver, header, id}}
@@ -72,7 +72,8 @@ type Op struct {
 // Keep says what a node removed leaves.
 type Keep struct {
 	// Session keeps a kou agent's session, which the session list shows;
-	// otherwise it is deleted with the node.
+	// otherwise, the default, it is deleted with the node, its run stopped
+	// first.
 	Session bool `json:"session"`
 	// Worktree is always kept: a worktree is removed on purpose only.
 	Worktree bool `json:"worktree"`
@@ -110,6 +111,12 @@ type NodeSpec struct {
 	// session on a canvas; a session is the agent of one node at a time,
 	// and removing the node or the canvas never deletes it.
 	Session string `json:"session"`
+	// Branch gives a new kou agent a copy of the session of the agent node
+	// it names — its whole conversation, which the copy goes on from — as
+	// a session of its own, deleted with it as any new node's. Only the
+	// user copies a session, and only of an agent not at work; one that
+	// never ran gives a new session.
+	Branch string `json:"branch"`
 }
 
 // Connect is how a new node is wired.
@@ -183,6 +190,9 @@ type applier struct {
 	// adopting are the titles of the sessions the batch puts on the
 	// canvas, checked before (adoptions).
 	adopting map[string]string
+	// branched are the copies of sessions the batch's nodes start with
+	// (NodeSpec.Branch), by operation, made before (branches).
+	branched map[int]string
 }
 
 type addition struct {
@@ -208,6 +218,19 @@ func (c *Canvas) apply(actor Actor, batch Batch) (Result, error) {
 		return Result{}, errInvalid(fmt.Sprintf("a batch holds %d operations at most", maxOps))
 	}
 	catalog := c.e.catalog(c.ws)
+	// The sessions the batch's nodes copy are copied before the canvas is
+	// locked, as copying takes a while; the copies go again unless the
+	// batch is applied.
+	branched, err := c.branches(actor, batch)
+	if err != nil {
+		return Result{}, err
+	}
+	applied := false
+	defer func() {
+		if !applied {
+			c.dropBranches(branched)
+		}
+	}()
 	// Sessions put on a canvas are put one batch at a time, the server
 	// over, so that two canvases do not take the same one.
 	var adopting map[string]string
@@ -232,6 +255,7 @@ func (c *Canvas) apply(actor Actor, batch Batch) (Result, error) {
 		c: c, actor: actor, next: c.doc.clone(), ids: map[string]string{}, placed: map[string]Rect{},
 		stale:    batch.BaseRev != nil && *batch.BaseRev != c.doc.Rev,
 		adopting: adopting,
+		branched: branched,
 	}
 	for i, op := range batch.Ops {
 		if err := a.apply(i, op, catalog); err != nil {
@@ -258,6 +282,7 @@ func (c *Canvas) apply(actor Actor, batch Batch) (Result, error) {
 	}
 	c.hub.publish(map[string]any{"type": "ops", "rev": c.doc.Rev, "actor": actor, "changes": a.changes(before)})
 	after := a.commitLocked()
+	applied = true
 	c.mu.Unlock()
 	for _, f := range after {
 		f()
@@ -377,6 +402,13 @@ func (a *applier) addNode(i int, spec *NodeSpec, catalog presetCache) error {
 		}
 		if spec.ID != "" {
 			node.ID = spec.ID
+		}
+		if spec.Branch != "" {
+			if node.Kind != KindAgent {
+				return errInvalid("only a kou agent's node copies a session")
+			}
+			// The copy made before (branches) is the node's own session.
+			node.Runtime.Session = a.branched[i]
 		}
 	}
 	w, h := node.W, node.H
@@ -825,9 +857,11 @@ func (a *applier) removeNode(op Op) error {
 			return errForbidden("«" + n.Title + "» is not yours to remove: you remove the nodes you made")
 		}
 	}
-	keep := Keep{Session: true, Worktree: true}
+	// A kou agent's session goes with its node unless asked for: kept, the
+	// session list would show an agent that is gone.
+	keep := Keep{Worktree: true}
 	if op.Keep != nil {
-		keep = Keep{Session: op.Keep.Session, Worktree: true}
+		keep.Session = op.Keep.Session
 	}
 	grace := defaultKeep
 	if op.GraceS != nil {
@@ -1017,9 +1051,7 @@ func (a *applier) updateEdge(op Op) error {
 	if e.Mode == ModeAuto {
 		e.Mode = ""
 	}
-	if e.Deliver == DeliverQueue {
-		e.Deliver = ""
-	}
+	// A delivery said is kept: queue is not the default to a kou agent.
 	a.edges = append(a.edges, e.ID)
 	return nil
 }

@@ -4,11 +4,12 @@
 // restty at the size of the element it is given. A tab's pane does more
 // (splits, a shell of its own); this is the pane alone.
 //
-//   mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady })
+//   mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady, onDrop })
 //     → { focus(), blur(), resize(), setPaused(paused), applyTheme(), applySettings(), dispose(), connected() }
 //
 // onMeta({ title, cwd }) says where the shell is, onExit(code) that it
-// ended (code null: it was gone already), onReady() that it draws.
+// ended (code null: it was gone already), onReady() that it draws,
+// onDrop() that the connection that drew it was lost (it tries again).
 // scale() is how much an element around the container scales it (the
 // canvas's zoom): the grid is the container's own size in cells then, not
 // what its scaled box measures — the same at any zoom, so the shell is not
@@ -132,8 +133,10 @@ export function mountTerminal(env, container, options = {}) {
     s.addEventListener('close', () => {
       if (socket !== s) return;
       socket = null;
+      const was = live;
       live = false;
       retry();
+      if (was) cockpit.safely(() => options.onDrop?.());
     });
   }
 

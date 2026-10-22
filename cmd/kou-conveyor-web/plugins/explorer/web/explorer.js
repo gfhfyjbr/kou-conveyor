@@ -206,8 +206,23 @@ export default function activate(cockpit) {
       };
       walk('.', 0);
       if (!rows.length && dirs.get('.')?.entries) rows.push(h('div', { class: 'fx-note', text: 'The workspace is empty.' }));
+      // The row with the focus is drawn anew: the focus goes on to its new
+      // row, and the tree stays where it is scrolled to.
+      const had = tree.contains(document.activeElement) && document.activeElement !== tree;
       tree.replaceChildren(...rows);
       if (focused) tree.querySelector(`[data-path="${CSS.escape(focused)}"]`)?.setAttribute('tabindex', '0');
+      if (had) focusRow({ preventScroll: true });
+    }
+
+    // focusRow puts the focus on the row the arrows go on from: the one
+    // focused last or, when it is gone, the first. The tree itself shows no
+    // focus.
+    function focusRow(options) {
+      const row = (focused && tree.querySelector(`.fx-row[data-path="${CSS.escape(focused)}"]`)) || tree.querySelector('.fx-row');
+      if (!row) return tree.focus(options);
+      focused = row.dataset.path;
+      row.setAttribute('tabindex', '0');
+      row.focus(options);
     }
 
     function toggleDir(path, open = !state.expanded.has(path)) {
@@ -292,6 +307,7 @@ export default function activate(cockpit) {
       clearTimeout(searchTimer);
       const query = search.value.trim();
       if (!query) {
+        searchTicket++; // what a search still on its way finds does not show
         results.hidden = true;
         tree.hidden = false;
         return;
@@ -314,10 +330,12 @@ export default function activate(cockpit) {
       if (event.key === 'Escape') {
         event.preventDefault();
         event.stopPropagation();
+        clearTimeout(searchTimer);
+        searchTicket++;
         search.value = '';
         results.hidden = true;
         tree.hidden = false;
-        tree.focus();
+        focusRow();
       } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault();
         pick = Math.max(0, Math.min(found.length - 1, pick + (event.key === 'ArrowDown' ? 1 : -1)));
@@ -365,6 +383,7 @@ export default function activate(cockpit) {
     let code = null;
     let fileTicket = 0;
     let shown = null; // what the file view shows: { path, version }
+    let unselected = null; // stops waiting for a selection in the file to go
     async function openFile(path, { keep = false } = {}) {
       const ticket = ++fileTicket;
       const first = !keep || shown?.path !== path;
@@ -390,7 +409,13 @@ export default function activate(cockpit) {
       }
       if (ticket !== fileTicket || disposed) return;
       if (keep && shown?.path === path && shown.version === data.version) return; // it did not change
-      const scroll = keep && shown?.path === path && code ? code.node.scrollTop : 0;
+      const same = !!(keep && shown?.path === path && code);
+      // Text selected in the file stays selected: its new version is drawn
+      // once nothing in it is.
+      if (same && selectedIn(code.node)) return redrawUnselected(path);
+      const scroll = same ? code.node.scrollTop : 0;
+      const across = same ? code.node.scrollLeft : 0;
+      const focusedIn = same && code.node.contains(document.activeElement);
       const lines = keep && shown?.path === path ? code?.selection() : null;
       shown = { path, version: data.version };
       fileHead.replaceChildren(head(path, data));
@@ -413,12 +438,31 @@ export default function activate(cockpit) {
       code.draw(true);
       if (lines) code.select(lines.from, lines.to);
       if (scroll) code.node.scrollTop = scroll;
+      if (across) code.node.scrollLeft = across;
+      if (focusedIn) code.node.focus({ preventScroll: true });
       if (!data.complete) {
         // The rest of the colours follow.
         cockpit.api(`/file?path=${encodeURIComponent(path)}&tokens=1&version=${encodeURIComponent(data.version)}`).then((more) => {
           if (ticket === fileTicket && code && more?.runs) code.highlight(more.runs);
         }, () => {});
       }
+    }
+
+    // selectedIn says whether text in an element is selected.
+    function selectedIn(el) {
+      const selection = document.getSelection?.();
+      return !!selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(el);
+    }
+
+    // redrawUnselected draws the file again once no text in it is selected.
+    function redrawUnselected(path) {
+      if (unselected) return;
+      unselected = cockpit.listen(document, 'selectionchange', () => {
+        if (code && selectedIn(code.node)) return;
+        unselected();
+        unselected = null;
+        if (!disposed && state.file === path) openFile(path, { keep: true });
+      });
     }
 
     function head(path, data) {
@@ -481,6 +525,7 @@ export default function activate(cockpit) {
         disposed = true;
         clearTimeout(changedTimer);
         clearTimeout(searchTimer);
+        unselected?.();
         for (const off of offs) off();
         views.delete(view);
       },

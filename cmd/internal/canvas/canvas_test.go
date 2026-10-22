@@ -37,10 +37,11 @@ type fakeHost struct {
 	failing error
 }
 
-// prompt is what an agent's session was given, under its ID.
+// prompt is what an agent's session was given, under its ID; rewind is
+// the prompt it took the place of (Resend).
 type prompt struct {
-	session, id, text, model string
-	force                    bool
+	session, id, text, model, rewind string
+	force                            bool
 }
 
 func (h *fakeHost) Workspaces() []Workspace { return []Workspace{h.ws} }
@@ -84,7 +85,17 @@ func (h *fakeHost) Enqueue(_ context.Context, _ Workspace, session, id, text, mo
 	if h.failing != nil {
 		return h.failing
 	}
-	h.prompts = append(h.prompts, prompt{session, id, text, model, force})
+	h.prompts = append(h.prompts, prompt{session: session, id: id, text: text, model: model, force: force})
+	return nil
+}
+
+func (h *fakeHost) Resend(_ context.Context, _ Workspace, session, rewind, id, text, model string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.failing != nil {
+		return h.failing
+	}
+	h.prompts = append(h.prompts, prompt{session: session, id: id, text: text, model: model, rewind: rewind})
 	return nil
 }
 

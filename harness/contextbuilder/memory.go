@@ -80,7 +80,24 @@ func ShownNotes(notes, path string) string {
 	for tail < len(notes) && !utf8.RuneStart(notes[tail]) {
 		tail++
 	}
-	return notes[:head] + fmt.Sprintf("\n[… %s from the middle of the notes are left out here, of %s in all: the whole file is %s …]\n", kilobytes(tail-head), kilobytes(len(notes)), path) + notes[tail:]
+	return notes[:head] + fmt.Sprintf("\n[… %s "+notesLeftOut+", of %s in all: the whole file is %s …]\n", kilobytes(tail-head), kilobytes(len(notes)), path) + notes[tail:]
+}
+
+// notesLeftOut marks, in what ShownNotes shows of notes too long to show
+// whole, where their middle is left out.
+const notesLeftOut = "from the middle of the notes are left out here"
+
+// ShowsWholeNotes reports whether notes as ShownNotes showed them are the
+// whole notes, rather than their beginning and end.
+func ShowsWholeNotes(shown string) bool {
+	return !strings.Contains(shown, notesLeftOut)
+}
+
+// NotesShownBy reads the notes a message of NotesUpdate shows; false for any
+// other message. What a session's conversation last showed of the notes is
+// the latest of these or of a compaction's (Compacted.Notes).
+func NotesShownBy(message string) (string, bool) {
+	return notesIn(message)
 }
 
 // kilobytes says a size in kilobytes, the way a person would.

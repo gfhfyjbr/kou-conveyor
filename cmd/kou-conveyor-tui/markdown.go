@@ -179,7 +179,7 @@ func renderMarkdown(st styles, text string, width int, base lipgloss.Style) []st
 				lang = "code"
 			}
 			blank()
-			out = append(out, st.rule.Render("┌ ")+st.faint.Render(strings.ToUpper(lang)))
+			out = append(out, st.rule.Render(corners.tl+" ")+st.faint.Render(strings.ToUpper(lang)))
 			closer := string(fence[1][0])
 			for i++; i < len(lines); i++ {
 				trimmed := strings.TrimSpace(lines[i])
@@ -190,7 +190,7 @@ func renderMarkdown(st styles, text string, width int, base lipgloss.Style) []st
 					out = append(out, st.rule.Render("│ ")+st.codeBlock.Render(part))
 				}
 			}
-			out = append(out, st.rule.Render("└"))
+			out = append(out, st.rule.Render(corners.bl))
 			blank()
 		case mdHeading.MatchString(line):
 			heading := mdHeading.FindStringSubmatch(line)

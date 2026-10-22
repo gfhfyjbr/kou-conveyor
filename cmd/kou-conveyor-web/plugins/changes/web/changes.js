@@ -200,6 +200,12 @@ export default function activate(cockpit) {
     return [h('b', { class: 'plus', text: `+${added}` }), ' ', h('b', { class: 'minus', text: `−${removed}` })];
   }
 
+  // What the tree and the diff show, to know when a new snapshot changes
+  // them: the tree's rows, and the diff's prompt, file and content.
+  let treeDrawn = null;
+  let diffShown = null; // { message, path, sig }, or null for a note
+  let unselected = null; // stops waiting for a selection in the diff to go
+
   function render() {
     if (!open()) return;
     const { data, message } = changes;
@@ -210,15 +216,21 @@ export default function activate(cockpit) {
     const numbers = data?.stat;
     stat.replaceChildren(...(numbers?.files ? [...counts(numbers.added, numbers.removed), ` · ${numbers.files} ${numbers.files === 1 ? 'file' : 'files'}`] : []));
 
-    const rows = [];
-    if (data?.available && data.files.length) {
-      const latest = new Set(data.live ? data.latest || [] : []);
-      for (const row of walkTree(buildTree(data.files), '', 0, [], changes.collapsed)) {
+    const listed = data?.available && data.files.length ? walkTree(buildTree(data.files), '', 0, [], changes.collapsed) : [];
+    const latest = new Set(data?.live ? data.latest || [] : []);
+    // A snapshot that leaves the rows as they are leaves the tree be.
+    const key = JSON.stringify(listed.map((row) => (row.dir
+      ? [row.path, row.name, row.depth, changes.collapsed.has(row.path)]
+      : [row.file.path, row.file.old_path, row.file.status, row.file.binary, row.file.added, row.file.removed, row.depth, latest.has(row.file.path), row.file.path === changes.selected])));
+    if (key !== treeDrawn) {
+      treeDrawn = key;
+      const rows = [];
+      for (const row of listed) {
         let el;
         if (row.dir) {
           const folded = changes.collapsed.has(row.path);
           el = h('button', {
-            type: 'button', class: 'ct-row ct-dir', 'aria-expanded': String(!folded), title: row.path,
+            type: 'button', class: 'ct-row ct-dir', 'aria-expanded': String(!folded), title: row.path, data: { key: `d:${row.path}` },
             onclick: () => {
               if (folded) changes.collapsed.delete(row.path);
               else changes.collapsed.add(row.path);
@@ -229,7 +241,7 @@ export default function activate(cockpit) {
           const f = row.file;
           el = h('button', {
             type: 'button', class: `ct-row${latest.has(f.path) ? ' latest' : ''}`, 'aria-current': String(f.path === changes.selected),
-            title: f.old_path ? `${f.old_path} → ${f.path}` : f.path, onclick: () => pick(f.path),
+            title: f.old_path ? `${f.old_path} → ${f.path}` : f.path, data: { key: `f:${f.path}` }, onclick: () => pick(f.path),
           },
           h('span', { class: `ct-st ${f.status}`, title: f.status, text: STATUS_LETTER[f.status] || '?' }),
           h('span', { class: 'ct-name', text: f.path.split('/').pop() }),
@@ -239,30 +251,70 @@ export default function activate(cockpit) {
         el.style.setProperty('--depth', String(row.depth));
         rows.push(el);
       }
+      // The row with the focus is drawn anew: the focus goes on to its new row.
+      const had = tree.contains(document.activeElement) ? document.activeElement.dataset.key : null;
+      tree.replaceChildren(...rows);
+      if (had) tree.querySelector(`.ct-row[data-key="${CSS.escape(had)}"]`)?.focus({ preventScroll: true });
     }
-    tree.replaceChildren(...rows);
     renderDiff();
   }
 
   const note = (text) => h('p', { class: 'changes-note', text });
 
+  // show puts what the diff shows in, and remembers what it is.
+  function show(what, ...nodes) {
+    diffShown = what;
+    diff.replaceChildren(...nodes);
+  }
+
+  // selectedIn says whether text in an element is selected.
+  function selectedIn(el) {
+    const selection = document.getSelection?.();
+    return !!selection?.rangeCount && !selection.isCollapsed && selection.getRangeAt(0).intersectsNode(el);
+  }
+
+  // redrawUnselected draws the diff again once no text in it is selected.
+  function redrawUnselected() {
+    if (unselected) return;
+    unselected = cockpit.listen(document, 'selectionchange', () => {
+      if (selectedIn(diff)) return;
+      unselected();
+      unselected = null;
+      renderDiff();
+    });
+  }
+
   function renderDiff() {
     const { data, message } = changes;
-    if (!message) return diff.replaceChildren(note('What the agent changes shows here: each prompt\'s changes, file by file, as the transcript scrolls to it.'));
-    if (!data) return diff.replaceChildren(note('Loading…'));
-    if (!data.available) return diff.replaceChildren(note(data.reason || 'No changes were recorded for this prompt.'));
-    if (!data.files.length) return diff.replaceChildren(note(data.live ? 'No files changed yet.' : 'This prompt changed no files.'));
+    if (!message) return show(null, note('What the agent changes shows here: each prompt\'s changes, file by file, as the transcript scrolls to it.'));
+    if (!data) return show(null, note('Loading…'));
+    if (!data.available) return show(null, note(data.reason || 'No changes were recorded for this prompt.'));
+    if (!data.files.length) return show(null, note(data.live ? 'No files changed yet.' : 'This prompt changed no files.'));
     const file = data.files.find((f) => f.path === changes.selected);
-    if (!file) return diff.replaceChildren();
+    if (!file) return show(null);
+    // A new snapshot of the file in view: its diff stays, scrolled where it
+    // is, until the new one is in, and is drawn again only if it differs.
+    const same = diffShown?.message === message && diffShown.path === file.path;
     const head = h('div', { class: 'diff-head' },
       h('span', { class: 'path', title: file.path, text: file.path }),
       file.old_path && h('span', { class: 'from', text: `from ${file.old_path}` }),
       file.binary ? null : h('span', null, counts(file.added, file.removed)));
-    if (file.binary) return diff.replaceChildren(head, note('A binary file; its content is not shown.'));
+    if (file.binary) return show(null, head, note('A binary file; its content is not shown.'));
     const answer = changes.diffs.get(`${message} ${data.tree} ${file.path}`);
-    if (!answer) return diff.replaceChildren(head, note('Loading…'));
-    if (answer.error) return diff.replaceChildren(head, note(answer.error));
-    return diff.replaceChildren(head, diffBody(answer.patch || '', answer.truncated, file));
+    if (!answer) return same ? undefined : show(null, head, note('Loading…'));
+    if (answer.error) return show(null, head, note(answer.error));
+    const sig = [file.old_path || '', file.added, file.removed, answer.truncated ? 1 : 0, answer.patch || ''].join('\n');
+    if (same && diffShown.sig === sig) return;
+    // Text selected in it stays selected: the new diff is drawn once
+    // nothing in it is.
+    if (same && selectedIn(diff)) return redrawUnselected();
+    const top = diff.scrollTop;
+    const left = diff.scrollLeft;
+    show({ message, path: file.path, sig }, head, diffBody(answer.patch || '', answer.truncated, file));
+    if (same) {
+      diff.scrollTop = top;
+      diff.scrollLeft = left;
+    }
   }
 
   // diffBody renders a unified diff with the lines' numbers, old and new.

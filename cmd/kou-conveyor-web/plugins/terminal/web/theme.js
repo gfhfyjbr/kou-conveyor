@@ -42,6 +42,8 @@ export function colours() {
     panel: token('--bg-2', dark ? '#121211' : '#fbfaf7'),
     muted: token('--fg-3', dark ? '#7f7d76' : '#77756c'),
     ...p,
+    // The selection is the accent's, whichever accent the cockpit has.
+    selection: token('--selection-solid', p.selection),
   };
 }
 

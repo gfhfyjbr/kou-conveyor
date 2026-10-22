@@ -25,8 +25,10 @@ export default function activate(cockpit) {
 
   const offline = h('span', { class: 'badge offline', id: 'link-state', hidden: true, text: 'Offline' });
   const stream = h('span', { class: 'badge', id: 'stream-state', data: { state: 'idle' }, hidden: true });
+  // The chip is a live region that says the run's state as it changes; the
+  // clock ticking in it is not read out.
   const word = h('b', { id: 'run-word', text: 'Idle' });
-  const clock = h('time', { id: 'run-clock' });
+  const clock = h('time', { id: 'run-clock', 'aria-hidden': 'true' });
   const chip = h('span', { class: 'run-state', id: 'run-state', data: { state: 'idle' }, 'aria-live': 'polite' }, h('i', { 'aria-hidden': 'true' }), word, clock);
   const actions = h('button', {
     class: 'icon', id: 'session-actions', type: 'button', title: 'Session actions', 'aria-label': 'Session actions', 'aria-haspopup': 'menu', 'aria-expanded': 'false',
@@ -64,7 +66,9 @@ export default function activate(cockpit) {
 
     chip.dataset.state = phase;
     chip.title = phase === 'external' ? 'Running in another window or terminal; this view follows it' : '';
-    word.textContent = session.PHASE_LABEL[phase] || phase;
+    // Written only when it changes, so that each state is said once.
+    const phaseWord = session.PHASE_LABEL[phase] || phase;
+    if (word.textContent !== phaseWord) word.textContent = phaseWord;
     clock.textContent = v.run ? fmt.timer(Date.now() - v.run.started) : '';
 
     stream.dataset.state = state.stream;

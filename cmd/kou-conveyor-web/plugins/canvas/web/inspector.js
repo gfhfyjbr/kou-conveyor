@@ -42,22 +42,32 @@ export function createInspector(env) {
     h('header', { class: 'cv-ins-head' }, titleEl, close), body);
   body.dataset.scroll = 'true';
 
-  let target = null; // { node, pending } | { edge } | { canvas: true }
+  let target = null; // { node, pending } | { nodes } | { edge } | { canvas: true }
   let dirty = false;
   let drawn = '';
+  // The waiting message being edited: the panel is not drawn anew under
+  // its field, nor while its whole text is read (a click on Approve takes
+  // the focus from the field before it lands).
+  let editingMessage = '';
+  // The messages shown whole, by ID: a redraw keeps them so.
+  const expanded = new Map();
 
   const model = () => env.model();
   const failed = (what) => (error) => cockpit.toast(`${what}: ${error.message}`, 'error');
   const editing = () => {
+    if (editingMessage) return true;
     const active = document.activeElement;
     return element.contains(active) && /^(INPUT|TEXTAREA|SELECT)$/.test(active?.tagName || '');
   };
+  const keyOf = (t) => (!t ? '' : t.node || t.edge || (t.nodes ? `nodes:${t.nodes.join(',')}` : 'canvas'));
 
   function show(next) {
+    if (keyOf(next) !== keyOf(target)) expanded.clear();
     target = next || null;
     element.hidden = !target;
     drawn = '';
     dirty = false;
+    editingMessage = '';
     draw();
     env.onToggle?.(!!target);
   }
@@ -78,7 +88,10 @@ export function createInspector(env) {
     }
     draw();
   }
-  element.addEventListener('focusout', () => {
+  element.addEventListener('focusout', (event) => {
+    // The focus stays in the panel: what it goes to is not to be redrawn
+    // under the pointer.
+    if (element.contains(event.relatedTarget)) return;
     setTimeout(() => {
       if (dirty && !editing()) {
         dirty = false;
@@ -95,6 +108,7 @@ export function createInspector(env) {
     }
     let parts = null;
     if (target.node) parts = drawNode(m, m.node(target.node));
+    else if (target.nodes) parts = drawSelection(m, target.nodes);
     else if (target.edge) parts = drawEdge(m, m.edge(target.edge));
     else if (target.canvas) parts = drawCanvas(m);
     if (!parts) {
@@ -102,7 +116,7 @@ export function createInspector(env) {
       show(null);
       return;
     }
-    const key = target.node || target.edge || 'canvas';
+    const key = keyOf(target);
     const scroll = drawn === key ? body.scrollTop : 0;
     body.replaceChildren(...parts.filter(Boolean));
     body.scrollTop = scroll;
@@ -163,6 +177,23 @@ export function createInspector(env) {
     }
     if (!readOnly) parts.push(actionsOf(m, n, st));
     return parts;
+  }
+
+  // drawSelection is what several nodes selected together show: which
+  // they are, a click on one inspecting it alone.
+  function drawSelection(m, ids) {
+    const list = ids.map((id) => m.node(id)).filter(Boolean);
+    if (list.length < 2) return list.length ? drawNode(m, list[0]) : null;
+    titleEl.replaceChildren(h('span', { class: 'cv-glyph', text: '▦' }), h('span', { text: `${list.length} nodes selected` }));
+    return [section('',
+      h('p', { class: 'cv-ins-note', text: 'Click one to inspect it alone.' }),
+      h('div', { class: 'cv-ins-picks', role: 'list' }, ...list.map((n) => h('button', {
+        class: 'cv-outline-row', type: 'button', role: 'listitem', data: { id: n.id, kind: n.kind }, title: n.title || n.id,
+        onclick: () => env.select?.(n.id),
+      },
+      h('span', { class: 'cv-outline-glyph', 'aria-hidden': 'true', text: glyphOf(n, env.kinds) }),
+      h('span', { class: 'cv-outline-title', text: n.title || n.id }),
+      h('span', { class: 'cv-outline-state', text: n.kind === 'note' ? '' : stateWord(shownState(m.status.get(n.id), n.kind === 'agent' ? 'idle' : 'stopped')) })))))];
   }
 
   function describeKind(n) {
@@ -288,22 +319,39 @@ export function createInspector(env) {
       const text = (q.text || '').replace(HEADER, '');
       const preview = h('p', { class: 'cv-msg-text', text });
       const actions = h('div', { class: 'ins-actions' });
-      const approve = (edited) => m.approve(q.id, edited).catch(failed('It was not let through'));
+      const approve = (edited) => m.approve(q.id, edited).then(() => true, (error) => {
+        failed('It was not let through')(error);
+        return false;
+      });
+      // done ends the edit: the panel shows what is now.
+      const done = () => {
+        if (editingMessage === q.id) editingMessage = '';
+        refresh();
+      };
       if (!m.readOnly) {
         actions.append(
           button(q.state === 'awaiting_approval' ? 'Approve' : 'Send now', () => approve(), { strong: true }),
           button('Edit', async () => {
+            if (editingMessage) return;
+            editingMessage = q.id;
             let full = q.text || '';
             if (q.truncated) {
               try {
                 full = (await m.message(q.id))?.text || full;
               } catch { /* the preview, then */ }
             }
+            // The panel moved on meanwhile (another node, closed).
+            if (editingMessage !== q.id || !preview.isConnected) {
+              if (editingMessage === q.id) done();
+              return;
+            }
             const area = h('textarea', { class: 'cv-msg-edit', rows: '6', spellcheck: 'false' });
             area.value = full;
             actions.replaceChildren(
-              button('Approve as edited', () => approve(area.value), { strong: true }),
-              button('Cancel', () => refresh()));
+              button('Approve as edited', async () => {
+                if (await approve(area.value)) done();
+              }, { strong: true }),
+              button('Cancel', () => done()));
             preview.replaceWith(area);
             area.focus();
           }),
@@ -356,7 +404,8 @@ export function createInspector(env) {
         onclick: () => { if (v !== value) onPick(v); },
       }, label)));
     const mode = e.mode || 'auto';
-    const deliver = e.deliver || 'queue';
+    // An edge that says nothing delivers to a kou agent at once.
+    const deliver = e.deliver || (to?.kind === 'agent' ? 'now' : 'queue');
     const headerDefault = !!to && (to.kind === 'agent' || (to.kind === 'terminal' && to.preset && to.preset !== 'shell' && to.preset !== 'command'));
     const header = e.header ?? null;
     const headerSelect = h('select', { disabled: readOnly, 'aria-label': 'Where it comes from' },
@@ -393,13 +442,18 @@ export function createInspector(env) {
     const messages = m.messages.filter((x) => x.edge === e.id).slice(-20).reverse();
     const list = messages.length
       ? h('ol', { class: 'cv-msgs' }, ...messages.map((x) => {
-        const text = h('p', { class: 'cv-msg-text', text: (x.text || '').replace(HEADER, '') });
-        const more = x.truncated ? h('button', {
+        const whole = expanded.get(x.id);
+        const text = h('p', { class: 'cv-msg-text', text: (whole ?? x.text ?? '').replace(HEADER, '') });
+        const more = x.truncated && whole == null ? h('button', {
           class: 'act', type: 'button',
           onclick: async (event) => {
             event.currentTarget.remove();
             try {
-              text.textContent = ((await m.message(x.id))?.text || '').replace(HEADER, '');
+              const full = (await m.message(x.id))?.text || '';
+              expanded.set(x.id, full);
+              text.textContent = full.replace(HEADER, '');
+              // Drawn anew meanwhile: the new list shows it whole.
+              if (!text.isConnected) refresh();
             } catch (error) {
               cockpit.toast(error.message, 'error');
             }

@@ -1,0 +1,18 @@
+{
+  "surface": "deps",
+  "title": "go.mod — dependency map",
+  "glance": "picked {/picked}",
+  "sources": { "mod": { "file": "go.mod", "format": "text" } },
+  "data": { "/filter": "", "/picked": "github.com/charmbracelet/bubbletea" },
+  "components": [
+    { "id": "root", "component": "Column", "children": ["map", "controls"] },
+    { "id": "map", "component": "Html", "file": "examples/plugins/genui/examples/deps.html",
+      "alt": "The modules go.mod requires, grouped by owner: the direct ones bright, the indirect ones dim",
+      "inputs": ["/sources/mod", "/filter", "/picked"], "actions": ["explain"] },
+    { "id": "controls", "component": "Row", "align": "end", "children": ["filter", "picked", "explain"] },
+    { "id": "filter", "component": "TextField", "label": "Filter", "placeholder": "pion, x/, charm…", "value": { "path": "/filter" } },
+    { "id": "picked", "component": "Text", "text": "{/picked}", "style": "mono" },
+    { "id": "explain", "component": "Button", "label": "Explain the picked module",
+      "action": { "event": { "name": "explain", "data": { "module": { "path": "/picked" } } } } }
+  ]
+}

@@ -90,6 +90,12 @@ type nodeState struct {
 	changed chan struct{}
 	outputs int    // how many outputs it gave
 	output  string // its last output's text
+	// unanswered counts the runs that ended without an answer to what the
+	// canvas asked — the model refused, the run was stopped or failed —
+	// which end a wait for an answer as an output does; noAnswer says why
+	// the last one did, until the node gives an output again.
+	unanswered int
+	noAnswer   string
 	// cause is the message delivered to it last, whose chain its next
 	// output goes on.
 	cause *Message
@@ -98,6 +104,13 @@ type nodeState struct {
 	// IDs, the oldest first.
 	prompts map[string]*Message
 	asked   []string
+	// sent is the ID of the prompt each sender — the user, or a node — gave
+	// a kou agent last, straight: the one its send with replace takes back
+	// (replaced). Not kept: after a restart there is none to replace.
+	sent map[string]string
+	// active is when a kou agent's run last showed it at work: started,
+	// wrote an entry or changed its activity.
+	active time.Time
 	// terminal is the node's shell, for a terminal node.
 	terminal *terminal.Session
 }
@@ -431,6 +444,13 @@ func (c *Canvas) remove(o DeleteOptions) error {
 		close(c.done)
 	}
 	c.mu.Unlock()
+	// The runs of the sessions that go with the canvas are all told to stop
+	// first: each session is deleted once its run is over (dropSession).
+	for _, item := range all {
+		if item.session != "" && !o.KeepSessions && !item.adopted {
+			c.e.o.Host.StopRun(c.ws, item.session)
+		}
+	}
 	for _, item := range all {
 		if item.inst != nil {
 			item.inst.stop()
@@ -451,22 +471,64 @@ func (c *Canvas) remove(o DeleteOptions) error {
 	return removeCanvasFiles(c.ws.Path, c.id)
 }
 
-// dropSession lets go of an agent's session: the session list shows it as
-// any other, or, deleted, it is gone — unless it runs, or the user put it
-// on the canvas (adopted).
+// dropSession lets go of an agent's session. Deleted, it is gone, its run
+// stopped first; kept, or put on the canvas by the user (adopted), or when
+// it cannot be deleted, the session list shows it as any other.
 func (c *Canvas) dropSession(session string, deleteIt bool) {
 	dir := c.ws.SessionDir
+	meta := cockpit.LoadMeta(dir, session)
+	if deleteIt && !meta.Adopted {
+		err := c.deleteSession(session)
+		if err == nil {
+			return
+		}
+		c.e.o.Logf("canvas %s: the session %s of a node removed goes to the session list: %v", c.id, session, err)
+	}
 	if _, err := os.Stat(cockpit.SessionPath(dir, session)); errors.Is(err, fs.ErrNotExist) {
 		_ = cockpit.DropMeta(dir, session)
 		return
 	}
-	meta := cockpit.LoadMeta(dir, session)
-	if deleteIt && !meta.Adopted && !c.e.o.Host.RunActive(c.ws, session) {
-		if err := cockpit.DeleteSession(dir, session); err == nil {
-			return
+	if err := cockpit.SetCanvasMeta(dir, session, meta.Title, "", ""); err != nil {
+		c.e.o.Logf("canvas %s: let go of the session %s: %v", c.id, session, err)
+	}
+}
+
+// sessionStops bounds how long deleting a session waits for its run to end.
+const sessionStops = 30 * time.Second
+
+// deleteSession deletes an agent's session. A run of it still going is told
+// to stop, and the session goes once the run is over and its runner lets
+// go of it.
+func (c *Canvas) deleteSession(session string) error {
+	dir, host := c.ws.SessionDir, c.e.o.Host
+	deadline := time.Now().Add(sessionStops)
+	stopped := false
+	for {
+		var err error
+		if host.RunActive(c.ws, session) {
+			if !stopped {
+				stopped = true
+				host.StopRun(c.ws, session)
+			}
+			err = errors.New("its run did not stop")
+		} else {
+			if _, statErr := os.Stat(cockpit.SessionPath(dir, session)); errors.Is(statErr, fs.ErrNotExist) {
+				// An agent that never ran has no session file.
+				return cockpit.DropMeta(dir, session)
+			}
+			if err = cockpit.DeleteSession(dir, session); !errors.Is(err, cockpit.ErrSessionBusy) {
+				return err
+			}
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-c.e.ctx.Done():
+			return err
+		case <-time.After(250 * time.Millisecond):
 		}
 	}
-	_ = cockpit.SetCanvasMeta(dir, session, meta.Title, "", "")
 }
 
 // adopts reports whether a batch puts sessions the user has on the canvas.
@@ -519,6 +581,80 @@ func (c *Canvas) adoptions(actor Actor, batch Batch) (map[string]string, error) 
 		}
 	}
 	return titles, nil
+}
+
+// branches copies the sessions of the kou agents a batch's new nodes copy
+// (NodeSpec.Branch), by operation. It runs before the canvas is locked, as
+// copying a session takes a while.
+func (c *Canvas) branches(actor Actor, batch Batch) (map[int]string, error) {
+	var branched map[int]string
+	for i, op := range batch.Ops {
+		if op.Op != "node.add" || op.Node == nil || op.Node.Branch == "" {
+			continue
+		}
+		var session string
+		var err error
+		if spec := op.Node; spec.Session != "" || spec.ID != "" || spec.Restore {
+			err = errInvalid("a node that copies an agent's session (branch) is a new node, with no session of the user's")
+		} else {
+			session, err = c.branch(actor, spec.Branch)
+		}
+		if err != nil {
+			c.dropBranches(branched)
+			return nil, fmt.Errorf("operation %d (node.add): %w", i, err)
+		}
+		if session != "" {
+			if branched == nil {
+				branched = map[int]string{}
+			}
+			branched[i] = session
+		}
+	}
+	return branched, nil
+}
+
+// branch copies the session of a kou agent's node, whole, into a new
+// session: none when the agent never ran.
+func (c *Canvas) branch(actor Actor, id string) (string, error) {
+	if actor.node() {
+		return "", errForbidden("only the user copies an agent's session")
+	}
+	n := c.node(id)
+	if n == nil {
+		return "", errNotFound("no node " + id + " to copy")
+	}
+	if n.Kind != KindAgent {
+		return "", errInvalid("«" + n.Title + "» is no kou agent: only an agent's session is copied")
+	}
+	dir, session := c.ws.SessionDir, n.Runtime.Session
+	if session == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(cockpit.SessionPath(dir, session)); errors.Is(err, fs.ErrNotExist) {
+		return "", nil
+	}
+	busy := errConflict("«" + n.Title + "» is at work: copy it once its run is over, or stop it")
+	if c.e.o.Host.RunActive(c.ws, session) {
+		return "", busy
+	}
+	branch, err := cockpit.BranchSession(c.e.ctx, dir, session, "")
+	switch {
+	case errors.Is(err, cockpit.ErrBranchRunning):
+		return "", busy
+	case err != nil:
+		return "", fmt.Errorf("copy the session of «%s»: %w", n.Title, err)
+	}
+	return branch.SessionID, nil
+}
+
+// dropBranches deletes the copies of sessions made for a batch that was
+// not applied.
+func (c *Canvas) dropBranches(branched map[int]string) {
+	for _, session := range branched {
+		if err := cockpit.DeleteSession(c.ws.SessionDir, session); err != nil {
+			c.e.o.Logf("canvas %s: delete the copy %s of a session: %v", c.id, session, err)
+		}
+	}
 }
 
 // snapshot is a canvas as a page starts from.

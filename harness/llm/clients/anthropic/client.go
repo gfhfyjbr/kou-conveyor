@@ -189,11 +189,16 @@ func (client *Client) Respond(ctx context.Context, request llm.Request, _ llm.Re
 	// room caps the response once the API says the context window cannot
 	// hold the input and the usual maximum.
 	var room int64
-	for attempt := 1; ; attempt++ {
+	for attempt, tried := 1, false; ; attempt++ {
 		params, err := client.params(request, keepThinking, room)
 		if err != nil {
 			return llm.Response{}, err
 		}
+		if tried {
+			// What the attempt before streamed is not the response.
+			llm.ReportStream(ctx, llm.StreamEvent{Reset: true})
+		}
+		tried = true
 		message, inputs, err := client.stream(ctx, params)
 		if err == nil {
 			response := responseFromMessage(message, inputs)
@@ -284,8 +289,13 @@ func (client *Client) stream(ctx context.Context, params sdk.BetaMessageNewParam
 		}
 		switch event.Type {
 		case "content_block_delta":
-			if event.Delta.Type == "input_json_delta" {
+			switch event.Delta.Type {
+			case "input_json_delta":
 				inputs[int(event.Index)] = append(inputs[int(event.Index)], event.Delta.PartialJSON...)
+			case "text_delta":
+				llm.ReportStream(ctx, llm.StreamEvent{Index: int(event.Index), Kind: llm.StreamText, Text: event.Delta.Text})
+			case "thinking_delta":
+				llm.ReportStream(ctx, llm.StreamEvent{Index: int(event.Index), Kind: llm.StreamReasoning, Text: event.Delta.Thinking})
 			}
 		case "message_stop":
 			complete = true

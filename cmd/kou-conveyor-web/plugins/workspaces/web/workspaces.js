@@ -93,8 +93,12 @@ export default function activate(cockpit) {
   const ui = { ticket: 0, suggestions: [], cursor: -1, timer: 0 };
   cockpit.onDispose(() => clearTimeout(ui.timer));
 
+  // The dialog gives the focus back to where it was when it closes.
+  let before = null;
+
   function add() {
     service('overlays')?.closeTop?.();
+    if (overlay.hidden) before = document.activeElement !== document.body ? document.activeElement : null;
     overlay.hidden = false;
     input.value = '';
     say('');
@@ -106,7 +110,14 @@ export default function activate(cockpit) {
   function close() {
     ui.ticket++;
     clearTimeout(ui.timer);
+    if (overlay.hidden) return;
     overlay.hidden = true;
+    // What opened it may be gone, or hidden, as a menu's item is.
+    if (overlay.contains(document.activeElement)) {
+      if (before?.isConnected && before.getClientRects().length) before.focus();
+      else document.activeElement.blur();
+    }
+    before = null;
   }
 
   function say(text, kind = '') {
@@ -134,6 +145,8 @@ export default function activate(cockpit) {
     ui.cursor = -1;
     suggest.hidden = !list.length;
     input.setAttribute('aria-expanded', String(!!list.length));
+    // The rows are new: none of them is chosen.
+    input.removeAttribute('aria-activedescendant');
     suggest.replaceChildren(...list.map((folder, n) => {
       // The folder's own name leads; long parents shorten, never the name.
       const cut = folder.lastIndexOf('/');
@@ -157,7 +170,8 @@ export default function activate(cockpit) {
     ui.cursor = next;
     suggest.querySelectorAll('li').forEach((li, i) => li.setAttribute('aria-selected', String(i === ui.cursor)));
     suggest.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-    input.setAttribute('aria-activedescendant', ui.cursor >= 0 ? `ws-suggest-${ui.cursor}` : '');
+    if (ui.cursor >= 0) input.setAttribute('aria-activedescendant', `ws-suggest-${ui.cursor}`);
+    else input.removeAttribute('aria-activedescendant');
   }
 
   // accept takes a folder and lists what is inside it.
@@ -212,6 +226,23 @@ export default function activate(cockpit) {
     } else if (event.key === 'Enter' && ui.cursor >= 0) {
       event.preventDefault();
       accept(ui.cursor);
+    }
+  });
+  // Tab stays inside the dialog while it is open, as in the connection's;
+  // in the field, with folders to choose from, it completes first.
+  cockpit.listen(form, 'keydown', (event) => {
+    if (event.key !== 'Tab' || event.defaultPrevented) return;
+    const focusable = [...form.querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+      .filter((el) => el.offsetParent !== null);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first) return;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
     }
   });
 

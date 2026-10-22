@@ -272,6 +272,9 @@ func (m *uiModel) isOpen(e *cockpit.Entry) bool {
 	if m.expandAll {
 		return true
 	}
+	if m.surfaceHead(e) {
+		return true // the newest version of a surface shows (surface.go)
+	}
 	return e.Kind == cockpit.KindTool && e.Tool.State == cockpit.ToolFailed && e.Tool.Error != ""
 }
 
@@ -332,10 +335,11 @@ func (m *uiModel) card(lines []string, edge lipgloss.Style, title string, joints
 	st := m.styles
 	pad := strings.Repeat(" ", gutter-2)
 	span := max(1, width-(gutter-2))
-	top, side, bottom := "┌", "│", "└"
+	top, side, bottom := corners.tl, "│", corners.bl
 	if edge.GetForeground() != st.rule.GetForeground() && !st.noColor {
-		// A coloured edge is a heavier one, as the web cockpit's 2px border.
-		top, side, bottom = "┎", "┃", "┖"
+		// A coloured edge is a heavier one, as the web cockpit's 2px border
+		// (while corners are square: boxCorners).
+		top, side, bottom = corners.heavyTop, corners.heavySide, corners.heavyBottom
 	}
 	rule := func(lead, title string) string {
 		line := edge.Render(lead)
@@ -498,6 +502,9 @@ func (m *uiModel) modelDot(model string) string {
 }
 
 func (m *uiModel) renderTool(e *cockpit.Entry, width int, open, live bool) []string {
+	if lines, ok := m.surfaceTool(e, width, open); ok {
+		return lines // a surface of the genui plugin (surface.go)
+	}
 	st := m.styles
 	tool := e.Tool
 	state := tool.State
@@ -1077,8 +1084,8 @@ func (m *uiModel) welcome(width int) []string {
 		}
 		var boxes [][]string
 		for c, s := range row {
-			lines := []string{st.rule.Render("┌─ ") + st.accentLabel.Render(s.number) + " " + st.bold.Render(s.name) + " " +
-				st.rule.Render(strings.Repeat("─", max(0, boxWidth-ansi.StringWidth(s.number+s.name)-6))+"┐")}
+			lines := []string{st.rule.Render(corners.tl+"─ ") + st.accentLabel.Render(s.number) + " " + st.bold.Render(s.name) + " " +
+				st.rule.Render(strings.Repeat("─", max(0, boxWidth-ansi.StringWidth(s.number+s.name)-6))+corners.tr)}
 			for r := range height {
 				g := ""
 				if r < len(gists[c]) {
@@ -1086,7 +1093,7 @@ func (m *uiModel) welcome(width int) []string {
 				}
 				lines = append(lines, st.rule.Render("│")+" "+g+strings.Repeat(" ", max(0, textWidth-ansi.StringWidth(g)))+" "+st.rule.Render("│"))
 			}
-			lines = append(lines, st.rule.Render("└"+strings.Repeat("─", boxWidth-2)+"┘"))
+			lines = append(lines, st.rule.Render(corners.bl+strings.Repeat("─", boxWidth-2)+corners.br))
 			boxes = append(boxes, lines)
 		}
 		for r := range height + 2 {
@@ -1114,11 +1121,11 @@ func (m *uiModel) welcome(width int) []string {
 
 	// The card: a hairline with the ghost's ticks at its corners.
 	tick := st.ghost
-	lines := []string{pad + tick.Render("┌") + st.rule.Render(strings.Repeat("─", outer-2)) + tick.Render("┐")}
+	lines := []string{pad + tick.Render(corners.tl) + st.rule.Render(strings.Repeat("─", outer-2)) + tick.Render(corners.tr)}
 	for _, line := range body {
 		lines = append(lines, pad+st.rule.Render("│")+" "+line+strings.Repeat(" ", max(0, inner-ansi.StringWidth(line)))+" "+st.rule.Render("│"))
 	}
-	lines = append(lines, pad+tick.Render("└")+st.rule.Render(strings.Repeat("─", outer-2))+tick.Render("┘"))
+	lines = append(lines, pad+tick.Render(corners.bl)+st.rule.Render(strings.Repeat("─", outer-2))+tick.Render(corners.br))
 	return lines
 }
 
@@ -1309,9 +1316,9 @@ func (m *uiModel) edgeRow(row, kind string, focused bool) string {
 	left, right := "├", "┤"
 	switch kind {
 	case edgeTop:
-		left, right = "┌", "┐"
+		left, right = corners.tl, corners.tr
 	case edgeBottom:
-		left, right = "└", "┘"
+		left, right = corners.bl, corners.br
 	}
 	corner := st.rule2
 	if focused {
@@ -1732,6 +1739,8 @@ func (m *uiModel) footer() string {
 	width := m.stageWidth() - margin
 	pad := strings.Repeat(" ", margin)
 	switch {
+	case m.surfaces.focus != nil:
+		return pad + keyHints(st, width, m.surfaceHints()...)
 	case m.changes.focused && m.changesShown():
 		hints = []string{"↑↓", "file", "←→", "fold", "pgup pgdn", "diff", "[ ]", "prompt"}
 		if m.changesLive() && !m.changes.follow {

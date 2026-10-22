@@ -51,7 +51,7 @@ const (
 	llmMaxAttemptsEnvironment = "KOU_CONVEYOR_LLM_MAX_ATTEMPTS"
 	llmMaxTokensEnvironment   = "KOU_CONVEYOR_LLM_MAX_TOKENS"
 	thinkingTurnsEnvironment  = "KOU_CONVEYOR_THINKING_TURNS"
-	contextWindowEnvironment  = "KOU_CONVEYOR_CONTEXT_WINDOW"
+	contextWindowEnvironment  = runconfig.ContextWindowEnvironment
 	autoCompactEnvironment    = "KOU_CONVEYOR_AUTO_COMPACT"
 	// recoveryEnvironment set to off leaves the model's answers as they
 	// come: no request to go on after the output limit, none to answer
@@ -245,6 +245,8 @@ type sessionObserver struct {
 
 	mu  sync.Mutex
 	err error
+	// live is what streams with -stream (live.go), nil without.
+	live *liveOutput
 }
 
 func RunMain(
@@ -318,6 +320,7 @@ func Run(
 	listPluginsFlag := flags.Bool("list-plugins", false, "print the plugins a run in the workspace would find, one JSON object per line, and exit")
 	listSkillsFlag := flags.Bool("list-skills", false, "print the skills a run in the workspace would find, the project's and the system-wide ones, one JSON object per line, and exit")
 	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making; {\"stop\": {\"reason\": string}} stops the run, which records why")
+	stream := flags.Bool("stream", false, "also write, between the session items, what the session records later if at all: {\"type\": \"delta\", ...} lines with the text of the model's response as it streams, and {\"type\": \"output\", ...} lines with the output of the commands tool calls run, as they run")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
 	toolGrace := flags.Duration("tool-grace", 3*time.Second, "how long the results of a turn's tool calls are gathered before they wake the model; a result that arrives while other calls run waits this long again for them")
 	toolGraceLimit := flags.Duration("tool-grace-limit", 15*time.Second, "the longest the results wait for the other calls, from when the calls started (0 does not extend the wait)")
@@ -563,6 +566,15 @@ func Run(
 	}
 	// From here on the run works in the sandbox's workspace.
 	workspace, shell = box.Workspace, box.Shell
+	// Out of a sandbox, a run may be given a folder to work in other than
+	// its workspace (a canvas's agent's cwd); its session stays the
+	// workspace's.
+	if dir := strings.TrimSpace(getenv(runconfig.WorkdirEnvironment)); dir != "" && sandboxMode == SandboxOff {
+		if info, statErr := os.Stat(dir); !filepath.IsAbs(dir) || statErr != nil || !info.IsDir() {
+			return fmt.Errorf("%s=%s: the folder to work in is not an absolute path of a folder", runconfig.WorkdirEnvironment, dir)
+		}
+		workspace = filepath.Clean(dir)
+	}
 	// The profile: which built-in tools the model works with.
 	profile, err := defaultToolProfile(getenv, parsed.ToolProfile)
 	if err != nil {
@@ -723,9 +735,13 @@ func Run(
 		return name == tool.EditName || name == tool.WriteName || name == tool.ApplyPatchName
 	}))
 	builder.SetMemory(memory.builder())
-	// Between compactions, the oldest tool results are pruned to notes.
+	// Between compactions, the oldest tool results are pruned to notes —
+	// first those of the plugins' tools that a call fetches again.
 	if autoCompact > 0 {
-		builder.SetPruning(contextbuilder.PruneOptions{Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes})
+		builder.SetPruning(contextbuilder.PruneOptions{
+			Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes,
+			First: func(name string) bool { return live != nil && live.refetches(name) },
+		})
 	}
 	// The plugins and the skill directories give the run tools,
 	// instructions and skills, now and as they change.
@@ -759,6 +775,20 @@ func Run(
 	}
 	observerID := store.AddObserver(observer.Observe)
 	defer store.RemoveObserver(observerID)
+	if *stream {
+		// What streams goes to the runner's output only, not to the log.
+		observer.live = newLiveOutput(output)
+		following := make(chan struct{})
+		go func() {
+			defer close(following)
+			observer.followOutput(runContext)
+		}()
+		defer func() {
+			cancel()
+			<-following
+			observer.closeLive()
+		}()
+	}
 	checks, err := newVerifier(getenv, workspace, shell, operationDirectory, plugins)
 	if err != nil {
 		return err
@@ -780,7 +810,7 @@ func Run(
 		Sessions:              store,
 		ContextBuilder:        builder,
 		LLM:                   client,
-		Tools:                 registry,
+		Tools:                 runTools{Registry: registry, live: live, builtins: builtinTranslators(toolConfig.Translators)},
 		Operations:            operations,
 		NoRecovery:            strings.EqualFold(strings.TrimSpace(getenv(recoveryEnvironment)), "off"),
 		MaxTurns:              bounds.maxTurns,
@@ -807,9 +837,13 @@ func Run(
 	// What each request began with is logged beside the tool output, to
 	// tell what cost a request its cache (prefixlog.go).
 	prefixes := &prefixLog{path: filepath.Join(operationDirectory, prefixLogFile)}
-	coordinatorErr := current.Run(llm.WithPrefixReporter(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
+	reporting := llm.WithPrefixReporter(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
 		fmt.Fprintln(retries, RetryLine(retry))
-	}), prefixes.report))
+	}), prefixes.report)
+	if observer.live != nil {
+		reporting = llm.WithStreamReporter(reporting, observer.stream)
+	}
+	coordinatorErr := current.Run(reporting)
 	retries.Close()
 	// Tools run in their own process groups. Canceling the run makes the
 	// operation manager terminate them (TERM, then KILL after a grace period)
@@ -1171,6 +1205,8 @@ func (observer *sessionObserver) Observe(sessionID session.ID, item sessionstore
 	}
 	observer.mu.Lock()
 	defer observer.mu.Unlock()
+	// What streamed of a response goes out before the response.
+	observer.writeDeltas()
 	if observer.err != nil {
 		return
 	}
@@ -1178,6 +1214,7 @@ func (observer *sessionObserver) Observe(sessionID session.ID, item sessionstore
 		observer.fail(err)
 		return
 	}
+	observer.live.observe(item)
 }
 
 func writeSessionItem(output io.Writer, item sessionstore.Item) error {

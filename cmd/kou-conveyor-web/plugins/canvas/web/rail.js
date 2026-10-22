@@ -14,24 +14,84 @@ const SHOWN_ACTIVITY = 80;
 export function outlineRows(env, model, { selected = [], onPick, onEnter } = {}) {
   const { h } = env;
   if (!model) return [];
+  return outlineFacts(env, model, selected).map((f) => h('button', {
+    class: 'cv-outline-row', type: 'button', data: { id: f.id, state: f.state || null, kind: f.kind },
+    'aria-current': f.current ? 'true' : null,
+    title: f.tip,
+    onclick: () => onPick?.(f.id),
+    ondblclick: () => onEnter?.(f.id),
+  },
+  h('span', { class: 'cv-outline-glyph', 'aria-hidden': 'true', text: f.glyph }),
+  h('span', { class: 'cv-outline-title', text: f.title }),
+  h('span', { class: 'cv-outline-state', data: { waiting: f.waiting ? 'true' : null }, text: f.word })));
+}
+
+// outlineKey is all the rows of outlineRows show, as one string: while it
+// is the same, the rows drawn are kept — a click, the focus, a tooltip on
+// one is not lost to a status that changes nothing they show.
+export function outlineKey(env, model, selected = []) {
+  if (!model) return '';
+  return JSON.stringify([model.loading, ...outlineFacts(env, model, selected).map((f) => Object.values(f))]);
+}
+
+function outlineFacts(env, model, selected) {
   const chosen = new Set(selected);
   const nodes = [...model.doc.nodes].sort((a, b) => (a.y - b.y) || (a.x - b.x));
   return nodes.map((n) => {
     const st = model.status.get(n.id);
     const state = n.kind === 'note' ? '' : n.proposed ? 'paused' : shownState(st, n.kind === 'agent' ? 'idle' : 'stopped');
     const waiting = model.pendingFor(n.id);
-    const word = [state ? stateWord(state) : '', waiting ? `${waiting} pending` : ''].filter(Boolean).join(' · ');
-    return h('button', {
-      class: 'cv-outline-row', type: 'button', data: { id: n.id, state: state || null, kind: n.kind },
-      'aria-current': chosen.has(n.id) ? 'true' : null,
-      title: [n.title || n.id, st?.detail || '', 'Click to show it, double-click to enter it'].filter(Boolean).join('\n'),
-      onclick: () => onPick?.(n.id),
-      ondblclick: () => onEnter?.(n.id),
-    },
-    h('span', { class: 'cv-outline-glyph', 'aria-hidden': 'true', text: glyphOf(n, env.kinds) }),
-    h('span', { class: 'cv-outline-title', text: n.title || n.id }),
-    h('span', { class: 'cv-outline-state', data: { waiting: waiting ? 'true' : null }, text: word }));
+    return {
+      id: n.id,
+      kind: n.kind,
+      state,
+      waiting,
+      word: [state ? stateWord(state) : '', waiting ? `${waiting} pending` : ''].filter(Boolean).join(' · '),
+      current: chosen.has(n.id),
+      title: n.title || n.id,
+      tip: [n.title || n.id, st?.detail || '', 'Click to show it, double-click to enter it'].filter(Boolean).join('\n'),
+      glyph: glyphOf(n, env.kinds),
+    };
   });
+}
+
+// keepRows gives the rows drawn anew the elements a list has for the same
+// IDs: such a row stays the element it is and takes what changed in place
+// — a click on it, the focus or its tooltip is not lost to a status that
+// came meanwhile.
+export function keepRows(list, rows) {
+  const have = new Map();
+  for (const el of list.children) if (el.dataset.id) have.set(el.dataset.id, el);
+  return rows.map((row) => {
+    const old = have.get(row.dataset.id);
+    if (!old || old.nodeName !== row.nodeName || old.children.length !== row.children.length) return row;
+    sameAttributes(old, row);
+    [...row.children].forEach((child, i) => {
+      const was = old.children[i];
+      sameAttributes(was, child);
+      if (was.textContent !== child.textContent) was.textContent = child.textContent;
+    });
+    return old;
+  });
+}
+
+function sameAttributes(old, fresh) {
+  for (const { name } of [...old.attributes]) if (!fresh.hasAttribute(name)) old.removeAttribute(name);
+  for (const { name, value } of [...fresh.attributes]) if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+}
+
+// place makes a list's children the ones given, in their order, moving
+// only those out of place; the focus stays where it was.
+export function place(list, children) {
+  const active = document.activeElement;
+  const keep = new Set(children);
+  for (const el of [...list.children]) if (!keep.has(el)) el.remove();
+  let at = list.firstElementChild;
+  for (const el of children) {
+    if (el === at) at = at.nextElementSibling;
+    else list.insertBefore(el, at);
+  }
+  if (active && active !== document.activeElement && active.isConnected) active.focus({ preventScroll: true });
 }
 
 export function createRail(env) {
@@ -98,40 +158,59 @@ export function createRail(env) {
 
   // ---------------------------------------------------------------- outline
 
+  let outlineDrawn = null;
   function renderOutline() {
     const m = env.model();
+    outlineCount.textContent = m && m.doc.nodes.length ? String(m.doc.nodes.length) : '';
+    outlineLabel.hidden = !m;
+    outline.hidden = !m;
+    const selected = env.selected();
+    const key = outlineKey(env, m, selected);
+    if (key === outlineDrawn) return;
+    outlineDrawn = key;
     const rows = outlineRows(env, m, {
-      selected: env.selected(),
+      selected,
       onPick: (id) => env.reveal(id),
       onEnter: (id) => env.enter(id),
     });
-    outlineCount.textContent = m && m.doc.nodes.length ? String(m.doc.nodes.length) : '';
-    outline.replaceChildren(...(rows.length ? rows : [h('p', { class: 'sessions-empty', text: m?.loading ? 'Loading…' : 'No nodes yet: + Add, or ask the foreman.' })]));
-    outlineLabel.hidden = !m;
-    outline.hidden = !m;
+    place(outline, rows.length ? keepRows(outline, rows) : [h('p', { class: 'sessions-empty', text: m?.loading ? 'Loading…' : 'No nodes yet: + Add, or ask the foreman.' })]);
   }
 
   // ---------------------------------------------------------------- activity
 
+  // The rows of Activity, by the item each shows: an item that came adds
+  // its row, and the others stay as they are (text selected in one, the
+  // focus on one).
+  let activityRows = new WeakMap();
+  let activityOf = null;
   function renderActivity() {
     const m = env.model();
     const items = (m?.activity || []).slice(-SHOWN_ACTIVITY).reverse();
     activityLabel.hidden = !m;
     activity.hidden = !m;
     if (!m) return;
+    if (activityOf !== m) {
+      activityOf = m;
+      activityRows = new WeakMap();
+    }
     if (!items.length) {
       activity.replaceChildren(h('li', { class: 'cv-activity-none', text: 'Outputs, messages and what agents do show here.' }));
       return;
     }
-    activity.replaceChildren(...items.map((item) => {
+    place(activity, items.map((item) => {
       const target = item.node && m.node(item.node) ? { node: item.node } : item.edge && m.edge(item.edge) ? { edge: item.edge } : null;
+      const key = target ? `${target.node ? 'n' : 'e'}:${target.node || target.edge}` : '';
+      const kept = activityRows.get(item);
+      if (kept?.key === key) return kept.row;
       const text = h(target ? 'button' : 'span', {
         class: 'cv-activity-text', type: target ? 'button' : null, text: item.text || '',
         title: target ? `${item.text}\nShow it on the board` : item.text,
         onclick: target ? () => (target.node ? env.reveal(target.node) : env.revealEdge(target.edge)) : null,
       });
-      return h('li', { data: { kind: item.kind || null, level: item.level || null } },
+      const row = h('li', { data: { kind: item.kind || null, level: item.level || null } },
         h('time', { text: fmt.clock(item.at), title: fmt.stamp(item.at) }), text);
+      activityRows.set(item, { key, row });
+      return row;
     }));
   }
 

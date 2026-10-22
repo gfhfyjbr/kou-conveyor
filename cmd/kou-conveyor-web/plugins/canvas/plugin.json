@@ -40,6 +40,7 @@
         },
         "input": {"paste": "bracketed", "newline": "cr", "submit": "\r", "submit_delay_ms": 80},
         "status": ["hooks"], "output": "hooks",
+        "asks": "Enter to confirm|Yes, I trust this folder|Do you trust the files|Yes, I accept",
         "resume": ["--resume", "{{runtime.agent_session}}"],
         "config": {"type": "object", "properties": {
           "permission_mode": {"type": "string", "title": "Permissions", "enum": ["default", "acceptEdits", "plan", "bypassPermissions"], "default": "default"},

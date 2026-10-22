@@ -92,7 +92,6 @@ func (f *settingsForm) sameEndpoint() bool {
 
 func (f *settingsForm) placeholders() {
 	if f.selected() == cockpit.APIGateway {
-		f.fields[2].Placeholder = "a model the gateway serves; ^T lists them"
 		return
 	}
 	defaults := cockpit.DefaultsFor(f.selected())
@@ -115,9 +114,11 @@ func (f *settingsForm) placeholders() {
 
 func (f *settingsForm) update() cockpit.SettingsUpdate {
 	if f.selected() == cockpit.APIGateway {
-		u := cockpit.SettingsUpdate{API: cockpit.APIGateway, Model: f.fields[2].Value()}
-		// The gateway's protocol, chosen in the browser, stays with its model.
-		if f.saved.API == cockpit.APIGateway && strings.TrimSpace(f.fields[2].Value()) == f.saved.Model {
+		// The gateway has no model of its own: prompts choose theirs in the
+		// composer, as in the browser's Accounts, which saves the same. The
+		// protocol chosen there stays.
+		u := cockpit.SettingsUpdate{API: cockpit.APIGateway}
+		if f.saved.API == cockpit.APIGateway {
 			u.Protocol = f.saved.Protocol
 		}
 		return u
@@ -134,10 +135,8 @@ func (f *settingsForm) update() cockpit.SettingsUpdate {
 // visible are the rows the selected API has.
 func (f *settingsForm) visible() []int {
 	switch f.selected() {
-	case cockpit.APIEnvironment:
+	case cockpit.APIEnvironment, cockpit.APIGateway:
 		return []int{rowAPI}
-	case cockpit.APIGateway:
-		return []int{rowAPI, rowModel}
 	}
 	return []int{rowAPI, rowBase, rowKey, rowModel}
 }
@@ -273,7 +272,9 @@ func (m *uiModel) saveSettings() tea.Cmd {
 	}
 	m.closeForm()
 	m.resolveConnection(next)
-	return m.notify("connection saved · "+m.connectionSummary()+" · applies to the next run", "info")
+	// The models listed were the other connection's.
+	m.catalog = nil
+	return tea.Batch(m.notify("connection saved · "+m.connectionSummary()+" · applies to the next run", "info"), m.modelsForNewSessions())
 }
 
 func (m *uiModel) checkSettings() tea.Cmd {
@@ -329,7 +330,8 @@ func (m *uiModel) connectionSummary() string {
 	model := orDefault(m.opt.model, m.conn.Model)
 	provider := m.conn.Provider
 	if m.conn.Source == "gateway" {
-		provider = "gateway"
+		// Its model, if old settings still have one, is not what runs use.
+		provider, model = "gateway", m.opt.model
 	}
 	parts := []string{orDefault(provider, "runner default")}
 	if model != "" {
@@ -377,16 +379,15 @@ func (f *settingsForm) view(st styles, width, height int) string {
 		} else {
 			note += "It is not running now: start kou-conveyor-web."
 		}
+		note += " Prompts choose their model in the composer (ctrl+p): a new session starts with the one last chosen there, else the first the gateway serves."
 		b.WriteString(strings.Join(wrapText(note, st.muted, inner, "", ""), "\n") + "\n")
-		f.fields[2].Width = max(8, inner-13)
-		b.WriteString(label(rowModel, "MODEL") + f.fields[2].View() + "\n")
-		b.WriteString(f.modelHints(st, inner))
+		b.WriteString(f.modelHints(st, inner, ""))
 	default:
 		for i, name := range []string{"BASE URL", "API KEY", "MODEL"} {
 			f.fields[i].Width = max(8, inner-13)
 			b.WriteString(label(i+1, name) + f.fields[i].View() + "\n")
 		}
-		b.WriteString(f.modelHints(st, inner))
+		b.WriteString(f.modelHints(st, inner, strings.TrimSpace(f.fields[2].Value())))
 	}
 	if f.status != "" {
 		glyph, style := "›", st.muted
@@ -413,12 +414,12 @@ func (f *settingsForm) view(st styles, width, height int) string {
 	return box
 }
 
-// modelHints lists checked models that start with what the model field holds.
-func (f *settingsForm) modelHints(st styles, inner int) string {
+// modelHints lists checked models that start with prefix, what the model
+// field holds.
+func (f *settingsForm) modelHints(st styles, inner int, prefix string) string {
 	if len(f.models) == 0 {
 		return ""
 	}
-	prefix := strings.TrimSpace(f.fields[2].Value())
 	var shown []string
 	for _, model := range f.models {
 		if strings.HasPrefix(model, prefix) && len(shown) < 6 {

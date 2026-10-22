@@ -54,7 +54,9 @@
 .queue-item[data-new] { animation: rise 0.18s ease-out; }
 .queue-item:focus { outline: none; }
 .queue-item:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
-.queue-item:hover, .queue-item:focus { background: var(--bg-3); }
+/* The pointer lights a prompt less than the focus the keys move. */
+.queue-item:hover { background: color-mix(in srgb, var(--bg-3) 55%, var(--bg-2)); }
+.queue-item:focus-visible { background: var(--bg-3); }
 .queue-mark { justify-self: center; font: 700 10.5px/1 var(--mono); letter-spacing: 0.04em; color: var(--fg-4); }
 .queue-text { overflow: hidden; font: 13.5px/1.45 var(--sans); color: var(--fg-2); white-space: nowrap; text-overflow: ellipsis; }
 .queue-item:hover .queue-text, .queue-item:focus .queue-text { color: var(--fg); }
@@ -71,7 +73,6 @@
    running along its bottom until the agent reads it. */
 .queue-item[data-forced] {
   cursor: default;
-  background: linear-gradient(90deg, var(--accent-soft), transparent 55%), var(--bg-2);
   box-shadow: inset 2px 0 0 var(--accent);
   overflow: hidden;
 }
@@ -128,3 +129,19 @@
   .queue-actions .icon.small { width: 32px; height: 32px; }
   .queue-editor { font-size: 16px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.queue, .queue-editor { border-radius: var(--radius); }
+.queue-count { border-radius: var(--radius-sm); }
+.queue-flow i { border-radius: min(var(--radius-sm), 2px); }
+/* Round, the tray sits on the composer's straight edge, clear of its
+   corners, rounded on top, and says a pause and a forced prompt with no
+   bar along the edge. */
+:root[data-corners="round"] .queue { margin: 0 calc(9px + var(--radius-lg)) -1px; border-radius: var(--radius) var(--radius) 0 0; transition: border-radius 0.24s; }
+/* Under the summary of a compaction (composer.css, .compacting), as wide
+   as it, the tray goes on from it: square on top. */
+:root[data-corners="round"] .compacting:not([hidden]) + .queue { border-top-left-radius: 0; border-top-right-radius: 0; }
+:root[data-corners="round"] .queue[data-paused="true"] { border-left-width: 1px; border-color: color-mix(in srgb, var(--warn) 45%, var(--line-2)); }
+:root[data-corners="round"] .queue-item[data-forced] { box-shadow: none; }

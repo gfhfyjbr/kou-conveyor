@@ -8,9 +8,16 @@ import UIKit
 struct SessionScreen: View {
     @Environment(AppModel.self) private var app
     @State private var model: SessionModel
+    /// The session's surfaces, which its UI calls draw.
+    @State private var surfaces = SurfaceBook()
     @State private var draft: String
-    @State private var attachments: [Attachment]
+    @State private var attachments: [Attachment] = []
+    /// The pictures of the prompt a branch gave back, until the composer
+    /// has them.
+    @State private var seedImages: [PromptImage]
     @State private var sheet: Sheet?
+    /// The picture shown large over the screen, dimmed behind it.
+    @State private var viewing: Viewing?
     @State private var renaming = false
     @State private var title = ""
     @State private var editing: QueueItem?
@@ -19,8 +26,9 @@ struct SessionScreen: View {
     @State private var photos: [PhotosPickerItem] = []
     @State private var voice = VoiceInput()
     /// What the composer held as dictation started, and what dictation
-    /// wrote in it last.
-    @State private var dictation: (base: String, written: String)?
+    /// wrote in it last: in a box, so that only dictation's start and end
+    /// draw the screen again, not each word it writes.
+    @State private var dictation: Dictation?
     /// The entry first in the transcript as earlier ones were asked for.
     @State private var kept: String?
     /// Whether the transcript's end is in view.
@@ -29,6 +37,11 @@ struct SessionScreen: View {
     @State private var scrolling = false
     /// Whether the transcript, once read, was taken to its end to be shown.
     @State private var placed = false
+    /// Whether the push that brought the screen is over: the transcript is
+    /// laid out only then. Read as the screen slid in, its rows were laid out
+    /// at a frame of the push — the slide, the tab bar going and the bars'
+    /// glass held as long — to be shown only once in place, after it.
+    @State private var arrived = false
     /// The last entry as the user scrolled away from the end: what came
     /// after it is new. Earlier entries read meanwhile are not.
     @State private var seen: String?
@@ -39,30 +52,58 @@ struct SessionScreen: View {
         case models
         /// What a prompt changed; with none, the session's prompts to choose from.
         case changes(Entry?)
-        case picture(path: String, title: String)
         /// A prompt, edited: the session runs again from it.
         case edit(Entry)
+        /// All of what a Write call wrote, or an Edit call changed.
+        case change(Entry)
 
         var id: String {
             switch self {
             case .models: "models"
             case let .changes(entry): "changes:\(entry?.id ?? "")"
-            case let .picture(path, _): "picture:\(path)"
             case let .edit(entry): "edit:\(entry.id)"
+            case let .change(entry): "change:\(entry.id)"
             }
         }
     }
 
-    init(client: RelayClient, route: SessionRoute, open: @escaping (SessionRoute) -> Void) {
-        _model = State(initialValue: SessionModel(client: client, workspace: route.workspace, id: route.id, fresh: route.fresh))
+    /// A picture shown large: a prompt's, or one the agent looked at.
+    struct Viewing: Identifiable {
+        let path: String
+        let title: String
+        /// What it is: "816×900 PNG · 14 KB".
+        var about: String?
+        var id: String { path }
+    }
+
+    /// The title shown instead of the session's own: a canvas node's.
+    private let titleOverride: String?
+    /// The canvas a node's chat is of: its notices come over the transcript
+    /// with the session's own.
+    private let canvas: CanvasModel?
+
+    init(client: RelayClient, route: SessionRoute, canvas: CanvasModel? = nil, open: @escaping (SessionRoute) -> Void) {
+        _model = State(initialValue: SessionModel(client: client, workspace: route.workspace, id: route.id, fresh: route.fresh,
+                                                  reserved: route.reserved, preferredModel: route.model, title: route.listedTitle))
+        titleOverride = route.title.flatMap { $0.isEmpty ? nil : $0 }
+        self.canvas = canvas
         _draft = State(initialValue: route.seed?.prompt ?? "")
-        _attachments = State(initialValue: (route.seed?.images ?? []).compactMap(Attachment.init(image:)))
+        _seedImages = State(initialValue: route.seed?.images ?? [])
         self.open = open
     }
 
     var body: some View {
         screen
+            .background {
+                PushEnd { arrived = true }
+            }
             .sheet(item: $sheet, content: sheetContent)
+            // Over the screen, which shows through it dimmed, as the cockpit
+            // shows a picture: a tap anywhere puts it back.
+            .fullScreenCover(item: $viewing) { picture in
+                PictureLightbox(client: model.client, picture: picture) { show(nil) }
+                    .presentationBackground(.clear)
+            }
             .alert("Rename the session", isPresented: $renaming) {
                 TextField("Title", text: $title)
                 Button("Rename") {
@@ -81,13 +122,30 @@ struct SessionScreen: View {
                 }
                 Button("Cancel", role: .cancel) {}
             }
+            .task {
+                // Should UIKit not tell, the transcript comes all the same.
+                try? await Task.sleep(for: .seconds(1.5))
+                arrived = true
+            }
             .task { await model.watch() }
+            .task { await surfaces.attach(model).watch() }
+            .onChange(of: SurfaceBook.calls(in: model.entries), initial: true) { _, calls in surfaces.sync(calls) }
             .task { _ = await app.loadCatalog(model.workspace) }
+            .task { await takeSeedImages() }
+            .onAppear { TurnNotifier.shared.visibleSession = model.id }
             .onDisappear {
                 model.close()
                 voice.cancel()
+                if TurnNotifier.shared.visibleSession == model.id {
+                    TurnNotifier.shared.visibleSession = nil
+                }
             }
-            .sensoryFeedback(.success, trigger: model.phase) { old, new in old != .idle && new == .idle }
+            // A run that ends is felt: done, or failed; one stopped is not.
+            .sensoryFeedback(trigger: model.phase) { old, new in
+                guard old != .idle, new == .idle else { return nil }
+                if model.notice?.isError == true { return .error }
+                return model.interrupted ? nil : .success
+            }
     }
 
     /// The transcript with its bars, title and menu: the body less its
@@ -98,13 +156,15 @@ struct SessionScreen: View {
             // fade under it would only be drawn over again.
             .scrollEdgeEffectHidden(true, for: .bottom)
             .overlay { placeholder }
-            .safeAreaBar(edge: .top) { noticeBar }
+            // Over the transcript, not in a bar above it: as such a bar went,
+            // its height going down took the darkening under the title away,
+            // to fade back a moment later; nor does the transcript jump.
+            .overlay(alignment: .top) { noticeBar }
             .safeAreaBar(edge: .bottom) { bottomBar }
             .animation(.snappy, value: model.notice)
-            .navigationTitle(model.displayTitle)
+            .navigationTitle(titleOverride ?? model.displayTitle)
             .navigationBarTitleDisplayMode(.inline)
             .navigationSubtitle(subtitle)
-            .toolbar(.hidden, for: .tabBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     sessionMenu
@@ -122,45 +182,25 @@ struct SessionScreen: View {
     private var transcript: some View {
         ScrollViewReader { proxy in
         List {
-            if model.earlier > 0 {
-                earlierButton
-                    .modifier(TranscriptRow())
+            if arrived {
+                rows
             }
-            let context = context
-            let live = model.isBusy
-            ForEach(model.entries) { entry in
-                // Equatable: an entry that did not change is not drawn
-                // again as the agent writes another, or a key is pressed.
-                EntryView(entry: entry, live: live, context: context)
-                    .equatable()
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .modifier(TranscriptRow())
-            }
-            runState
-                .modifier(TranscriptRow())
-            if !model.queued.isEmpty {
-                QueueView(model: model) { item in
-                    editText = item.text
-                    editing = item
-                }
-                .modifier(TranscriptRow())
-            }
-            Color.clear
-                .frame(height: 1)
-                .modifier(TranscriptRow(vertical: 0))
-                .id(Self.end)
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        // The ground of the shade chosen, the bar's base's too (BarBase).
+        .background(Color.kouGround)
         .environment(\.defaultMinListRowHeight, 0)
         .contentMargins(.vertical, 5, for: .scrollContent)
         // The run's row comes and goes softly; not the transcript read with it.
         .animation(placed ? .smooth(duration: 0.25) : nil, value: model.isBusy)
         .opacity(placed || model.entries.isEmpty ? 1 : 0)
-        .task(id: model.entries.isEmpty) {
+        // Once in place, it comes softly, not all at once.
+        .animation(.easeOut(duration: 0.2), value: placed)
+        .task(id: arrived && !model.entries.isEmpty) {
             // Should the list never tell it reached the end, it is shown
             // where it is.
-            guard !model.entries.isEmpty, !placed else { return }
+            guard arrived, !model.entries.isEmpty, !placed else { return }
             try? await Task.sleep(for: .milliseconds(600))
             placed = true
         }
@@ -174,6 +214,8 @@ struct SessionScreen: View {
             // A session read is shown from its end: the list is laid out
             // from its top, and is not seen until it is at the end.
             if !placed, !model.entries.isEmpty {
+                // Until the push is over, the list is empty: not in place.
+                guard arrived else { return }
                 if new.pinned { placed = true } else { proxy.scrollTo(Self.end, anchor: .bottom) }
                 return
             }
@@ -184,7 +226,7 @@ struct SessionScreen: View {
             }
             guard following != new.atEnd else { return }
             following = new.atEnd
-            if new.atEnd { seen = nil } else if seen == nil { seen = model.entries.last?.id ?? "" }
+            if new.atEnd { seen = nil } else if seen == nil { seen = model.entries.last?.rowID ?? "" }
         }
         .overlay(alignment: .bottom) {
             if !following, !model.entries.isEmpty {
@@ -199,7 +241,7 @@ struct SessionScreen: View {
         .animation(.snappy(duration: 0.25), value: following)
         // Once the page read is laid out above, what was first goes back to
         // the top: the screen stays on what was read.
-        .onChange(of: model.entries.first?.id) {
+        .onChange(of: model.entries.first?.rowID) {
             guard let kept else { return }
             self.kept = nil
             proxy.scrollTo(kept, anchor: .top)
@@ -207,9 +249,43 @@ struct SessionScreen: View {
         }
     }
 
+    /// The transcript's rows: the entries, the run's state, the queue.
+    @ViewBuilder
+    private var rows: some View {
+        if model.earlier > 0 {
+            earlierButton
+                .modifier(TranscriptRow())
+        }
+        let context = context
+        let live = model.isBusy
+        // By their rows: an entry that took the place of what streamed of
+        // it is the same row, done.
+        ForEach(model.entries, id: \.rowID) { entry in
+            // Equatable: an entry that did not change is not drawn
+            // again as the agent writes another, or a key is pressed.
+            EntryView(entry: entry, live: live, output: model.outputs[entry.id], context: context)
+                .equatable()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(TranscriptRow())
+        }
+        runState
+            .modifier(TranscriptRow())
+        if !model.queued.isEmpty {
+            QueueView(model: model) { item in
+                editText = item.text
+                editing = item
+            }
+            .modifier(TranscriptRow())
+        }
+        Color.clear
+            .frame(height: 1)
+            .modifier(TranscriptRow(vertical: 0))
+            .id(Self.end)
+    }
+
     /// How many entries came after the last one seen at the end.
     private var unseen: Int {
-        guard let seen, let last = model.entries.lastIndex(where: { $0.id == seen }) else { return 0 }
+        guard let seen, let last = model.entries.lastIndex(where: { $0.rowID == seen }) else { return 0 }
         return model.entries.count - 1 - last
     }
 
@@ -219,7 +295,7 @@ struct SessionScreen: View {
     /// The session is read from its end; this reads a page more of it.
     private var earlierButton: some View {
         Button {
-            kept = model.entries.first?.id
+            kept = model.entries.first?.rowID
             Task { await model.showEarlier() }
         } label: {
             HStack(spacing: 6) {
@@ -233,7 +309,7 @@ struct SessionScreen: View {
             .font(.footnote.weight(.medium))
         }
         .buttonStyle(.bordered)
-        .buttonBorderShape(.capsule)
+        .buttonBorderShape(.cornerCapsule)
         .disabled(model.loadingEarlier)
         .frame(maxWidth: .infinity)
     }
@@ -253,11 +329,19 @@ struct SessionScreen: View {
 
     @ViewBuilder
     private var placeholder: some View {
-        // Until the transcript read is shown from its end.
+        // Until the transcript read is shown from its end; its wait counted
+        // from the push's end, when the transcript is laid out — not to
+        // come for a moment as it is.
         if model.loading || !placed && !model.entries.isEmpty {
-            ProgressView()
+            if arrived { LoadingSpinner() }
         } else if let error = model.loadError, model.entries.isEmpty {
             ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.bubble", description: Text(error))
+        } else if model.fresh, model.entries.isEmpty, model.reserved {
+            ContentUnavailableView {
+                Label("Not started yet", systemImage: "point.3.connected.trianglepath.dotted")
+            } description: {
+                Text("This node's agent starts with its first prompt, from here or from the canvas, which gives it the canvas's brief with it.")
+            }
         } else if model.fresh, model.entries.isEmpty {
             ContentUnavailableView {
                 Label("New session", systemImage: "sparkles")
@@ -269,11 +353,17 @@ struct SessionScreen: View {
 
     @ViewBuilder
     private var noticeBar: some View {
-        if let notice = model.notice {
-            NoticeBanner(notice: notice) { model.notice = nil }
-                .padding(.horizontal, 16)
-                .transition(.move(edge: .top).combined(with: .opacity))
+        VStack(spacing: 8) {
+            if let canvas {
+                CanvasNoticeSlot(model: canvas)
+            }
+            if let notice = model.notice {
+                NoticeBanner(notice: notice) { model.notice = nil }
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
         }
+        .animation(.snappy, value: canvas?.notice)
     }
 
     private var bottomBar: some View {
@@ -299,8 +389,10 @@ struct SessionScreen: View {
         Composer(text: $draft, phase: model.phase, external: model.external,
                  images: attachments.count, send: send, stop: stop,
                  pickPhotos: { pickingPhotos = true }, paste: pasteImage,
-                 listening: listening, dictate: dictate, dictated: dictation != nil)
-            .onChange(of: voice.transcript) { _, words in write(dictated: words) }
+                 listening: listening, dictate: dictate)
+            // Watched apart, as the draft is: read in this body, the words
+            // heard drew the whole screen again at each of them.
+            .modifier(DictationWatch(voice: voice) { write(dictated: $0) })
             // Watched through its binding, not read here: read in this body,
             // the draft would draw the whole screen again at every key.
             .modifier(DraftWatch(text: $draft, edited: edited))
@@ -342,13 +434,13 @@ struct SessionScreen: View {
         case let .changes(entry):
             ChangesSheet(client: model.client, workspace: model.workspace, session: model.id,
                          prompts: prompts, start: entry)
-        case let .picture(path, title):
-            PictureViewer(client: model.client, path: path, title: title)
         case let .edit(entry):
             PromptEditor(entry: entry, after: max(0, model.replaced(by: entry) - 1)) { text in
                 await model.edit(entry, to: text, effort: app.knownEffort)
             }
             .presentationDetents([.medium, .large])
+        case let .change(entry):
+            ChangeSheet(entry: entry)
         }
     }
 
@@ -358,8 +450,12 @@ struct SessionScreen: View {
         (model.earlierPrompts + model.entries).filter { $0.kind == Entry.user && $0.messageID != nil && $0.state == nil }
     }
 
-    private var nextModelTitle: String {
-        app.modelTitle(model.nextModel ?? app.defaultModel(model.workspace), in: model.workspace)
+    /// The model of the next prompt, as it reads. Unknown until the session
+    /// is read: the workspace's default would show for a moment, and give
+    /// way to the model the session ran with.
+    private var nextModelTitle: String? {
+        guard model.nextModel != nil || model.fresh || model.read else { return nil }
+        return app.modelTitle(model.nextModel ?? app.defaultModel(model.workspace), in: model.workspace)
     }
 
     private var editingShown: Binding<Bool> {
@@ -369,12 +465,24 @@ struct SessionScreen: View {
     private var context: EntryContext {
         EntryContext(
             imagePath: { entry, n in model.imagePath(entry, n) },
+            toolImagePath: { model.toolImagePath($0) },
             client: model.client,
             branch: { branch($0) },
             changes: { sheet = .changes($0) },
-            picture: { path, title in sheet = .picture(path: path, title: title) },
-            edit: model.phase == .idle && !model.external ? { sheet = .edit($0) } : nil
+            picture: { path, title, about in show(Viewing(path: path, title: title, about: about)) },
+            edit: model.phase == .idle && !model.external ? { sheet = .edit($0) } : nil,
+            change: { sheet = .change($0) },
+            surfaces: surfaces.attach(model)
         )
+    }
+
+    /// show puts a picture over the screen, or takes it away, at once: it
+    /// fades in and out itself, the screen dimmed behind it, rather than
+    /// sliding up and down as a cover does.
+    private func show(_ picture: Viewing?) {
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { viewing = picture }
     }
 
     private var known: Bool { !(model.fresh && model.entries.isEmpty) }
@@ -432,10 +540,16 @@ struct SessionScreen: View {
         let text = draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let sending = attachments
-        let images = sending.filter { text.contains($0.label) }.map(\.prompt)
+        let pictures = sending.filter { text.contains($0.label) }
         draft = ""
         attachments = []
         Task {
+            // In base64 off the main thread: megabytes of pictures, written
+            // out as the composer emptied, held it still a moment.
+            var images: [PromptImage] = []
+            if !pictures.isEmpty {
+                images = await Task.detached { pictures.map(\.prompt) }.value
+            }
             let sent = await model.send(text, force: force, images: images, effort: app.knownEffort)
             // What was not sent is back in the composer, unless the user
             // wrote something else meanwhile.
@@ -460,7 +574,7 @@ struct SessionScreen: View {
     private func dictate() {
         switch voice.state {
         case .idle:
-            dictation = (draft, draft)
+            dictation = Dictation(base: draft)
             voice.start(client: model.client, workspace: model.workspace)
         case .starting, .listening:
             voice.stop()
@@ -475,7 +589,7 @@ struct SessionScreen: View {
         let base = current.base
         let gap = base.isEmpty || words.isEmpty || base.last?.isWhitespace == true ? "" : " "
         let text = base + gap + words
-        dictation = (base, text)
+        current.written = text
         draft = text
     }
 
@@ -506,6 +620,17 @@ struct SessionScreen: View {
     }
 
     // MARK: Images
+
+    /// takeSeedImages puts the pictures of the prompt a branch gave back in
+    /// the composer, read off the main thread: read as the screen was made,
+    /// they held its push still a moment.
+    private func takeSeedImages() async {
+        guard !seedImages.isEmpty else { return }
+        let images = seedImages
+        seedImages = []
+        let taken = await Task.detached { images.compactMap(Attachment.init(image:)) }.value
+        attachments = taken + attachments
+    }
 
     private func nextLabel() -> String {
         let used = attachments.compactMap { Entry.ImageInfo(label: $0.label).number }
@@ -538,12 +663,18 @@ struct SessionScreen: View {
     }
 
     private func pasteImage() {
-        guard let image = UIPasteboard.general.image, let data = image.pngData() else {
+        guard let image = UIPasteboard.general.image else {
             model.notice = SessionModel.Notice(text: "There is no picture to paste.", isError: false)
             return
         }
         Task {
-            if let processed = await Task.detached(operation: { Attachment.process(data) }).value { add(processed) }
+            // The picture is scaled as it is, off the main thread: written
+            // out as PNG first, a screenshot held the screen still a moment.
+            guard let processed = await Task.detached(operation: { Attachment.process(image) }).value else {
+                model.notice = SessionModel.Notice(text: "That picture cannot be sent.", isError: true)
+                return
+            }
+            add(processed)
         }
     }
 
@@ -596,6 +727,10 @@ struct Attachment: Identifiable, Hashable {
     /// and 3.5 MB, as JPEG.
     nonisolated static func process(_ data: Data) -> Processed? {
         guard let image = UIImage(data: data) else { return nil }
+        return process(image)
+    }
+
+    nonisolated static func process(_ image: UIImage) -> Processed? {
         let pixels = CGSize(width: image.size.width * image.scale, height: image.size.height * image.scale)
         let longest = max(pixels.width, pixels.height)
         guard longest > 0 else { return nil }
@@ -627,7 +762,7 @@ struct AttachmentStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 14) {
                 ForEach(attachments) { attachment in
                     VStack(spacing: 4) {
                         Group {
@@ -641,28 +776,36 @@ struct AttachmentStrip: View {
                             }
                         }
                         .frame(width: 58, height: 58)
-                        .clipShape(.rect(cornerRadius: 12))
+                        .background(.fill.quaternary)
+                        .clipShape(.rect(cornerRadius: .corner(12)))
+                        // A light picture keeps its edge on the light screen.
+                        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.separator, lineWidth: 0.5))
                         .overlay(alignment: .topTrailing) {
                             Button {
-                                remove(attachment)
+                                withAnimation(.snappy) { remove(attachment) }
                             } label: {
                                 Image(systemName: "xmark.circle.fill")
                                     .symbolRenderingMode(.palette)
                                     .foregroundStyle(.white, .black.opacity(0.6))
                                     .font(.body)
+                                    // The mark is small; the finger finds a
+                                    // larger circle around it.
+                                    .padding(6)
+                                    .contentShape(.circle)
                             }
                             .buttonStyle(.plain)
-                            .offset(x: 6, y: -6)
+                            .offset(x: 12, y: -12)
                             .accessibilityLabel("Remove \(attachment.label)")
                         }
                         Text(attachment.label.dropFirst().dropLast())
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.top, 8)
+            .padding(.top, 12)
         }
     }
 }
@@ -673,7 +816,8 @@ struct AttachmentStrip: View {
 /// model, the effort, the tools and the sandbox of the next runs.
 struct ComposerOptions: View {
     @Environment(AppModel.self) private var app
-    let modelTitle: String
+    /// The next prompt's model; nil until it is known.
+    let modelTitle: String?
     /// A model was chosen for the session, not left to its default.
     let chosen: Bool
     var pickModel: () -> Void
@@ -685,9 +829,11 @@ struct ComposerOptions: View {
                 Button(action: pickModel) {
                     HStack(spacing: 5) {
                         Image(systemName: "cpu")
-                        Text(modelTitle)
+                        // Until the model is known, the place of its name.
+                        Text(modelTitle ?? "Default model")
                             .lineLimit(1)
                             .truncationMode(.middle)
+                            .redacted(reason: modelTitle == nil ? .placeholder : [])
                         Image(systemName: "chevron.up.chevron.down")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.secondary)
@@ -696,7 +842,7 @@ struct ComposerOptions: View {
                     .foregroundStyle(chosen ? Color.kouAccent : .primary)
                 }
                 .buttonStyle(.glass)
-                .accessibilityLabel("Model: \(modelTitle)")
+                .accessibilityLabel(modelTitle.map { "Model: \($0)" } ?? "Model")
 
                 Menu {
                     Picker("Effort", selection: effortChoice) {
@@ -820,6 +966,44 @@ enum Effort {
     }
 }
 
+/// PushEnd tells when the push that brought its screen is over, as UIKit
+/// tells its controllers — SwiftUI's onAppear comes as the push starts — and
+/// at once where the screen came without one.
+private struct PushEnd: UIViewControllerRepresentable {
+    var ended: () -> Void
+
+    func makeUIViewController(context: Context) -> Controller {
+        Controller(ended: ended)
+    }
+
+    func updateUIViewController(_ controller: Controller, context: Context) {
+        controller.ended = ended
+    }
+
+    final class Controller: UIViewController {
+        var ended: () -> Void
+
+        init(ended: @escaping () -> Void) {
+            self.ended = ended
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) is not used")
+        }
+
+        override func loadView() {
+            view = UIView()
+            view.isUserInteractionEnabled = false
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            ended()
+        }
+    }
+}
+
 /// BarBase is what the composer stands on: the page's own ground, from a
 /// little above the bar down to the screen's foot, as the cockpit's dock
 /// stands below its transcript. The glass of the controls takes its shade
@@ -830,7 +1014,7 @@ struct BarBase: View {
     static let fade: CGFloat = 18
 
     var body: some View {
-        let ground = Color(uiColor: .systemBackground)
+        let ground = Color.kouGround
         VStack(spacing: 0) {
             LinearGradient(colors: [ground.opacity(0), ground], startPoint: .top, endPoint: .bottom)
                 .frame(height: Self.fade)
@@ -888,6 +1072,29 @@ private struct DraftWatch: ViewModifier {
     }
 }
 
+/// Dictation is what the composer held as dictation started, and what
+/// dictation wrote in it last.
+private final class Dictation {
+    let base: String
+    var written: String
+
+    init(base: String) {
+        self.base = base
+        written = base
+    }
+}
+
+/// DictationWatch tells of the words dictation hears as they come, where
+/// only it depends on them.
+private struct DictationWatch: ViewModifier {
+    let voice: VoiceInput
+    var heard: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content.onChange(of: voice.transcript) { _, words in heard(words) }
+    }
+}
+
 /// JumpButton takes the transcript back to its end, as the page's "N new ↓".
 struct JumpButton: View {
     let unseen: Int
@@ -909,9 +1116,9 @@ struct JumpButton: View {
             .contentShape(.capsule)
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .capsule)
+        .glassEffect(.regular.interactive(), in: .cornerCapsule)
         .animation(.snappy, value: unseen)
-        .accessibilityLabel(unseen > 0 ? "\(unseen) new entries, jump to the latest" : "Jump to the latest")
+        .accessibilityLabel(unseen > 0 ? "\(unseen) new \(unseen == 1 ? "entry" : "entries"), jump to the latest" : "Jump to the latest")
     }
 }
 
@@ -920,11 +1127,18 @@ struct ActivityRow: View {
     let activity: String?
     let started: Date?
     let reconnecting: Bool
+    /// The spinner is a new one each time the row shows. The transcript's
+    /// List gives the cell of a row taken away to the next row of its kind,
+    /// spinner and all: the row of a run that ended came back for the next
+    /// run — or for this one, followed anew — with UIKit's spinner stopped,
+    /// and so hidden, beside "Thinking".
+    @State private var spinner = 0
 
     var body: some View {
         HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
+                .id(spinner)
             Text(reconnecting ? "Reconnecting…" : (activity ?? "Working"))
                 .font(.subheadline.weight(.medium))
                 .lineLimit(1)
@@ -937,8 +1151,9 @@ struct ActivityRow: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .glassEffect(.regular.tint(Color.kouAccent.opacity(0.12)), in: .capsule)
+        .glassEffect(.regular.tint(Color.kouAccent.opacity(0.12)), in: .cornerCapsule)
         .animation(.smooth, value: activity)
+        .onAppear { spinner &+= 1 }
     }
 }
 
@@ -1006,7 +1221,7 @@ struct QueueView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.fill.quaternary, in: .rect(cornerRadius: 16))
+        .background(.fill.quaternary, in: .rect(cornerRadius: .corner(16)))
     }
 
     @ViewBuilder
@@ -1055,7 +1270,7 @@ struct NoticeBanner: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: 18))
+        .glassEffect(.regular, in: .rect(cornerRadius: .corner(18)))
         .task(id: notice.id) {
             try? await Task.sleep(for: .seconds(notice.isError ? 7 : 4))
             if !Task.isCancelled { dismiss() }
@@ -1080,100 +1295,135 @@ struct Composer: View {
     /// starts and stops it.
     var listening: VoiceInput.State? = nil
     var dictate: () -> Void = {}
-    /// Whether what the composer holds is what dictation wrote: the
-    /// microphone stays for more of it, and goes once the user types.
-    var dictated = false
+    /// Whether the microphone stays by the send button: once dictation
+    /// wrote in the composer, for more of it, until the composer is
+    /// emptied — typed over, it does not go from under the fingers.
+    @State private var stays = false
     @Namespace private var glass
 
     // Stops at the first letter: a long text is not copied to say so.
     private var empty: Bool { !text.contains { !$0.isWhitespace } }
     private var working: Bool { phase == .running || phase == .stopping }
 
-    /// The microphone is there while the composer is empty, or holds what
-    /// was said, and while dictation goes.
-    private var mic: Bool {
-        guard let listening, !external else { return false }
-        return listening != .idle || empty || dictated
-    }
+    /// Whether dictation is taken here.
+    private var dictates: Bool { listening != nil && !external }
+    /// Whether dictation goes: starting, listening or finishing.
+    private var dictating: Bool { dictates && listening != .idle }
+
+    // The microphone and the send button share the end of the row: an
+    // empty composer has the microphone there, one with text the send
+    // button, in its place — the first key does not change the width of
+    // the field, which laid its text out again at every frame of the change
+    // and held the keys typed meanwhile. Both are there while dictation
+    // goes, and after, for more of it.
+
+    /// The microphone is there while the composer is empty, while dictation
+    /// goes, and after it, until the composer is emptied.
+    private var mic: Bool { dictates && (empty || dictating || stays) }
+    /// The send button is there but where the microphone has its place
+    /// alone.
+    private var sends: Bool { !dictates || !empty || dictating || stays }
 
     var body: some View {
-        GlassEffectContainer(spacing: 10) {
-            HStack(alignment: .bottom, spacing: 10) {
-                Menu {
-                    Button("Photo Library", systemImage: "photo.on.rectangle", action: pickPhotos)
-                    Button("Paste Image", systemImage: "doc.on.clipboard", action: paste)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 26, height: 30)
-                }
-                .buttonStyle(.glass)
-                .buttonBorderShape(.circle)
-                .disabled(external || images >= 20)
-                .glassEffectID("attach", in: glass)
-                .accessibilityLabel("Add an image")
+        HStack(alignment: .bottom, spacing: 10) {
+            Menu {
+                Button("Photo Library", systemImage: "photo.on.rectangle", action: pickPhotos)
+                Button("Paste Image", systemImage: "doc.on.clipboard", action: paste)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 26, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .disabled(external || images >= 20)
+            .accessibilityLabel("Add an image")
 
-                ComposerField(text: $text, placeholder: placeholder, editable: !external)
-                    .frame(minHeight: 46)
-                    .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 23))
-                    .glassEffectID("field", in: glass)
+            ComposerField(text: $text, placeholder: placeholder, editable: !external)
+                .frame(minHeight: 46)
+                // Its own glass, out of the buttons' container: in it, the
+                // text view went with the glass the buttons morphed in —
+                // drawn again at every frame, at times under the glass,
+                // blurred or not at all, the field's outline left empty.
+                .glassEffect(.regular, in: .rect(cornerRadius: .corner(23)))
 
-                if mic, let listening {
-                    Button(action: dictate) {
-                        Image(systemName: listening == .listening ? "waveform" : "mic")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(listening == .idle ? Color.primary : Color.kouAccent)
-                            .symbolEffect(.variableColor.iterative, isActive: listening == .listening)
-                            .symbolEffect(.pulse, isActive: listening == .starting || listening == .finishing)
-                            .frame(width: 26, height: 30)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .disabled(listening == .finishing)
-                    .glassEffectID("mic", in: glass)
-                    .accessibilityLabel(listening == .idle ? "Dictate" : "Stop dictating")
-                }
-
-                if working {
-                    Button(action: stop) {
-                        Image(systemName: phase == .stopping ? "hourglass" : "stop.fill")
-                            .font(.body.weight(.semibold))
-                            .frame(width: 26, height: 30)
-                    }
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.circle)
-                    .disabled(phase == .stopping)
-                    .glassEffectID("stop", in: glass)
-                    .accessibilityLabel("Stop the run")
-                }
-
-                if !working || !empty {
-                    Button {
-                        send(false)
-                    } label: {
-                        Image(systemName: working ? "text.badge.plus" : "arrow.up")
-                            .font(.body.weight(.bold))
-                            .frame(width: 26, height: 30)
-                    }
-                    .buttonStyle(.glassProminent)
-                    .buttonBorderShape(.circle)
-                    .disabled(empty || external || phase == .starting)
-                    .glassEffectID("send", in: glass)
-                    .accessibilityLabel(working ? "Queue the message" : "Send")
-                    .contextMenu {
-                        if working {
-                            Button("Put to the agent now", systemImage: "bolt.fill") { send(true) }
-                            Button("Queue for after this run", systemImage: "text.badge.plus") { send(false) }
-                        }
-                    }
+            GlassEffectContainer(spacing: 10) {
+                HStack(alignment: .bottom, spacing: 10) {
+                    buttons
                 }
             }
-            .animation(.smooth(duration: 0.3), value: working)
-            .animation(.smooth(duration: 0.3), value: empty)
-            .animation(.smooth(duration: 0.3), value: mic)
         }
+        .animation(.smooth(duration: 0.3), value: working)
+        .animation(.smooth(duration: 0.3), value: empty)
+        .animation(.smooth(duration: 0.3), value: mic)
+        .animation(.smooth(duration: 0.3), value: sends)
         .padding(.horizontal, 12)
         .padding(.bottom, 8)
+        .onChange(of: dictating) { _, dictating in
+            if dictating { stays = true }
+        }
+        .onChange(of: empty && !dictating) { _, emptied in
+            if emptied { stays = false }
+        }
+    }
+
+    /// Stop, the microphone and send, at the end of the row: one goes into
+    /// another in their glass.
+    @ViewBuilder
+    private var buttons: some View {
+        if working {
+            Button(action: stop) {
+                Image(systemName: phase == .stopping ? "hourglass" : "stop.fill")
+                    .font(.body.weight(.semibold))
+                    .frame(width: 26, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .disabled(phase == .stopping)
+            .glassEffectID("stop", in: glass)
+            .accessibilityLabel("Stop the run")
+        }
+
+        if mic, let listening {
+            Button(action: dictate) {
+                Image(systemName: listening == .listening ? "waveform" : "mic")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(listening == .idle ? Color.primary : Color.kouAccent)
+                    .symbolEffect(.variableColor.iterative, isActive: listening == .listening)
+                    .symbolEffect(.pulse, isActive: listening == .starting || listening == .finishing)
+                    .frame(width: 26, height: 30)
+            }
+            .buttonStyle(.glass)
+            .buttonBorderShape(.circle)
+            .disabled(listening == .finishing)
+            .glassEffectID("mic", in: glass)
+            .accessibilityLabel(listening == .idle ? "Dictate" : "Stop dictating")
+        }
+
+        if sends {
+            let blocked = empty || external || phase == .starting
+            Button {
+                send(false)
+            } label: {
+                Image(systemName: working ? "text.badge.plus" : "arrow.up")
+                    .font(.body.weight(.bold))
+                    .frame(width: 26, height: 30)
+            }
+            .buttonStyle(.glassProminent)
+            .buttonBorderShape(.circle)
+            .disabled(blocked)
+            // A prominent glass button is drawn alike disabled or
+            // not: grey says there is nothing to send yet.
+            .tint(blocked ? Color(uiColor: .systemGray3) : nil)
+            .glassEffectID("send", in: glass)
+            .accessibilityLabel(working ? "Queue the message" : "Send")
+            .contextMenu {
+                if working {
+                    Button("Put to the agent now", systemImage: "bolt.fill") { send(true) }
+                    Button("Queue for after this run", systemImage: "text.badge.plus") { send(false) }
+                }
+            }
+        }
     }
 
     private var placeholder: String {
@@ -1265,7 +1515,19 @@ struct ComposerField: UIViewRepresentable {
         let line = font.lineHeight
         let vertical = Self.inset.top + Self.inset.bottom
         let most = ceil(line * CGFloat(Self.maxLines) + vertical)
-        let least = ceil(line + vertical)
+        let available = max(1, width - Self.inset.left - Self.inset.right)
+        func measure(_ text: String) -> CGFloat {
+            let rect = (text as NSString).boundingRect(
+                with: CGSize(width: available, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: font],
+                context: nil)
+            return ceil(rect.height) + vertical
+        }
+        // A line measured as a text's is: the empty field a point shorter
+        // than its first letter made it grew by it, animated, the text
+        // scrolled a point out of place meanwhile.
+        let least = max(ceil(line + vertical), measure("X"))
         let length = view.textStorage.length
         let height: CGFloat
         if length == 0 {
@@ -1273,17 +1535,11 @@ struct ComposerField: UIViewRepresentable {
         } else if length > Self.measured {
             height = most
         } else {
-            let available = max(1, width - Self.inset.left - Self.inset.right)
             let text = view.textStorage.string
             // A last empty line, after a newline, counts too.
-            let measured = text.hasSuffix("\n") ? text + " " : text
-            let rect = (measured as NSString).boundingRect(
-                with: CGSize(width: available, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading],
-                attributes: [.font: font],
-                context: nil)
-            height = min(most, max(least, ceil(rect.height) + vertical))
+            height = min(most, max(least, measure(text.hasSuffix("\n") ? text + " " : text)))
         }
+        (view as? ComposerTextView)?.tallest = most
         return CGSize(width: width, height: height)
     }
 
@@ -1349,12 +1605,59 @@ final class ComposerTextView: UITextView {
 
     override init(frame: CGRect, textContainer: NSTextContainer?) {
         super.init(frame: frame, textContainer: textContainer)
-        addSubview(placeholder)
+        setUp()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
+        setUp()
+    }
+
+    private func setUp() {
         addSubview(placeholder)
+        // Its offset is its text's alone: no inset of a bar or the keyboard
+        // comes into where it may be.
+        contentInsetAdjustmentBehavior = .never
+    }
+
+    // The field's height follows its text a moment late — at SwiftUI's next
+    // layout, or over an animation — and the text view scrolled to its caret
+    // meanwhile: a line more scrolled the first one out of view as the field
+    // grew, and a field that shrank, its text sent or deleted, stayed
+    // scrolled past the end of what it held — empty to the eye, its outline
+    // left, with the text above it. Its offset is kept where the text is.
+
+    /// The tallest the field gets, its insets in: a text no taller is shown
+    /// whole, from its top, the field growing to it.
+    var tallest: CGFloat = .greatestFiniteMagnitude {
+        didSet { if tallest != oldValue { setNeedsLayout() } }
+    }
+    /// Whether the view was kept from scrolling to its caret: it is taken
+    /// there once it can be.
+    private var held = false
+
+    override var contentOffset: CGPoint {
+        get { super.contentOffset }
+        set { super.contentOffset = kept(newValue) }
+    }
+
+    override func setContentOffset(_ offset: CGPoint, animated: Bool) {
+        super.setContentOffset(kept(offset), animated: animated)
+    }
+
+    override var contentSize: CGSize {
+        didSet { if contentSize != oldValue { setNeedsLayout() } }
+    }
+
+    /// kept is the offset the text can be at: its top while it fits the
+    /// field as tall as the field gets, and never past its end.
+    private func kept(_ offset: CGPoint) -> CGPoint {
+        // A drag, and its bounce, go as the finger takes them.
+        guard !isTracking, !isDecelerating else { return offset }
+        let end = max(0, contentSize.height - bounds.height)
+        let y = contentSize.height <= tallest + 1 ? 0 : min(max(0, offset.y), end)
+        if y < offset.y - 0.5 { held = true }
+        return CGPoint(x: offset.x, y: y)
     }
 
     override func layoutSubviews() {
@@ -1365,8 +1668,134 @@ final class ComposerTextView: UITextView {
             placeholder.frame = CGRect(x: inset.left, y: inset.top,
                                        width: max(0, bounds.width - inset.left - inset.right), height: height)
         }
-        guard bounds.height != shownHeight else { return }
+        // The field's size, or its text's, changed: the text goes back where
+        // it can be, and the caret into view if it was kept from it.
+        let offset = kept(contentOffset)
+        if offset != contentOffset { super.contentOffset = offset }
+        let resized = bounds.height != shownHeight
         shownHeight = bounds.height
-        if isFirstResponder { scrollRangeToVisible(selectedRange) }
+        guard isFirstResponder, resized || held else { return }
+        held = false
+        scrollRangeToVisible(selectedRange)
+    }
+}
+
+/// PictureLightbox shows a picture large over the screen, which shows through
+/// dimmed, as the cockpit does: whole, never larger than it is, with what it
+/// is under it. A tap anywhere, on it or around it, puts it back.
+private struct PictureLightbox: View {
+    let client: RelayClient
+    let picture: SessionScreen.Viewing
+    /// Takes it away, once it has faded out.
+    let close: () -> Void
+    @State private var image: UIImage?
+    @State private var failed = false
+    /// Whether it is in view: it fades in as it comes, and out as it goes.
+    @State private var shown = false
+
+    init(client: RelayClient, picture: SessionScreen.Viewing, close: @escaping () -> Void) {
+        self.client = client
+        self.picture = picture
+        self.close = close
+        // The thumbnail tapped has read it: it comes at once.
+        _image = State(initialValue: PictureCache.shared.object(forKey: RemoteImage.key(picture.path, []) as NSString))
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(shown ? 0.6 : 0)
+                .ignoresSafeArea()
+            GeometryReader { space in
+                VStack(spacing: 12) {
+                    content(within: CGSize(width: space.size.width - 32, height: space.size.height - 72))
+                    caption
+                }
+                .frame(width: space.size.width, height: space.size.height)
+            }
+            .scaleEffect(shown ? 1 : 0.96)
+            .offset(y: shown ? 0 : 8)
+            .opacity(shown ? 1 : 0)
+        }
+        .contentShape(.rect)
+        .onTapGesture(perform: hide)
+        .environment(\.colorScheme, .dark)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Picture \(picture.title)")
+        .accessibilityValue(picture.about ?? "")
+        .accessibilityHint("Puts it back")
+        .accessibilityAddTraits([.isImage, .isModal])
+        .accessibilityAction(.default) { hide() }
+        .accessibilityAction(.escape) { hide() }
+        .onAppear {
+            withAnimation(.smooth(duration: 0.24)) { shown = true }
+        }
+        .task { await load() }
+    }
+
+    @ViewBuilder private func content(within box: CGSize) -> some View {
+        if let image {
+            let size = Self.fit(image.size, within: box)
+            Image(uiImage: image)
+                .resizable()
+                .frame(width: size.width, height: size.height)
+                .clipShape(.rect(cornerRadius: .corner(12)))
+                .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.white.opacity(0.16), lineWidth: 0.5))
+                .shadow(color: .black.opacity(0.5), radius: 30, y: 12)
+        } else if failed {
+            Label("The picture did not load", systemImage: "photo.badge.exclamationmark")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        } else {
+            ProgressView()
+        }
+    }
+
+    /// "before.png  816×900 PNG · 14 KB", as the cockpit writes it under it:
+    /// on a dark pill of its own, read over whatever the screen shows there.
+    private var caption: some View {
+        HStack(spacing: 8) {
+            Text(picture.title)
+                .fontWeight(.semibold)
+                .foregroundStyle(.primary)
+            if let about = picture.about {
+                Text(about)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.system(.caption, design: .monospaced))
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.6), in: .cornerCapsule)
+        .padding(.horizontal, 16)
+    }
+
+    /// fit is the size the picture is shown at: whole within the box, and
+    /// never larger than it is.
+    static func fit(_ size: CGSize, within box: CGSize) -> CGSize {
+        guard size.width > 0, size.height > 0, box.width > 0, box.height > 0 else { return .zero }
+        let scale = min(box.width / size.width, box.height / size.height, 1)
+        return CGSize(width: max((size.width * scale).rounded(), 1), height: max((size.height * scale).rounded(), 1))
+    }
+
+    private func load() async {
+        guard image == nil else { return }
+        do {
+            image = try await RemoteImage.fetch(client: client, path: picture.path, query: [], retryMissing: true).0
+        } catch is CancellationError {
+        } catch {
+            failed = true
+        }
+    }
+
+    /// hide fades the picture and the dimming out, then takes them away.
+    private func hide() {
+        guard shown else { return }
+        withAnimation(.easeOut(duration: 0.16)) {
+            shown = false
+        } completion: {
+            close()
+        }
     }
 }

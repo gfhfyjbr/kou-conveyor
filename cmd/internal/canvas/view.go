@@ -57,7 +57,15 @@ type ViewNode struct {
 	Pending   int      `json:"pending,omitzero"`
 	Session   string   `json:"session,omitzero"`
 	Text      string   `json:"text,omitzero"` // a note's
+	// QuietS is how long, in seconds, a busy kou agent has shown nothing —
+	// no entry, no change of what it does — from agentQuietAfter on: it waits
+	// on a long command, or it is stuck.
+	QuietS int `json:"quiet_s,omitzero"`
 }
+
+// agentQuietAfter is how long a busy kou agent shows nothing before the
+// view says it is quiet.
+const agentQuietAfter = 10 * time.Minute
 
 // ViewEdge is an edge as an agent sees it.
 type ViewEdge struct {
@@ -102,6 +110,11 @@ func (c *Canvas) view(me string, scope string, full bool) View {
 			if st.terminal != nil {
 				item.Program = st.terminal.Info().Running
 			}
+			if n.Kind == KindAgent && st.status.State == StateBusy && !st.active.IsZero() {
+				if quiet := time.Since(st.active); quiet >= agentQuietAfter {
+					item.QuietS = int(quiet / time.Second)
+				}
+			}
 		}
 		if n.Kind == KindNote && full {
 			item.Text = n.configString("text")
@@ -113,7 +126,7 @@ func (c *Canvas) view(me string, scope string, full bool) View {
 		}
 	}
 	for _, e := range c.doc.Edges {
-		item := ViewEdge{ID: e.ID, From: e.From.String(), To: e.To.String(), Mode: e.mode(), Deliver: e.deliver()}
+		item := ViewEdge{ID: e.ID, From: e.From.String(), To: e.To.String(), Mode: e.mode(), Deliver: e.deliverTo(c.doc.node(e.To.Node))}
 		if full {
 			item.Template = e.Template
 		}
@@ -176,13 +189,18 @@ type WaitResult struct {
 	Status   Status `json:"status"`
 	Outputs  int    `json:"outputs"`
 	TimedOut bool   `json:"timed_out,omitzero"`
+	// NoAnswer says why the node's last run ended without an answer, when
+	// it did and the node gave no output since: a wait for an output ends
+	// so too.
+	NoAnswer string `json:"no_answer,omitzero"`
 }
 
 // maxWait bounds a wait.
 const maxWait = 30 * time.Minute
 
 // wait waits for a node to be idle, to give an output (after outputs it
-// gave already: after < 0 is the outputs it has now), or to end.
+// gave already: after < 0 is the outputs it has now) or end a run without
+// one, or to end.
 func (c *Canvas) wait(ctx context.Context, id, until string, after int, timeout time.Duration) (WaitResult, error) {
 	switch until {
 	case "idle", "output", "exit":
@@ -192,6 +210,7 @@ func (c *Canvas) wait(ctx context.Context, id, until string, after int, timeout 
 	timeout = min(max(timeout, time.Second), maxWait)
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
+	unanswered := -1 // the runs without an answer when the wait began
 	for {
 		c.mu.Lock()
 		st := c.states[id]
@@ -202,7 +221,10 @@ func (c *Canvas) wait(ctx context.Context, id, until string, after int, timeout 
 		if after < 0 {
 			after = st.outputs
 		}
-		result := WaitResult{Node: id, Status: st.status, Outputs: st.outputs}
+		if unanswered < 0 {
+			unanswered = st.unanswered
+		}
+		result := WaitResult{Node: id, Status: st.status, Outputs: st.outputs, NoAnswer: st.noAnswer}
 		done := false
 		switch until {
 		case "idle":
@@ -213,7 +235,7 @@ func (c *Canvas) wait(ctx context.Context, id, until string, after int, timeout 
 				})
 			}
 		case "output":
-			done = st.outputs > after
+			done = st.outputs > after || st.unanswered > unanswered
 		case "exit":
 			done = st.status.State == StateExited || st.status.State == StateStopped
 		}
@@ -241,6 +263,9 @@ type WaitNode struct {
 	Outputs int    `json:"outputs"`
 	// Gone says that the node was removed.
 	Gone bool `json:"gone,omitzero"`
+	// NoAnswer says why the node's last run ended without an answer, when
+	// it did and the node gave no output since.
+	NoAnswer string `json:"no_answer,omitzero"`
 }
 
 // WaitAnyResult is how a wait for several nodes ended: Fired is the node
@@ -259,13 +284,15 @@ const maxWaitNodes = 64
 
 // waitAny waits for something to happen to any of several nodes:
 //
-//	answer (output) one of them gives an output past the cursor
+//	answer (output) one of them gives an output past the cursor, or ends
+//	                a run without the answer the canvas asked for: the
+//	                model refused, the run was stopped or failed
 //	idle            all of them are idle — the last to stop working fires
 //	exit            one of them exits, or is stopped or removed
 //	any             one of them gives an output, changes its state, or goes
 //
-// after is the cursor a wait gave as next ("node:outputs,…"); the outputs of
-// a node it does not name count from now.
+// after is the cursor a wait gave as next ("node:outputs[/unanswered],…");
+// the outputs of a node it does not name count from now.
 func (c *Canvas) waitAny(ctx context.Context, ids []string, until, after string, timeout time.Duration) (WaitAnyResult, error) {
 	switch until {
 	case "", "answer":
@@ -312,11 +339,11 @@ func (c *Canvas) waitAny(ctx context.Context, ids []string, until, after string,
 			}
 			seen, ok := cursor[id]
 			if !ok {
-				seen = st.outputs
+				seen = st.waitMark()
 				cursor[id] = seen
 			}
-			result.Nodes = append(result.Nodes, WaitNode{Node: id, Title: n.Title, Status: st.status, Outputs: st.outputs})
-			next = append(next, fmt.Sprintf("%s:%d", id, st.outputs))
+			result.Nodes = append(result.Nodes, WaitNode{Node: id, Title: n.Title, Status: st.status, Outputs: st.outputs, NoAnswer: st.noAnswer})
+			next = append(next, id+":"+st.waitMark().String())
 			if first {
 				start[id] = st.status.State
 			}
@@ -327,9 +354,10 @@ func (c *Canvas) waitAny(ctx context.Context, ids []string, until, after string,
 			if fired != "" {
 				continue
 			}
+			moved := st.outputs > seen.outputs || st.unanswered > seen.unanswered
 			switch until {
 			case "answer", "output":
-				if st.outputs > seen {
+				if moved {
 					fired = id
 				}
 			case "exit":
@@ -337,7 +365,7 @@ func (c *Canvas) waitAny(ctx context.Context, ids []string, until, after string,
 					fired = id
 				}
 			case "any":
-				if st.outputs > seen || st.status.State != start[id] {
+				if moved || st.status.State != start[id] {
 					fired = id
 				}
 			}
@@ -389,17 +417,41 @@ func (c *Canvas) idleLocked(id string, st *nodeState) bool {
 	return false
 }
 
-// parseCursor reads a wait's cursor: "node:outputs,…".
-func parseCursor(after string) map[string]int {
-	cursor := map[string]int{}
+// waitMark is where a wait's cursor stands at a node: the outputs it gave,
+// and its runs that ended without an answer.
+type waitMark struct{ outputs, unanswered int }
+
+func (st *nodeState) waitMark() waitMark { return waitMark{st.outputs, st.unanswered} }
+
+// String is the mark in a cursor: "outputs", or "outputs/unanswered" once a
+// run ended without an answer.
+func (m waitMark) String() string {
+	if m.unanswered == 0 {
+		return strconv.Itoa(m.outputs)
+	}
+	return strconv.Itoa(m.outputs) + "/" + strconv.Itoa(m.unanswered)
+}
+
+// parseCursor reads a wait's cursor: "node:outputs[/unanswered],…".
+func parseCursor(after string) map[string]waitMark {
+	cursor := map[string]waitMark{}
 	for _, part := range strings.Split(after, ",") {
 		id, count, ok := strings.Cut(strings.TrimSpace(part), ":")
 		if !ok {
 			continue
 		}
-		if n, err := strconv.Atoi(count); err == nil && n >= 0 {
-			cursor[id] = n
+		outputs, unanswered, both := strings.Cut(count, "/")
+		n, err := strconv.Atoi(outputs)
+		if err != nil || n < 0 {
+			continue
 		}
+		m := waitMark{outputs: n}
+		if both {
+			if m.unanswered, err = strconv.Atoi(unanswered); err != nil || m.unanswered < 0 {
+				continue
+			}
+		}
+		cursor[id] = m
 	}
 	return cursor
 }

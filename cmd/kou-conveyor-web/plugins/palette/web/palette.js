@@ -7,7 +7,7 @@ export default function activate(cockpit) {
   const { h } = cockpit;
   const session = cockpit.use('session');
   const service = (name) => (cockpit.has(name) ? cockpit.use(name) : null);
-  const ui = { items: [], shown: [], cursor: 0 };
+  const ui = { items: [], shown: [], more: 0, cursor: 0 };
 
   const input = h('input', {
     id: 'palette-input', type: 'text', placeholder: 'Type a command or a session…', autocomplete: 'off', spellcheck: 'false',
@@ -72,6 +72,9 @@ export default function activate(cockpit) {
   let before = null;
 
   function open() {
+    // A menu or the model picker open would cover the palette.
+    service('menu')?.close?.();
+    service('models')?.closePicker?.();
     before = document.activeElement !== document.body ? document.activeElement : null;
     ui.items = items();
     input.value = '';
@@ -92,12 +95,13 @@ export default function activate(cockpit) {
 
   function filter() {
     const query = input.value.trim().toLowerCase();
-    ui.shown = ui.items
+    const found = ui.items
       .map((item) => ({ item, score: Math.max(score(query, item.label), score(query, `${item.group} ${item.detail || ''}`) * 0.5) }))
       .filter((x) => x.score > 0)
       .sort((a, b) => (query ? b.score - a.score : 0))
-      .map((x) => x.item)
-      .slice(0, 60);
+      .map((x) => x.item);
+    ui.shown = found.slice(0, 60);
+    ui.more = found.length - ui.shown.length;
     ui.cursor = 0;
     render();
   }
@@ -112,14 +116,31 @@ export default function activate(cockpit) {
       }
       nodes.push(h('li', {
         role: 'option', id: `palette-${n}`, 'aria-selected': String(n === ui.cursor),
-        onmousemove: () => { if (ui.cursor !== n) { ui.cursor = n; render(); } },
+        onmousemove: () => { if (ui.cursor !== n) select(n, false); },
         onclick: () => choose(n),
       }, h('span', { class: 'i', text: item.icon || '' }), h('span', { class: 'l', text: item.label }), item.hint ? h('kbd', { text: item.hint }) : h('span')));
     });
     if (!ui.shown.length) nodes.push(h('li', { class: 'none', role: 'presentation', text: 'Nothing matches' }));
+    // What the list leaves out, it says: the query finds it.
+    else if (ui.more) nodes.push(h('li', { class: 'none', role: 'presentation', text: `…${ui.more} more — refine the query` }));
     list.replaceChildren(...nodes);
-    list.setAttribute('aria-activedescendant', `palette-${ui.cursor}`);
-    list.querySelector(`#palette-${ui.cursor}`)?.scrollIntoView({ block: 'nearest' });
+    select(ui.cursor, true);
+  }
+
+  // select puts the cursor on an item, in place: the pointer moves it to
+  // the item under it, and only the arrows scroll the list. The field names
+  // the item the cursor is on, and none when nothing matches.
+  function select(n, scroll) {
+    list.querySelector(`#palette-${ui.cursor}`)?.setAttribute('aria-selected', 'false');
+    ui.cursor = n;
+    const li = list.querySelector(`#palette-${n}`);
+    if (!li) {
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+    li.setAttribute('aria-selected', 'true');
+    input.setAttribute('aria-activedescendant', li.id);
+    if (scroll) li.scrollIntoView({ block: 'nearest' });
   }
 
   function choose(n) {
@@ -133,11 +154,14 @@ export default function activate(cockpit) {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       const n = ui.shown.length;
-      if (n) ui.cursor = (ui.cursor + (event.key === 'ArrowDown' ? 1 : n - 1)) % n;
-      render();
+      if (n) select((ui.cursor + (event.key === 'ArrowDown' ? 1 : n - 1)) % n, true);
     } else if (event.key === 'Enter') {
       event.preventDefault();
       choose(ui.cursor);
+    } else if (event.key === 'Tab') {
+      // The palette has one field: Tab would take the focus out of it, under
+      // the dimmed page.
+      event.preventDefault();
     }
   });
 

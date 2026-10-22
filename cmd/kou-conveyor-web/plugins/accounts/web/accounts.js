@@ -1,7 +1,8 @@
 // accounts: the Accounts view (layout.view "accounts", #/accounts): the
-// gateway's connection, accounts and endpoints (gateway.js) in the stage,
-// its filters in the rail, the count on its tab, and its dialogs to sign in
-// and to add an endpoint. Its second tab, Usage (usage.js, #/accounts/usage,
+// gateway's connection, accounts and endpoints (gateway.js) and the models'
+// context windows (contexts.js) in the stage, its filters in the rail, the
+// count on its tab, and its dialogs to sign in, to add an endpoint and to
+// set a context window. Its second tab, Usage (usage.js, #/accounts/usage,
 // U), is what the gateway's requests used and what that comes to as API
 // credits, with the prices tokens count at. Once the page opens, it offers
 // a newer CLIProxyAPI than the server's, if one is out (update.js). It
@@ -9,12 +10,15 @@
 // addAccount(provider), addEndpoint(kind), refresh(), providers(),
 // checkUpdate().
 import { createAccounts } from './gateway.js';
+import { createContexts } from './contexts.js';
 import { money } from './format.js';
 import { createUpdates } from './update.js';
 import { USAGE_RANGES, createUsage } from './usage.js';
 
 const MENU = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.4"/></svg>';
 const REFRESH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13 8a5 5 0 1 1-1.5-3.55M13 2.5v3h-3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+// The view's icon, which its rail tab shows when the names do not fit: a key.
+const ACCOUNTS_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="5" cy="8" r="3" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 8h6.5M12.5 8v2.5M10.5 8v2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 
 // The sign-ins the gateway offers, and the kinds of endpoint it takes, for
 // /accounts.
@@ -94,13 +98,14 @@ export default function activate(cockpit) {
         h('span', { class: 'run-state gw-state', id: 'gw-state', data: { state: 'starting' } }, h('i', { 'aria-hidden': 'true' }), h('b', { id: 'gw-word', text: 'Starting' })),
         h('span', { class: 'bar-group', data: { for: 'accounts' } }, range),
         h('span', { class: 'bar-group', data: { for: 'usage' }, hidden: true }, usageRange),
-        h('button', { class: 'icon', id: 'accounts-refresh', type: 'button', title: 'Refresh (R)', 'aria-label': 'Refresh', onclick: () => (tab === 'usage' ? usage.refresh() : panel.refresh()) }, svg(REFRESH)),
+        h('button', { class: 'icon', id: 'accounts-refresh', type: 'button', title: 'Refresh (R)', 'aria-label': 'Refresh', onclick: () => (tab === 'usage' ? usage.refresh() : (panel.refresh(), contexts.refresh())) }, svg(REFRESH)),
         h('span', { class: 'bar-group', data: { for: 'accounts' } }, addTop))),
     h('div', { class: 'accounts-scroll', id: 'accounts-scroll', role: 'tabpanel', 'aria-labelledby': 'accounts-tab-accounts' },
       h('div', { class: 'accounts-body' },
         h('div', { id: 'gw-card' }),
         h('div', { class: 'accounts-list', id: 'accounts-list' }),
-        h('div', { class: 'accounts-list', id: 'endpoints-list' }))),
+        h('div', { class: 'accounts-list', id: 'endpoints-list' }),
+        h('div', { class: 'accounts-list', id: 'models-list' }))),
     h('div', { class: 'accounts-scroll usage-scroll', id: 'usage-scroll', role: 'tabpanel', 'aria-labelledby': 'accounts-tab-usage', hidden: true },
       h('div', { class: 'accounts-body usage-body', id: 'usage-body' })));
 
@@ -113,8 +118,9 @@ export default function activate(cockpit) {
   const signin = dialog('signin', 'signin', 'signin', 'Add account');
   const endpoint = dialog('endpoint-dialog', 'endpoint', 'endpoint-form', 'Add endpoint');
   const price = dialog('price-dialog', 'price', 'price-form', 'Price');
+  const contextDialog = dialog('context-dialog', 'context', 'context-form', 'Context window');
   const files = h('input', { id: 'account-files', type: 'file', accept: '.json,application/json', multiple: true, hidden: true });
-  const roots = [rail, page, signin, endpoint, price, files];
+  const roots = [rail, page, signin, endpoint, price, contextDialog, files];
 
   // $ finds the view's own elements, in the page or not yet.
   const $ = (id) => {
@@ -133,11 +139,24 @@ export default function activate(cockpit) {
     return null;
   };
 
-  for (const [id, node, order] of [['signin', signin, 30], ['endpoint-dialog', endpoint, 31], ['price-dialog', price, 33], ['account-files', files, 32], ['gw-update', updates.overlay, 34]]) {
+  for (const [id, node, order] of [['signin', signin, 30], ['endpoint-dialog', endpoint, 31], ['price-dialog', price, 33], ['account-files', files, 32], ['gw-update', updates.overlay, 34], ['context-dialog', contextDialog, 35]]) {
     cockpit.ui.mount('overlays', { id, order, node });
   }
 
   // ---------------------------------------------------------------- the view
+
+  // The context window each model's runs take, listed after the endpoints.
+  const contexts = createContexts({
+    api: cockpit.api, toast: (text, kind, key) => cockpit.toast(text, kind, key), $,
+    openDialog: () => {
+      service('overlays')?.closeTop?.();
+      contextDialog.hidden = false;
+    },
+    closeDialog: () => { contextDialog.hidden = true; },
+    // A window changed: the composer's models show it.
+    onChange: () => service('models')?.stale?.(),
+  });
+  cockpit.onDispose(() => contexts.destroy());
 
   const panel = createAccounts({
     api: cockpit.api, toast: (text, kind, key) => cockpit.toast(text, kind, key), copy: (text, label) => cockpit.copy(text, label),
@@ -153,7 +172,10 @@ export default function activate(cockpit) {
       service('models')?.load?.();
     },
     // The gateway serves other models: an account or endpoint came or went.
-    onModels: () => service('models')?.stale?.(),
+    onModels: () => {
+      service('models')?.stale?.();
+      contexts.refresh();
+    },
     showUsage: (r) => showUsage(r),
   });
   cockpit.onDispose(() => panel.destroy());
@@ -211,12 +233,14 @@ export default function activate(cockpit) {
     if (!shown()) return;
     if (next === 'usage') {
       panel.close();
+      contexts.close();
       usage.open();
       // The bar's state of the gateway, and the cost on the tab.
       panel.refresh({ quiet: true });
     } else {
       usage.close();
       panel.open();
+      contexts.open();
     }
     if (changed) cockpit.render();
   }
@@ -251,13 +275,14 @@ export default function activate(cockpit) {
   }
 
   cockpit.contribute('layout.view', {
-    id: 'accounts', title: 'Accounts', order: 20, badge: count, rail, page,
+    id: 'accounts', title: 'Accounts', icon: ACCOUNTS_ICON, order: 20, badge: count, rail, page,
     tabTitle: 'Accounts: the subscriptions runs can use (A)',
     select: () => show(tab),
     shown: () => setTab(tab),
     hidden: () => {
       panel.close();
       usage.close();
+      contexts.close();
     },
   });
   cockpit.routes.register({ id: 'accounts', priority: 10, match: (hash) => hash.match(/^#\/accounts(?:\/(usage))?\/?$/), enter: (match) => {
@@ -277,6 +302,9 @@ export default function activate(cockpit) {
   cockpit.listen(price.querySelector('#price-close'), 'click', () => usage.closeDialog());
   cockpit.listen(price, 'mousedown', (event) => { if (event.target === price) usage.closeDialog(); });
   cockpit.contribute('overlay', { id: 'price', order: 33, modal: true, isOpen: () => !price.hidden, close: () => usage.closeDialog() });
+  cockpit.listen(contextDialog.querySelector('#context-close'), 'click', () => contexts.closeDialog());
+  cockpit.listen(contextDialog, 'mousedown', (event) => { if (event.target === contextDialog) contexts.closeDialog(); });
+  cockpit.contribute('overlay', { id: 'context', order: 35, modal: true, isOpen: () => !contextDialog.hidden, close: () => contexts.closeDialog() });
   cockpit.listen(signin.querySelector('#signin-close'), 'click', () => panel.closeSignIn());
   cockpit.listen(endpoint.querySelector('#endpoint-close'), 'click', () => panel.closeEndpoint());
   cockpit.listen(endpoint, 'mousedown', (event) => { if (event.target === endpoint) panel.closeEndpoint(); });
@@ -368,6 +396,7 @@ export default function activate(cockpit) {
         ? { group: 'Accounts', icon: '◧', label: 'Back to sessions', hint: 'U', order: 199, run: back }
         : { group: 'Accounts', icon: '$', label: 'Usage & API cost', hint: 'U', detail: 'Tokens by model and account, as API credits', order: 199, run: () => showUsage() },
       { group: 'Accounts', icon: '$', label: 'Set a model\'s price…', detail: 'What a million tokens of it cost as API credits', order: 205, run: () => { showUsage(); usage.openPrice(); } },
+      { group: 'Accounts', icon: '⇔', label: 'Set a model\'s context window…', detail: 'Typed, or as OpenRouter lists it', order: 205, run: () => { show('accounts'); contexts.openWindow(); } },
       { group: 'Accounts', icon: '+', label: 'Add account…', hint: '+', order: 201, run: () => addAccount() },
       ...panel.providers().map((p) => ({ group: 'Accounts', icon: '+', label: `Add account: ${p.name}`, detail: p.detail, order: 202, run: () => addAccount(p.id) })),
       { group: 'Accounts', icon: '↑', label: 'Import credential files…', order: 203, run: () => { show(); panel.pickFiles(); } },

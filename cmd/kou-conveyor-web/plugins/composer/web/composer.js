@@ -1,5 +1,6 @@
 // composer: the prompt, in the layout's dock, with the banner of a run that
-// did not finish and the activity of the run going on over it. Its row, under
+// did not finish, the activity of the run going on or, while it compacts the
+// context, the summary it writes over it instead. Its row, under
 // the text, ends with the buttons that send it: icons alone. It offers the
 // slots composer.above (over the text: suggestions, images) and composer.row
 // (beside the buttons: the model, the effort), and asks plugins through
@@ -50,6 +51,16 @@ export default function activate(cockpit) {
     activityText, activityClock,
     h('span', { class: 'activity-hint' }, h('kbd', { text: 'Esc' }), h('kbd', { text: 'Esc' }), ' stop'));
 
+  // While the run compacts the context, the summary it writes streams over
+  // the prompt: the end of it, in a few lines, and three bars until it starts.
+  const summaryPart = h('span', { class: 'compacting-part' });
+  const summaryBars = h('div', { class: 'compacting-bars', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'));
+  const summaryText = h('div', { class: 'compacting-text', hidden: true });
+  const summaryBody = h('div', { class: 'compacting-body' }, summaryBars, summaryText);
+  const compacting = h('section', { class: 'compacting', id: 'compacting', hidden: true, 'aria-label': 'The summary of the conversation, as it is written' },
+    h('div', { class: 'compacting-head' }, h('span', { class: 'compacting-mark', 'aria-hidden': 'true' }), h('span', { text: 'Compacting…' }), summaryPart),
+    summaryBody);
+
   const above = h('div', { class: 'slot-contents' });
   const input = h('textarea', {
     id: 'prompt', rows: '1', spellcheck: 'true', 'aria-label': 'Prompt', 'aria-autocomplete': 'list', 'aria-controls': 'commands', 'aria-expanded': 'false',
@@ -71,6 +82,7 @@ export default function activate(cockpit) {
 
   cockpit.ui.mount('dock', { id: 'resume', order: 10, node: resume });
   cockpit.ui.mount('dock', { id: 'activity', order: 20, node: activity });
+  cockpit.ui.mount('dock', { id: 'compacting', order: 25, node: compacting });
   cockpit.ui.mount('dock', { id: 'composer', order: 40, node: form });
   cockpit.ui.slot('composer.above', above);
   cockpit.ui.slot('composer.row', row);
@@ -192,6 +204,40 @@ export default function activate(cockpit) {
   });
   cockpit.on('session:view', (v, { reload } = {}) => { if (!reload) loadDraft(v); });
 
+  // ---------------------------------------------------------------- the summary
+
+  // SUMMARY_KEEP is how much of the end of a summary its block holds: more
+  // than its lines show, however wide they are.
+  const SUMMARY_KEEP = 2000;
+  let summaryDrawn = null;
+
+  // drawSummary shows what streamed of a compaction's summary (the session's
+  // view.compaction): the end of its latest piece — the thinking before it,
+  // or its text — without the tags around the analysis and the summary nor
+  // blank lines, which its few lines have no room for, with the part it is
+  // in.
+  function drawSummary(compaction) {
+    compacting.hidden = !compaction;
+    const piece = compaction ? [...compaction.pieces.values()].at(-1) || null : null;
+    if (!compaction || piece === summaryDrawn) return;
+    summaryDrawn = piece;
+    const raw = piece?.text || '';
+    const thinking = piece?.kind === 'reasoning';
+    summaryPart.textContent = thinking ? 'thinking' : raw.includes('<summary>') ? 'summary' : raw.includes('<analysis>') ? 'analysis' : '';
+    const text = raw
+      .replace(/<\/?(?:analysis|summary)>/g, '')
+      .replace(/<\/?[a-z]*$/, '') // a tag still coming
+      .replace(/\n\s*\n/g, '\n')
+      .trimStart()
+      .slice(-SUMMARY_KEEP);
+    compacting.dataset.kind = thinking ? 'reasoning' : 'assistant';
+    summaryBars.hidden = !!text;
+    summaryText.hidden = !text;
+    summaryText.textContent = text;
+    // The lines that went out of sight at the top fade out.
+    summaryBody.dataset.over = text && summaryText.offsetHeight > summaryBody.clientHeight ? 'true' : 'false';
+  }
+
   // ---------------------------------------------------------------- the banner
 
   function onResume() {
@@ -261,9 +307,13 @@ export default function activate(cockpit) {
       input.placeholder = placeholder;
       autosize(); // a placeholder of another length takes other lines
     }
-    activity.hidden = !busy;
+    // While the run compacts the context, the compaction's block says so; the
+    // line comes back for what else happens meanwhile: a request to the model
+    // tried again, a stop.
+    activity.hidden = !busy || (!!v.compaction && v.run.activity === 'Compacting context');
     activityText.textContent = v.run?.activity || 'Working';
     activityClock.textContent = v.run ? fmt.timer(Date.now() - v.run.started) : '';
+    drawSummary(busy ? v.compaction : null);
     form.dataset.busy = busy ? 'true' : 'false';
   }
   cockpit.on('render', render);

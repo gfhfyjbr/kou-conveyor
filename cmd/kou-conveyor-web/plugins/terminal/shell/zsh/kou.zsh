@@ -173,13 +173,21 @@ _kou_duration() {
   fi
 }
 
-typeset -g _kou_prompt=$'%{\e]133;A\a%}%F{208}▪%f %B%(4~|…/%3~|%~)%b${_kou_vcs} %(?.%F{208}.%F{1})❯%f %{\e]133;B\a%}'
+# The marks are those Ghostty's own integration prints, the terminal being
+# Ghostty's (libghostty-vt): where a prompt starts, on a line of its own (A;
+# cl=line: a click on the line may move the cursor along it), and what is
+# typed after it (B); a continuation prompt is marked one (P;k=s), so that
+# its … is no part of the command.
+typeset -g _kou_prompt=$'%{\e]133;A;cl=line\a%}%F{208}▪%f %B%(4~|…/%3~|%~)%b${_kou_vcs} %(?.%F{208}.%F{1})❯%f %{\e]133;B\a%}'
 typeset -g _kou_rprompt='${_kou_took}%(?.. %F{1}✕ %?%f)'
+typeset -g _kou_ps2=$'%{\e]133;P;k=s\a%}%F{8}…%f %{\e]133;B\a%}'
 
 _kou_preexec() {
   _kou_started=$EPOCHREALTIME
   _kou_ran=1
-  builtin print -n $'\e]133;C\a'
+  # The cursor the terminal has of its own again, then where the command's
+  # output starts.
+  builtin print -n $'\e[0 q\e]133;C\a'
   _kou_title "${1[1,120]}"
 }
 
@@ -190,6 +198,8 @@ _kou_precmd() {
     builtin print -n $'\e]133;D;'"$code"$'\a'
     _kou_ran=
   fi
+  # At the prompt the cursor is a blinking bar, as Ghostty has it.
+  builtin print -n $'\e[5 q'
   _kou_took=
   if [[ -n $_kou_started ]]; then
     local -F took=$(( EPOCHREALTIME - _kou_started ))
@@ -205,12 +215,22 @@ _kou_precmd() {
   _kou_vcs_update
   _kou_git_status
   # Last of the hooks, the prompt is kou-conveyor's whatever ran before.
-  PROMPT=$_kou_prompt RPROMPT=$_kou_rprompt PS2='%F{8}…%f '
+  PROMPT=$_kou_prompt RPROMPT=$_kou_rprompt PS2=$_kou_ps2
 }
+
+# In vi mode the cursor is a block in command mode, a bar otherwise — unless
+# what the user's .zshrc set up shapes it already.
+_kou_keymap_select() {
+  case $KEYMAP in
+    (vicmd|visual) builtin print -n $'\e[1 q' ;;
+    (*) builtin print -n $'\e[5 q' ;;
+  esac
+}
+zle -l zle-keymap-select >/dev/null 2>&1 || zle -N zle-keymap-select _kou_keymap_select
 
 add-zsh-hook preexec _kou_preexec
 add-zsh-hook precmd _kou_precmd
-PROMPT=$_kou_prompt RPROMPT=$_kou_rprompt PS2='%F{8}…%f '
+PROMPT=$_kou_prompt RPROMPT=$_kou_rprompt PS2=$_kou_ps2
 
 # A terminal of a canvas finds its kou-canvas first.
 if [[ -n ${KOU_CANVAS_BIN-} ]]; then

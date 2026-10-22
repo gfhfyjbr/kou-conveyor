@@ -66,16 +66,31 @@ type Message struct {
 	State   string `json:"state"`
 	Reason  string `json:"reason,omitzero"`
 	Deliver string `json:"deliver,omitzero"`
+	// said: the edge or the sender asked for its delivery, rather than
+	// have the default of its target. A kou agent whose queue is paused
+	// takes now at once only when asked for it: by default a message to
+	// an idle agent waits in its queue's order. Not kept: a message read
+	// back from pending.jsonl waits, as it would by default.
+	said bool
 	// NoSubmit types a message into a terminal without pressing Enter.
 	NoSubmit bool `json:"no_submit,omitzero"`
+	// Rewind, of a message that replaces a prompt its sender gave a kou
+	// agent (sendRequest.Replace), is that prompt's ID: the agent's session
+	// goes back to before it, and the message runs there in its place.
+	Rewind string `json:"rewind,omitzero"`
 	// Actor sent it straight to its node: user, or a node's ID.
 	Actor string `json:"actor,omitzero"`
 	// Reply marks the answer to a message a node sent another straight
 	// (InReplyTo), which comes back to it: what it answers to a reply
 	// stays with it.
-	Reply       bool      `json:"reply,omitzero"`
-	InReplyTo   string    `json:"in_reply_to,omitzero"`
+	Reply     bool   `json:"reply,omitzero"`
+	InReplyTo string `json:"in_reply_to,omitzero"`
+	// DeliveredAt is when the message was handed to its node: typed into
+	// its terminal, or given to its kou agent's session — whose agent may
+	// read it later, when the prompts before it are done. SeenAt is when
+	// the agent read it.
 	DeliveredAt time.Time `json:"delivered_at,omitzero"`
+	SeenAt      time.Time `json:"seen_at,omitzero"`
 	// Truncated says that Text is only the start of the message's text:
 	// the pages are given that much.
 	Truncated bool `json:"truncated,omitzero"`
@@ -142,6 +157,7 @@ func (c *Canvas) putOutLocked(node string, out Output, cause *Message, skip map[
 	}
 	st.output = out.Text
 	st.outputs++
+	st.noAnswer = ""
 	st.wake()
 	c.hub.publish(map[string]any{"type": "output", "node": node, "port": out.Port, "title": out.Title, "preview": previewOf(out.Text), "at": now()})
 	chain, hops := newID("c_", 10), 0
@@ -163,7 +179,8 @@ func (c *Canvas) putOutLocked(node string, out Output, cause *Message, skip map[
 		vars := messageVars{text: out.Text, title: out.Title, data: out.Data, from: n, edge: e.ID, now: time.Now()}
 		m := &Message{
 			ID: newID("m_", 10), Chain: chain, Hops: hops, From: Port{node, out.Port}, Edge: e.ID, To: e.To, At: now(),
-			Title: out.Title, Text: renderMessage(e.Template, vars, header), Data: out.Data, Deliver: e.deliver(),
+			Title: out.Title, Text: renderMessage(e.Template, vars, header), Data: out.Data, Deliver: e.deliverTo(target),
+			said: e.Deliver != "",
 		}
 		if limit := c.doc.Settings.Routing.MaxHops; hops > limit {
 			m.State, m.Reason = MessageDropped, fmt.Sprintf("its chain went over %d hops: a loop?", limit)
@@ -320,6 +337,11 @@ func (c *Canvas) readyLocked(n *Node, st *nodeState, deliver string) bool {
 	case KindTerminal:
 		switch st.status.State {
 		case StateExited, StateStopped, StateStarting, StateError, StatePaused:
+			return false
+		}
+		if t, ok := st.inst.(*terminalInstance); ok && t.asking.Load() {
+			// Its harness asks the user a question as it starts: Enter
+			// would answer it.
 			return false
 		}
 		return deliver == DeliverNow || st.status.State == StateIdle
@@ -544,6 +566,11 @@ type sendRequest struct {
 	// TimeoutS seconds at most (600 by default): the send answers it.
 	Wait     bool    `json:"wait"`
 	TimeoutS float64 `json:"timeout_s"`
+	// Replace has the text take the place of the last prompt the sender
+	// gave a kou agent — one its model refused, say — rather than come
+	// after it: the agent's session goes back to before that prompt, and
+	// the text runs from there (replaced).
+	Replace bool `json:"replace"`
 }
 
 // send has text, or keys, go to a node; actor is user or the node that
@@ -563,6 +590,9 @@ func (c *Canvas) sendWaiting(actor, to string, req sendRequest) (*Message, *repl
 	if req.Force {
 		deliver = DeliverNow
 	}
+	// What a node sends a kou agent goes at once unless it says otherwise
+	// (defaultDelivery); what the user sends waits, unless the user says.
+	said := deliver != ""
 	switch deliver {
 	case "", "idle", DeliverQueue:
 		deliver = DeliverQueue
@@ -573,6 +603,21 @@ func (c *Canvas) sendWaiting(actor, to string, req sendRequest) (*Message, *repl
 	if len(req.Text) > maxPaste {
 		return nil, nil, errInvalid("the text is too long")
 	}
+	rewind := ""
+	if req.Replace {
+		switch {
+		case len(req.Keys) != 0:
+			return nil, nil, errInvalid("replace takes text, not keys")
+		case req.Text == "":
+			return nil, nil, errInvalid("text is required")
+		case actor == to:
+			return nil, nil, errInvalid("that is your own node: answer instead")
+		}
+		var err error
+		if rewind, err = c.replaced(actor, to); err != nil {
+			return nil, nil, err
+		}
+	}
 	c.mu.Lock()
 	n, st := c.doc.node(to), c.states[to]
 	if n == nil || st == nil {
@@ -582,6 +627,9 @@ func (c *Canvas) sendWaiting(actor, to string, req sendRequest) (*Message, *repl
 	if n.Kind != KindTerminal && n.Kind != KindAgent {
 		c.mu.Unlock()
 		return nil, nil, errInvalid("«" + n.Title + "» takes no input")
+	}
+	if !said && actor != "user" {
+		deliver = defaultDelivery(n)
 	}
 	if len(req.Keys) != 0 {
 		if n.Kind != KindTerminal {
@@ -615,17 +663,14 @@ func (c *Canvas) sendWaiting(actor, to string, req sendRequest) (*Message, *repl
 		c.mu.Unlock()
 		return nil, nil, errConflict("«" + n.Title + "» waits for your answer to what it sent you: answer it first, or send without wait")
 	}
+	// What a node sends of its own accord starts a chain: the hops of the
+	// chain it works on bound what goes on by itself — along edges, as
+	// answers — and a long talk of its sends is no loop. The canvas's
+	// rates still bound how many messages go.
 	chain, hops := newID("c_", 10), 0
 	from := Port{Node: actor, Port: "send"}
 	text := req.Text
 	if actor != "user" {
-		if sender := c.states[actor]; sender != nil && sender.cause != nil {
-			chain, hops = sender.cause.Chain, sender.cause.Hops+1
-		}
-		if limit := c.doc.Settings.Routing.MaxHops; hops > limit {
-			c.mu.Unlock()
-			return nil, nil, errConflict(fmt.Sprintf("the chain of messages went over %d hops: a loop?", limit))
-		}
 		// An agent is told which node writes to it, as along an edge.
 		if sender := c.doc.node(actor); sender != nil && c.answersLocked(n) {
 			text = renderMessage("", messageVars{text: text, from: sender}, true)
@@ -634,6 +679,7 @@ func (c *Canvas) sendWaiting(actor, to string, req sendRequest) (*Message, *repl
 	m := &Message{
 		ID: newID("m_", 10), Chain: chain, Hops: hops, From: from, To: Port{to, "in"}, At: now(),
 		Text: text, Deliver: deliver, Actor: actor, NoSubmit: req.Submit != nil && !*req.Submit, State: MessagePending,
+		said: said, Rewind: rewind,
 	}
 	var w *replyWait
 	if req.Wait && actor != "user" {

@@ -13,7 +13,6 @@ import (
 
 func TestGatewaySettings(t *testing.T) {
 	for _, bad := range []Settings{
-		{API: APIGateway},
 		{API: APIGateway, Model: "claude-opus-5", BaseURL: "http://127.0.0.1:8318"},
 		{API: APIGateway, Model: "claude-opus-5", APIKey: "sk"},
 		{API: APIGateway, Model: "claude-opus-5", Protocol: "grpc"},
@@ -28,8 +27,8 @@ func TestGatewaySettings(t *testing.T) {
 	if err != nil || next != (Settings{API: APIGateway, Model: "gpt-5.6-codex", Protocol: APIResponses}) {
 		t.Fatalf("update = %+v, %v", next, err)
 	}
-	if _, err := saved.Update(SettingsUpdate{API: APIGateway}); err == nil {
-		t.Error("the gateway without a model was accepted")
+	if blank, err := saved.Update(SettingsUpdate{API: APIGateway}); err != nil || blank != (Settings{API: APIGateway}) {
+		t.Errorf("gateway without a model = %+v, %v", blank, err)
 	}
 	path := filepath.Join(t.TempDir(), "settings.json")
 	if err := SaveSettings(path, next); err != nil {

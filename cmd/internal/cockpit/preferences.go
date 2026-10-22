@@ -13,12 +13,16 @@ import (
 )
 
 // Preferences are choices the cockpits keep that are not part of the
-// connection: the effort the next runs think with, whichever cockpit set it,
-// and how the terminal cockpit lays itself out. They live beside the
-// settings file, which holds a key and is rewritten by the connection form;
-// this file changes whenever a preference does.
+// connection: the effort and the model last chosen in a composer, which new
+// sessions start with, and how the terminal cockpit lays itself out. They
+// live beside the settings file, which holds a key and is rewritten by the
+// connection form; this file changes whenever a preference does.
 type Preferences struct {
-	Effort string `json:"effort,omitzero"`
+	// Effort and LastModel are what a composer last chose, of either
+	// cockpit. A new session starts with them; a session that has its own
+	// keeps it, whatever is chosen in another.
+	Effort    string `json:"effort,omitzero"`
+	LastModel string `json:"last_model,omitzero"`
 	// ToolProfile is the set of built-in tools the next runs work with
 	// (tool.Profile): auto, edit, patch, code or shell.
 	ToolProfile string `json:"tool_profile,omitzero"`
@@ -37,6 +41,12 @@ type Preferences struct {
 	// integration, or TerminalThemeShell as the user's shell starts
 	// anywhere, with nothing of kou-conveyor's.
 	TerminalTheme string `json:"terminal_theme,omitzero"`
+	// Accent, Shade and Radius are how both cockpits look (Appearance): the
+	// accent colour, the shade of the greys and how round corners are. ""
+	// and 0 are the cockpits' own orange, graphite and square corners.
+	Accent string `json:"accent,omitzero"`
+	Shade  string `json:"shade,omitzero"`
+	Radius int    `json:"radius,omitzero"`
 }
 
 // Terminal themes.
@@ -74,6 +84,9 @@ func LoadPreferences(path string) Preferences {
 	if !ValidThinkingLevel(p.Effort) {
 		p.Effort = ""
 	}
+	if ValidModel(p.LastModel) != nil || p.LastModel == "" {
+		p.LastModel = ""
+	}
 	if _, err := tool.ParseProfile(p.ToolProfile); err != nil {
 		p.ToolProfile = ""
 	}
@@ -89,6 +102,7 @@ func LoadPreferences(path string) Preferences {
 	if p.TerminalTheme != TerminalThemeKou && p.TerminalTheme != TerminalThemeShell {
 		p.TerminalTheme = ""
 	}
+	normalAppearance(&p)
 	return p
 }
 
@@ -96,12 +110,23 @@ func LoadPreferences(path string) Preferences {
 // than any terminal, and less than what a mistake would make it.
 const maxPanelColumns = 2000
 
-// SaveEffort records the effort, keeping the other preferences.
+// SaveEffort records the effort last chosen in a composer, keeping the
+// other preferences.
 func SaveEffort(path, level string) error {
 	if !ValidThinkingLevel(level) {
 		return fmt.Errorf("unknown effort %q", level)
 	}
 	return savePreferences(path, func(p *Preferences) { p.Effort = level })
+}
+
+// SaveLastModel records the model last chosen in a composer, keeping the
+// other preferences. The models runs start with are not recorded: a
+// canvas's agents and queued prompts choose theirs without the user.
+func SaveLastModel(path, model string) error {
+	if model == "" || ValidModel(model) != nil {
+		return fmt.Errorf("unknown model %q", model)
+	}
+	return savePreferences(path, func(p *Preferences) { p.LastModel = model })
 }
 
 // SaveToolProfile records the tool profile of the next runs, keeping the

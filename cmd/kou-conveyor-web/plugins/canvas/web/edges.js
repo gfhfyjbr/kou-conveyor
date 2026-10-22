@@ -3,10 +3,17 @@
 // another's left; a dot runs along it as a message goes, and its label
 // counts what went since the page opened. Dragging from a port draws a new
 // edge to the port it is let go on — a node will do, its first port of the
-// kind — or, let go where nothing is, asks what to add there, wired.
+// kind — or, let go where nothing is, asks what to add there, wired. While
+// it is drawn, the ports it can end in show; the nearest grows as the wire
+// comes close, and a few pixels from it the wire docks in it.
 import { curve, portPoint, portsOf } from './geometry.js';
 
 const NS = 'http://www.w3.org/2000/svg';
+// A wire being drawn docks in the port it can end in that is within SNAP
+// pixels of the pointer, on the screen; the nearest within CLOSE grows, to
+// say where it would go.
+const SNAP = 20;
+const CLOSE = 64;
 
 // s builds an SVG element: the kernel's h makes HTML ones.
 function s(tag, attrs = {}, ...children) {
@@ -203,17 +210,33 @@ export function createEdges(env) {
     const start = portPoint(node, from.dir, from.port, env.kinds);
     const wanted = from.dir === 'out' ? 'in' : 'out';
     env.world().dataset.connecting = wanted;
+    port.dataset.source = 'true';
     for (const el of env.world().querySelectorAll(`.cv-port[data-dir="${wanted}"]`)) {
       if (el.dataset.node !== from.node) el.dataset.candidate = 'true';
     }
     const stop = new AbortController();
     const { signal } = stop;
     let target = null;
+    let close = null; // the port the wire nears, not docked in yet
     connecting = stop;
     const target_ = env.viewport();
     try {
       target_.setPointerCapture(event.pointerId);
     } catch { /* gone */ }
+
+    // nearest is the port the wire can end in nearest a point of the world,
+    // and how far from it that is on the screen.
+    const nearest = (at) => {
+      let best = null;
+      for (const el of env.world().querySelectorAll('.cv-port[data-candidate]')) {
+        const other = env.nodeOf(el.dataset.node);
+        if (!other) continue;
+        const p = portPoint(other, wanted, el.dataset.port, env.kinds);
+        const d = Math.hypot(p.x - at.x, p.y - at.y) * env.zoom();
+        if (!best || d < best.d) best = { el, d };
+      }
+      return best;
+    };
 
     const pick = (clientX, clientY) => {
       const el = document.elementFromPoint(clientX, clientY);
@@ -232,11 +255,18 @@ export function createEdges(env) {
 
     const draw = (clientX, clientY) => {
       const at = env.worldAt(clientX, clientY);
-      const next = pick(clientX, clientY);
+      const near = nearest(at);
+      const next = near && near.d <= SNAP ? near.el : pick(clientX, clientY);
       if (next !== target) {
         if (target) delete target.dataset.over;
         target = next;
         if (target) target.dataset.over = 'true';
+      }
+      const hint = !target && near && near.d <= CLOSE ? near.el : null;
+      if (hint !== close) {
+        if (close) delete close.dataset.close;
+        close = hint;
+        if (close) close.dataset.close = 'true';
       }
       let end = at;
       if (target) {
@@ -253,9 +283,11 @@ export function createEdges(env) {
       connecting = null;
       ghost.setAttribute('d', '');
       delete env.world().dataset.connecting;
-      for (const el of env.world().querySelectorAll('.cv-port[data-candidate], .cv-port[data-over]')) {
+      for (const el of env.world().querySelectorAll('.cv-port[data-candidate], .cv-port[data-over], .cv-port[data-close], .cv-port[data-source]')) {
         delete el.dataset.candidate;
         delete el.dataset.over;
+        delete el.dataset.close;
+        delete el.dataset.source;
       }
       if (!commit) return;
       if (target) {

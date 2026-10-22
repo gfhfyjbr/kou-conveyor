@@ -50,19 +50,82 @@ func TestPromptsRunWithTheirModels(t *testing.T) {
 	if got := promptModels(body); got != "claude-opus-5-5,grok-4.7" {
 		t.Fatalf("prompts' models = %q", got)
 	}
-	// Without a model, a prompt runs with the connection's: here the
-	// environment's.
+	// Without a model, a prompt goes on with its session's last.
 	third := h.start(fmt.Sprintf(`{"prompt":"and you","session_id":%q,"resume":true}`, session))
 	h.stream(third["run_id"].(string), "")
 	body = h.waitFor(session, func(body map[string]any) bool { return body["run"] == nil })
-	if got := promptModels(body); got != "claude-opus-5-5,grok-4.7,env-model" {
+	if got := promptModels(body); got != "claude-opus-5-5,grok-4.7,grok-4.7" {
 		t.Fatalf("prompts' models = %q", got)
+	}
+	// A new session without one starts with the connection's: here the
+	// environment's, as no composer chose one.
+	fresh := h.start(`{"prompt":"hello"}`)
+	h.stream(fresh["run_id"].(string), "")
+	if fresh["model"] != "env-model" {
+		t.Fatalf("a new session's model = %v", fresh["model"])
 	}
 	if res, _ := h.do("POST", "/api/runs", `{"prompt":"hi","model":"two words"}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a model with a space: %d", res.StatusCode)
 	}
 	if res, _ := h.do("POST", "/api/sessions/"+session+"/queue", `{"text":"x","model":"two words"}`); res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("a queued model with a space: %d", res.StatusCode)
+	}
+}
+
+// New sessions start with the model last chosen in a composer, of either
+// cockpit; a session that ran goes on with its own, and a run, a canvas
+// agent's or a queued one, chooses for no other.
+func TestNewSessionsStartWithTheModelLastChosen(t *testing.T) {
+	t.Setenv("KOU_CONVEYOR_LLM_MODEL", "connection-model")
+	h := newHarness(t)
+	path := cockpit.PreferencesPath(h.server.opt.SettingsFile)
+	model := func(body string) string {
+		t.Helper()
+		started := h.start(body)
+		h.stream(started["run_id"].(string), "")
+		model, _ := started["model"].(string)
+		return model
+	}
+	first := h.start(`{"prompt":"first","model":"used-model"}`)
+	h.stream(first["run_id"].(string), "")
+	if got := model(`{"prompt":"second"}`); got != "connection-model" {
+		t.Fatalf("a run chose the model of new sessions: %q", got)
+	}
+	if p := cockpit.LoadPreferences(path); p.LastModel != "" {
+		t.Fatalf("a run saved its model: %+v", p)
+	}
+
+	if res, body := h.do("PUT", "/api/preferences", `{"last_model":" chosen-model "}`); res.StatusCode != http.StatusOK || body["last_model"] != "chosen-model" {
+		t.Fatalf("choose: %d %v", res.StatusCode, body)
+	}
+	if p := cockpit.LoadPreferences(path); p.LastModel != "chosen-model" {
+		t.Fatalf("the terminal cockpit reads %+v", p)
+	}
+	if _, prefs := h.do("GET", "/api/preferences", ""); prefs["last_model"] != "chosen-model" {
+		t.Fatalf("preferences = %v", prefs)
+	}
+	if got := model(`{"prompt":"third"}`); got != "chosen-model" {
+		t.Fatalf("a new session's model = %q, want the one chosen", got)
+	}
+	// The session that ran goes on with its own.
+	if got := model(fmt.Sprintf(`{"prompt":"again","session_id":%q,"resume":true}`, first["session_id"])); got != "used-model" {
+		t.Fatalf("an existing session's model = %q, want its own", got)
+	}
+
+	// The terminal cockpit chooses another.
+	if err := cockpit.SaveLastModel(path, "terminal-model"); err != nil {
+		t.Fatal(err)
+	}
+	if got := model(`{"prompt":"fourth"}`); got != "terminal-model" {
+		t.Fatalf("a new session's model = %q, want the terminal's choice", got)
+	}
+	for _, body := range []string{`{"last_model":"two words"}`, `{"last_model":"  "}`} {
+		if res, _ := h.do("PUT", "/api/preferences", body); res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("%s: %d", body, res.StatusCode)
+		}
+	}
+	if p := cockpit.LoadPreferences(path); p.LastModel != "terminal-model" {
+		t.Fatalf("a refused choice changed the model: %+v", p)
 	}
 }
 
@@ -121,12 +184,24 @@ func TestModelsOfTheConnection(t *testing.T) {
 	if err := cockpit.SaveSettings(h.server.opt.SettingsFile, cockpit.Settings{API: cockpit.APIGateway, Model: "grok-4.7"}); err != nil {
 		t.Fatal(err)
 	}
+	// Through the gateway, new sessions start with the first model it
+	// serves until a composer chooses one: the settings name none that
+	// counts.
 	_, catalog = h.do("GET", "/api/models", "")
 	models, _ = catalog["models"].([]any)
-	if catalog["source"] != "gateway" || catalog["default"] != "grok-4.7" || len(models) != 2 || models[0].(map[string]any)["id"] != "claude-opus-5-5" {
+	if catalog["source"] != "gateway" || catalog["default"] != "claude-opus-5-5" || len(models) != 2 || models[0].(map[string]any)["id"] != "claude-opus-5-5" {
 		t.Fatalf("gateway catalog = %v", catalog)
 	}
 	if models[0].(map[string]any)["api"] != "messages" || models[1].(map[string]any)["api"] != "responses" {
 		t.Fatalf("the models' APIs = %v", models)
+	}
+	started := h.start(`{"prompt":"hello"}`)
+	h.stream(started["run_id"].(string), "")
+	if started["model"] != "claude-opus-5-5" {
+		t.Fatalf("a new session's model = %v, want the first served", started["model"])
+	}
+	h.do("PUT", "/api/preferences", `{"last_model":"grok-4.7"}`)
+	if _, catalog = h.do("GET", "/api/models", ""); catalog["default"] != "grok-4.7" {
+		t.Fatalf("after a choice: %v", catalog)
 	}
 }

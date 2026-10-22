@@ -503,6 +503,7 @@
 .u-name-box { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .u-name-col { display: grid; gap: 3px; min-width: 0; }
 .u-table th + th, .u-table td + td { padding-left: 14px; }
+.u-table-scroll { min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; }
 .u-sw { flex: none; display: inline-block; width: 8px; height: 8px; margin: 4px 8px 0 0; background: var(--c); }
 .u-name-box .u-sw { margin: 4px 0 0; }
 .u-link { font: 600 12px/1.3 var(--mono); color: var(--fg); text-align: left; overflow-wrap: anywhere; }
@@ -593,6 +594,20 @@
 .u-borrow b { font-weight: 600; color: var(--fg); }
 .price-form > footer .primary { height: 30px; }
 
+/* Context windows: the window each model's runs take (contexts.js). */
+#context-dialog { padding-top: 8vh; }
+.context-form { width: min(560px, 100%); }
+.context-form > footer .primary { height: 30px; }
+.ctx-fill { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: -6px; }
+.ctx-fill .act { height: 26px; line-height: 24px; border-color: var(--line-2); }
+.ctx-table td { vertical-align: middle; }
+.ctx-table .u-model { font: 600 12px/1.3 var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+.ctx-table small { font: 10.5px/1.3 var(--mono); color: var(--fg-4); }
+.ctx-runs b { font-weight: 600; color: var(--fg); }
+.ctx-runs .u-src { margin-left: 6px; }
+.ctx-own { color: var(--fg-4); }
+.ctx-warn { color: var(--warn); }
+
 /* The gateway's update: a newer CLIProxyAPI, and taking it up. */
 .gw-update-badge {
   align-self: center;
@@ -639,4 +654,31 @@
   .u-price-grid { grid-template-columns: minmax(0, 1fr); }
   .page-tab { padding: 0 7px; }
   .accounts-page .crumbs code { display: none; }
+  .accounts-body { padding: 16px 12px 40px; }
+  .u-table th + th, .u-table td + td { padding-left: 8px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.range, .use-form, .account, .provider, .manual, .callback-row input, .conn-modes, .ep-empty, .acc-none,
+.kind-grid button, .endpoint-form textarea, .picked, .u-card, .u-tip, .gw-update-output { border-radius: var(--radius); }
+.ptag, .user-code code, .chip, .u-src, .gw-update-badge, .gw-update-command code { border-radius: var(--radius-sm); }
+.gw, .acc-empty, .u-kpis { border-radius: var(--radius-lg); }
+:root[data-corners="round"] :is(.range, .conn-modes) { overflow: hidden; }
+.filter .dot, .acc-state i { border-radius: min(var(--radius-sm), 3.5px); }
+/* Round, no bars along the left edge: the filter chosen is a rounded
+   block, an account says its state by its border (and its state's chip). */
+:root[data-corners="round"] .filter { border-left-color: transparent; border-radius: var(--radius); }
+:root[data-corners="round"] .use-form { padding-left: 15px; border-left-width: 1px; border-left-color: var(--line-2); }
+:root[data-corners="round"] .account { border-left-width: 1px; border-left-color: var(--line); }
+:root[data-corners="round"] .account[data-state="ready"] { border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+:root[data-corners="round"] .account[data-state="cooling"] { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+:root[data-corners="round"] .account[data-state="error"] { border-color: color-mix(in srgb, var(--err) 45%, var(--line)); }
+:root[data-corners="round"] .account[data-state="refreshing"] { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+:root[data-corners="round"] .account[data-state="configured"] { border-style: dashed; }
+:root[data-corners="round"] .gw-update-major { padding-left: 14px; border-left: 0; border-radius: var(--radius); }
+/* Round, the view's tabs are a segmented control, as the rail's. */
+:root[data-corners="round"] .page-tabs { align-items: center; gap: 3px; }
+:root[data-corners="round"] .page-tab { height: 30px; margin: 0; border-bottom: 0; border-radius: var(--radius); }
+:root[data-corners="round"] .page-tab[aria-selected="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-2); }

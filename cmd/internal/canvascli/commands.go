@@ -97,7 +97,7 @@ func parseFlags(args []string, spec map[string]flagKind) (parsed, error) {
 			}
 			p.values[name] = value
 		case optionalFlag:
-			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && len(p.args) > 0 {
+			if !hasValue && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				i++
 				value = args[i]
 			}
@@ -150,22 +150,30 @@ var commands = map[string]command{
 			"prompt": valueFlag, "config": valueFlag, "access": valueFlag, "near": valueFlag, "side": valueFlag,
 			"right-of": valueFlag, "below": valueFlag, "left-of": valueFlag, "above": valueFlag,
 			"x": valueFlag, "y": valueFlag, "w": valueFlag, "h": valueFlag,
-			"connect-to": valueFlag, "connect-from": valueFlag,
+			"connect-to": valueFlag, "connect-from": valueFlag, "no-connect": boolFlag,
 		},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas spawn <preset> [--title T] [--cmd C] [--worktree [name]] [--include a,b] [--link c] [--prompt P] [--right-of N] …"); err != nil {
+			if err := p.need(0, 1, "kou-canvas spawn [<preset>, agent by default] [--title T] [--cmd C] [--cwd D] [--worktree[=name]] [--include a,b] [--link c] [--prompt P] [--config JSON] [--right-of N] …"); err != nil {
 				return result{}, err
 			}
 			a := spawnArgs{
-				Preset: p.args[0], Title: p.value("title"), Command: p.value("cmd"), Cwd: p.value("cwd"),
+				Title: p.value("title"), Command: p.value("cmd"), Cwd: p.value("cwd"),
 				Base: p.value("base"), Prompt: p.value("prompt"), Access: p.value("access"), Near: p.value("near"), Side: p.value("side"),
 				Include: strings.Split(p.value("include"), ","), Link: strings.Split(p.value("link"), ","),
+			}
+			worktree := p.value("worktree")
+			if len(p.args) > 0 {
+				a.Preset = p.args[0]
+			} else if builtinPresets[worktree] {
+				// kou-canvas spawn --worktree shell: a shell in a worktree
+				// of its own, as when the preset came first.
+				a.Preset, worktree = worktree, ""
 			}
 			if a.Command == "" {
 				a.Command = p.value("command")
 			}
 			if p.bool("worktree") {
-				name := p.value("worktree")
+				name := worktree
 				if name == "" {
 					name = "true"
 				}
@@ -189,11 +197,12 @@ var commands = map[string]command{
 					return result{}, err
 				}
 			}
-			if p.bool("connect-to") || p.bool("connect-from") {
-				a.Connect = &struct {
-					From string `json:"from"`
-					To   string `json:"to"`
-				}{From: p.value("connect-from"), To: p.value("connect-to")}
+			// Neither flag, an agent's agent is wired to answer it (spawn);
+			// --no-connect wires nothing.
+			if p.bool("no-connect") {
+				a.Connect = &spawnConnect{}
+			} else if p.bool("connect-to") || p.bool("connect-from") {
+				a.Connect = &spawnConnect{From: p.value("connect-from"), To: p.value("connect-to")}
 			}
 			return c.spawn(ctx, a)
 		},
@@ -208,17 +217,22 @@ var commands = map[string]command{
 		},
 	},
 	"connect": {
-		flags: map[string]flagKind{"template": valueFlag, "approve": boolFlag, "now": boolFlag, "mode": valueFlag},
+		flags: map[string]flagKind{"template": valueFlag, "approve": boolFlag, "now": boolFlag, "queue": boolFlag, "mode": valueFlag},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(2, 2, "kou-canvas connect <node>[:port] <node>[:port] [--template T] [--approve] [--now]"); err != nil {
+			if err := p.need(2, 2, "kou-canvas connect <node>[:port] <node>[:port] [--template T] [--approve] [--now|--queue]"); err != nil {
 				return result{}, err
 			}
 			a := connectArgs{From: p.args[0], To: p.args[1], Template: p.value("template"), Mode: p.value("mode")}
 			if p.bool("approve") {
 				a.Mode = "approve"
 			}
-			if p.bool("now") {
+			switch {
+			case p.bool("now") && p.bool("queue"):
+				return result{}, errors.New("--now or --queue, not both")
+			case p.bool("now"):
 				a.Deliver = "now"
+			case p.bool("queue"):
+				a.Deliver = "queue"
 			}
 			return c.connect(ctx, a)
 		},
@@ -254,18 +268,23 @@ var commands = map[string]command{
 		},
 	},
 	"send": {
-		flags: map[string]flagKind{"no-enter": boolFlag, "now": boolFlag, "wait": boolFlag, "timeout": valueFlag},
+		flags: map[string]flagKind{"no-enter": boolFlag, "now": boolFlag, "idle": boolFlag, "wait": boolFlag, "timeout": valueFlag, "replace": boolFlag},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(2, -1, `kou-canvas send <node> "text" [--wait [--timeout 600]] [--no-enter] [--now]`); err != nil {
+			if err := p.need(2, -1, `kou-canvas send <node> "text" [--wait [--timeout 600]] [--no-enter] [--now|--idle] [--replace]`); err != nil {
 				return result{}, err
 			}
-			a := sendArgs{Node: p.args[0], Text: strings.Join(p.args[1:], " "), Wait: loose(p.bool("wait"))}
+			a := sendArgs{Node: p.args[0], Text: strings.Join(p.args[1:], " "), Wait: loose(p.bool("wait")), Replace: loose(p.bool("replace"))}
 			if p.bool("no-enter") {
 				submit := false
 				a.Submit = &submit
 			}
-			if p.bool("now") {
+			switch {
+			case p.bool("now") && p.bool("idle"):
+				return result{}, errors.New("--now or --idle, not both")
+			case p.bool("now"):
 				a.When = "now"
+			case p.bool("idle"):
+				a.When = "idle"
 			}
 			if p.bool("timeout") {
 				seconds, err := parseSeconds(p.value("timeout"))
@@ -334,18 +353,21 @@ var commands = map[string]command{
 	},
 	"transcript": {
 		flags: map[string]flagKind{
-			"after": valueFlag, "limit": valueFlag, "kinds": valueFlag, "tools": valueFlag,
+			"after": valueFlag, "tail": valueFlag, "limit": valueFlag, "kinds": valueFlag, "tools": valueFlag,
 			"since": valueFlag, "until": valueFlag, "message-limit": valueFlag, "output-limit": valueFlag,
-			"include": valueFlag,
+			"include": valueFlag, "format": valueFlag,
 		},
 		run: func(ctx context.Context, c *client, p parsed) (result, error) {
-			if err := p.need(1, 1, "kou-canvas transcript <node> [--after cursor|last] [--limit N] [--kinds a,b] [--tools a,b] [--since RFC3339] [--until RFC3339] [--message-limit N] [--output-limit N] [--include notes,summaries]"); err != nil {
+			if err := p.need(1, 1, "kou-canvas transcript <node> [--tail N | --after cursor|last] [--limit N] [--kinds a,b] [--tools a,b] [--since RFC3339] [--until RFC3339] [--message-limit N] [--output-limit N] [--include notes,summaries] [--format text|json]"); err != nil {
 				return result{}, err
 			}
-			a := transcriptArgs{Node: p.args[0], After: transcriptCursor(p.value("after")), Since: p.value("since"), Until: p.value("until")}
+			a := transcriptArgs{Node: p.args[0], After: transcriptCursor(p.value("after")), Since: p.value("since"), Until: p.value("until"), Format: p.value("format")}
 			a.Kinds, a.Tools, a.Include = nodeList(strings.Split(p.value("kinds"), ",")), nodeList(strings.Split(p.value("tools"), ",")), nodeList(strings.Split(p.value("include"), ","))
 			var err error
 			if a.Limit, err = p.number("limit"); err != nil {
+				return result{}, err
+			}
+			if a.Tail, err = p.number("tail"); err != nil {
 				return result{}, err
 			}
 			if a.MessageLimit, err = p.number("message-limit"); err != nil {
@@ -421,6 +443,13 @@ var commands = map[string]command{
 			return c.emit(ctx, a)
 		},
 	},
+}
+
+// builtinPresets are the presets kou-canvas spawn takes after --worktree
+// for a preset, not the worktree's name.
+var builtinPresets = map[string]bool{
+	"agent": true, "kou": true, "shell": true, "command": true, "note": true,
+	"claude-code": true, "codex": true, "opencode": true,
 }
 
 // parseSeconds reads a timeout: seconds, or a duration such as 10m.

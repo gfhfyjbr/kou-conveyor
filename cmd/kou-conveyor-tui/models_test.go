@@ -58,15 +58,28 @@ func TestPromptsRunWithTheSessionsModel(t *testing.T) {
 }
 
 // The next prompt runs with the model chosen for the session, else the one
-// its last prompt ran with, else -model's, else the connection's.
+// its last prompt ran with, else the one last chosen in a composer, else
+// -model's, else the connection's: the one it names, else the first it lists.
 func TestNextModel(t *testing.T) {
 	m := testModel(t)
 	if m.nextModel() != "" {
 		t.Fatalf("a new session without -model runs %q", m.nextModel())
 	}
+	// The gateway names none, whatever the environment the test runs in does.
+	m.conn = cockpit.Connection{Source: "gateway", Provider: "anthropic"}
+	m.catalog = &cockpit.Catalog{Source: "gateway", Models: []cockpit.ModelInfo{
+		{ID: "grok-imagine-video", Media: true}, {ID: "grok-4.7", Cooling: true}, {ID: "claude-opus-5-5"},
+	}}
+	if m.nextModel() != "claude-opus-5-5" {
+		t.Fatalf("a connection that names no model: %q", m.nextModel())
+	}
 	m.opt.model = "flag-model"
 	if m.nextModel() != "flag-model" {
 		t.Fatalf("with -model: %q", m.nextModel())
+	}
+	m.lastModel = "last-model"
+	if m.nextModel() != "last-model" {
+		t.Fatalf("after a choice in a composer: %q", m.nextModel())
 	}
 	m.tr.SubmitModel("11111111-1111-4111-8111-111111111111", "hello", "session-model", time.Now())
 	if m.nextModel() != "session-model" {
@@ -83,6 +96,34 @@ func TestNextModel(t *testing.T) {
 	m.sessionID = "another"
 	if m.nextModel() != "session-model" {
 		t.Fatalf("a choice is the session's alone: %q", m.nextModel())
+	}
+}
+
+// A model chosen in a composer, here or in the web cockpit, is the one new
+// sessions start with; a session that ran keeps its own.
+func TestNewSessionsStartWithTheModelLastChosen(t *testing.T) {
+	m := testModel(t)
+	m.opt.preferences = cockpit.PreferencesPath(filepath.Join(t.TempDir(), "settings.json"))
+	m.Init()
+	m.chooseModel("grok-4.7")
+	if saved := cockpit.LoadPreferences(m.opt.preferences).LastModel; saved != "grok-4.7" || !strings.Contains(m.note.text, "new sessions") {
+		t.Fatalf("saved %q, notice %q", saved, m.note.text)
+	}
+	m.newSession()
+	if m.nextModel() != "grok-4.7" {
+		t.Fatalf("a new session runs %q", m.nextModel())
+	}
+	m.tr.SubmitModel("11111111-1111-4111-8111-111111111111", "hello", "claude-opus-5-5", time.Now())
+	if err := cockpit.SaveLastModel(m.opt.preferences, "gpt-6-astra"); err != nil {
+		t.Fatal(err)
+	}
+	m.Update(prefsMsg{})
+	if m.nextModel() != "claude-opus-5-5" {
+		t.Fatalf("a choice made elsewhere changed the session's model to %q", m.nextModel())
+	}
+	m.newSession()
+	if m.nextModel() != "gpt-6-astra" {
+		t.Fatalf("a new session after a choice made elsewhere runs %q", m.nextModel())
 	}
 }
 

@@ -157,6 +157,12 @@ harness asks for no progress report (the report due is asked for a whole
 period after the wait ends) and its heartbeat waits four times its interval
 from the start. Off by default.
 
+`"refetch": true` marks a tool whose results show what is kept elsewhere,
+which a call fetches again — another agent's transcript, a search of it —,
+such as the canvas's `CanvasTranscript`. When a long conversation is pruned
+between compactions, such results go before the others, the oldest first.
+Off by default.
+
 With the `code` tool profile a plugin tool is a function of the Code tool's
 JavaScript instead: `name(args)`, or `tools["name"](args)` for a name the code
 cannot call as it is (one with a `-`, a reserved word, or a name the runtime's
@@ -304,7 +310,7 @@ the canvas and followed by it.
 | `env` | variables for the program, templates too |
 | `launch` | `launcher`, the default: the shell runs `kou-canvas launch`, which asks the canvas for the program's arguments, variables and folder and runs it, so leaving the program gives the shell back; `type`: the command is typed at the shell's first prompt; `shell`: the shell alone |
 | `input` | how a message is typed into it: `paste` (`bracketed`, as a paste where the program asked for that, or `type`), `newline` (`cr` or `lf`), `submit` (what follows the text, `\r` by default) and `submit_delay_ms` |
-| `status` | how the canvas learns whether it works or waits: `hooks` (it calls `kou-canvas hook claude`, as Claude Code's hooks do), `notify` (`kou-canvas hook codex`, Codex's notify program), `osc133` (a shell's marks of its prompts and commands, as for the Shell and Command presets), `idle` (quiet for `idle_ms`, 4 seconds by default); `ready` is a pattern its screen shows when it waits |
+| `status` | how the canvas learns whether it works or waits: `hooks` (it calls `kou-canvas hook claude`, as Claude Code's hooks do), `notify` (`kou-canvas hook codex`, Codex's notify program), `osc133` (a shell's marks of its prompts and commands, as for the Shell and Command presets), `idle` (quiet for `idle_ms`, 4 seconds by default); `ready` is a pattern its screen shows when it waits; `asks`, a pattern its screen shows as it starts when it asks the user a question of its own — a folder to trust, a mode to accept: while the question shows, the node waits for the user and nothing is typed into it, as the Enter after a message would answer it |
 | `output` | what it gives on `out`: what its `hooks` or `notify` program say it answered (`kou-canvas emit` with `"answer": true`, as `kou-canvas hook` does), a command's output (`osc133`), its `screen` once it falls idle, or `none`. An answer goes where the message it answers came from: along the node's edges and back to the node that sent it, when it came from the canvas; nowhere, when the user typed it — unless the node's `output` setting is `all` (or `explicit`: only what it emits) |
 | `session_arg`, `resume` | the arguments that start the program on the session the canvas names for it (`{{runtime.agent_session}}`), and those that take it up again — **Resume** on the node |
 | `config` | the JSON schema of the node's settings |
@@ -427,9 +433,15 @@ toast and in the runner log of the inspector, and the cockpit goes on.
 Files are served from `/api/w/<workspace>/plugins/<name>/v/<version>/<path>`,
 so a module can import its neighbours (`import './lib.js'`), and a plugin's
 modules may import the kernel's helpers from `/kernel/dom.js` (`h`, `svg`,
-`fmt`, `kv`, `uuid`, `typingIn`). Scripts, styles, JSON, images, fonts and
-text are served; hidden files, other files and paths that leave the plugin
-are not, nor is anything of a plugin that does not run.
+`fmt`, `kv`, `uuid`, `typingIn`). A stream of the server's events is followed
+with `openEvents(url)` of `/kernel/events.js`, used as an `EventSource`:
+where the page came over HTTP/1.1 it reads the stream over a WebSocket (the
+server upgrades any GET of `…/events`), so the streams of the page, of its
+other tabs and of the chats on a canvas do not take the six connections a
+browser keeps to a server; `streams()` says how they are read. Scripts,
+styles, JSON, images, fonts and text are served; hidden files, other files
+and paths that leave the plugin are not, nor is anything of a plugin that
+does not run.
 
 ```js
 export default function activate(cockpit) {
@@ -485,7 +497,7 @@ export default function activate(cockpit) {
 | `inspector.register({ id, title, order, shown(view), render(view), fold, open, meta(view) })`, `inspector.refresh()` | an inspector section; `render` returns a node, a list of nodes or text and runs whenever the cockpit redraws — a node it returns again stays where it is, so a control it keeps (a select with its menu open, a button being clicked) is not replaced under the user; the `id` of another takes its place. With `fold` the section is a bar — its title and what `meta` says (text, or parts `{ text, tone }`) — that opens, animated, onto its body; it starts closed (open with `open`), stays as the user leaves it, and `render` runs only while it is open |
 | `tools.register(name, { summary(entry), render(entry, ui) })` | how a tool's calls look; `ui` has `h`, `fmt`, `stream(label, text)` and `copy` |
 | `view()` | the session in view: `id`, `ws`, `fresh`, `title`, `running`, `interrupted`, `external`, `activity`, `usage`, `prompts`, `entries`, `queued`, `paused`, `pinned` |
-| `entries()` | its entries: `{ id, kind, text, at, files, tool: { call_id, name, input, state, output, stderr, error, exit_code, image } }`; `image` describes the picture a `ViewImage` call read (`{ label, media_type, width, height, size }`), and a prompt's `files` what the model saw of the files it linked (`{ label, path, directory, from, to, lines, size, binary, error }`) |
+| `entries()` | its entries: `{ id, kind, text, at, files, tool: { call_id, name, input, state, output, stderr, error, exit_code, image, change } }`; `image` describes the picture a `ViewImage` call read (`{ label, media_type, width, height, size }`), `change` what a `Write` call wrote (`{ kind: "write", content, syntax }`) or an `Edit` call changed (`{ kind: "edit", diff, line, replacements, syntax }`: `diff` is the hunks of a unified diff, numbered as in the file when `line`, where the change starts, is there; `syntax` colours the text, as runs of a length in UTF-16 units and a class), and a prompt's `files` what the model saw of the files it linked (`{ label, path, directory, from, to, lines, size, binary, error }`) |
 | `sessions()`, `workspaces()`, `effort()`, `models()`, `plugins()` | the session list, the workspaces, the effort and its levels, the models (`{ current, default, list }`), the plugin listing |
 | `prompt(text)`, `toast(text, kind, key)`, `copy(text, label)` | runs a prompt in the session in view; a message; the clipboard |
 | `actions` | what the cockpit's own commands do: `compact(focus)`, `continueRun()`, `stop()`, `editPrompt(n)`, `newSession()`, `openSession(id)`, `resume(query)`, `rename(title)`, `pin()`, `fork(n)`, `exportSession()`, `deleteSession()`, `effort(level)`, `model(id)`, `openSettings()`, `openAccounts()`, `openUsage(range)`, `addAccount(provider)`, `addEndpoint(kind)`, `workspace(query)`, `copyAnswer()`, `expandAll(open)`, `toggleChanges()`, `toggleInspector()`, `toggleTheme()`, `openHelp()`, `showPlugins()`, `trustPlugins(trusted)`, `enablePlugin(name, enabled)`, `reloadPlugins()`, `queue(action)` — each the service of a built-in plugin, which says so if that plugin is off |
@@ -517,7 +529,7 @@ plugins read these:
 
 | Point | Item | Read by |
 | --- | --- | --- |
-| `layout.view` | `{ id, title, order, badge, rail, page, select(), shown(), hidden() }`: a view with a tab in the rail; `rail` shows in the rail while it is the view, `page`, if any, in the stage in place of the session | layout |
+| `layout.view` | `{ id, title, icon, order, badge, rail, page, select(), shown(), hidden() }`: a view with a tab in the rail; `rail` shows in the rail while it is the view, `page`, if any, in the stage in place of the session; `icon` (SVG markup, 16×16) is what the tab shows when the rail is too narrow for the tabs' names — without one, the title's first letter | layout |
 | `layout.panel` | `{ id, order, width, minWidth, node, opened(), closed() }`: a side panel; one is open at a time. `width` (a CSS length) is what it starts as; the user drags its edge to make it wider or narrower, down to `minWidth` pixels (260 by default), and the width is kept | layout |
 | `timeline.renderer` | `{ kind, order, render(entry, ctx) }`: draws a kind of entry (`user`, `assistant`, `reasoning`, `tool`, `notice`, `error`); the latest that returns a node wins | timeline |
 | `timeline.action` | `{ id, kinds, label, title, order, shown(entry, ctx), run(entry, ctx) }`: a button in an entry's header | timeline |
@@ -558,12 +570,12 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | --- | --- | --- |
 | `session` | session | `view()`, `summary()`, `state`, `submit(text, options)`, `prompt(text)`, `compact(focus)`, `stop()`, `newSession()`, `openSession(id)`, `branch(ws, id, message)`, `rename(ws, id, title)`, `menuItems(ws, id)`, `runBlocked(v)`, `switchWorkspace(id)`, `refreshSessions()` |
 | `layout` | layout | `view()`, `show(id)`, `openPanel(id)`, `closePanel(id)`, `togglePanel(id)`, `panelOpen(id)`, `rail(open)`, `scroller()`, `width(id)` and `setWidth(id, px)` for the rail (`'rail'`) and the panels (`null` gives the default back) |
-| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`; `open(anchor, items, { compact })`, `toggle(anchor, items, { compact })`, `close()` — an item is `{ icon, label, detail, title, hint, danger, confirm, disabled, run }` or `{ separator: true }`, and a compact menu has denser rows that say their `detail` in a tooltip; `copy(text, label)`; `closeTop()` |
+| `toast`, `menu`, `clipboard`, `overlays` | ui | `show(text, kind, key)`; `open(anchor, items, { compact })`, `toggle(anchor, items, { compact })`, `close()` — an item is `{ icon, label, detail, title, hint, current, danger, confirm, disabled, run }` or `{ separator: true }` — `icon` a glyph or SVG markup, `current` marking the item that is the current one — and a compact menu has denser rows that say their `detail` in a tooltip; `copy(text, label)`; `closeTop()` |
 | `timeline` | timeline | `schedule(id)`, `flushNow()`, `reveal(id)`, `scrollToBottom()`, `promptInView(v)`, `setAllTools(open)` |
 | `composer` | composer | `value()`, `set(text, { focus, end })`, `focus()`, `clear()`, `submit({ force })`, `input`, `form` |
 | `commands` | commands | `list()`, `named(name)`, `parse(text)`, `run(parsed)` |
 | `models` | models | `next(v)`, `default()`, `catalog()`, `load()`, `set(v, id)`, `openPicker(options)`, `title(id)` |
-| `effort` | effort | `current()`, `levels()`, `set(level)`, `cycle(step)` |
+| `effort` | effort | `current(v)`, `levels()`, `set(level)`, `cycle(step)`, `refresh()` |
 | `images` | images | `take(text)`, `encode(list)`, `attach({ input })`, `imageURL(v, entry, n)`, `toolImageURL(v, entry)`, `openToolImage(v, entry)` |
 | `files` | files | `attach({ input, container })` completes `$` in another textarea, `complete(query)`, `links(text)`, `query(before)`, `label(path)` |
 | `terminal` | terminal | `mount(container, { id, fontSize, readOnly, scale, onMeta, onExit, onFocus, onReady })` draws a shell of the server's that runs (by its `id`) in an element, and returns `{ focus(), blur(), resize(), dispose(), connected() }`; `open(fresh)`, a terminal tab; `settings()` |
@@ -580,9 +592,10 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | --- | --- |
 | `render` | none: redraw what you show |
 | `entry`, `session`, `finish`, `plugins` | an entry and the view; the view; `{ kind, compact, view }`; the plugin listing |
-| `session:view`, `session:leave`, `session:entry`, `session:dirty`, `session:loaded`, `session:finish`, `session:changes`, `session:queue`, `session:gone`, `session:before-run`, `session:sessions`, `session:workspaces`, `session:workspace`, `session:config` | the session plugin's model, as it changes (see its source) |
+| `session:view`, `session:leave`, `session:entry`, `session:dirty`, `session:loaded`, `session:started`, `session:finish`, `session:changes`, `session:queue`, `session:gone`, `session:before-run`, `session:sessions`, `session:workspaces`, `session:workspace`, `session:config` | the session plugin's model, as it changes (see its source) |
 | `composer:input`, `composer:focus`, `composer:blur`, `composer:ready` | the composer |
 | `timeline:flush`, `timeline:scroll`, `layout:view`, `layout:panel`, `layout:resize`, `models`, `theme` | the timeline; the layout (`layout:resize` is the stage's new width, as the window, the rail or a panel changes it); the models, the theme |
+| `preferences` | what new sessions start with, `{ effort, last_model, … }` as saved, and when it was asked for (`Date.now()`), from the effort plugin, as either cockpit chooses |
 | `service`, `point:<name>`, `store:<key>`, `slots` | a service came or went; a contribution point changed; a stored key; a slot |
 | `plugin-reloaded`, `plugin-restyled`, `plugin-error`, `online`, `ready` | the kernel |
 
@@ -593,6 +606,7 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | `composer.submit` | `({ raw, text, force, view })`, first to return true takes what was written: the commands plugin takes `/commands`, the queue a message while the agent works |
 | `composer.key` | `(event)`, first to return true takes a key pressed in the composer |
 | `run.request` | `(body, view)`, async: every prompt's request passes through, and may be changed on its way |
+| `session.missing` | `({ id, ws })`, first to return true has a session the server does not know opened as a new one under its ID, with no error: the chat of a canvas's agent before its first run |
 
 ### Changing the interface
 
@@ -645,10 +659,15 @@ cockpit.contribute('sidebar.tab', {
 });
 ```
 
-`tab` is `{ id, kind, state, save(state), setTitle(text), setBadge(text),
-close(), activate(), visible() }`. The `sidebar` service opens tabs:
-`open(kind, { state, reuse, focus })`, `close(id)`, `activate(id)`,
-`toggle(kind)`, `show()`, `hide()`, `tabs()`, `active()`, `view(id)`.
+`tab` is `{ id, kind, state, save(state), setTitle(text, detail),
+setBadge(text), close(), activate(), visible() }`. A title is short — what
+tells the tab from the others, a shell's folder say — and `detail`, the
+whole of it, is the tab's tooltip. The tabs say their titles while all of
+them fit; else each is its icon, the shown one's title beside them, and
+those that do not fit even so are in the menu of "⋯ N". The `sidebar`
+service opens tabs: `open(kind, { state, reuse, focus })`, `close(id)`,
+`activate(id)`, `toggle(kind)`, `show()`, `hide()`, `tabs()`, `active()`,
+`view(id)`.
 
 **Terminals** run their shells on the server and outlive the page: `` ` ``
 opens one, ⌘D splits a pane right and ⌘⇧D down (Ctrl+Alt+D and

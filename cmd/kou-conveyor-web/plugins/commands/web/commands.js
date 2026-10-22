@@ -164,12 +164,15 @@ export default function activate(cockpit) {
       return h('li', {
         role: 'option', id: `command-${n}`, class: item.hint ? 'hint' : null, 'aria-selected': String(selected),
         'aria-disabled': item.hint ? 'true' : null,
-        onmousemove: () => {
-          if (!item.hint && ui.cursor !== n) {
-            ui.cursor = n;
-            ui.moved = true;
-            render();
-          }
+        // The pointer moves the cursor in place: the list is neither drawn
+        // anew nor scrolled under it.
+        onmousemove: (event) => {
+          if (item.hint || ui.cursor === n) return;
+          listbox.querySelector(`#command-${ui.cursor}`)?.setAttribute('aria-selected', 'false');
+          ui.cursor = n;
+          ui.moved = true;
+          event.currentTarget.setAttribute('aria-selected', 'true');
+          composer.input?.setAttribute('aria-activedescendant', event.currentTarget.id);
         },
         onmousedown: (event) => {
           event.preventDefault(); // the composer keeps the focus

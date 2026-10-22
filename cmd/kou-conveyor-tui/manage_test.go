@@ -240,27 +240,32 @@ func TestSettingsFormGateway(t *testing.T) {
 	for m.form.selected() != cockpit.APIGateway {
 		m.Update(key("left"))
 	}
-	if view := ansi.Strip(m.View()); !strings.Contains(view, "GATEWAY") || !strings.Contains(view, "not running") || strings.Contains(view, "BASE URL") {
+	if view := ansi.Strip(m.View()); !strings.Contains(view, "GATEWAY") || !strings.Contains(view, "not running") || strings.Contains(view, "BASE URL") || !strings.Contains(view, "composer") {
 		t.Fatalf("gateway form:\n%s", view)
 	}
+	// It has no model to choose: prompts choose theirs in the composer.
 	m.Update(key("tab"))
-	if m.form.focus != rowModel {
-		t.Fatalf("focus = %d", m.form.focus)
-	}
-	typeText(m, "claude-opus-5-5")
-	m.Update(key("tab")) // back to the API: the gateway has no other row
 	if m.form.focus != rowAPI {
-		t.Fatalf("focus after the model = %d", m.form.focus)
+		t.Fatalf("focus = %d", m.form.focus)
 	}
 	m.Update(key("enter"))
 	saved, err := cockpit.LoadSettings(m.opt.SettingsFile)
-	if err != nil || saved != (cockpit.Settings{API: cockpit.APIGateway, Model: "claude-opus-5-5"}) {
+	if err != nil || saved != (cockpit.Settings{API: cockpit.APIGateway}) {
+		t.Fatalf("saved %+v, %v", saved, err)
+	}
+	if status := ansi.Strip(m.statusLine()); !strings.Contains(status, "connection saved · gateway · applies") {
+		t.Fatalf("status = %q", status)
+	}
+	// Older settings' model goes, the protocol chosen in the browser stays.
+	if err := cockpit.SaveSettings(m.opt.SettingsFile, cockpit.Settings{API: cockpit.APIGateway, Model: "claude-opus-5-5", Protocol: cockpit.APIResponses}); err != nil {
+		t.Fatal(err)
+	}
+	m.command("/settings")
+	m.Update(key("enter"))
+	if saved, err := cockpit.LoadSettings(m.opt.SettingsFile); err != nil || saved != (cockpit.Settings{API: cockpit.APIGateway, Protocol: cockpit.APIResponses}) {
 		t.Fatalf("saved %+v, %v", saved, err)
 	}
 	m.note = notice{}
-	if status := ansi.Strip(m.statusLine()); !strings.Contains(status, "gateway · claude-opus-5-5") {
-		t.Fatalf("status = %q", status)
-	}
 	// A published gateway shows where it runs.
 	if err := cockpit.PublishGateway(cockpit.GatewayPath(m.opt.SettingsFile), cockpit.Gateway{URL: "http://127.0.0.1:8318", APIKey: "sk-ua-k"}); err != nil {
 		t.Fatal(err)

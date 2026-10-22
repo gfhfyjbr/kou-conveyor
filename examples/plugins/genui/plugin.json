@@ -1,0 +1,28 @@
+{
+  "name": "genui",
+  "version": "0.2.0",
+  "description": "Generative UI, stage 0: the UI tool shows the user a surface (metrics, charts, tables, diffs, inputs and buttons) bound to data and to workspace files, which the browser cockpit, the terminal and the iPhone app draw with their own components, live as the files change; an Html component is a page of the agent's own, framed in a sandbox and bound to the same data.",
+  "tools": [
+    {
+      "name": "UI",
+      "description": "Show the user a surface: a small native UI (metrics, charts, tables, diffs, inputs, buttons) in the browser cockpit, the terminal and the iPhone app, bound to data and to files of the workspace, which stays live as the files change. A call with a surface ID used before changes that surface. The result is the surface as text, with warnings. The genui plugin's instructions list the components.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "surface": {"type": "string", "description": "The surface's ID: lowercase letters, digits, - and _, as \"bench\". A call with an ID used before changes that surface."},
+          "title": {"type": "string", "description": "The surface's title."},
+          "glance": {"type": "string", "description": "One line that sums the surface up while it is out of view, with templates, as \"p99 {#p99}\"."},
+          "sources": {"type": "object", "description": "Files the surface reads, and reads again as they change: { \"<name>\": { \"file\": \"path in the workspace\", \"format\": \"jsonl|csv|tsv|json|text|markdown\" } }; null drops one. Each is at /sources/<name> in the data model."},
+          "components": {"type": "array", "description": "Components to add, or to replace by id: { \"id\": \"…\", \"component\": \"Metric\", …props }. Containers name their children by id; the surface starts at \"root\".", "items": {"type": "object"}},
+          "remove": {"type": "array", "description": "IDs of components to drop.", "items": {"type": "string"}},
+          "data": {"type": "object", "description": "Changes to the data model: { \"/pointer\": value }; null removes."},
+          "delete": {"type": "boolean", "description": "true removes the surface."}
+        },
+        "required": ["surface"]
+      },
+      "run": ["python3", "./ui.py"]
+    }
+  ],
+  "prompt": "prompt.md",
+  "web": {"script": "web/genui.js", "style": "web/genui.css"}
+}

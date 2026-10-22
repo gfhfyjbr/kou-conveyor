@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"net/http"
@@ -29,41 +30,79 @@ type catalogCache struct {
 	catalog cockpit.Catalog
 }
 
-// catalog lists the models a prompt in the workspace can run with. fresh
+// catalog lists the models a prompt in the workspace can run with; its
+// default is the model a new session starts with (newSessionModel). fresh
 // asks an endpoint again rather than answer from what it said last.
 func (s *server) catalog(ctx context.Context, ws *workspace, fresh bool) cockpit.Catalog {
 	settings, err := s.settings()
 	if err != nil {
 		return cockpit.Catalog{Models: []cockpit.ModelInfo{}, Error: err.Error()}
 	}
-	defaultModel := s.connection(settings, ws).Model
-	if s.opt.Provider == "" && settings.API == cockpit.APIGateway && s.gateway != nil {
-		catalog := cockpit.Catalog{Source: "gateway", Default: defaultModel, Models: []cockpit.ModelInfo{}}
+	var catalog cockpit.Catalog
+	if s.throughGateway(settings) {
+		catalog = cockpit.Catalog{Source: "gateway", Models: []cockpit.ModelInfo{}}
 		models, err := s.gatewayModels(ctx)
 		if err != nil {
 			catalog.Error = err.Error()
 		} else {
 			catalog.Models = models
 		}
-		return catalog
-	}
-	key := string(settings.API) + "\x00" + settings.BaseURL + "\x00" + settings.KeyHint() + "\x00" + ws.Path
-	s.models.mu.Lock()
-	if !fresh && s.models.key == key && time.Since(s.models.at) < catalogTTL {
-		catalog := s.models.catalog
-		s.models.mu.Unlock()
-		catalog.Default = defaultModel
-		return catalog
-	}
-	s.models.mu.Unlock()
-	catalog := cockpit.ListModels(ctx, s.opt.Provider, s.opt.SettingsFile, settings, cockpit.WorkspaceEnv(ws.Path))
-	catalog.Default = defaultModel
-	if catalog.Error == "" {
+	} else {
+		key := catalogKey(settings, ws)
 		s.models.mu.Lock()
-		s.models.key, s.models.at, s.models.catalog = key, time.Now(), catalog
+		cached := !fresh && s.models.key == key && time.Since(s.models.at) < catalogTTL
+		catalog = s.models.catalog
+		s.models.mu.Unlock()
+		if !cached {
+			catalog = cockpit.ListModels(ctx, s.opt.Provider, s.opt.SettingsFile, settings, cockpit.WorkspaceEnv(ws.Path))
+			if catalog.Error == "" {
+				s.models.mu.Lock()
+				s.models.key, s.models.at, s.models.catalog = key, time.Now(), catalog
+				s.models.mu.Unlock()
+			}
+		}
+	}
+	catalog.Default = s.startingModel(settings, ws, catalog)
+	return catalog
+}
+
+// newSessionModel is the model a new session of the workspace starts with
+// when its prompt names none. Of an endpoint's models it knows those it
+// listed last, without asking it again.
+func (s *server) newSessionModel(ctx context.Context, settings cockpit.Settings, ws *workspace) string {
+	var listed cockpit.Catalog
+	if s.throughGateway(settings) {
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if models, err := s.gatewayModels(ctx); err == nil {
+			listed.Models = models
+		}
+	} else {
+		s.models.mu.Lock()
+		if s.models.key == catalogKey(settings, ws) {
+			listed = s.models.catalog
+		}
 		s.models.mu.Unlock()
 	}
-	return catalog
+	return s.startingModel(settings, ws, listed)
+}
+
+// startingModel is the model a new session starts with, of the models
+// listed: the server's -model, else the one last chosen in a composer of
+// either cockpit, else the first listed (cockpit.NewSessionModel).
+func (s *server) startingModel(settings cockpit.Settings, ws *workspace, listed cockpit.Catalog) string {
+	last := cockpit.LoadPreferences(cockpit.PreferencesPath(s.opt.SettingsFile)).LastModel
+	return cmp.Or(s.opt.model, cockpit.NewSessionModel(last, s.connection(settings, ws), listed))
+}
+
+// throughGateway says runs go through the gateway this server runs.
+func (s *server) throughGateway(settings cockpit.Settings) bool {
+	return s.opt.Provider == "" && settings.API == cockpit.APIGateway && s.gateway != nil
+}
+
+// catalogKey tells apart the endpoints whose models are cached.
+func catalogKey(settings cockpit.Settings, ws *workspace) string {
+	return string(settings.API) + "\x00" + settings.BaseURL + "\x00" + settings.KeyHint() + "\x00" + ws.Path
 }
 
 // gatewayModels are the models the gateway serves, as the composer offers
@@ -75,6 +114,11 @@ func (s *server) gatewayModels(ctx context.Context) ([]cockpit.ModelInfo, error)
 	}
 	models := make([]cockpit.ModelInfo, 0, len(served))
 	for _, m := range served {
+		// The window set for the model on the Accounts page is the one its
+		// runs take.
+		if window := s.gateway.ContextWindow(m.ID); window > 0 {
+			m.Context = window
+		}
 		models = append(models, modelInfo(m))
 	}
 	cockpit.SortModels(models)

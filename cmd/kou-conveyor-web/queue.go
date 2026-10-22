@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"os"
 	"strings"
 	"uuid"
 
@@ -88,9 +89,8 @@ func (s *server) settle(current *run, tr *cockpit.Transcript, outcome string) (*
 // runNext runs the next queued prompt in the place of the run that ended. A
 // prompt that cannot start goes back first in line, and the queue pauses.
 func (s *server) runNext(current *run, item cockpit.QueueItem) (*run, error) {
-	thinking, _ := s.effort()
 	following, err := s.launch(s.ctx, current.ws, startRequest{
-		Prompt: item.Text, SessionID: current.sessionID, MessageID: item.ID, Model: s.modelOf(item), Thinking: thinking,
+		Prompt: item.Text, SessionID: current.sessionID, MessageID: item.ID, Model: s.modelOf(item, current.model), Resume: true,
 		Images: item.Images,
 	}, current)
 	if err != nil {
@@ -205,20 +205,20 @@ func (s *server) queueRoute(w http.ResponseWriter, r *http.Request, req *queueRe
 // runNow starts a run of a prompt that has nothing to wait for, under the
 // message ID it was given.
 func (s *server) runNow(ctx context.Context, ws *workspace, id string, item cockpit.QueueItem) (*run, error) {
-	thinking, _ := s.effort()
+	_, statErr := os.Stat(cockpit.SessionPath(ws.opt.SessionDir, id))
 	return s.launch(ctx, ws, startRequest{
-		Prompt: item.Text, SessionID: id, MessageID: item.ID, Model: s.modelOf(item), Thinking: thinking,
+		Prompt: item.Text, SessionID: id, MessageID: item.ID, Model: s.modelOf(item, ""), Resume: statErr == nil,
 		Images: item.Images,
 	}, nil)
 }
 
 // modelOf is the model a queued prompt runs with: the one it was queued
-// with, else the server's -model, else the connection's.
-func (s *server) modelOf(item cockpit.QueueItem) string {
+// with, else the model of the run it follows.
+func (s *server) modelOf(item cockpit.QueueItem, fallback string) string {
 	if item.Model != "" {
 		return item.Model
 	}
-	return s.opt.model
+	return fallback
 }
 
 // answerRun tells the browser that a prompt runs now, and in which run.

@@ -199,3 +199,13 @@
   .mp-foot { min-height: 44px; }
   .mp-foot .act { height: 32px; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.model-pick, .mp-back button { border-radius: var(--radius); }
+.mp-flag, .model-tag { border-radius: var(--radius-sm); }
+.model-picker { border-radius: var(--radius-lg); }
+:root[data-corners="round"] .model-picker { overflow: hidden; }
+/* Round, the chosen model is a rounded block, with no bar along its edge. */
+:root[data-corners="round"] .mp-row { margin: 0 4px; padding: 4px 8px 4px 10px; border-left: 0; border-radius: var(--radius); }

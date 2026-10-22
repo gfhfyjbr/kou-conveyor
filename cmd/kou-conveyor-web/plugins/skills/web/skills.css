@@ -83,3 +83,14 @@
 @media (prefers-reduced-motion: reduce) {
   .skill-more, .skill-row, .skill-head { transition: none !important; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.skills-off, .skill-row { border-radius: var(--radius); }
+.skill-tag { border-radius: var(--radius-sm); }
+/* Round, no bars along the left edge: a skill that is off says it by its
+   name, struck through. */
+:root[data-corners="round"] .skills-off { padding-left: 11px; border-left-width: 1px; border-left-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+:root[data-corners="round"] .skill-row { border-left-width: 1px; border-left-color: var(--line); }
+:root[data-corners="round"] .skill-row[data-open="true"] { border-left-color: var(--line-2); }

@@ -67,7 +67,7 @@ struct ModelPicker: View {
                     if let error {
                         ContentUnavailableView("Models unavailable", systemImage: "cpu", description: Text(error))
                     } else {
-                        ProgressView()
+                        LoadingSpinner()
                     }
                 }
             }

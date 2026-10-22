@@ -24,24 +24,21 @@
   height: var(--bar);
   border-bottom: 1px solid var(--line);
 }
-.sb-tabs {
-  display: flex;
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: none;
-}
-.sb-tabs::-webkit-scrollbar { display: none; }
+/* The tabs say their names while all of them fit. Else each is its icon and
+   the caption beside them says the active one's name; the tabs that do not
+   fit even so are in the menu of "⋯ N" (sidebar.js, fitStrip). */
+.sb-bar { display: flex; flex: 1; min-width: 0; }
+.sb-tabs { display: flex; flex: 1; min-width: 0; overflow: hidden; }
+.sb-bar[data-mode="icons"] .sb-tabs { flex: none; }
 .sb-tab {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex: 0 1 auto;
   min-width: 76px;
   max-width: 200px;
-  padding: 0 6px 0 12px;
+  padding: 0 4px 0 10px;
   border-right: 1px solid var(--line);
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
@@ -52,6 +49,9 @@
   -webkit-user-select: none;
   transition: color 0.12s, background 0.12s;
 }
+.sb-tab[hidden], .sb-more[hidden], .sb-caption[hidden] { display: none; }
+/* Measured, each tab is as wide as its name makes it. */
+.sb-bar[data-measure] .sb-tab { flex: none; }
 .sb-tab:hover { color: var(--fg); background: var(--bg-3); }
 .sb-tab[aria-selected="true"] { color: var(--fg); background: var(--bg); border-bottom-color: var(--accent); }
 .sb-tab:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
@@ -60,6 +60,8 @@
 .sb-icon svg { width: 13px; height: 13px; }
 .sb-tab[aria-selected="true"] .sb-icon { color: var(--accent); }
 .sb-glyph { font: 12px/1 var(--mono); }
+/* A kind with no icon: the first letter of its name. */
+.sb-mono { display: inline-grid; place-items: center; width: 13px; height: 13px; border: 1px solid currentColor; font: 700 8.5px/1 var(--mono); }
 .sb-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-badge { flex: none; font: 700 9.5px/1 var(--mono); letter-spacing: 0.06em; color: var(--accent); }
 .sb-badge:empty { display: none; }
@@ -67,14 +69,38 @@
   flex: none;
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   color: var(--fg-4);
   font: 14px/1 var(--mono);
   opacity: 0;
 }
-.sb-tab:hover .sb-x, .sb-tab[aria-selected="true"] .sb-x, .sb-x:focus-visible { opacity: 1; }
+.sb-tab:hover .sb-x, .sb-tab[aria-selected="true"] .sb-x, .sb-x:focus-visible, .sb-caption .sb-x { opacity: 1; }
 .sb-x:hover { color: var(--fg); background: var(--bg-4); }
+/* Icons: a tab is its icon, its badge in the corner. */
+.sb-bar[data-mode="icons"] .sb-tab { flex: none; justify-content: center; width: 34px; min-width: 0; padding: 0; }
+.sb-bar[data-mode="icons"] .sb-tab > .sb-title, .sb-bar[data-mode="icons"] .sb-tab > .sb-x { display: none; }
+.sb-bar[data-mode="icons"] .sb-tab > .sb-badge { position: absolute; top: calc(50% - 14px); left: calc(50% + 7px); font-size: 8.5px; letter-spacing: 0; }
+.sb-bar[data-mode="icons"] .sb-icon { width: 16px; height: 16px; }
+.sb-bar[data-mode="icons"] .sb-icon svg { width: 15px; height: 15px; }
+.sb-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-width: 34px;
+  padding: 0 8px;
+  border-right: 1px solid var(--line);
+  color: var(--fg-3);
+  font: 600 11px/1 var(--mono);
+  white-space: nowrap;
+  transition: color 0.12s, background 0.12s;
+}
+.sb-more:hover, .sb-more[aria-expanded="true"] { color: var(--fg); background: var(--bg-3); }
+.sb-more:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+/* The caption: the active tab's name, its badge and its ×. */
+.sb-caption { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 0 4px 0 10px; color: var(--fg); font: 500 11.5px/1 var(--mono); }
+.sb-caption-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sb-add, .sb-close { flex: none; align-self: center; margin-left: 2px; }
 .sb-close { margin-right: 8px; }
 
@@ -186,3 +212,33 @@
 .set-inline input:focus, .set-inline select:focus { outline: 0; border-color: var(--accent); }
 .set-toggle { display: flex; align-items: center; gap: 8px; font: 12px var(--mono); color: var(--fg-2); cursor: pointer; }
 .set-toggle input { accent-color: var(--accent); }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). The
+   grids of hairlines round with them what they hold. */
+.hello-kinds, .hello-icon, .hello-rows, .set-choice,
+.set-inline input[type="text"], .set-inline input[type="number"], .set-inline select { border-radius: var(--radius); }
+.sb-mono, .sb-x { border-radius: var(--radius-sm); }
+:root[data-corners="round"] :is(.hello-kinds, .hello-rows, .set-choice) { overflow: hidden; }
+:root[data-corners="round"] .hello-kind { border-left-color: transparent; }
+/* Round, the tabs are a segmented control, as the rail's: no rules
+   between them, the shown one raised (sidebar.js counts the gaps). */
+:root[data-corners="round"] .sb-head { padding-left: 6px; }
+:root[data-corners="round"] :is(.sb-bar, .sb-tabs) { align-items: center; }
+:root[data-corners="round"] .sb-tabs { gap: 3px; }
+:root[data-corners="round"] :is(.sb-tab, .sb-more) { height: 32px; margin: 0; border: 0; border-radius: var(--radius); }
+:root[data-corners="round"] .sb-tab[aria-selected="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-2); }
+/* Round, the panel is a block on the page's ground (layout.css), its strip
+   level with the stage's bar, the tabs as far from its edges as from its
+   top. Beside the stage, the strip and the tabs are blocks apart, as the
+   rail's head and its view are; floating over the stage, on a narrow
+   screen, the panel stays one block. */
+:root[data-corners="round"]:not([data-rail-compact]) .sb-head { height: calc(var(--bar) - 9px); padding-left: 5px; }
+:root[data-corners="round"]:not([data-rail-compact]) .sb-close { margin-right: 5px; }
+@media (min-width: 1181px) {
+  :root[data-corners="round"]:not([data-rail-compact]) .sidebar { gap: 8px; background: none; border: 0; border-radius: 0; }
+  :root[data-corners="round"]:not([data-rail-compact]) :is(.sb-head, .sb-body) { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+  :root[data-corners="round"]:not([data-rail-compact]) .sb-head { height: calc(var(--bar) - 8px); }
+  :root[data-corners="round"]:not([data-rail-compact]) .sb-body { overflow: hidden; }
+}

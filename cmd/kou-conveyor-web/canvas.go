@@ -66,6 +66,21 @@ func (h canvasHost) Enqueue(ctx context.Context, ws canvas.Workspace, session, i
 	return err
 }
 
+func (h canvasHost) Resend(ctx context.Context, ws canvas.Workspace, session, rewind, id, text, model string) error {
+	w := h.s.workspaces.find(ws.ID)
+	if w == nil {
+		return errors.New("the workspace is gone")
+	}
+	_, err := h.s.launch(ctx, w, startRequest{
+		Prompt: text, SessionID: session, MessageID: id, Model: model, Resume: true, Rewind: rewind,
+	}, nil)
+	var busy *busyError
+	if errors.As(err, &busy) {
+		return errors.New("its session runs a prompt now: replace yours once that run is over")
+	}
+	return err
+}
+
 func (h canvasHost) StopRun(ws canvas.Workspace, session string) bool {
 	w := h.s.workspaces.find(ws.ID)
 	if w == nil {
@@ -101,6 +116,11 @@ func (s *server) canvasRunFinished(current *run, tr *cockpit.Transcript, outcome
 	answer := ""
 	if !current.compact && outcome == "done" {
 		answer = canvas.FinalAnswer(tr.Entries)
+		// A model that refused to the end answered nothing: what waits for
+		// its answer is told so.
+		if strings.TrimSpace(answer) == "" && canvas.Refused(tr.Entries) {
+			outcome = "refused"
+		}
 	}
 	s.canvas.RunFinished(current.ws.ID, current.sessionID, answer, outcome, runPrompts(current, tr))
 }

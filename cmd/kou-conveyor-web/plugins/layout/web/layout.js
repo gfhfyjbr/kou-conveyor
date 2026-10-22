@@ -14,9 +14,12 @@
 //
 // and through two contribution points:
 //
-//   layout.view     { id, title, order, badge, rail, page, select(), shown(), hidden() }:
+//   layout.view     { id, title, icon, order, badge, rail, page, select(), shown(), hidden() }:
 //                   a view with a tab in the rail. rail is shown in the rail
 //                   while the view is; page, if any, takes the stage's place.
+//                   icon (SVG markup) is what the tab shows where the rail
+//                   is too narrow for the names; a view without one shows
+//                   the first letter of its title.
 //   layout.panel    { id, order, width, minWidth, node, opened(), closed() }:
 //                   a side panel; one is open at a time. width is where it
 //                   starts, minWidth (pixels) the least it can be made.
@@ -155,6 +158,7 @@ export default function activate(cockpit) {
     // The tabs, when there is more than one view.
     tabs.hidden = list.length < 2;
     place(tabs, list.map((v) => tabFor(v, v === active)));
+    fitTabs();
     if (shell.dataset.tab !== id) shell.dataset.tab = id;
     shell.toggleAttribute('data-page', !!(active?.page instanceof Node));
     cockpit.store.set('view', id);
@@ -177,13 +181,65 @@ export default function activate(cockpit) {
       node = h('button', {
         class: 'rail-tab', id: `tab-${v.id}`, type: 'button', role: 'tab', data: { tab: v.id },
         onclick: () => (v.select ? cockpit.safely(v.select) : show(v.id)),
-      }, v.title || v.id, v.badge instanceof Node ? v.badge : null);
+      },
+      h('span', { class: 'rail-tab-icon', 'aria-hidden': 'true' }, iconOf(v)),
+      h('span', { class: 'rail-tab-label', text: v.title || v.id }),
+      v.badge instanceof Node ? v.badge : null);
       tabNodes.set(v, node);
+      // A count that changes may make the names fit, or not.
+      if (v.badge instanceof Node) counts.observe(v.badge, COUNT_CHANGES);
     }
     node.title = v.tabTitle || v.title || v.id;
     node.setAttribute('aria-selected', String(selected));
     return node;
   }
+
+  // iconOf is what a view's tab shows in place of its name: its icon (SVG
+  // markup, a node or a glyph), or the first letter of its title.
+  function iconOf(v) {
+    const icon = v.icon;
+    if (icon instanceof Node) return icon.cloneNode(true);
+    if (typeof icon === 'string' && icon.trim().startsWith('<svg')) return svg(icon);
+    if (typeof icon === 'string' && icon.trim()) return h('span', { class: 'rail-tab-glyph', text: icon.trim() });
+    return h('span', { class: 'rail-tab-mono', text: String(v.title || v.id || '?').trim().charAt(0).toUpperCase() });
+  }
+
+  // fitTabs has the tabs say their names while every name fits its tab,
+  // a few pixels to spare, and their icons while one does not. The names
+  // are measured as they would show, so which tab is selected changes
+  // nothing; going back to the names takes a little more room than leaving
+  // them did, so a width at the edge does not flicker.
+  const TAB_SPARE = 6;
+  const TAB_SLACK = 8;
+  function fitTabs() {
+    if (tabs.hidden || !tabs.isConnected || !tabs.clientWidth) return;
+    const dense = tabs.hasAttribute('data-dense');
+    if (dense) tabs.removeAttribute('data-dense');
+    const needs = [...tabs.children].some((tab) => {
+      const parts = [...tab.children].filter((el) => !el.classList.contains('rail-tab-icon'))
+        .map((el) => el.getBoundingClientRect()).filter((box) => box.width > 0);
+      if (!parts.length) return false;
+      const width = Math.max(...parts.map((box) => box.right)) - Math.min(...parts.map((box) => box.left));
+      return width + TAB_SPARE + (dense ? TAB_SLACK : 0) > tab.clientWidth;
+    });
+    tabs.toggleAttribute('data-dense', needs);
+  }
+  // The tabs are fitted anew when the rail's width changes, when a count
+  // in them does, and when the fonts have come.
+  const tabsSized = new ResizeObserver(() => fitTabs());
+  tabsSized.observe(tabs);
+  let countsFit = 0;
+  const counts = new MutationObserver(() => {
+    cancelAnimationFrame(countsFit);
+    countsFit = requestAnimationFrame(() => fitTabs());
+  });
+  const COUNT_CHANGES = { childList: true, characterData: true, subtree: true, attributes: true, attributeFilter: ['data-health', 'hidden'] };
+  document.fonts?.ready.then(() => fitTabs());
+  cockpit.onDispose(() => {
+    tabsSized.disconnect();
+    counts.disconnect();
+    cancelAnimationFrame(countsFit);
+  });
 
   // place makes box's children the nodes given, moving as few as it can.
   function place(box, nodes) {

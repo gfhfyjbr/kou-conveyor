@@ -1,30 +1,42 @@
 /* kou-conveyor — web cockpit.
    One accent, hairline rules, square corners, mono for anything a machine
    produced and sans for prose. Every colour is a token; light and dark
-   only redefine tokens. */
+   only redefine tokens. The appearance the user chooses (appearance.js) —
+   another accent, another shade of the greys, rounder corners — only sets
+   the --kou-* properties the tokens read: unset, the tokens are the
+   cockpit's own. */
 
 :root {
   color-scheme: dark;
-  --bg: #0c0c0b;
-  --bg-2: #121211;
-  --bg-3: #191917;
-  --bg-4: #22221f;
-  --line: #262623;
-  --line-2: #373632;
-  --fg: #ecebe6;
-  --fg-2: #b3b1a9;
-  --fg-3: #7f7d76;
-  --fg-4: #5a5852;
-  --accent: #ff5b1f;
-  --accent-ink: #0c0c0b;
-  --accent-soft: rgb(255 91 31 / 0.12);
+  --bg: var(--kou-dark-bg, #0c0c0b);
+  --bg-2: var(--kou-dark-bg-2, #121211);
+  --bg-3: var(--kou-dark-bg-3, #191917);
+  --bg-4: var(--kou-dark-bg-4, #22221f);
+  --line: var(--kou-dark-line, #262623);
+  --line-2: var(--kou-dark-line-2, #373632);
+  --fg: var(--kou-dark-fg, #ecebe6);
+  --fg-2: var(--kou-dark-fg-2, #b3b1a9);
+  --fg-3: var(--kou-dark-fg-3, #7f7d76);
+  --fg-4: var(--kou-dark-fg-4, #5a5852);
+  --accent: var(--kou-dark-accent, #ff5b1f);
+  --accent-ink: var(--bg);
+  --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
   --ok: #9ccf83;
   --warn: #efb443;
   --err: #ff5468;
   --err-soft: rgb(255 84 104 / 0.09);
-  --code: #0f0f0e;
-  --selection: rgb(255 91 31 / 0.3);
+  --code: var(--kou-dark-code, #0f0f0e);
+  --selection: color-mix(in srgb, var(--accent) 30%, transparent);
+  /* The selection where it cannot lie over the text, as in a terminal. */
+  --selection-solid: var(--kou-dark-selection-solid, #4a2a1b);
   --shadow: 0 24px 64px rgb(0 0 0 / 0.5);
+
+  /* How round corners are: square unless the appearance says. Controls
+     take --radius; what is small in them — keys, tags, chips — half; what
+     floats or holds them — dialogs, the composer, canvas nodes — half again. */
+  --radius: var(--kou-radius, 0px);
+  --radius-sm: calc(var(--radius) / 2);
+  --radius-lg: calc(var(--radius) * 1.5);
 
   --mono: ui-monospace, "SF Mono", SFMono-Regular, "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
   --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -39,22 +51,24 @@
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
     color-scheme: light;
-    --bg: #f4f3ef; --bg-2: #fbfaf7; --bg-3: #ecebe5; --bg-4: #e2e0d8;
-    --line: #dcdad2; --line-2: #c6c3b9;
-    --fg: #151513; --fg-2: #46453f; --fg-3: #77756c; --fg-4: #a19e94;
-    --accent: #e4470c; --accent-ink: #ffffff; --accent-soft: rgb(228 71 12 / 0.1);
+    --bg: var(--kou-light-bg, #f4f3ef); --bg-2: var(--kou-light-bg-2, #fbfaf7); --bg-3: var(--kou-light-bg-3, #ecebe5); --bg-4: var(--kou-light-bg-4, #e2e0d8);
+    --line: var(--kou-light-line, #dcdad2); --line-2: var(--kou-light-line-2, #c6c3b9);
+    --fg: var(--kou-light-fg, #151513); --fg-2: var(--kou-light-fg-2, #46453f); --fg-3: var(--kou-light-fg-3, #77756c); --fg-4: var(--kou-light-fg-4, #a19e94);
+    --accent: var(--kou-light-accent, #e4470c); --accent-ink: #ffffff; --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
     --ok: #2e7a34; --warn: #9a6200; --err: #cc1f3d; --err-soft: rgb(204 31 61 / 0.07);
-    --code: #efeee8; --selection: rgb(228 71 12 / 0.22); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
+    --code: var(--kou-light-code, #efeee8); --selection: color-mix(in srgb, var(--accent) 22%, transparent);
+    --selection-solid: var(--kou-light-selection-solid, #f2cbb8); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
   }
 }
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #f4f3ef; --bg-2: #fbfaf7; --bg-3: #ecebe5; --bg-4: #e2e0d8;
-  --line: #dcdad2; --line-2: #c6c3b9;
-  --fg: #151513; --fg-2: #46453f; --fg-3: #77756c; --fg-4: #a19e94;
-  --accent: #e4470c; --accent-ink: #ffffff; --accent-soft: rgb(228 71 12 / 0.1);
+  --bg: var(--kou-light-bg, #f4f3ef); --bg-2: var(--kou-light-bg-2, #fbfaf7); --bg-3: var(--kou-light-bg-3, #ecebe5); --bg-4: var(--kou-light-bg-4, #e2e0d8);
+  --line: var(--kou-light-line, #dcdad2); --line-2: var(--kou-light-line-2, #c6c3b9);
+  --fg: var(--kou-light-fg, #151513); --fg-2: var(--kou-light-fg-2, #46453f); --fg-3: var(--kou-light-fg-3, #77756c); --fg-4: var(--kou-light-fg-4, #a19e94);
+  --accent: var(--kou-light-accent, #e4470c); --accent-ink: #ffffff; --accent-soft: color-mix(in srgb, var(--accent) 10%, transparent);
   --ok: #2e7a34; --warn: #9a6200; --err: #cc1f3d; --err-soft: rgb(204 31 61 / 0.07);
-  --code: #efeee8; --selection: rgb(228 71 12 / 0.22); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
+  --code: var(--kou-light-code, #efeee8); --selection: color-mix(in srgb, var(--accent) 22%, transparent);
+  --selection-solid: var(--kou-light-selection-solid, #f2cbb8); --shadow: 0 24px 64px rgb(40 30 20 / 0.18);
 }
 
 /* ---------------------------------------------------------------- base */
@@ -89,6 +103,7 @@ kbd {
   padding: 0 4px;
   border: 1px solid var(--line-2);
   border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
   color: var(--fg-3);
   font: 500 10px/1 var(--mono);
   letter-spacing: 0;
@@ -122,6 +137,24 @@ kbd + kbd { margin-left: 2px; }
     linear-gradient(var(--tick), var(--tick)) bottom right / 1px 9px;
   background-repeat: no-repeat;
 }
+/* Round corners bend the marks with them: the box's own border, shown
+   only where it turns. */
+:root[data-corners="round"] .ticks::before {
+  --tick-arm: calc(9px + var(--radius-lg));
+  background: none;
+  border: 1px solid var(--tick);
+  border-radius: inherit;
+  -webkit-mask:
+    linear-gradient(#000 0 0) top left / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) top right / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) bottom left / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) bottom right / var(--tick-arm) var(--tick-arm) no-repeat;
+  mask:
+    linear-gradient(#000 0 0) top left / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) top right / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) bottom left / var(--tick-arm) var(--tick-arm) no-repeat,
+    linear-gradient(#000 0 0) bottom right / var(--tick-arm) var(--tick-arm) no-repeat;
+}
 
 .icon {
   display: inline-grid;
@@ -130,6 +163,7 @@ kbd + kbd { margin-left: 2px; }
   height: 32px;
   color: var(--fg-3);
   border: 1px solid transparent;
+  border-radius: var(--radius);
   font: 600 13px/1 var(--mono);
 }
 .icon svg { width: 16px; height: 16px; }
@@ -141,6 +175,7 @@ kbd + kbd { margin-left: 2px; }
   height: 22px;
   padding: 0 7px;
   border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   color: var(--fg-3);
   font: 600 10px/20px var(--mono);
   letter-spacing: 0.08em;
@@ -151,7 +186,7 @@ kbd + kbd { margin-left: 2px; }
 .act:disabled { opacity: 0.4; pointer-events: none; }
 .act.strong { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); }
 .act.strong:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.icon.small { width: 24px; height: 24px; font-size: 14px; }
+.icon.small { width: 24px; height: 24px; font-size: 14px; border-radius: var(--radius-sm); }
 .icon:disabled { opacity: 0.35; pointer-events: none; }
 
 .primary {
@@ -159,6 +194,7 @@ kbd + kbd { margin-left: 2px; }
   padding: 0 16px;
   background: var(--accent);
   border: 1px solid var(--accent);
+  border-radius: var(--radius);
   color: var(--accent-ink);
   font: 700 11px/1 var(--mono);
   letter-spacing: 0.12em;
@@ -176,6 +212,7 @@ kbd + kbd { margin-left: 2px; }
   display: grid;
   place-items: center;
   border: 1px solid transparent;
+  border-radius: var(--radius-sm);
   color: var(--fg-3);
   font: 700 14px/1 var(--mono);
   opacity: 0;
@@ -206,11 +243,14 @@ kbd + kbd { margin-left: 2px; }
   padding: 12px 14px;
   border: 1px solid color-mix(in srgb, var(--err) 35%, var(--line));
   border-left: 2px solid var(--err);
+  border-radius: var(--radius);
   background: var(--err-soft);
   font: 12px var(--mono);
 }
 .load-error b { color: var(--err); }
 .load-error span { color: var(--fg-2); flex: 1; }
+/* Round, an error says itself by its tint, with no bar along its edge. */
+:root[data-corners="round"] .load-error { padding-left: 15px; border-left-width: 1px; border-left-color: color-mix(in srgb, var(--err) 35%, var(--line)); }
 
 /* Segmented activity meter. */
 .meter { display: inline-flex; gap: 2px; }
@@ -233,7 +273,7 @@ kbd + kbd { margin-left: 2px; }
 [data-provider="deepseek"] { --p: #5b8def; }
 [data-provider="qwen"] { --p: #a38cf4; }
 [data-provider="mistral"] { --p: #ff8a3d; }
-.mp-dot, .model-dot { flex: none; width: 7px; height: 7px; background: var(--p, var(--fg-4)); }
+.mp-dot, .model-dot { flex: none; width: 7px; height: 7px; border-radius: min(var(--radius-sm), 3.5px); background: var(--p, var(--fg-4)); }
 
 .kv { display: flex; align-items: baseline; gap: 6px; font: 12px/1.95 var(--mono); }
 .kv .k { color: var(--fg-3); flex: none; }
@@ -248,9 +288,11 @@ kbd + kbd { margin-left: 2px; }
 /* ---------------------------------------------------------------- code */
 
 /* The colours of tokens, by the classes the server names
-   (cmd/internal/highlight): the file viewer's, and a Code call's code. */
+   (cmd/internal/highlight): the file viewer's, and a Code call's code. The
+   greys follow the shade; the colours are the code's own, whatever the
+   accent. */
 :root {
-  --syn-fg: #e3e2dc;
+  --syn-fg: var(--kou-dark-syn-fg, #e3e2dc);
   --syn-keyword: #ff8a57;
   --syn-type: #7aa7d9;
   --syn-const: #d28bc4;
@@ -258,23 +300,23 @@ kbd + kbd { margin-left: 2px; }
   --syn-func: #efc36e;
   --syn-string: #9ccf83;
   --syn-escape: #6fc2b8;
-  --syn-comment: #6d6b64;
-  --syn-punct: #8c8a83;
-  --syn-op: #b3b1a9;
-  --syn-prop: #cfcdc5;
+  --syn-comment: var(--kou-dark-syn-comment, #6d6b64);
+  --syn-punct: var(--kou-dark-syn-punct, #8c8a83);
+  --syn-op: var(--kou-dark-syn-op, #b3b1a9);
+  --syn-prop: var(--kou-dark-syn-prop, #cfcdc5);
   --syn-err: #ff5468;
 }
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --syn-fg: #1c1c19; --syn-keyword: #c23d0a; --syn-type: #2d5f9a; --syn-const: #9c3d87; --syn-builtin: #1f7a72;
-    --syn-func: #8a5a00; --syn-string: #2e7a34; --syn-escape: #1f7a72; --syn-comment: #8f8c83; --syn-punct: #6f6c64;
-    --syn-op: #55534c; --syn-prop: #3d3c38; --syn-err: #cc1f3d;
+    --syn-fg: var(--kou-light-syn-fg, #1c1c19); --syn-keyword: #c23d0a; --syn-type: #2d5f9a; --syn-const: #9c3d87; --syn-builtin: #1f7a72;
+    --syn-func: #8a5a00; --syn-string: #2e7a34; --syn-escape: #1f7a72; --syn-comment: var(--kou-light-syn-comment, #8f8c83); --syn-punct: var(--kou-light-syn-punct, #6f6c64);
+    --syn-op: var(--kou-light-syn-op, #55534c); --syn-prop: var(--kou-light-syn-prop, #3d3c38); --syn-err: #cc1f3d;
   }
 }
 :root[data-theme="light"] {
-  --syn-fg: #1c1c19; --syn-keyword: #c23d0a; --syn-type: #2d5f9a; --syn-const: #9c3d87; --syn-builtin: #1f7a72;
-  --syn-func: #8a5a00; --syn-string: #2e7a34; --syn-escape: #1f7a72; --syn-comment: #8f8c83; --syn-punct: #6f6c64;
-  --syn-op: #55534c; --syn-prop: #3d3c38; --syn-err: #cc1f3d;
+  --syn-fg: var(--kou-light-syn-fg, #1c1c19); --syn-keyword: #c23d0a; --syn-type: #2d5f9a; --syn-const: #9c3d87; --syn-builtin: #1f7a72;
+  --syn-func: #8a5a00; --syn-string: #2e7a34; --syn-escape: #1f7a72; --syn-comment: var(--kou-light-syn-comment, #8f8c83); --syn-punct: var(--kou-light-syn-punct, #6f6c64);
+  --syn-op: var(--kou-light-syn-op, #55534c); --syn-prop: var(--kou-light-syn-prop, #3d3c38); --syn-err: #cc1f3d;
 }
 .tk-k, .tk-kd, .tk-kn, .tk-ow, .tk-nt, .tk-gh { color: var(--syn-keyword); }
 .tk-kt, .tk-nc { color: var(--syn-type); }
@@ -313,6 +355,7 @@ kbd + kbd { margin-left: 2px; }
   width: min(600px, 100%);
   background: var(--bg-2);
   border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   animation: rise 0.14s ease-out;
 }
@@ -332,6 +375,7 @@ kbd + kbd { margin-left: 2px; }
   width: min(560px, 100%);
   background: var(--bg-2);
   border: 1px solid var(--line-2);
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow);
   animation: rise 0.14s ease-out;
 }
@@ -359,6 +403,8 @@ kbd + kbd { margin-left: 2px; }
   background: var(--bg);
   transition: background 0.12s, color 0.12s;
 }
+.seg label:first-of-type span { border-radius: var(--radius) 0 0 var(--radius); }
+.seg label:last-of-type span { border-radius: 0 var(--radius) var(--radius) 0; }
 .seg b { font: 700 11px/1.2 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .seg small { font: 11px/1.3 var(--mono); color: var(--fg-4); }
 .seg label:hover span { background: var(--bg-3); }
@@ -376,6 +422,7 @@ kbd + kbd { margin-left: 2px; }
   padding: 0 10px;
   background: var(--bg);
   border: 1px solid var(--line-2);
+  border-radius: var(--radius);
   outline: 0;
   font: 12.5px var(--mono);
   color: var(--fg);
@@ -404,11 +451,54 @@ kbd + kbd { margin-left: 2px; }
 .settings-path { flex: 1; min-width: 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); overflow-wrap: anywhere; }
 .settings > footer .act { border-color: var(--line-2); height: 30px; line-height: 28px; }
 
+/* ---------------------------------------------------------------- appearance */
+
+/* Settings → Appearance: the accents, the shades and the corners, each a
+   radio of its own drawn as a swatch. */
+.look { display: flex; flex-wrap: wrap; gap: 6px; }
+.look label { position: relative; cursor: pointer; }
+.look input { position: absolute; opacity: 0; pointer-events: none; }
+.look label > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 30px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  font: 600 10.5px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+  transition: border-color 0.12s, color 0.12s, background 0.12s;
+}
+.look label:hover > span { border-color: var(--line-2); color: var(--fg); background: var(--bg); }
+.look input:checked ~ span { border-color: var(--accent); color: var(--fg); background: var(--accent-soft); }
+.look input:focus-visible ~ span { outline: 1px solid var(--accent); outline-offset: 2px; }
+/* An accent's dot, a shade's three greys, a corner's bend. */
+.look-dot { flex: none; width: 12px; height: 12px; border-radius: min(var(--radius-sm), 6px); background: var(--sw); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 14%, transparent); }
+.look-custom .look-dot:not([data-set]) { background: conic-gradient(#ff5b1f, #f5a524, #3ecf72, #22c3b0, #4c8dff, #9d7bff, #ff5c9d, #ff5b1f); }
+.look-custom input[type="color"] { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; pointer-events: auto; }
+.look-shade { display: inline-flex; flex: none; height: 14px; border: 1px solid var(--line-2); border-radius: min(var(--radius-sm), 4px); overflow: hidden; }
+.look-shade i { width: 7px; height: 100%; }
+.look-corner {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border-top: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+  border-top-left-radius: var(--r);
+}
+.look-range { display: flex; align-items: center; gap: 10px; }
+.look-range input { flex: 1; max-width: 260px; accent-color: var(--accent); }
+.look-range output { min-width: 40px; font: 11px var(--mono); color: var(--fg-2); }
+
 /* ---------------------------------------------------------------- scrollbars */
 
 * { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
-::-webkit-scrollbar-thumb { background: var(--line-2); border: 3px solid transparent; background-clip: content-box; }
+::-webkit-scrollbar-thumb { background: var(--line-2); border: 3px solid transparent; border-radius: var(--radius); background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------------------------------------------------------------- motion */
@@ -429,6 +519,8 @@ kbd + kbd { margin-left: 2px; }
 @media (max-width: 560px) {
   .seg { grid-template-columns: minmax(0, 1fr); }
   .seg label + label span { border-left-width: 1px; border-top-width: 0; }
+  .seg label:first-of-type span { border-radius: var(--radius) var(--radius) 0 0; }
+  .seg label:last-of-type span { border-radius: 0 0 var(--radius) var(--radius); }
   .settings > footer { flex-wrap: wrap; }
   .settings-path { flex-basis: 100%; }
 }

@@ -69,20 +69,29 @@ export function createSourceBody(node, ctx) {
     }
   }
 
+  // What the line says, drawn last: it is drawn anew only when that
+  // changes — a webhook's address selected, or its Copy under the
+  // pointer, stays through the statuses that come.
+  let whatDrawn = null;
   function drawWhat() {
     const hook = model.hooks.get(current.id);
     if (!current.plugin && current.preset === 'webhook') {
       const url = hook ? `${location.origin}${hook}` : '';
       if (!hook && !current.proposed) model.refreshHooks();
+      if (whatDrawn === `hook:${url}`) return;
+      whatDrawn = `hook:${url}`;
       what.replaceChildren(
         h('span', { class: 'cv-src-label', text: 'POST to' }),
         url ? h('code', { class: 'cv-hook', text: url, title: url }) : h('span', { text: 'its address comes once it runs' }),
         url ? h('button', { class: 'act', type: 'button', onclick: () => ctx.cockpit.copy(url, 'Address copied') }, 'Copy') : null);
       return;
     }
-    const line = describe();
-    what.replaceChildren(h('span', { text: line || '' }));
-    if (!def()) what.replaceChildren(h('span', { class: 'cv-warn', text: `No source ${current.plugin ? `${current.plugin}/` : ''}${current.preset}: is its plugin on?` }));
+    const known = !!def();
+    const line = known ? describe() || '' : `No source ${current.plugin ? `${current.plugin}/` : ''}${current.preset}: is its plugin on?`;
+    const key = `${known ? 'line' : 'warn'}:${line}`;
+    if (whatDrawn === key) return;
+    whatDrawn = key;
+    what.replaceChildren(known ? h('span', { text: line }) : h('span', { class: 'cv-warn', text: line }));
   }
 
   function drawEvents() {

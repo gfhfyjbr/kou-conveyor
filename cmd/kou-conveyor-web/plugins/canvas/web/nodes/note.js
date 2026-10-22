@@ -12,10 +12,15 @@ export function createNoteBody(node, ctx) {
   view.dataset.scroll = 'true';
 
   const textOf = (n) => (typeof n.config?.text === 'string' ? n.config.text : '');
+  // The text drawn: a change to the canvas that leaves the note as it is
+  // leaves what it shows (and what is selected in it) be.
+  let drawn = null;
 
   function draw() {
     if (editing) return;
     const text = textOf(current);
+    if (text === drawn) return;
+    drawn = text;
     view.replaceChildren(text.trim() ? ctx.markdown(text) : h('p', { class: 'cv-note-empty', text: 'Double-click to write.' }));
   }
 

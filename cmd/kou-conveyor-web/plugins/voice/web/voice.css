@@ -79,3 +79,9 @@
   .voice { transition: none; }
   .voice[data-state] svg { animation: none; }
 }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.voice, #voice-form textarea, #voice-form select, .voice-checks { border-radius: var(--radius); }
+:root[data-corners="round"] .voice-checks { overflow: hidden; }

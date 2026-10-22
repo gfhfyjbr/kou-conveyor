@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -76,8 +77,17 @@ func (c *Canvas) startAgent(n *Node, start bool) {
 				return
 			}
 		}
+	} else if meta := cockpit.LoadMeta(c.ws.SessionDir, session); meta.Canvas == "" {
+		// A session the node starts with as its own — a copy of another
+		// agent's (NodeSpec.Branch) — names its node as a new one does: the
+		// session list leaves it to the canvas, and it goes with the node.
+		if err := cockpit.SetCanvasMeta(c.ws.SessionDir, session, n.Title, c.id, n.ID); err != nil {
+			c.setStatus(n.ID, StateError, "cannot take its session: "+err.Error())
+			return
+		}
 	}
 	c.e.indexSession(c, n.ID, session)
+	c.applyEffort(n.ID, session)
 	inst := &agentInstance{c: c, id: n.ID, session: session}
 	busy := c.e.o.Host.RunActive(c.ws, session)
 	c.mu.Lock()
@@ -99,15 +109,26 @@ func (a *agentInstance) deliver(m *Message) error {
 	if n == nil {
 		return errors.New("the node is gone")
 	}
+	if m.Rewind != "" {
+		return a.resend(n, m)
+	}
 	text := m.Text
 	if !n.Runtime.Briefed {
 		text = a.c.brief(a.id) + "\n\n" + text
+	}
+	a.c.applyEffort(a.id, a.session)
+	// now goes to the running agent between its tool calls. To an agent
+	// that runs nothing it starts a run, even while its queue is paused —
+	// which by default it does not: there it waits its turn.
+	force := m.Deliver == DeliverNow
+	if force && !m.said && !a.c.e.o.Host.RunActive(a.c.ws, a.session) {
+		force = false
 	}
 	// The run that answers the prompt says so by its ID: the message is
 	// known by it first, as the run may end before Enqueue returns.
 	prompt := uuid.New().String()
 	a.c.remember(a.id, prompt, m)
-	err := a.c.e.o.Host.Enqueue(a.c.e.ctx, a.c.ws, a.session, prompt, text, strings.TrimSpace(n.configString("model")), m.Deliver == DeliverNow)
+	err := a.c.e.o.Host.Enqueue(a.c.e.ctx, a.c.ws, a.session, prompt, text, strings.TrimSpace(n.configString("model")), force)
 	if err != nil {
 		a.c.forget(a.id, prompt)
 		return err
@@ -115,7 +136,100 @@ func (a *agentInstance) deliver(m *Message) error {
 	if !n.Runtime.Briefed {
 		a.c.setRuntime(a.id, func(r *Runtime) { r.Briefed = true })
 	}
+	a.c.noteSent(a.id, m, prompt)
 	return nil
+}
+
+// resend has a message take the place of the prompt it replaces
+// (sendRequest.Replace): the agent's session goes back to before that
+// prompt, and the message runs from there. The brief comes with it as with
+// a prompt edited in the session's page: when the session is left without
+// a prompt (Engine.Brief).
+func (a *agentInstance) resend(n *Node, m *Message) error {
+	// What the agent was given since the replace was asked for stays.
+	if err := a.c.replaceable(n.Title, a.session, m.Rewind); err != nil {
+		return err
+	}
+	a.c.applyEffort(a.id, a.session)
+	prompt := uuid.New().String()
+	a.c.remember(a.id, prompt, m)
+	if err := a.c.e.o.Host.Resend(a.c.e.ctx, a.c.ws, a.session, m.Rewind, prompt, m.Text, strings.TrimSpace(n.configString("model"))); err != nil {
+		a.c.forget(a.id, prompt)
+		return err
+	}
+	a.c.noteSent(a.id, m, prompt)
+	return nil
+}
+
+// noteSent keeps the prompt a message gave a kou agent as the last its
+// sender gave it, when the sender sent it straight — not along an edge,
+// nor as a reply: the prompt its send with replace takes back.
+func (c *Canvas) noteSent(id string, m *Message, prompt string) {
+	if m.Actor == "" || m.Edge != "" || m.Reply {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.states[id]; st != nil {
+		if st.sent == nil {
+			st.sent = map[string]string{}
+		}
+		st.sent[m.Actor] = prompt
+	}
+}
+
+// replaced is the ID of the prompt that a sender's text to a kou agent
+// replaces (sendRequest.Replace): the last one the sender gave it, which
+// must be the last of the agent's session, and done with.
+func (c *Canvas) replaced(actor, to string) (string, error) {
+	n := c.node(to)
+	if n == nil {
+		return "", errNotFound("no such node")
+	}
+	if n.Kind != KindAgent {
+		return "", errInvalid("replace takes back a prompt of a kou agent: «" + n.Title + "» is none")
+	}
+	c.mu.Lock()
+	prompt := ""
+	if st := c.states[to]; st != nil {
+		prompt = st.sent[actor]
+	}
+	c.mu.Unlock()
+	if prompt == "" || n.Runtime.Session == "" {
+		return "", errConflict("«" + n.Title + "» has no prompt of yours to replace: send the text without replace")
+	}
+	return prompt, c.replaceable(n.Title, n.Runtime.Session, prompt)
+}
+
+// replaceable says why a prompt of a kou agent's session cannot be
+// replaced, if it cannot: the agent is at work, or the prompt is not the
+// session's last.
+func (c *Canvas) replaceable(title, session, prompt string) error {
+	if c.e.o.Host.RunActive(c.ws, session) {
+		return errConflict("«" + title + "» is at work: replace your prompt once its run is over")
+	}
+	tr, err := cockpit.LoadSession(c.ws.SessionDir, session)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	// The prompts the session holds: a rewind goes back to before one
+	// (cockpit.RewindSession).
+	last, found := "", false
+	if tr != nil {
+		for _, e := range tr.Entries {
+			if e.Kind == cockpit.KindUser && e.State == "" {
+				last, _ = strings.CutPrefix(e.ID, "input:")
+				found = found || last == prompt
+			}
+		}
+	}
+	switch {
+	case last == prompt:
+		return nil
+	case found:
+		return errConflict("«" + title + "» was given another prompt after yours: send the text without replace")
+	}
+	return errConflict("your last prompt to «" + title + "» is not in its session — it waits in its queue still, or was taken back: send the text without replace")
 }
 
 func (a *agentInstance) read(what string, lines int) (string, error) {
@@ -174,6 +288,22 @@ func (a *agentInstance) stop() {}
 // its agent puts out when the run ends.
 func FinalAnswer(entries []*cockpit.Entry) string { return lastAnswer(entries) }
 
+// Refused reports whether the model refused to respond after a transcript's
+// last prompt: a run that ends so with no answer has the outcome "refused"
+// (Engine.RunFinished).
+func Refused(entries []*cockpit.Entry) bool {
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := entries[i]
+		if e.Kind == cockpit.KindUser {
+			return false
+		}
+		if e.Kind == cockpit.KindNotice && e.Text == cockpit.RefusedNotice {
+			return true
+		}
+	}
+	return false
+}
+
 // lastAnswer is a transcript's last answer: its last final answer, else
 // the text the agent wrote after the last prompt.
 func lastAnswer(entries []*cockpit.Entry) string {
@@ -227,6 +357,25 @@ const feedText = 2 << 10
 // a blank line, then the message: its feed shows the message.
 const briefStart = "You are node «"
 
+// briefRun gives a prompt of a node's session the node's brief first, when
+// its agent was not told of the canvas yet or the prompt is the session's
+// first (Engine.Brief), and says whether the prompt has it. One from the
+// canvas has it already (deliver).
+func (c *Canvas) briefRun(id, session, prompt string, first bool) (string, bool) {
+	n := c.node(id)
+	if n == nil || n.Kind != KindAgent || n.Runtime.Session != session || n.Runtime.Briefed && !first {
+		return prompt, false
+	}
+	if strings.HasPrefix(prompt, briefStart) {
+		return prompt, true
+	}
+	brief := c.brief(id)
+	if brief == "" {
+		return prompt, false
+	}
+	return brief + "\n\n" + prompt, true
+}
+
 // withoutBrief is a prompt without the brief that came first in it.
 func withoutBrief(text string) string {
 	if strings.HasPrefix(text, briefStart) {
@@ -277,28 +426,82 @@ func (c *Canvas) agentEnv(id string) []string {
 		if options := worktreeOptions(spec); !options.IsZero() {
 			env = append(env, runconfig.WorktreeEnvironment+"="+options.Encode())
 		}
+	} else if cwd := strings.TrimSpace(n.configString("cwd")); cwd != "" {
+		// Its cwd is the folder it works in: its tools' and its shell's,
+		// as the workspace is another's.
+		if !filepath.IsAbs(cwd) {
+			cwd = filepath.Join(c.ws.Path, cwd)
+		}
+		env = append(env, runconfig.WorkdirEnvironment+"="+filepath.Clean(cwd))
 	}
 	return env
+}
+
+// applyEffort gives a node's session the effort of the node's config, when
+// the config names one the canvas did not give it yet: a change of the
+// effort in the session's composer holds until the config's changes.
+func (c *Canvas) applyEffort(id, session string) {
+	n := c.node(id)
+	if n == nil || n.Kind != KindAgent || session == "" {
+		return
+	}
+	effort := strings.ToLower(strings.TrimSpace(n.configString("effort")))
+	if effort == "" || effort == n.Runtime.Effort {
+		return
+	}
+	if err := cockpit.SetSessionEffort(c.ws.SessionDir, session, effort); err != nil {
+		c.notice("warning", fmt.Sprintf("«%s» runs with the effort of its session: %v (efforts: %s)", n.Title, err, strings.Join(cockpit.ThinkingLevels, ", ")), id, "")
+	}
+	c.setRuntime(id, func(r *Runtime) { r.Effort = effort })
 }
 
 func (c *Canvas) agentRunStarted(id string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.setStatusLocked(id, StateBusy, "")
+	if st := c.states[id]; st != nil {
+		st.active = now()
+	}
+}
+
+// agentRewound forgets a node's last output, which may be an answer of a run
+// its session's rewind removed: the nodes that read it must not get what the
+// rewound agent is no longer to know. Until it answers again, its answer is
+// the last one of what remains of the session (agentInstance.read).
+func (c *Canvas) agentRewound(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if st := c.states[id]; st != nil {
+		st.output = ""
+	}
 }
 
 func (c *Canvas) agentActivity(id, activity string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.setActivityLocked(id, activity)
+	if st := c.states[id]; st != nil {
+		st.active = now()
+	}
 }
 
 func (c *Canvas) agentEntry(id string, entry *cockpit.Entry) {
 	item := compactEntry(entry)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.states[id] != nil {
-		c.hub.publish(map[string]any{"type": "agent", "node": id, "entry": item})
+	st := c.states[id]
+	if st == nil {
+		return
+	}
+	st.active = now()
+	c.hub.publish(map[string]any{"type": "agent", "node": id, "entry": item})
+	// A prompt of a message the runner wrote down is the message read: a
+	// forced one between tool calls, a queued one when its run started.
+	if prompt, ok := strings.CutPrefix(entry.ID, "input:"); ok && entry.Kind == cockpit.KindUser && entry.State == "" {
+		if m := st.prompts[prompt]; m != nil && m.SeenAt.IsZero() {
+			m.SeenAt = now()
+			c.recordLocked(m)
+		}
 	}
 }
 
@@ -320,6 +523,9 @@ func (c *Canvas) agentRunFinished(id, answer, outcome string, prompts []string) 
 	case "stopped":
 		c.setStatusLocked(id, StateIdle, "stopped")
 		reason = "«" + n.Title + "»'s run was stopped"
+	case "refused":
+		c.setStatusLocked(id, StateIdle, "refused")
+		reason = "«" + n.Title + "»'s model refused to answer"
 	default:
 		c.setStatusLocked(id, StateIdle, "")
 	}

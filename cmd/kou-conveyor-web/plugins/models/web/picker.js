@@ -2,9 +2,9 @@
 // models the connection reaches: through the gateway, every model of every
 // account and endpoint, whichever provider serves it. The picker lists them
 // grouped by provider, newest first, with a search field; the composer
-// chooses the model of the next prompt with it, and the Accounts view the
-// connection's default. Models that make media rather than answers are left
-// out unless searched for, and an ID the list does not hold can be typed.
+// chooses the model of the next prompt with it, which new sessions then
+// start with. Models that make media rather than answers are left out unless
+// searched for, and an ID the list does not hold can be typed.
 import { h } from '/kernel/dom.js';
 
 // contextLabel says how much a context window holds: 200k, 1M.
@@ -88,7 +88,7 @@ export function openModelPicker(options) {
   const keys = h('span', { class: 'mp-keys' });
   const count = h('span', { class: 'mp-count' });
   const refresh = o.onRefresh && h('button', { class: 'act', type: 'button', title: 'Ask the connection again which models it has' }, 'Refresh');
-  const connection = o.onConnection && h('button', { class: 'act', type: 'button', title: 'Where runs connect, and their default model' }, 'Connection…');
+  const connection = o.onConnection && h('button', { class: 'act', type: 'button', title: 'Where runs connect' }, 'Connection…');
   const box = h('div', { class: 'model-picker', role: 'dialog', 'aria-label': o.title || 'Choose a model', data: { placement: o.placement } },
     h('header', { class: 'mp-head' }, h('span', { class: 'label', text: o.title || 'Model' }), h('span', { class: 'mp-note', text: o.note || '' }), keys),
     search, stage,
@@ -99,14 +99,21 @@ export function openModelPicker(options) {
     const width = Math.min(520, window.innerWidth - 16);
     box.style.width = `${width}px`;
     box.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - width - 8))}px`;
-    if (o.placement === 'above') {
+    // Above the anchor, as asked, while there is as much room there as
+    // below it; the box is no taller than its side has room for.
+    const above = r.top - 16;
+    const below = window.innerHeight - r.bottom - 16;
+    const up = o.placement === 'above' && above >= below;
+    const side = up ? 'above' : 'below';
+    if (box.dataset.placement !== side) box.dataset.placement = side;
+    if (up) {
       box.style.top = '';
       box.style.bottom = `${window.innerHeight - r.top + 6}px`;
-      box.style.maxHeight = `${Math.max(220, r.top - 16)}px`;
+      box.style.maxHeight = `${Math.max(120, above)}px`;
     } else {
       box.style.bottom = '';
       box.style.top = `${r.bottom + 6}px`;
-      box.style.maxHeight = `${Math.max(220, window.innerHeight - r.bottom - 16)}px`;
+      box.style.maxHeight = `${Math.max(120, below)}px`;
     }
   }
 
@@ -331,9 +338,12 @@ export function openModelPicker(options) {
     o.onPick?.(r.id);
   }
 
+  // What is typed puts the cursor on the first row, and the list scrolls
+  // back to it.
   search.addEventListener('input', () => {
     cursor = 0;
     render();
+    list.scrollTop = 0;
   });
   search.addEventListener('keydown', (event) => {
     if (event.isComposing) return;
@@ -375,6 +385,7 @@ export function openModelPicker(options) {
           search.value = '';
           cursor = 0;
           render();
+          list.scrollTop = 0;
         } else if (open) {
           back();
         } else {
@@ -429,6 +440,8 @@ export function openModelPicker(options) {
       loading = stillLoading;
       if (!open && !search.value && groups().filter((g) => g.models.length).length === 1) open = groups().find((g) => g.models.length).key;
       render();
+      // The row the cursor is on stays in sight.
+      select(cursor, true);
     },
   };
   current = handle;

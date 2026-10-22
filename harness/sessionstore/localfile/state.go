@@ -3,6 +3,8 @@ package localfile
 import (
 	"fmt"
 	"io/fs"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
@@ -51,6 +53,18 @@ func newSessionHead(id session.ID, createdAt time.Time) sessionHead {
 		toolCallStatuses:   make(map[toolCallStatusKey]struct{}),
 		operationPositions: make(map[operation.ID]int),
 	}
+}
+
+// clone returns a copy of the head that shares nothing the head changes in
+// place, so that writes through the copy leave the original as it was.
+func (head sessionHead) clone() sessionHead {
+	head.Operations = slices.Clone(head.Operations)
+	head.turns = maps.Clone(head.turns)
+	head.ownedTurns = maps.Clone(head.ownedTurns)
+	head.respondedTurns = maps.Clone(head.respondedTurns)
+	head.toolCallStatuses = maps.Clone(head.toolCallStatuses)
+	head.operationPositions = maps.Clone(head.operationPositions)
+	return head
 }
 
 func (head *sessionHead) appendInput(

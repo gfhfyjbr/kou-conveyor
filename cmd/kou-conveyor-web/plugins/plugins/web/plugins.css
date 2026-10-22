@@ -36,3 +36,15 @@
 .plugin-build p { margin: 0; }
 .plugin-build pre { max-height: 220px; margin: 6px 0 0; overflow: auto; white-space: pre-wrap; color: var(--fg-2); font: 10.5px/1.45 var(--mono); }
 .plugin-server { margin: 0; font: 10.5px/1.4 var(--mono); color: var(--fg-4); }
+
+/* ---------------------------------------------------------------- corners */
+
+/* Square unless the appearance rounds them (theme.css: --radius…). */
+.plugin-row, .plugin-trust, .plugin-safe, .plugin-build { border-radius: var(--radius); }
+.plugin-source, .plugin-live { border-radius: var(--radius-sm); }
+/* Round, no bars along the left edge: the borders say what the bars did. */
+:root[data-corners="round"] :is(.plugin-row, .plugin-trust, .plugin-build) { padding-left: 11px; border-left-width: 1px; }
+:root[data-corners="round"] .plugin-row { border-left-color: var(--line); }
+:root[data-corners="round"] .plugin-trust { border-left-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
+:root[data-corners="round"] .plugin-build { border-left-color: var(--line-2); }
+:root[data-corners="round"] .plugin-build[data-state="failed"] { border-color: color-mix(in srgb, var(--err) 45%, var(--line-2)); }

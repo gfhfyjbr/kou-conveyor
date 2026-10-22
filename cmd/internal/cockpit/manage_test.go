@@ -259,6 +259,28 @@ func TestStartAppliesSavedSettings(t *testing.T) {
 
 func newID() string { return uuid.New().String() }
 
+func TestSessionEffortMetadata(t *testing.T) {
+	dir := t.TempDir()
+	if err := cockpit.SetSessionEffort(dir, "fresh", "max"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cockpit.LoadMeta(dir, "fresh").Effort; got != "max" {
+		t.Fatalf("fresh effort = %q", got)
+	}
+	if err := cockpit.SetSessionEffort(dir, "fresh", "huge"); err == nil {
+		t.Fatal("saved an unknown effort")
+	}
+	if err := cockpit.SetSessionEffort(dir, "bad/id", "max"); err == nil {
+		t.Fatal("saved effort for an invalid session")
+	}
+	if err := cockpit.SetSessionEffort(dir, "fresh", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := cockpit.LoadMeta(dir, "fresh").Effort; got != "" {
+		t.Fatalf("cleared effort = %q", got)
+	}
+}
+
 func TestMetadataFromDiskIsCleaned(t *testing.T) {
 	dir := t.TempDir()
 	session(t, dir, "s", "question")

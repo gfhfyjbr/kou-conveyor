@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type OpenRouterStatus struct {
 type openRouterEntry struct {
 	ID string `json:"id"` // OpenRouter's, such as anthropic/claude-opus-4.5
 	Price
+	// Context is the model's context window, in tokens; 0 when OpenRouter
+	// lists none, as in a list kept before the windows were.
+	Context int64 `json:"context,omitzero"`
 }
 
 // OpenRouter keeps OpenRouter's prices, in a file between fetches.
@@ -51,6 +55,9 @@ type OpenRouter struct {
 	byKey   map[string]openRouterEntry
 	fetched time.Time
 	err     string
+	// stale: the list kept was fetched before the context windows were
+	// kept with it, and is fetched again at once.
+	stale bool
 }
 
 type openRouterFile struct {
@@ -67,6 +74,7 @@ func NewOpenRouter(path string) *OpenRouter {
 	if data, err := os.ReadFile(path); err == nil && json.Unmarshal(data, &saved) == nil && saved.Version == 1 {
 		o.index(saved.Models)
 		o.fetched = saved.Fetched
+		o.stale = !slices.ContainsFunc(saved.Models, func(m openRouterEntry) bool { return m.Context > 0 })
 	}
 	return o
 }
@@ -100,6 +108,29 @@ func (o *OpenRouter) Lookup(model string) (ModelPrice, bool) {
 	return ModelPrice{Price: e.Price, Source: PriceOpenRouter, Rule: e.ID}, true
 }
 
+// Window is the context window OpenRouter lists for a model, in tokens, and
+// the ID it lists the model under, if it lists one.
+func (o *OpenRouter) Window(model string) (int64, string, bool) {
+	if o == nil {
+		return 0, "", false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	e, ok := o.byKey[openRouterKey(model)]
+	if !ok || e.Context <= 0 {
+		return 0, "", false
+	}
+	return e.Context, e.ID, true
+}
+
+// fresh reports whether the list kept was fetched within d, with the
+// context windows.
+func (o *OpenRouter) fresh(d time.Duration) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return !o.stale && !o.fetched.IsZero() && time.Since(o.fetched) < d
+}
+
 // Status says how the list stands.
 func (o *OpenRouter) Status() OpenRouterStatus {
 	o.mu.Lock()
@@ -120,7 +151,7 @@ func (o *OpenRouter) Refresh(ctx context.Context) error {
 		return err
 	}
 	o.index(models)
-	o.fetched, o.err = time.Now().UTC(), ""
+	o.fetched, o.err, o.stale = time.Now().UTC(), "", false
 	file := openRouterFile{Version: 1, Fetched: o.fetched, Models: models}
 	o.mu.Unlock()
 	if o.path == "" {
@@ -151,6 +182,11 @@ func (o *OpenRouter) fetch(ctx context.Context) ([]openRouterEntry, error) {
 		Data []struct {
 			ID      string         `json:"id"`
 			Pricing map[string]any `json:"pricing"`
+			// The window of the model, else of the provider OpenRouter
+			// routes it to first: read loosely, as the prices are, for a
+			// field of an odd shape must not cost the list.
+			ContextLength any `json:"context_length"`
+			TopProvider   any `json:"top_provider"`
 		} `json:"data"`
 	}
 	if err := json.UnmarshalRead(io.LimitReader(res.Body, 32<<20), &body); err != nil {
@@ -194,12 +230,32 @@ func (o *OpenRouter) fetch(ctx context.Context) ([]openRouterEntry, error) {
 		} else if v, ok := perToken("input_cache_write"); ok {
 			p.CacheWrite = v
 		}
-		out = append(out, openRouterEntry{ID: m.ID, Price: p})
+		window := tokenCount(m.ContextLength)
+		if top, ok := m.TopProvider.(map[string]any); ok && window == 0 {
+			window = tokenCount(top["context_length"])
+		}
+		out = append(out, openRouterEntry{ID: m.ID, Price: p, Context: window})
 	}
 	if len(out) == 0 {
 		return nil, errors.New("OpenRouter listed no priced models")
 	}
 	return out, nil
+}
+
+// tokenCount reads a count of tokens OpenRouter lists, a number or a string
+// of one; 0 when it lists none.
+func tokenCount(v any) int64 {
+	var n float64
+	switch x := v.(type) {
+	case float64:
+		n = x
+	case string:
+		n, _ = strconv.ParseFloat(strings.TrimSpace(x), 64)
+	}
+	if !(n > 0) || n >= 1<<53 {
+		return 0
+	}
+	return int64(n)
 }
 
 // keep fetches the list when it is older than half a day, until ctx ends.
@@ -210,6 +266,9 @@ func (o *OpenRouter) keep(ctx context.Context) {
 	for {
 		o.mu.Lock()
 		due := time.Until(o.fetched.Add(openRouterEvery))
+		if o.stale {
+			due = 0
+		}
 		o.mu.Unlock()
 		if due <= 0 {
 			if err := o.Refresh(ctx); err != nil {

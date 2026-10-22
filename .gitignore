@@ -22,3 +22,6 @@ __pycache__/
 
 # scratch screenshots
 /*.png
+
+# fonts docs/assets/render.sh fetches
+/docs/assets/src/fonts/

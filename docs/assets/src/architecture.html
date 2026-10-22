@@ -1,0 +1,112 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script>if(/light/.test(location.search))document.documentElement.className='light'</script>
+<link rel="stylesheet" href="kou.css">
+<style>
+body{height:600px}
+svg{display:block}
+.fr{fill:none;stroke:var(--line)}
+.ln{stroke:var(--line)}
+.cp{font:400 12px var(--mono);letter-spacing:.14em;fill:var(--fg-3)}
+.cp .b{fill:var(--fg)}
+.lb{font:400 10px var(--mono);letter-spacing:.14em;fill:var(--fg-4)}
+.box{fill:var(--bg-2);stroke:var(--line-2)}
+.core{fill:var(--bg-2);stroke:var(--accent);stroke-width:1.5}
+.dot{fill:var(--accent)}
+.t{font:600 15px var(--sans);letter-spacing:-.01em;fill:var(--fg)}
+.t.xl{font-size:17px}
+.p{font:400 11px var(--mono);fill:var(--fg-3)}
+.p.dim{fill:var(--fg-4)}
+.p.mid{text-anchor:middle}
+.n{font:400 11px var(--mono);fill:var(--fg-2)}
+.pv{font:500 13px var(--sans);fill:var(--fg-2)}
+.w{fill:none;stroke:var(--fg-4)}
+.wa{fill:none;stroke:var(--accent);stroke-width:1.5}
+.wd{fill:none;stroke:var(--fg-3);stroke-dasharray:4 4}
+.ah{fill:var(--fg-4)}.aa{fill:var(--accent)}.ad{fill:var(--fg-3)}
+.leg{font:400 11px var(--mono);fill:var(--fg-3)}
+.leg.dim{fill:var(--fg-4)}
+</style></head>
+<body>
+<svg width="1280" height="600" viewBox="0 0 1280 600">
+  <defs>
+    <marker id="mg" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path class="ah" d="M0 0L8 4L0 8z"/></marker>
+    <marker id="ma" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path class="aa" d="M0 0L8 4L0 8z"/></marker>
+    <marker id="md" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto"><path class="ad" d="M0 0L8 4L0 8z"/></marker>
+  </defs>
+  <rect class="fr" x=".5" y=".5" width="1279" height="599"/>
+  <line class="ln" x1="0" y1="56.5" x2="1280" y2="56.5"/>
+  <text class="cp" x="32" y="32"><tspan class="b">ARCHITECTURE</tspan></text>
+  <text class="cp" x="1248" y="32" text-anchor="end">ONE LIBRARY · THREE COCKPITS · ANY MODEL</text>
+
+  <g transform="translate(0 32)">
+    <!-- cockpits -->
+    <text class="lb" x="32" y="104">COCKPITS</text>
+    <rect class="box" x="32.5" y="116.5" width="199" height="63"/>
+    <text class="t" x="48" y="143">Terminal</text><text class="p" x="48" y="163">kou-conveyor-tui</text>
+    <rect class="box" x="32.5" y="200.5" width="199" height="63"/>
+    <text class="t" x="48" y="227">Browser</text><text class="p" x="48" y="247">kou-conveyor-web</text>
+    <rect class="box" x="62.5" y="300.5" width="139" height="35"/>
+    <text class="p mid" x="132" y="322">kou-conveyor-relay</text>
+    <rect class="box" x="32.5" y="372.5" width="199" height="63"/>
+    <text class="t" x="48" y="399">iPhone</text><text class="p" x="48" y="419">ios · SwiftUI</text>
+    <path class="wd" d="M132 264V299" marker-end="url(#md)"/>
+    <path class="wd" d="M132 372V337" marker-end="url(#md)"/>
+
+    <!-- cockpits to the runner -->
+    <path class="wa" d="M232 148H258M232 232H258M258 148V232"/>
+    <path class="wa" d="M258 190H283" marker-end="url(#ma)"/>
+    <rect class="box" x="284.5" y="150.5" width="199" height="79"/>
+    <text class="t" x="300" y="177">Runner</text><text class="p" x="300" y="197">kou-conveyor-runner</text><text class="p dim" x="300" y="215">JSONL events on stdout</text>
+
+    <!-- runner to the coordinator -->
+    <path class="wa" d="M484 190H535" marker-end="url(#ma)"/>
+    <rect class="core" x="536.75" y="120.75" width="218.5" height="138.5"/>
+    <rect class="dot" x="730" y="234" width="14" height="14"/>
+    <text class="t xl" x="552" y="150">Coordinator</text><text class="p" x="552" y="170">harness/coordinator</text>
+    <text class="n" x="552" y="198">persists inputs</text>
+    <text class="n" x="552" y="215">runs LLM turns</text>
+    <text class="n" x="552" y="232">compacts the context</text>
+    <text class="n" x="552" y="249">dispatches operations</text>
+
+    <!-- coordinator to the modules -->
+    <path class="w" d="M782 130V346"/>
+    <path class="w" d="M782 130H807" marker-end="url(#mg)"/>
+    <path class="w" d="M782 202H807" marker-end="url(#mg)"/>
+    <path class="w" d="M782 274H807" marker-end="url(#mg)"/>
+    <path class="wa" d="M756 190H782V346H807" marker-end="url(#ma)"/>
+    <text class="lb" x="808" y="88">HARNESS</text>
+    <rect class="box" x="808.5" y="100.5" width="199" height="59"/>
+    <text class="t" x="824" y="126">Context builder</text><text class="p" x="824" y="146">harness/contextbuilder</text>
+    <rect class="box" x="808.5" y="172.5" width="199" height="59"/>
+    <text class="t" x="824" y="198">Session store</text><text class="p" x="824" y="218">harness/sessionstore</text>
+    <rect class="box" x="808.5" y="244.5" width="199" height="59"/>
+    <text class="t" x="824" y="270">Operation manager</text><text class="p" x="824" y="290">harness/operation</text>
+    <rect class="box" x="808.5" y="316.5" width="199" height="59"/>
+    <text class="t" x="824" y="342">LLM adapter</text><text class="p" x="824" y="362">harness/llm</text>
+
+    <!-- adapter to the gateway and the providers -->
+    <path class="wa" d="M1008 346H1055" marker-end="url(#ma)"/>
+    <rect class="box" x="1056.5" y="316.5" width="191" height="59"/>
+    <text class="t" x="1072" y="342">Accounts gateway</text><text class="p" x="1072" y="362">CLIProxyAPI, in-process</text>
+    <path class="wa" d="M1152 316V281" marker-end="url(#ma)"/>
+    <text class="p" x="1144" y="302" text-anchor="end">accounts · API keys</text>
+    <rect class="box" x="1056.5" y="100.5" width="191" height="179"/>
+    <text class="lb" x="1072" y="122">PROVIDERS</text>
+    <text class="pv" x="1072" y="148">Claude</text>
+    <text class="pv" x="1072" y="168">Codex · OpenAI</text>
+    <text class="pv" x="1072" y="188">Gemini · Antigravity</text>
+    <text class="pv" x="1072" y="208">Grok · xAI</text>
+    <text class="pv" x="1072" y="228">Kimi</text>
+    <text class="pv" x="1072" y="248">OpenRouter · DeepSeek</text>
+    <text class="pv" x="1072" y="268">Ollama · vLLM</text>
+  </g>
+
+  <!-- legend -->
+  <line class="ln" x1="0" y1="540.5" x2="1280" y2="540.5"/>
+  <path class="wa" d="M32 568H64"/><text class="leg" x="76" y="572">a prompt's path to a model</text>
+  <path class="w" d="M300 568H332"/><text class="leg" x="344" y="572">uses</text>
+  <path class="wd" d="M420 568H452"/><text class="leg" x="464" y="572">relay: both sides connect out</text>
+  <text class="leg dim" x="1248" y="572" text-anchor="end">or straight to a provider with an API key</text>
+</svg>
+</body></html>

@@ -1,0 +1,182 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script>if(/light/.test(location.search))document.documentElement.className='light'</script>
+<link rel="stylesheet" href="kou.css">
+<style>
+body{height:664px}
+.sheet{height:664px;display:grid;grid-template-rows:56px auto 1fr}
+.band{height:auto}
+
+/* five looks of one cockpit, side by side */
+.specs{display:grid;grid-template-columns:repeat(5,1fr);gap:16px;padding:24px 32px 24px}
+.spec{display:flex;flex-direction:column;gap:10px}
+.spec figcaption{display:flex;align-items:baseline;justify-content:space-between}
+.spec .nm{font-size:17px;font-weight:600;letter-spacing:-.015em}
+.spec .px{font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.spec .meta{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:10.5px;color:var(--fg-3)}
+.spec .meta i{width:8px;height:8px}
+
+.ui{--rs:calc(var(--r) / 2);--rl:calc(var(--r) * 1.5);height:304px;display:flex;flex-direction:column;overflow:hidden;
+  border:1px solid var(--line-2);border-radius:var(--rl);background:var(--bg);color:var(--fg)}
+.ui .hd{display:flex;align-items:center;gap:8px;height:38px;flex:none;padding:0 12px;border-bottom:1px solid var(--line);background:var(--bg-2)}
+.ui .hd .st{width:7px;height:7px;flex:none;border-radius:min(var(--rs),3.5px);background:var(--accent)}
+.ui .hd b{flex:1;font-size:12px;font-weight:600;white-space:nowrap}
+.ui .chip{font-family:var(--mono);font-size:9.5px;color:var(--fg-2);border:1px solid var(--line-2);border-radius:var(--rs);padding:2px 6px;white-space:nowrap}
+.ui .bd{flex:1;display:flex;flex-direction:column;gap:10px;padding:12px}
+.ui .you{align-self:flex-end;max-width:86%;padding:8px 10px;border-radius:var(--r);background:var(--bg-3);font-size:11px;line-height:1.45}
+.ui .think{font-family:var(--mono);font-size:10px;color:var(--fg-4)}
+.ui .tools{border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.ui .tools div{display:grid;grid-template-columns:34px 1fr auto;gap:6px;padding:6px 9px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--fg-3)}
+.ui .tools div:last-child{border-bottom:0}
+.ui .tools b{font-weight:400;color:var(--fg-2)}
+.ui .tools em{font-style:normal}
+.ui .seg{display:flex}
+.ui .seg span{flex:1;margin-left:-1px;padding:5px 0;border:1px solid var(--line-2);font-size:10px;text-align:center;color:var(--fg-3)}
+.ui .seg span:first-child{margin-left:0;border-radius:var(--r) 0 0 var(--r)}
+.ui .seg span:last-child{border-radius:0 var(--r) var(--r) 0}
+.ui .seg .on{position:relative;border-color:var(--accent);background:var(--accent-soft);color:var(--fg)}
+.ui .comp{display:flex;align-items:center;gap:8px;margin-top:auto;padding:6px 6px 6px 10px;border:1px solid var(--line-2);border-radius:var(--r);background:var(--bg-2)}
+.ui .comp span{flex:1;font-size:11px;color:var(--fg-4);white-space:nowrap}
+.ui .send{width:22px;height:22px;flex:none;display:grid;place-items:center;border-radius:var(--rs);background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:12px;font-weight:700}
+.ok{color:var(--ok)}.err{color:var(--err)}
+
+/* what there is to choose */
+.opts{display:grid;grid-template-columns:1.12fr 1fr 1fr;border-top:1px solid var(--line)}
+.col{display:flex;flex-direction:column;padding:22px 28px 0;border-right:1px solid var(--line)}
+.col:last-child{border-right:0}
+.head{display:flex;align-items:baseline;gap:12px}
+.head h2{font-size:20px;font-weight:600;letter-spacing:-.02em}
+.head .sub{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--fg-3)}
+.row{display:flex;justify-content:space-between;margin-top:22px}
+.opt{display:flex;flex-direction:column;align-items:center;gap:8px;font-family:var(--mono);font-size:10px;color:var(--fg-3)}
+.sw{width:30px;height:30px;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--fg) 14%,transparent)}
+.sw.cu{background:conic-gradient(#ff5b1f,#f5a524,#3ecf72,#22c3b0,#4c8dff,#9d7bff,#ff5c9d,#ff5b1f)}
+.shd{display:flex;width:36px;height:30px;border:1px solid var(--line-2)}
+.shd i{flex:1}
+.note{margin-top:18px;font-size:13px;line-height:1.5;color:var(--fg-2)}
+
+/* a corner's bend, and its radius in px */
+.crn{position:relative;width:30px;height:30px}
+.crn i{position:absolute;inset:0;border-top:1.5px solid var(--fg-2);border-left:1.5px solid var(--fg-2);border-top-left-radius:var(--r)}
+.crn b{position:absolute;right:0;bottom:-2px;font-weight:400;font-size:9px;color:var(--fg-4)}
+.note .tty{font-family:var(--mono);font-size:12px;color:var(--fg-3)}
+.note .tty b{font-weight:400;color:var(--fg)}
+</style></head>
+<body><div class="sheet">
+  <div class="band">
+    <span class="cap"><b>Appearance</b> &nbsp;/&nbsp; accent &middot; shade &middot; corners</span>
+    <span class="cap">browser settings &nbsp;&middot;&nbsp; /appearance &nbsp;&middot;&nbsp; iPhone</span>
+  </div>
+
+  <div class="specs" id="specs"></div>
+
+  <div class="opts">
+    <section class="col">
+      <div class="head"><span class="idx">01</span><h2>Accent</h2><span class="sub">8 presets or any #rrggbb</span></div>
+      <div class="row" id="accents"></div>
+      <p class="note">Buttons, your prompts and what runs. A colour of your own is made to read on the ground.</p>
+    </section>
+    <section class="col">
+      <div class="head"><span class="idx">02</span><h2>Shade</h2><span class="sub">7 tints of the greys</span></div>
+      <div class="row" id="shades"></div>
+      <p class="note">Grounds, lines and text take the tint. Graphite is the cockpits' own.</p>
+    </section>
+    <section class="col">
+      <div class="head"><span class="idx">03</span><h2>Corners</h2><span class="sub">0 to 16 px, any between</span></div>
+      <div class="row" id="corners"></div>
+      <p class="note">Four presets, or any radius between.<br><span class="tty">terminal&nbsp;&nbsp; <b>┌──┐</b> 0&nbsp;&nbsp; <b>╭──╮</b> 1–16</span></p>
+    </section>
+  </div>
+</div>
+
+<template id="spec">
+  <figure class="spec">
+    <figcaption><span class="nm"></span><span class="px"></span></figcaption>
+    <div class="ui">
+      <div class="hd"><i class="st"></i><b>split the store</b><span class="chip">opus · high</span></div>
+      <div class="bd">
+        <div class="you">Split the store into an append log and an index.</div>
+        <div class="think">· reasoning 6s</div>
+        <div class="tools">
+          <div><b>Read</b><span>store.go</span><em></em></div>
+          <div><b>Edit</b><span>index.go</span><em><span class="ok">+84</span> <span class="err">−31</span></em></div>
+          <div><b>Bash</b><span>go test</span><em class="ok">ok</em></div>
+        </div>
+        <div class="seg"><span class="on">Chat</span><span>Changes</span><span>Files</span></div>
+        <div class="comp"><span>Ask, or / for commands</span><i class="send">↑</i></div>
+      </div>
+    </div>
+    <div class="meta"><i></i><span></span></div>
+  </figure>
+</template>
+
+<script>
+// The colours are the cockpits' own (cmd/internal/cockpit/appearance.go):
+// each shade's greys in dark and in light, and each accent preset.
+const SHADES = {"graphite":{"dark":{"bg":"#0c0c0b","bg2":"#121211","bg3":"#191917","bg4":"#22221f","line":"#262623","line2":"#373632","fg":"#ecebe6","fg2":"#b3b1a9","fg3":"#7f7d76","fg4":"#5a5852"},"light":{"bg":"#f4f3ef","bg2":"#fbfaf7","bg3":"#ecebe5","bg4":"#e2e0d8","line":"#dcdad2","line2":"#c6c3b9","fg":"#151513","fg2":"#46453f","fg3":"#77756c","fg4":"#a19e94"}},"neutral":{"dark":{"bg":"#0c0c0c","bg2":"#121212","bg3":"#191919","bg4":"#222222","line":"#262626","line2":"#363636","fg":"#ebebeb","fg2":"#b1b1b1","fg3":"#7d7d7d","fg4":"#585858"},"light":{"bg":"#f3f3f3","bg2":"#fafafa","bg3":"#ebebeb","bg4":"#e0e0e0","line":"#dadada","line2":"#c3c3c3","fg":"#151515","fg2":"#454545","fg3":"#757575","fg4":"#9e9e9e"}},"slate":{"dark":{"bg":"#0b0c0e","bg2":"#111214","bg3":"#16191d","bg4":"#1e2228","line":"#22262c","line2":"#31373e","fg":"#e7ebf2","fg2":"#aab2bc","fg3":"#777e87","fg4":"#535960"},"light":{"bg":"#f1f3f7","bg2":"#f8fafd","bg3":"#e7ebf0","bg4":"#dbe0e7","line":"#d5dae1","line2":"#bdc4cc","fg":"#141517","fg2":"#41454a","fg3":"#70757d","fg4":"#989fa7"}},"midnight":{"dark":{"bg":"#0a0c11","bg2":"#101217","bg3":"#141922","bg4":"#1b222f","line":"#1f2633","line2":"#2d3648","fg":"#e5ebf7","fg2":"#a7b1c5","fg3":"#757d8e","fg4":"#515867"},"light":{"bg":"#f0f3fa","bg2":"#f8faff","bg3":"#e6ebf5","bg4":"#d9e0ee","line":"#d3dae8","line2":"#bbc3d4","fg":"#141517","fg2":"#41454c","fg3":"#6f7580","fg4":"#989eab"}},"sage":{"dark":{"bg":"#0a0d0b","bg2":"#101311","bg3":"#161a18","bg4":"#1d2420","line":"#212824","line2":"#303834","fg":"#e5ede9","fg2":"#a8b4ae","fg3":"#75807b","fg4":"#515b56"},"light":{"bg":"#f0f4f2","bg2":"#f8fbf9","bg3":"#e7ecea","bg4":"#dae2de","line":"#d4dcd8","line2":"#bcc6c1","fg":"#131514","fg2":"#414644","fg3":"#6e7773","fg4":"#97a19c"}},"mauve":{"dark":{"bg":"#0c0b0e","bg2":"#121114","bg3":"#1a181c","bg4":"#232027","line":"#27242b","line2":"#38343d","fg":"#ece9f0","fg2":"#b3aeba","fg3":"#7f7b85","fg4":"#5a565f"},"light":{"bg":"#f4f2f6","bg2":"#fbf9fc","bg3":"#eceaef","bg4":"#e1dee6","line":"#dbd8e0","line2":"#c5c1cb","fg":"#151416","fg2":"#464449","fg3":"#77737c","fg4":"#a09ca6"}},"mocha":{"dark":{"bg":"#0e0b09","bg2":"#14110f","bg3":"#1d1814","bg4":"#28201a","line":"#2c241e","line2":"#3f332c","fg":"#f2e9e3","fg2":"#bcaea5","fg3":"#877a72","fg4":"#60564f"},"light":{"bg":"#f7f2ef","bg2":"#fdf9f7","bg3":"#f0e9e5","bg4":"#e7ded8","line":"#e1d8d2","line2":"#ccc0b9","fg":"#161413","fg2":"#4a433f","fg3":"#7c736d","fg4":"#a69c95"}}};
+const ACCENTS = {orange:["#ff5b1f","#e4470c"],amber:["#f5a524","#a16207"],green:["#3ecf72","#18853f"],teal:["#22c3b0","#0b7f72"],blue:["#4c8dff","#2160e0"],violet:["#9d7bff","#6d44e0"],pink:["#ff5c9d","#d0246c"],mono:["#ecebe6","#151513"]};
+const LOOKS = [
+  {name:"Sharp", r:0, accent:"orange", shade:"graphite"},
+  {name:"Soft", r:4, accent:"blue", shade:"slate"},
+  {name:"Rounded", r:8, accent:"green", shade:"sage"},
+  {name:"Round", r:12, accent:"violet", shade:"midnight"},
+  {name:"Max", r:16, accent:"pink", shade:"mauve"},
+];
+const dark = !document.documentElement.classList.contains("light");
+const mode = dark ? "dark" : "light";
+const accentOf = (name) => ACCENTS[name][dark ? 0 : 1];
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const mix = (a, b, t) => "#" + rgb(a).map((x, i) => Math.round(x * t + rgb(b)[i] * (1 - t)).toString(16).padStart(2, "0")).join("");
+// The accent laid faintly over the ground, as the cockpits mix it; their
+// own orange is tuned by hand.
+const softOf = (name, bg) => name === "orange" ? (dark ? "#3a1b0e" : "#f3d6c8") : dark ? mix(accentOf(name), bg, 0.2) : mix(accentOf(name), "#ffffff", 0.22);
+const VARS = {bg:"--bg", bg2:"--bg-2", bg3:"--bg-3", bg4:"--bg-4", line:"--line", line2:"--line-2", fg:"--fg", fg2:"--fg-2", fg3:"--fg-3", fg4:"--fg-4"};
+
+const specs = document.getElementById("specs");
+const tpl = document.getElementById("spec");
+for (const look of LOOKS) {
+  const node = tpl.content.firstElementChild.cloneNode(true);
+  const g = SHADES[look.shade][mode];
+  const ui = node.querySelector(".ui");
+  for (const [k, v] of Object.entries(VARS)) ui.style.setProperty(v, g[k]);
+  ui.style.setProperty("--accent", accentOf(look.accent));
+  ui.style.setProperty("--accent-soft", softOf(look.accent, g.bg));
+  ui.style.setProperty("--accent-ink", dark ? g.bg : "#ffffff");
+  ui.style.setProperty("--r", look.r + "px");
+  node.querySelector(".nm").textContent = look.name;
+  node.querySelector(".px").textContent = look.r + " px";
+  node.querySelector(".meta i").style.background = accentOf(look.accent);
+  node.querySelector(".meta span").textContent = look.accent + " · " + look.shade;
+  specs.appendChild(node);
+}
+
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text) e.textContent = text; return e; };
+const accents = document.getElementById("accents");
+for (const name of Object.keys(ACCENTS)) {
+  const o = el("span", "opt"), s = el("i", "sw");
+  s.style.background = accentOf(name);
+  o.append(s, name);
+  accents.append(o);
+}
+const custom = el("span", "opt");
+custom.append(el("i", "sw cu"), "custom");
+accents.append(custom);
+
+const shades = document.getElementById("shades");
+for (const name of Object.keys(SHADES)) {
+  const g = SHADES[name][mode], o = el("span", "opt"), s = el("b", "shd");
+  for (const k of ["bg2", "bg4", "fg3"]) { const i = el("i"); i.style.background = g[k]; s.append(i); }
+  o.append(s, name);
+  shades.append(o);
+}
+
+const corners = document.getElementById("corners");
+for (const [name, r] of [["sharp", 0], ["soft", 4], ["rounded", 8], ["round", 12], ["max", 16]]) {
+  const o = el("span", "opt"), c = el("b", "crn"), m = el("i");
+  m.style.setProperty("--r", r + "px");
+  c.append(m, el("b", "", String(r)));
+  o.append(c, name);
+  corners.append(o);
+}
+</script>
+</body></html>

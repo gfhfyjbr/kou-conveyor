@@ -1,11 +1,14 @@
-# kou-conveyor
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.png">
+  <img alt="kou-conveyor. One session, every model: queue prompts, steer a run in flight and compact before the context window fills, on any account or API key. Cockpits in the browser, the terminal and on the iPhone." src="docs/assets/hero-light.png">
+</picture>
 
-> **One session, every model.** An async-first harness for coding agents, with three cockpits — a **browser**, a **terminal**, and an **iPhone** — that all share the same session files.
-
-[![CI](https://github.com/gfhfyjbr/kou-conveyor/actions/workflows/ci.yml/badge.svg)](https://github.com/gfhfyjbr/kou-conveyor/actions/workflows/ci.yml)
-&nbsp;![Go 1.27](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)
-&nbsp;![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20iOS-555)
-&nbsp;[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+<p align="center">
+  <a href="https://github.com/gfhfyjbr/kou-conveyor/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/gfhfyjbr/kou-conveyor/ci.yml?branch=main&style=flat-square&label=ci&labelColor=151513"></a>
+  <img alt="Go 1.27" src="https://img.shields.io/badge/go-1.27-ff5b1f?style=flat-square&labelColor=151513">
+  <img alt="Runs on macOS, Linux and iOS" src="https://img.shields.io/badge/runs%20on-macOS%20%C2%B7%20Linux%20%C2%B7%20iOS-46453f?style=flat-square&labelColor=151513">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-46453f?style=flat-square&labelColor=151513"></a>
+</p>
 
 kou-conveyor runs an AI coding agent as a long-lived, asynchronous service:
 prompts **queue**, messages **steer a run in flight**, and the conversation
@@ -20,43 +23,80 @@ the project adds is a hot-reloaded plugin — the browser cockpit *is* plugins.
 | --- | --- | --- |
 | [Quick start](#quick-start) | [Sessions](#sessions) · [Models](#models) | [Architecture](#architecture) |
 | [Install](#install) | [Images](#images) · [Files](#files) | [Extending the harness](#extending-the-harness) |
-| [Three cockpits](#three-cockpits) | [Queue](#queue) · [Changes](#changes) | [Plugins](#plugins) · [Skills](#skills) |
+| [Three cockpits](#three-cockpits) · [Appearance](#appearance) | [Queue](#queue) · [Changes](#changes) | [Plugins](#plugins) · [Skills](#skills) |
 | [Web UI](#web-ui) · [Terminal UI](#terminal-ui) | [Compaction](#compaction) · [Canvas](#canvas) | [Connection settings](#connection-settings) |
 | [iPhone app](#the-iphone-app) · [Voice](#voice) | [Accounts](#accounts) · [Usage](#usage) | [Contributing](#contributing) · [License](#license) |
 
 ## Highlights
 
-| &nbsp; | &nbsp; |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/session-dark.png">
+  <img alt="One session on a timeline: Claude plans the change, GPT edits six files, Gemini reads the codebase and fills 90% of the context window, a compaction keeps a summary and the notes, Grok reviews the diff, and Claude fixes and commits." src="docs/assets/session-light.png">
+</picture>
+
+| Feature | What you get |
 | --- | --- |
-| 🔀 **One session, every model** | Pick a [model](#models) per prompt — any account or endpoint the [gateway](#accounts) reaches. Hop Claude → GPT → Gemini → Grok mid-conversation; every turn remembers the model that wrote it. |
-| ⚡ **Async-first** | [Queue](#queue) prompts, **force** a message into a running turn, and resume a crashed run. Runs live on the server, not the tab. |
-| 🧩 **Everything is a plugin** | Tools, skills, slash commands, whole UI panels — added, replaced and [hot-reloaded](#plugins) with nothing restarted. |
-| 🖼️ **Canvas** | A board of coding agents and terminals wired output → input. [Agents build canvases too](#canvas): a foreman spawns workers in worktrees and gathers their answers. |
-| 🧠 **Compaction & memory** | [Summarize](#compaction) a long session and keep going; durable notes and per-compaction summaries survive, and `TranscriptSearch` reaches the whole history. |
-| 💸 **Accounts & cost** | Sign in subscriptions and add API keys, watch rate-limit windows, and [see tokens as API credits](#usage) priced from OpenRouter's live list. |
-| 📸 **Images & files** | Paste or drop images and see [what the agent looked at](#images); [link files](#files) with `$path:lines` the model reads as the prompt runs. |
-| 📱 **Three cockpits** | The same sessions in a [browser](#web-ui), a [terminal](#terminal-ui) and on your [iPhone](#the-iphone-app) — live over a relay, from anywhere. |
+| **One session, every model** | Pick a [model](#models) per prompt — any account or endpoint the [gateway](#accounts) reaches. Hop Claude → GPT → Gemini → Grok mid-conversation; every turn remembers the model that wrote it. |
+| **Async-first** | [Queue](#queue) prompts, **force** a message into a running turn, and resume a crashed run. Runs live on the server, not the tab. |
+| **Everything is a plugin** | Tools, skills, slash commands, whole UI panels — added, replaced and [hot-reloaded](#plugins) with nothing restarted. |
+| **Canvas** | A board of coding agents and terminals wired output → input. [Agents build canvases too](#canvas): a foreman spawns workers in worktrees and gathers their answers. |
+| **Compaction and memory** | [Summarize](#compaction) a long session and keep going; durable notes and per-compaction summaries survive, and `TranscriptSearch` reaches the whole history. |
+| **Accounts and cost** | Sign in subscriptions and add API keys, watch rate-limit windows, and [see tokens as API credits](#usage) priced from OpenRouter's live list. |
+| **Images and files** | Paste or drop images and see [what the agent looked at](#images); [link files](#files) with `$path:lines` the model reads as the prompt runs. |
+| **Three cockpits** | The same sessions in a [browser](#web-ui), a [terminal](#terminal-ui) and on your [iPhone](#the-iphone-app) — live over a relay, from anywhere. |
+| **Your own look** | An [accent, a shade of the greys and square or rounded corners](#appearance), one look for the browser and the terminal. |
 
 ## Three cockpits
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/cockpits-dark.png">
+  <img alt="The three cockpits on one session: the browser with its session list, the transcript, tool calls and a diff; the terminal with the same transcript and two queued messages; the iPhone app with a canvas of a foreman and its workers." src="docs/assets/cockpits-light.png">
+</picture>
+
 Three front-ends, one set of session files on disk — open a session in any of them.
 
-| Capability | 🖥️ Browser | ⌨️ Terminal | 📱 iPhone |
+| Capability | Browser | Terminal | iPhone |
 | --- | :---: | :---: | :---: |
-| Live transcript — reasoning + collapsible tool calls | ✅ | ✅ | ✅ |
-| Per-prompt diffs of what changed in the workspace | ✅ | ✅ | ✅ |
-| [Pick a model](#models) per prompt · effort control | ✅ | ✅ | ✅ |
-| [Images](#images): paste/attach + see what the agent saw | ✅ | ✅ | ✅ |
-| Resume · edit · branch · fork · rename · pin · delete | ✅ | ✅ | ✅ |
-| [Files](#files): browse & search with git status | ✅ | ✅ | ✅ |
-| [Queue & force](#queue) while the agent works | ✅ | ✅ | ➖ |
-| [Canvas](#canvas): a board of wired agents & terminals | ✅ | ➖ | ✅ |
-| [Accounts](#accounts) gateway & [usage / cost](#usage) | ✅ | ➖ | 👁️ |
-| 🎙️ [Voice](#voice) dictation | ✅ | ➖ | ✅ |
-| Server-side terminals that outlive reloads | ✅ | — | ➖ |
-| Reach it from anywhere (relay tunnel) | ➖ | ➖ | ✅ |
+| Live transcript: reasoning and collapsible tool calls | ● | ● | ● |
+| Per-prompt diffs of what changed in the workspace | ● | ● | ● |
+| [Pick a model](#models) per prompt, and its effort | ● | ● | ● |
+| [Images](#images): paste or attach, and see what the agent saw | ● | ● | ● |
+| Resume, edit, branch, fork, rename, pin, delete | ● | ● | ● |
+| [Files](#files): browse and search, with git status | ● | ● | ● |
+| [Queue](#queue) messages while the agent works | ● | ● | ● |
+| [Force](#queue) a message into a running turn | ● | ● | — |
+| [Appearance](#appearance): accent, shade, corners | ● | ● | ● |
+| [Canvas](#canvas): a board of wired agents and terminals | ● | — | ● |
+| [Accounts](#accounts) gateway, [usage and cost](#usage) | ● | — | ○ |
+| [Voice](#voice) dictation | ● | — | ● |
+| Terminals on the server that outlive a reload | ● | — | ○ |
+| Reach it from anywhere, through a [relay](#the-iphone-app) | ● | — | ● |
 
-_✅ yes · ➖ not yet / lives elsewhere · 👁️ view only · — n/a_
+<sub>● yes &nbsp;&nbsp; ○ in part: the iPhone views the accounts, and opens the terminals of a canvas &nbsp;&nbsp; — no</sub>
+
+## Appearance
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/appearance-dark.png">
+  <img alt="One cockpit in five looks, its corners from sharp to round: orange on graphite at 0 px, blue on slate at 4, green on sage at 8, violet on midnight at 12 and pink on mauve at 16. Below, the eight accents and a colour of your own, the seven shades, and the corner radii." src="docs/assets/appearance-light.png">
+</picture>
+
+The cockpits' own look is orange on graphite with square corners; change any of
+the three. The browser's settings and the terminal's `/appearance` set one look
+for both, and the iPhone app's Appearance screen offers the same choices for
+the phone.
+
+| Setting | Presets | Or |
+| --- | --- | --- |
+| **Accent** | `orange` · `amber` · `green` · `teal` · `blue` · `violet` · `pink` · `mono` | any `#rrggbb`, made lighter or darker until it reads on the ground |
+| **Shade** | `graphite` · `neutral` · `slate` · `midnight` · `sage` · `mauve` · `mocha` | |
+| **Corners** | `sharp` 0 px · `soft` 4 · `rounded` 8 · `round` 12 | any radius up to 16 px; above 0 the terminal draws its boxes round, `╭─╮` |
+
+```text
+/appearance accent violet
+/appearance shade midnight
+/appearance corners 10
+```
 
 ## Quick start
 
@@ -101,6 +141,11 @@ can also keep the connection themselves (below).
 
 ## Architecture
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/architecture-dark.png">
+  <img alt="The terminal and the browser cockpits, and the iPhone through kou-conveyor-relay, drive kou-conveyor-runner. Its coordinator persists inputs, runs LLM turns, compacts the context and dispatches operations, with the context builder, the session store, the operation manager and the LLM adapter, which reaches the providers through the accounts gateway or straight with an API key." src="docs/assets/architecture-light.png">
+</picture>
+
 Three cockpits and a CLI drive one library. A **runner** turns each prompt into
 a **coordinator**-managed sequence of LLM turns and asynchronous operations; a
 **session store** keeps an append-only, forkable history; a **context builder**
@@ -111,25 +156,7 @@ cockpit's **accounts gateway**.
 - [`cmd/`](cmd/) — the executables: the runner, the two desktop cockpits, the canvas helper and the relay.
 - [`benchmarks/`](benchmarks/) — benchmark runners.
 - [`ios/`](ios/) — the native iPhone app.
-
-```mermaid
-flowchart LR
-  subgraph Cockpits
-    W["🖥️ browser"]
-    T["⌨️ terminal"]
-    P["📱 iPhone"]
-  end
-  P -. relay .-> W
-  W --> R["kou-conveyor-runner"]
-  T --> R
-  R --> CO["coordinator"]
-  CO --> CB["context builder"]
-  CO --> SS[("session store")]
-  CO --> OM["operation manager"]
-  CO --> AD["LLM adapter"]
-  AD --> GW["accounts gateway"]
-  GW --> M["Claude · GPT · Gemini · Grok · …"]
-```
+- [`docs/assets/`](docs/assets/) — the pictures above, drawn from HTML by `render.sh`.
 
 ## Glossary
 
@@ -915,7 +942,7 @@ On the phone you can:
   terminals, sources and notes, wire them, and step into any node's chat;
 - browse and search the [files](#files), and view the [accounts](#accounts)
   gateway's accounts, endpoints and limits;
-- 🎙️ dictate prompts with the [voice](#voice) button.
+- dictate prompts with the [voice](#voice) button.
 
 See [`ios/README.md`](ios/README.md) to build it and pair it with a cockpit.
 

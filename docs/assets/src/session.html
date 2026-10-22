@@ -1,0 +1,100 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script>if(/light/.test(location.search))document.documentElement.className='light'</script>
+<link rel="stylesheet" href="kou.css">
+<style>
+body{height:500px}
+svg{display:block}
+.fr{fill:none;stroke:var(--line)}
+.ln{stroke:var(--line)}
+.cp{font:400 12px var(--mono);letter-spacing:.14em;fill:var(--fg-3)}
+.cp .b{fill:var(--fg)}
+.belt{stroke:var(--line-2);stroke-width:2}
+.tick{stroke:var(--line-2)}
+.card{fill:var(--bg-2);stroke:var(--line-2)}
+.card.on{stroke:var(--accent)}
+.k{font:400 11px var(--mono);letter-spacing:.08em;fill:var(--fg-4)}
+.k.on{fill:var(--accent)}
+.m{font:600 24px var(--sans);letter-spacing:-.02em;fill:var(--fg)}
+.t{font:400 12px var(--mono);fill:var(--fg-3)}
+.stem{stroke:var(--line-2)}
+.node{fill:var(--bg);stroke:var(--fg-3)}
+.node.on{fill:var(--accent);stroke:var(--accent)}
+.sq{fill:var(--accent)}
+.ev{font:400 11px var(--mono);fill:var(--fg-3)}
+.cmp{stroke:var(--accent);stroke-dasharray:4 4}
+.cl{font:400 11px var(--mono);letter-spacing:.14em;fill:var(--accent)}
+.mask{fill:var(--bg)}
+.lim{stroke:var(--line-2);stroke-dasharray:2 4}
+.bar{fill:var(--bg-3)}
+.bt{stroke:var(--fg-3);stroke-width:2}
+.bt.hot{stroke:var(--warn)}
+.pct{font:400 10px var(--mono);fill:var(--fg-3)}
+.pct.hot{fill:var(--warn)}
+</style></head>
+<body>
+<svg width="1280" height="500" viewBox="0 0 1280 500">
+  <defs>
+    <pattern id="tk" width="16" height="6" patternUnits="userSpaceOnUse"><line class="tick" x1="0.5" y1="0" x2="0.5" y2="6"/></pattern>
+  </defs>
+  <rect class="fr" x=".5" y=".5" width="1279" height="499"/>
+  <line class="ln" x1="0" y1="56.5" x2="1280" y2="56.5"/>
+  <text class="cp" x="32" y="32"><tspan class="b">ONE SESSION,</tspan> EVERY MODEL</text>
+  <text class="cp" x="1248" y="32" text-anchor="end">EACH TURN KEEPS THE MODEL THAT WROTE IT</text>
+
+  <!-- compaction -->
+  <line class="cmp" x1="746.5" y1="98" x2="746.5" y2="468"/>
+  <text class="cl" x="746.5" y="88" text-anchor="middle">COMPACTION</text>
+
+  <!-- belt -->
+  <line class="belt" x1="32" y1="268" x2="1248" y2="268"/>
+  <rect x="32" y="270" width="1216" height="6" fill="url(#tk)"/>
+
+  <!-- turns -->
+  <g>
+    <rect class="card" x="32.5" y="132.5" width="183" height="99"/>
+    <text class="k" x="48" y="156">T01</text><text class="m" x="48" y="194">Claude</text><text class="t" x="48" y="216">plans the change</text>
+    <line class="stem" x1="124.5" y1="232" x2="124.5" y2="263"/><rect class="node" x="119.5" y="263.5" width="10" height="10"/>
+    <text class="ev" x="124.5" y="304" text-anchor="middle">prompt</text>
+  </g>
+  <g>
+    <rect class="card" x="248.5" y="132.5" width="183" height="99"/>
+    <text class="k" x="264" y="156">T02</text><text class="m" x="264" y="194">GPT</text><text class="t" x="264" y="216">edits six files</text>
+    <line class="stem" x1="340.5" y1="232" x2="340.5" y2="263"/><rect class="node" x="335.5" y="263.5" width="10" height="10"/>
+    <text class="ev" x="340.5" y="304" text-anchor="middle">queued ×2</text>
+  </g>
+  <g>
+    <rect class="card" x="464.5" y="132.5" width="183" height="99"/>
+    <text class="k" x="480" y="156">T03</text><text class="m" x="480" y="194">Gemini</text><text class="t" x="480" y="216">reads the codebase</text>
+    <line class="stem" x1="556.5" y1="232" x2="556.5" y2="263"/><rect class="node" x="551.5" y="263.5" width="10" height="10"/>
+    <text class="ev" x="556.5" y="304" text-anchor="middle">forced in</text>
+  </g>
+  <rect class="mask" x="672" y="290" width="150" height="20"/>
+  <text class="ev" x="746.5" y="304" text-anchor="middle">summary + notes kept</text>
+  <g>
+    <rect class="card" x="844.5" y="132.5" width="183" height="99"/>
+    <text class="k" x="860" y="156">T04</text><text class="m" x="860" y="194">Grok</text><text class="t" x="860" y="216">reviews the diff</text>
+    <line class="stem" x1="936.5" y1="232" x2="936.5" y2="263"/><rect class="node" x="931.5" y="263.5" width="10" height="10"/>
+    <text class="ev" x="936.5" y="304" text-anchor="middle">resumed</text>
+  </g>
+  <g>
+    <rect class="card on" x="1060.5" y="132.5" width="183" height="99"/>
+    <text class="k on" x="1076" y="156">T05</text>
+    <rect class="sq" x="1164" y="150" width="6" height="6"/><text class="k on" x="1228" y="156" text-anchor="end">running</text>
+    <text class="m" x="1076" y="194">Claude</text><text class="t" x="1076" y="216">fixes and commits</text>
+    <line class="stem" x1="1152.5" y1="232" x2="1152.5" y2="263"/><rect class="node on" x="1147.5" y="263.5" width="10" height="10"/>
+    <text class="ev" x="1152.5" y="304" text-anchor="middle">steered</text>
+  </g>
+
+  <!-- context window -->
+  <text class="k" x="32" y="344">CONTEXT WINDOW</text>
+  <line class="lim" x1="32" y1="372.5" x2="1248" y2="372.5"/>
+  <text class="pct" x="1248" y="364" text-anchor="end">limit</text>
+  <rect class="bar" x="32" y="431" width="184" height="25"/><line class="bt" x1="32" y1="431" x2="216" y2="431"/><text class="pct" x="216" y="423" text-anchor="end">30%</text>
+  <rect class="bar" x="248" y="410" width="184" height="46"/><line class="bt" x1="248" y1="410" x2="432" y2="410"/><text class="pct" x="432" y="402" text-anchor="end">55%</text>
+  <rect class="bar" x="464" y="380" width="184" height="76"/><line class="bt hot" x1="464" y1="380" x2="648" y2="380"/><text class="pct hot" x="648" y="394" text-anchor="end">90%</text>
+  <rect class="bar" x="844" y="443" width="184" height="13"/><line class="bt" x1="844" y1="443" x2="1028" y2="443"/><text class="pct" x="1028" y="435" text-anchor="end">16%</text>
+  <rect class="bar" x="1060" y="424" width="184" height="32"/><line class="bt" x1="1060" y1="424" x2="1244" y2="424"/><text class="pct" x="1244" y="416" text-anchor="end">38%</text>
+  <line class="ln" x1="32" y1="456.5" x2="1248" y2="456.5"/>
+</svg>
+</body></html>

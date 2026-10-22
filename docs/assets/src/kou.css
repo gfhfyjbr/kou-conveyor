@@ -1,0 +1,40 @@
+/* The look of the README's showcase images: the cockpits' own graphite and
+   orange, square corners, Inter and JetBrains Mono. render.sh turns each
+   page into a dark and a light PNG (?light picks the light one). */
+@font-face{font-family:"Kou Sans";src:url("fonts/Inter.woff2") format("woff2");font-weight:100 900;font-display:block}
+@font-face{font-family:"Kou Mono";src:url("../../../cmd/kou-conveyor-web/plugins/terminal/web/fonts/JetBrainsMonoNL-Regular.ttf") format("truetype");font-weight:400;font-display:block}
+@font-face{font-family:"Kou Mono";src:url("../../../cmd/kou-conveyor-web/plugins/terminal/web/fonts/JetBrainsMonoNL-Bold.ttf") format("truetype");font-weight:700;font-display:block}
+
+:root{
+  --bg:#0c0c0b;--bg-2:#121211;--bg-3:#191917;--bg-4:#22221f;
+  --line:#262623;--line-2:#373632;
+  --fg:#ecebe6;--fg-2:#b3b1a9;--fg-3:#7f7d76;--fg-4:#5a5852;
+  --accent:#ff5b1f;--accent-soft:#3a1b0e;
+  --ok:#9ccf83;--ok-soft:rgba(156,207,131,.10);
+  --err:#ff5468;--err-soft:rgba(255,84,104,.10);
+  --warn:#efb443;
+  --sans:"Kou Sans",system-ui,sans-serif;
+  --mono:"Kou Mono",ui-monospace,monospace;
+}
+:root.light{
+  --bg:#f4f3ef;--bg-2:#fbfaf7;--bg-3:#ecebe5;--bg-4:#e2e0d8;
+  --line:#dcdad2;--line-2:#c6c3b9;
+  --fg:#151513;--fg-2:#46453f;--fg-3:#77756c;--fg-4:#a19e94;
+  --accent:#e4470c;--accent-soft:#f3d6c8;
+  --ok:#2e7a34;--ok-soft:rgba(46,122,52,.09);
+  --err:#cc1f3d;--err-soft:rgba(204,31,61,.07);
+  --warn:#9a6200;
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--fg)}
+body{width:1280px;overflow:hidden;font-family:var(--sans);-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
+
+.sheet{position:relative;border:1px solid var(--line);overflow:hidden}
+.band{display:flex;align-items:center;justify-content:space-between;height:56px;padding:0 32px;border-bottom:1px solid var(--line)}
+.cap{font-family:var(--mono);font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-3)}
+.cap b{font-weight:400;color:var(--fg)}
+.idx{font-family:var(--mono);font-size:12px;letter-spacing:.1em;color:var(--accent)}
+
+.mark .frame{fill:none;stroke:var(--fg);stroke-width:3}
+.mark .core{fill:var(--accent)}

@@ -1,0 +1,200 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script>if(/light/.test(location.search))document.documentElement.className='light'</script>
+<link rel="stylesheet" href="kou.css">
+<style>
+body{height:648px}
+.sheet{height:648px;display:grid;grid-template-rows:56px 1fr}
+.band{height:auto}
+.cols{display:grid;grid-template-columns:1.55fr 1.2fr .85fr}
+.col{display:flex;flex-direction:column;padding:26px 28px 0;border-right:1px solid var(--line)}
+.col:last-child{border-right:0}
+.head{display:flex;align-items:baseline;gap:12px}
+.head h2{font-size:24px;font-weight:600;letter-spacing:-.02em}
+.head .sub{margin-left:auto;font-family:var(--mono);font-size:12px;color:var(--fg-3)}
+.stage{height:420px;margin-top:22px;display:flex;align-items:center;justify-content:center}
+.note{margin-top:20px;font-size:14px;line-height:1.5;color:var(--fg-2)}
+.ok{color:var(--ok)}.err{color:var(--err)}
+.chip{font-family:var(--mono);font-size:9.5px;color:var(--fg-2);border:1px solid var(--line-2);padding:2px 6px;white-space:nowrap}
+.send{width:20px;height:20px;flex:none;background:var(--accent);display:grid;place-items:center;color:var(--bg);font-size:12px;font-weight:700}
+
+/* window */
+.win{width:100%;height:400px;border:1px solid var(--line-2);background:var(--bg-2);display:grid;grid-template-rows:30px 1fr;overflow:hidden}
+.tb{display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid var(--line);background:var(--bg-3);font-family:var(--mono);font-size:10.5px}
+.tb i{width:8px;height:8px;background:var(--line-2)}
+.tb .url{margin-left:10px;color:var(--fg-4)}
+.tb .ttl{color:var(--fg-3)}
+.tb .rt{margin-left:auto;color:var(--fg-4)}
+
+/* browser */
+.web{display:grid;grid-template-columns:132px 1fr;min-height:0}
+.side{display:flex;flex-direction:column;gap:2px;padding:12px 0;border-right:1px solid var(--line);background:var(--bg-2)}
+.side .h{display:flex;justify-content:space-between;padding:0 12px 8px;font-size:11px;font-weight:600;color:var(--fg-2)}
+.side .h span{font-family:var(--mono);font-weight:400;color:var(--fg-4)}
+.side .r{padding:6px 12px 6px 10px;border-left:2px solid transparent;font-family:var(--mono);font-size:10px;color:var(--fg-3);white-space:nowrap;overflow:hidden}
+.side .r.on{background:var(--bg-3);border-left-color:var(--accent);color:var(--fg)}
+.side .r em{display:block;margin-top:2px;font-style:normal;font-size:9px;color:var(--fg-4)}
+.side .r.on em{color:var(--accent)}
+.chat{position:relative;display:flex;flex-direction:column;gap:9px;padding:12px 14px 0;background:var(--bg);min-height:0}
+.chat .hd{display:flex;align-items:center;justify-content:space-between}
+.chat .hd b{font-size:12px;font-weight:600}
+.you{align-self:flex-end;max-width:82%;padding:8px 10px;background:var(--bg-3);font-size:11px;line-height:1.45}
+.think{font-family:var(--mono);font-size:10px;color:var(--fg-4)}
+.tools{border:1px solid var(--line)}
+.tools div{display:grid;grid-template-columns:40px 1fr auto;gap:6px;padding:5px 8px;border-bottom:1px solid var(--line);font-family:var(--mono);font-size:10px;color:var(--fg-3)}
+.tools div:last-child{border-bottom:0}
+.tools b{font-weight:400;color:var(--fg-2)}
+.diff{border:1px solid var(--line);font-family:var(--mono);font-size:10px}
+.diff .dh{display:flex;justify-content:space-between;padding:5px 8px;border-bottom:1px solid var(--line);background:var(--bg-2);color:var(--fg-2)}
+.diff p{padding:2px 8px;white-space:pre;color:var(--fg-3)}
+.diff p.m{background:var(--err-soft);color:var(--err)}
+.diff p.a{background:var(--ok-soft);color:var(--ok)}
+.say{font-size:11px;line-height:1.45;color:var(--fg-2)}
+.comp{position:absolute;left:14px;right:14px;bottom:12px;display:flex;align-items:center;gap:8px;padding:6px 6px 6px 10px;border:1px solid var(--line-2);background:var(--bg-2)}
+.comp span:first-child{flex:1;font-size:11px;color:var(--fg-4)}
+
+/* terminal */
+.term{background:var(--bg)}
+.tx{position:relative;height:100%;padding:12px 14px;font-family:var(--mono);font-size:11px;line-height:1.72;white-space:pre;color:var(--fg-2)}
+.tx .p{color:var(--accent)}
+.tx .h{color:var(--fg-3)}
+.tx .d{color:var(--fg-4)}
+.tx .q{padding:0 4px;background:var(--bg-4);color:var(--fg-2)}
+.tx .st{position:absolute;left:0;right:0;bottom:0;display:flex;justify-content:space-between;padding:5px 14px;border-top:1px solid var(--line);background:var(--bg-3);color:var(--fg)}
+.tx .st span{color:var(--fg-3)}
+
+/* phone */
+.phone{position:relative;display:flex;flex-direction:column;width:200px;height:408px;padding:9px 10px 8px;border:1.5px solid var(--line-2);border-radius:32px;background:var(--bg-2)}
+.isl{width:60px;height:17px;margin:1px auto 0;border-radius:9px;background:#000}
+.sb{display:flex;justify-content:space-between;align-items:center;margin-top:-14px;padding:0 10px;font-size:10px;font-weight:600}
+.sb i{display:inline-block;width:16px;height:8px;border:1px solid var(--fg-3);border-radius:2px}
+.ah{margin-top:16px;padding:0 4px}
+.ah b{display:block;font-size:13px;font-weight:600;letter-spacing:-.01em}
+.ah span{font-family:var(--mono);font-size:9px;color:var(--fg-3)}
+.board{position:relative;flex:1;margin-top:8px;border:1px solid var(--line);background-color:var(--bg);background-image:radial-gradient(var(--line-2) 1px,transparent 1.2px);background-size:12px 12px}
+.board svg{position:absolute;inset:0;width:100%;height:100%}
+.board .nd{fill:var(--bg-2);stroke:var(--line-2)}
+.board .nd.on{stroke:var(--accent)}
+.board .wr{fill:none;stroke:var(--fg-4)}
+.board .pt{fill:var(--fg-4)}
+.board .l{font:400 9.5px var(--mono);fill:var(--fg)}
+.board .s{font:400 8px var(--mono);fill:var(--fg-3)}
+.board .s.on{fill:var(--accent)}
+.board .s.ok{fill:var(--ok)}
+.board .s.wn{fill:var(--warn)}
+.pc{display:flex;align-items:center;gap:6px;margin-top:8px;padding:5px 5px 5px 8px;border:1px solid var(--line-2);background:var(--bg)}
+.pc span{flex:1;font-size:10px;color:var(--fg-4)}
+.pc svg{flex:none}
+.pc .mic{fill:none;stroke:var(--fg-2);stroke-width:1.2}
+.pc .send{width:16px;height:16px;font-size:10px}
+.tabs{display:flex;justify-content:space-between;margin-top:8px;padding:0 3px;font-size:7.5px;font-weight:500;color:var(--fg-4)}
+.tabs span{display:flex;flex-direction:column;align-items:center;gap:3px}
+.tabs i{width:7px;height:7px;border:1px solid var(--fg-4)}
+.tabs .on{color:var(--accent)}
+.tabs .on i{border-color:var(--accent);background:var(--accent)}
+.home{width:70px;height:3px;margin:8px auto 0;border-radius:2px;background:var(--fg-4)}
+</style></head>
+<body><div class="sheet">
+  <div class="band">
+    <span class="cap"><b>Three cockpits</b> &nbsp;/&nbsp; one session</span>
+    <span class="cap">same session files on disk</span>
+  </div>
+  <div class="cols">
+
+    <section class="col">
+      <div class="head"><span class="idx">01</span><h2>Browser</h2><span class="sub">kou-conveyor-web</span></div>
+      <div class="stage">
+        <div class="win">
+          <div class="tb"><i></i><i></i><i></i><span class="url">127.0.0.1:8080</span></div>
+          <div class="web">
+            <div class="side">
+              <div class="h">Sessions <span>12</span></div>
+              <div class="r on">split the store<em>now · working</em></div>
+              <div class="r">fix flaky fork test<em>12 min</em></div>
+              <div class="r">canvas: release<em>1 h</em></div>
+              <div class="r">relay tunnel<em>3 h</em></div>
+              <div class="r">usage chart<em>yesterday</em></div>
+              <div class="r">voice settings<em>2 days</em></div>
+            </div>
+            <div class="chat">
+              <div class="hd"><b>split the store</b><span class="chip">claude-opus · high</span></div>
+              <div class="you">Split the session store into an append log and an index, and keep forks cheap.</div>
+              <div class="think">· reasoning 6s</div>
+              <div class="tools">
+                <div><b>Read</b><span>harness/sessionstore/store.go</span><span></span></div>
+                <div><b>Edit</b><span>store.go · index.go</span><span><span class="ok">+84</span> <span class="err">−31</span></span></div>
+                <div><b>Bash</b><span>go test ./harness/...</span><span class="ok">ok</span></div>
+              </div>
+              <div class="diff">
+                <div class="dh"><span>index.go</span><span><span class="ok">+12</span> <span class="err">−3</span></span></div>
+                <p>func (s *Store) Fork(at ID) *Store {</p>
+                <p class="m">-   return s.copy()</p>
+                <p class="a">+   return &amp;Store{base: s, at: at}</p>
+                <p>}</p>
+              </div>
+              <div class="say">Forks share the base log now. Tests pass.</div>
+              <div class="comp"><span>Ask, link a $file, or / for commands</span><span class="chip">1 queued</span><div class="send">↑</div></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="note">The full cockpit: canvases, accounts and usage, terminals that outlive a reload.</p>
+    </section>
+
+    <section class="col">
+      <div class="head"><span class="idx">02</span><h2>Terminal</h2><span class="sub">kou-conveyor-tui</span></div>
+      <div class="stage">
+        <div class="win term">
+          <div class="tb"><span class="ttl">kou-conveyor-tui</span><span class="rt">~/src/harness</span></div>
+          <div class="tx"><span class="d">›</span> <span class="h">Why does Fork copy the whole log?</span>
+<span class="h">  Fork calls s.copy(), which clones every</span>
+<span class="h">  item. A shared base log would do.</span>
+
+<span class="p">›</span> Split the session store into an
+  append log and an index.
+<span class="d">· reasoning 6s</span>
+<span class="d">▸</span> Read  harness/sessionstore/store.go
+<span class="d">▸</span> Edit  store.go index.go  <span class="ok">+84</span> <span class="err">−31</span>
+<span class="d">▸</span> Bash  go test ./harness/...  <span class="ok">ok</span>
+  Forks share the base log now.
+
+<span class="q">queued</span> add a changelog entry
+<span class="q">queued</span> bump the module version<div class="st">gpt-5 · high<span>2 queued · ctrl-x force</span></div></div>
+        </div>
+      </div>
+      <p class="note">Keyboard-first: queue, force, diff and resume, in the same session.</p>
+    </section>
+
+    <section class="col">
+      <div class="head"><span class="idx">03</span><h2>iPhone</h2><span class="sub">ios</span></div>
+      <div class="stage">
+        <div class="phone">
+          <div class="isl"></div>
+          <div class="sb"><span>9:41</span><i></i></div>
+          <div class="ah"><b>release board</b><span>4 nodes · 1 working</span></div>
+          <div class="board">
+            <svg viewBox="0 0 176 262" preserveAspectRatio="xMidYMid meet">
+              <path class="wr" d="M88 64V88M46 88H130M46 88V112M130 88V112M46 152V176M130 152V176M46 176H130M88 176V200"/>
+              <rect class="pt" x="86" y="62" width="4" height="4"/><rect class="pt" x="44" y="110" width="4" height="4"/><rect class="pt" x="128" y="110" width="4" height="4"/><rect class="pt" x="86" y="198" width="4" height="4"/>
+              <rect class="nd on" x="48.5" y="24.5" width="79" height="39"/>
+              <text class="l" x="58" y="41">foreman</text><text class="s on" x="58" y="55">working</text>
+              <rect class="nd" x="8.5" y="112.5" width="75" height="39"/>
+              <text class="l" x="17" y="129">worker</text><text class="s ok" x="17" y="143">api · done</text>
+              <rect class="nd" x="92.5" y="112.5" width="75" height="39"/>
+              <text class="l" x="101" y="129">worker</text><text class="s wn" x="101" y="143">ui · asks</text>
+              <rect class="nd" x="48.5" y="200.5" width="79" height="39"/>
+              <text class="l" x="58" y="217">terminal</text><text class="s" x="58" y="231">go test</text>
+            </svg>
+          </div>
+          <div class="pc"><span>Message foreman</span>
+            <svg width="14" height="14" viewBox="0 0 14 14"><rect class="mic" x="4.6" y="1.6" width="4.8" height="7.2" rx="2.4"/><path class="mic" d="M2.6 7a4.4 4.4 0 0 0 8.8 0M7 11.4v1.8"/></svg>
+            <div class="send">↑</div></div>
+          <div class="tabs"><span><i></i>Sessions</span><span class="on"><i></i>Canvas</span><span><i></i>Files</span><span><i></i>Accounts</span></div>
+          <div class="home"></div>
+        </div>
+      </div>
+      <p class="note">Live over a relay, from anywhere: canvases, files, voice.</p>
+    </section>
+
+  </div>
+</div></body></html>

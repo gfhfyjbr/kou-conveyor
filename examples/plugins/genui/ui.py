@@ -3,7 +3,7 @@
 components bound to data and to workspace files, in the browser cockpit, the
 terminal and the iPhone app.
 
-This is stage 0 of generative-ui-design.md, as a plugin: the tool keeps each
+This is a prototype, as a plugin: the tool keeps each
 version of a surface in .harness/ui/<session>/<surface>/ (v<N>.json, and
 latest.json for the newest), and the plugin's web script, the terminal and
 the app draw the version a call made. The files a surface names as sources

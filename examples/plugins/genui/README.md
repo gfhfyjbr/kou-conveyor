@@ -86,9 +86,7 @@ call with an Html: ask the agent to call `UI` with them, and the card frames
 [examples/deps.html](examples/deps.html), a map of the modules go.mod
 requires, whose filter and pick follow the surface's own field.
 
-This is a prototype, stage 0 of the design in
-[generative-ui-design.md](../../../generative-ui-design.md), with the framed
-`Html` of its stage 4:
+This is a prototype, and it has limits:
 
 - **The terminal frames no `Html`:** it shows the `alt`. In its compact
   mode the transcript is printed once, so a surface there does not change.

@@ -23,5 +23,19 @@ __pycache__/
 # scratch screenshots
 /*.png
 
+# scratch notes, patches, dumps and scripts at the root
+/*.md
+!/README.md
+!/CONTRIBUTING.md
+/*.patch
+/*.diff
+/*.log
+/*.json
+/*.txt
+/*.py
+/audit-*/
+/harness-gaps-analysis/
+/plans/
+
 # fonts docs/assets/render.sh fetches
 /docs/assets/src/fonts/

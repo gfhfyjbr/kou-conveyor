@@ -85,9 +85,9 @@ take any part's place (`ui.mount(slot, { id, order, node })`), hide it
 | `bar.crumbs` | layout | the workspace and the title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
 | `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
 | `stage.main` | layout | the transcript (`timeline`) |
-| `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
+| `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40 and the session's figures under it (`stats`, 50); the jump to the latest (`jump`) |
 | `stage.overlay`, `overlays` | layout | the image shown large; dialogs, menus, toasts |
-| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), the file suggestions (`file-suggestions` 12), the images (`attachments` 20), the linked files (`links` 22); the model (`model` 10), the effort (`effort` 20) and the dictation button (`voice` 90) |
+| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), the file suggestions (`file-suggestions` 12), the images (`attachments` 20), the linked files (`links` 22); the model (`model` 10), the effort (`effort` 20), the session's figures when Settings has them in a chip (`figures` 30) and the dictation button (`voice` 90) |
 | `sessions.tools` | session-list | `ws-switch` 10, `new-session` 20, `session-filter` 30 |
 
 ## Contribution points
@@ -114,7 +114,7 @@ plugins read these:
 | `palette.provider` | `{ id, order, items(view) }`: palette items that change | palette |
 | `session.menu` | `{ items(ws, id, view) }`: more items of a session's menu | session |
 | `overlay` | `{ id, order, modal, isOpen(), close() }`: Esc closes the first open one; while a modal one is open, keys that are not global do nothing | ui |
-| `help.keys` | `{ keys: ['⌘', 'K'], text, order }`: a line of the keyboard sheet | help |
+| `help.keys` | `{ keys: ['⌘', 'K'], text, order, group }`: a line of the keyboard sheet, in the section `group` names — without one, by `order`: below 100 Prompt, below 200 Sessions, below 300 View, then More (the terminal's and the canvas's lines have sections of their own) | help |
 | `session-list.rows` | `{ id, order, rows(ws) }`: rows of the session list, among the sessions not pinned by when they changed; `rows` returns `{ id, glyph, title, meta, at, href, current, running, open(), menu() }` — `menu` returns menu items (the canvases are such rows) | session-list |
 | `canvas.node` | `{ kind, preset, order, create(node, ctx) }`: what a canvas node shows (below); a `preset` (`"id"` or `"plugin/id"`) is matched before a `kind` | canvas |
 | `canvas.add` | `{ id, group, title, icon, order, shown(canvas), create(at) }`: an item of a canvas's + Add menu; `at` is the point of the board it was asked at | canvas |
@@ -225,6 +225,7 @@ off.
 | `composer.key` | `(event)`: the first to return true takes a key pressed in the composer |
 | `run.request` | `(body, view)`, async: every prompt's request passes through, and may be changed on its way: `cockpit.hooks.tap('run.request', (body) => ({ ...body, prompt: body.prompt + '\n\nAnswer briefly.' }))` |
 | `session.missing` | `({ id, ws })`: a session the server does not know is opened — the first hook to return true has it shown as a new session under its ID, its first prompt making it, with no error; the canvas so shows the chat of an agent node before its first run |
+| `session.tail` | `({ id, ws })`: a session is opened — the first hook to return a number n has only its last n entries read, the earlier ones on demand (`session.showEarlier(view, { all })`, the timeline's Show more); the canvas so keeps the chats of its agents small |
 
 ## Changing the interface
 

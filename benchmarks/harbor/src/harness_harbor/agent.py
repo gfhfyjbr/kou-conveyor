@@ -127,7 +127,11 @@ class KouConveyor(BaseInstalledAgent):
             "model": self._model,
             "thinking_level": self._thinking_level,
             "session_id": self._runner_session,
-            "disallowed_tools": ["SkillUse"],
+            # The trajectory has observations of Bash and ViewImage alone, so the
+            # runner offers those: the shell profile, less its other tools. A
+            # model's own profile would add Read, Edit, Write or ApplyPatch.
+            "tool_profile": "shell",
+            "disallowed_tools": ["TranscriptSearch", "SkillUse"],
         }
         await self.exec_as_agent(
             environment, command=f"mkdir -p {shlex.quote(str(logs))}"

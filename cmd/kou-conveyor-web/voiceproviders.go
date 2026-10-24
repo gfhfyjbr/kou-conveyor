@@ -412,9 +412,9 @@ func pcmWAV(pcm []byte) []byte {
 	b := make([]byte, 0, 44+len(pcm))
 	b = le.AppendUint32(append(b, "RIFF"...), uint32(36+len(pcm)))
 	b = le.AppendUint32(append(b, "WAVEfmt "...), 16)
-	b = le.AppendUint16(le.AppendUint16(b, 1), 1)                 // PCM, mono
+	b = le.AppendUint16(le.AppendUint16(b, 1), 1)                   // PCM, mono
 	b = le.AppendUint32(le.AppendUint32(b, voiceRate), voiceRate*2) // rate, bytes a second
-	b = le.AppendUint16(le.AppendUint16(b, 2), 16)                 // bytes a frame, bits a sample
+	b = le.AppendUint16(le.AppendUint16(b, 2), 16)                  // bytes a frame, bits a sample
 	b = le.AppendUint32(append(b, "data"...), uint32(len(pcm)))
 	return append(b, pcm...)
 }
@@ -503,7 +503,7 @@ func openSoniox(ctx context.Context, c voiceCall) (voiceUpstream, error) {
 }
 
 func (s sonioxStream) audio(pcm []byte) error { return s.write(websocket.BinaryMessage, pcm) }
-func (s sonioxStream) finish() error         { return s.send(map[string]string{"type": "finalize"}) }
+func (s sonioxStream) finish() error          { return s.send(map[string]string{"type": "finalize"}) }
 
 func (s sonioxStream) close() {
 	if !s.closed.Load() {
@@ -815,9 +815,9 @@ func geminiSetup(model string, o voiceOptions) map[string]any {
 		transcription["customVocabulary"] = terms
 	}
 	return map[string]any{"setup": map[string]any{
-		"model":                    "models/" + model,
-		"generationConfig":         map[string]any{"responseModalities": []string{"TEXT"}},
-		"realtimeInputConfig":      map[string]any{"automaticActivityDetection": map[string]any{"disabled": true}},
+		"model":                   "models/" + model,
+		"generationConfig":        map[string]any{"responseModalities": []string{"TEXT"}},
+		"realtimeInputConfig":     map[string]any{"automaticActivityDetection": map[string]any{"disabled": true}},
 		"inputAudioTranscription": transcription,
 	}}
 }

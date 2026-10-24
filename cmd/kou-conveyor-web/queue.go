@@ -305,6 +305,12 @@ func (s *server) enqueue(ctx context.Context, ws *workspace, id, promptID, text,
 	}
 	key := activeKey(ws, id)
 	s.mu.Lock()
+	if s.closed {
+		// The queues went to the server that starts next (saveQueues): a
+		// prompt queued now would be lost.
+		s.mu.Unlock()
+		return enqueued{}, errClosed
+	}
 	q := s.queueFor(key)
 	current := s.active[key]
 	if current == nil && (force || !q.Paused && len(q.Items) == 0) {

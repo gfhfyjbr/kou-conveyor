@@ -55,10 +55,10 @@ private struct MarkdownBlockView: View {
         case let .quote(blocks):
             // A quote is Markdown too.
             AnyView(MarkdownBlocks(blocks: blocks))
-                .foregroundStyle(.secondary)
-                .padding(.leading, 12)
+                .foregroundStyle(Color.kouFg2)
+                .padding(.leading, 14)
                 .overlay(alignment: .leading) {
-                    Rectangle().fill(.tertiary).frame(width: 2)
+                    Rectangle().fill(Color.kouLine2).frame(width: 2)
                 }
         case let .paragraph(text):
             // Selectable through Reveal.
@@ -70,7 +70,7 @@ private struct MarkdownBlockView: View {
         case let .table(head, rows):
             MarkdownTable(head: head, rows: rows)
         case .rule:
-            Divider()
+            Hairline()
         }
     }
 
@@ -95,7 +95,7 @@ private struct MarkdownBlockView: View {
                 .font(.system(.caption, design: .monospaced, weight: .bold))
                 .tracking(0.8)
                 .textCase(.uppercase)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg2)
                 .padding(.top, 6)
         }
     }
@@ -137,17 +137,17 @@ private struct MarkdownList: View {
         if let checked = item.task {
             Image(systemName: checked ? "checkmark.square" : "square")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
         } else if let number = item.number {
             Text("\(number).")
                 .font(.system(.subheadline, design: .monospaced, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
                 .frame(minWidth: 18, alignment: .trailing)
         } else {
             // U+FE0E: the square as text, in its colour, not as an emoji.
             Text("▪\u{FE0E}")
                 .font(.footnote)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.kouFg4)
                 .frame(minWidth: 10)
         }
     }
@@ -167,14 +167,14 @@ private struct MarkdownTable: View {
                         cellText(cell)
                             .font(.system(.caption2, design: .monospaced, weight: .bold))
                             .textCase(.uppercase)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.kouFg3)
                             // The column's width, so the row's tint is unbroken.
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                             .background(Color.kouSurface)
                     }
                 }
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    Divider()
+                    Hairline()
                     GridRow {
                         ForEach(head.indices, id: \.self) { column in
                             cellText(column < row.count ? row[column] : AttributedString())
@@ -184,7 +184,7 @@ private struct MarkdownTable: View {
                 }
             }
             .textSelection(.enabled)
-            .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(.separator, lineWidth: 0.5))
+            .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(Color.kouLine, lineWidth: 1))
             .clipShape(.rect(cornerRadius: .corner(10)))
         }
         .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
@@ -490,7 +490,7 @@ enum MarkdownDocument {
 
         // Code: a tinted chip, a little smaller than the text around it.
         for run in string.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            string[run.range].swiftUI.backgroundColor = Color.secondary.opacity(0.14)
+            string[run.range].swiftUI.backgroundColor = Color.kouChip
         }
 
         // Bare addresses: linked, unless already in a link or in code.

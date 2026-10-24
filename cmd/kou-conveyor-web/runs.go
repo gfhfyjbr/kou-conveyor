@@ -35,6 +35,11 @@ type run struct {
 	started              time.Time
 	job                  *cockpit.Job
 	tracker              *cockpit.Tracker // what the run changes; nil when it is not recorded
+	// dir is the run's directory when its runner runs apart from the server
+	// (detached.go): the runner goes on when the server goes, and the server
+	// that starts next takes the run up from there. Empty for a runner that
+	// ends with the server.
+	dir string
 
 	mu     sync.Mutex
 	events eventLog // encoded events; event i has SSE ID i+1
@@ -46,6 +51,7 @@ type run struct {
 	readers  int           // the browsers that read the log now
 	retired  bool          // the run is gone from the server: its log goes with its last reader
 	stopping bool
+	restart  bool // the run is stopped to start again (handleRestart)
 	done     bool
 	activity string // what the last status event said the agent does
 }
@@ -55,7 +61,7 @@ type run struct {
 // not: they are pieces of text that streams, which browsers add up, each
 // once, as they read the log from its start.
 type event struct {
-	Type  string         `json:"type"` // entry, delta, output, status, log or done
+	Type  string         `json:"type"` // entry, delta, output, status, log, title or done
 	Entry *cockpit.Entry `json:"entry,omitempty"`
 	// Delta: text that streamed of the model's response, for a preview
 	// that an entry replaces once the response is recorded (Entry.Replaces).
@@ -80,6 +86,9 @@ type event struct {
 	Queue *cockpit.Queue `json:"queue,omitempty"`
 	// Next: the run of the queued prompt that took over from this one (done).
 	Next *runSummary `json:"next,omitempty"`
+	// Restarted (done): the run was stopped to start again, and Next is the
+	// run that goes on from where it got to (handleRestart).
+	Restarted bool `json:"restarted,omitzero"`
 }
 
 func (r *run) publish(e event) {
@@ -415,15 +424,21 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	var prompt *cockpit.Entry
 	var tracker *cockpit.Tracker
 	briefed := false
+	// opens says that the prompt is the session's first, which a model makes
+	// its title of (autoTitle); the canvas's brief is no part of it.
+	opens, first := false, ""
 	if req.Compact {
 		// A compaction changes no files, and its only entry is the notice
 		// with the summary.
 		tr.Begin(current.id, "Compacting context")
 	} else {
+		if opens = !hasPrompt(tr); opens {
+			first = req.Prompt
+		}
 		// The agent of a canvas's node is told of the canvas with the first
 		// prompt of its session — written in the node's chat as well as sent
 		// by the canvas.
-		req.Prompt, briefed = s.canvas.Brief(ws.ID, req.SessionID, req.Prompt, !hasPrompt(tr))
+		req.Prompt, briefed = s.canvas.Brief(ws.ID, req.SessionID, req.Prompt, opens)
 		prompt = tr.SubmitModel(req.MessageID, req.Prompt, model, now)
 		if len(req.Images) != 0 {
 			tr.WithImages(prompt, req.Images)
@@ -438,6 +453,21 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 			tracker = nil
 		}
 	}
+	// A runner that runs apart from the server goes on when the server goes:
+	// the server that starts next takes the run up from its directory
+	// (detached.go).
+	dir := ""
+	if s.opt.detach {
+		dir = runDir(ws, current.id)
+		if err := writeRunRecord(dir, runRecord{
+			Session: req.SessionID, Message: req.MessageID, Prompt: req.Prompt, Title: current.title,
+			Model: model, Compact: req.Compact, Started: now,
+		}); err != nil {
+			log.Printf("run %s: the runner runs attached: %v", current.id, err)
+			os.RemoveAll(dir)
+			dir = ""
+		}
+	}
 	job, err := cockpit.Start(s.ctx, ws.opt, cockpit.Request{
 		SessionID: req.SessionID, MessageID: req.MessageID, Prompt: req.Prompt, Model: req.Model, Thinking: req.Thinking,
 		Resume: req.Resume, Rewind: req.Rewind, Compact: req.Compact, Instructions: req.Instructions,
@@ -448,14 +478,23 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		Env: append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), s.contextEnv(req.Model)...),
 		// Browsers show the model's text as it streams and the output of
 		// commands as they run (pump).
-		Stream: true,
+		Stream:   true,
+		Detached: dir,
 	})
 	if err != nil {
+		if dir != "" {
+			os.RemoveAll(dir)
+		}
 		if tracker != nil {
 			tracker.Cancel()
 		}
 		release()
 		return nil, err
+	}
+	if _, _, ok := job.Detached(); dir != "" && !ok {
+		// A runner too old to run apart from the server runs attached.
+		os.RemoveAll(dir)
+		dir = ""
 	}
 	// The session keeps the effort it ran with. Neither it nor the model is
 	// recorded for new sessions: that is what the user chooses in a
@@ -466,10 +505,13 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 			log.Printf("save session effort: %v", err)
 		}
 	}
+	if opens {
+		s.autoTitle(ws, current, first)
+	}
 	// The queue's handlers find the run by its session before it is
 	// registered: they read job under s.mu.
 	s.mu.Lock()
-	current.job, current.tracker = job, tracker
+	current.job, current.tracker, current.dir = job, tracker, dir
 	queue := s.queueSnapshot(key)
 	s.runs[current.id] = current
 	s.mu.Unlock()
@@ -602,6 +644,16 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 		}
 	}
 	err := current.job.Err()
+	if errors.Is(err, cockpit.ErrReleased) {
+		// The server goes, and the runner goes on without it: the server that
+		// starts next takes the run up from its directory, and settles it
+		// (detached.go). What the run changes goes on from the last snapshot.
+		if current.tracker != nil {
+			current.tracker.Cancel()
+		}
+		<-forwarded
+		return
+	}
 	// The last snapshot goes out before browsers hear the run is done.
 	if current.tracker != nil {
 		current.tracker.Finish()
@@ -614,9 +666,16 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 			s.canvas.RunEntry(current.ws.ID, current.sessionID, e)
 		}
 	}
+	// The run is settled here: no server is to take it up again.
+	if current.dir != "" {
+		if err := os.RemoveAll(current.dir); err != nil {
+			log.Printf("run %s: %v", current.id, err)
+		}
+	}
 	// The session is free (the runner released its lock when it exited)
 	// before browsers hear that the run is done, so they can start the next
-	// one right away; or the next queued prompt has it already.
+	// one right away; or the next queued prompt has it already, or the run
+	// that goes on from this one when it was stopped to start again.
 	outcome := "done"
 	switch {
 	case stopped:
@@ -624,7 +683,14 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 	case err != nil:
 		outcome = "failed"
 	}
-	next, queue := s.settle(current, tr, outcome)
+	restart := stopped && current.restarting()
+	var next *cockpit.QueueItem
+	var queue cockpit.Queue
+	if restart {
+		queue = s.settleRestart(current, tr)
+	} else {
+		next, queue = s.settle(current, tr, outcome)
+	}
 	// The canvas hears of the end before the next queued prompt runs.
 	s.canvasRunFinished(current, tr, outcome)
 	interrupted := tr.Interrupted()
@@ -637,7 +703,15 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 	if info, err := os.Stat(cockpit.SessionPath(current.ws.opt.SessionDir, current.sessionID)); err == nil {
 		done.Size = info.Size()
 	}
-	if next != nil {
+	if restart {
+		if following, err := s.restartRun(current); err != nil {
+			current.publish(event{Type: "log", Text: "the run did not start again: " + err.Error()})
+		} else {
+			done.Next = &runSummary{ID: following.id, Started: following.started}
+			done.Restarted = true
+		}
+		done.Queue = s.snapshotOf(current)
+	} else if next != nil {
 		if following, err := s.runNext(current, *next); err != nil {
 			current.publish(event{Type: "log", Text: "the next queued prompt did not start: " + err.Error()})
 			done.Queue = s.snapshotOf(current)
@@ -661,6 +735,10 @@ func (s *server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
+	// Stopping it wins over starting it again, asked for before.
+	current.mu.Lock()
+	current.restart = false
+	current.mu.Unlock()
 	current.stop("the user stopped the run from the cockpit")
 	writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 }
@@ -722,7 +800,8 @@ func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 // close refuses new runs, interrupts running ones (their context is the
-// server's, which is already canceled) and waits for them to exit.
+// server's, which is already canceled) and waits for them to exit; those
+// whose runners run apart from the server go on without it (detached.go).
 func (s *server) close(ctx context.Context) bool {
 	s.mu.Lock()
 	s.closed = true
@@ -742,6 +821,11 @@ func (s *server) close(ctx context.Context) bool {
 	case <-finished:
 	case <-ctx.Done():
 		return false
+	}
+	// What waits in the queues waits for the server that starts next
+	// (detached.go).
+	if err := s.saveQueues(); err != nil {
+		log.Printf("queues are not kept: %v", err)
 	}
 	// The gateway stops with the server's context, saves its history and
 	// withdraws its publication.

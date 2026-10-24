@@ -4,12 +4,20 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/fswatch"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
+	"github.com/gfhfyjbr/kou-conveyor/harness/skill"
 )
 
 // Open pages follow the plugins as they change. /api/w/{ws}/plugins/events
@@ -20,8 +28,13 @@ import (
 // loaded again itself. When the page's own files change (assets read from a
 // checkout), a "kernel" event has it load again.
 
-// pluginPollInterval is how often the plugins' files are looked at.
-const pluginPollInterval = 400 * time.Millisecond
+// pluginPollInterval is how often the plugins' files are looked at where
+// the system does not tell of their changes; pluginSafetyPoll how often
+// where it does, besides when it tells, for what it might not tell of.
+const (
+	pluginPollInterval = 400 * time.Millisecond
+	pluginSafetyPoll   = 5 * time.Second
+)
 
 type pluginEvent struct {
 	kind string
@@ -56,15 +69,17 @@ func (stream *pluginStream) offer(event pluginEvent) {
 // pluginWatch keeps the pages that follow plugins, and the goroutine that
 // looks at the plugins' files while there are any.
 type pluginWatch struct {
-	mu       sync.Mutex
-	streams  map[*pluginStream]struct{}
-	running  bool
-	interval time.Duration
-	wake     chan struct{}
+	mu      sync.Mutex
+	streams map[*pluginStream]struct{}
+	running bool
+	// interval and safety are pluginPollInterval and pluginSafetyPoll,
+	// but in tests.
+	interval, safety time.Duration
+	wake             chan struct{}
 }
 
 func newPluginWatch() *pluginWatch {
-	return &pluginWatch{streams: map[*pluginStream]struct{}{}, interval: pluginPollInterval, wake: make(chan struct{}, 1)}
+	return &pluginWatch{streams: map[*pluginStream]struct{}{}, interval: pluginPollInterval, safety: pluginSafetyPoll, wake: make(chan struct{}, 1)}
 }
 
 // poke has the watch look at once, after the server changed plugins.json.
@@ -112,14 +127,31 @@ func (s *server) watchPlugins(ctx context.Context) {
 	if dir := s.assets.staticDirectory(); dir != "" {
 		kernel = plugin.Fingerprint(dir)
 	}
+	var files followedFiles
+	defer files.close()
+	looked := time.Now()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		case <-s.watch.wake:
+		case <-files.changes():
+			if !pace(ctx, looked, s.watch.interval) {
+				return
+			}
 		}
+		looked = time.Now()
 		streams := s.watch.snapshot()
+		// The system tells of changes to the files the listings are made
+		// from, where it can: they are looked at then, and seldom besides.
+		// They are followed before they are looked at, so that a change
+		// between is told.
+		if files.follow(func() []string { return s.pluginFiles(streams) }) {
+			ticker.Reset(s.watch.safety)
+		} else {
+			ticker.Reset(s.watch.interval)
+		}
 		if len(streams) == 0 {
 			continue
 		}
@@ -155,6 +187,113 @@ func (s *server) watchPlugins(ctx context.Context) {
 				stream.offer(pluginEvent{kind: "plugins", data: encoded})
 			}
 		}
+	}
+}
+
+// pluginFiles are the files the listings of the workspaces streams follow
+// are made from, as the system can tell of their changes: the plugins'
+// sources, the skill directories and the page's own files when they are
+// read from disk — with where the links in them lead, which the
+// fingerprints follow.
+func (s *server) pluginFiles(streams []*pluginStream) []string {
+	var roots []string
+	if dir := s.assets.staticDirectory(); dir != "" {
+		roots = append(roots, dir)
+	}
+	seen := map[*workspace]bool{}
+	for _, stream := range streams {
+		if seen[stream.ws] {
+			continue
+		}
+		seen[stream.ws] = true
+		roots = append(roots, s.pluginSources(stream.ws)...)
+		directories, _ := skill.Directories(cockpit.SkillOptions(s.opt.SettingsFile, stream.ws.Path))
+		for _, directory := range directories {
+			roots = append(roots, directory.Path)
+		}
+	}
+	for _, root := range slices.Clone(roots) {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if entry.Type()&fs.ModeSymlink == 0 {
+				continue
+			}
+			if target, err := filepath.EvalSymlinks(filepath.Join(root, entry.Name())); err == nil {
+				roots = append(roots, target)
+			}
+		}
+	}
+	slices.Sort(roots)
+	return slices.Compact(roots)
+}
+
+// followedFiles are the files a watch has the system tell of the changes
+// of, and the watcher that tells.
+type followedFiles struct {
+	roots   []string
+	watcher *fswatch.Watcher
+	// unsupported is set once the system turned out to tell of none.
+	unsupported bool
+}
+
+// changes receives when the followed files change; never, while none are.
+func (f *followedFiles) changes() <-chan struct{} {
+	if f.watcher == nil {
+		return nil
+	}
+	return f.watcher.Changes()
+}
+
+// follow has the system tell of changes to the files roots names from now
+// on, unless it does already, and reports whether it does; roots is not
+// asked where the system tells of none.
+func (f *followedFiles) follow(roots func() []string) bool {
+	if f.unsupported {
+		return false
+	}
+	now := roots()
+	if slices.Equal(f.roots, now) {
+		return f.watcher != nil
+	}
+	f.close()
+	f.roots = now
+	if len(now) == 0 {
+		return false
+	}
+	watcher, err := fswatch.Watch(now...)
+	if err != nil {
+		f.unsupported = errors.Is(err, errors.ErrUnsupported)
+		return false
+	}
+	f.watcher = watcher
+	return true
+}
+
+func (f *followedFiles) close() {
+	if f.watcher != nil {
+		f.watcher.Close()
+		f.watcher = nil
+	}
+}
+
+// pace waits, unless ctx ends first, until interval has passed since last:
+// a burst of changes the system tells of has the files looked at no more
+// often than they would be polled.
+func pace(ctx context.Context, last time.Time, interval time.Duration) bool {
+	wait := time.Until(last.Add(interval))
+	if wait <= 0 {
+		return true
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 

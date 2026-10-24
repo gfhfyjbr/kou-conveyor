@@ -71,13 +71,27 @@ struct UserBubble: View {
     /// How wide the prompt is drawn: its copy, pressed, wraps as it does.
     @State private var width: CGFloat?
 
+    /// The prompt's shape: round, but for the corner it is said from.
+    static var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: .corner(18), bottomLeadingRadius: .corner(18),
+                               bottomTrailingRadius: .corner(5), topTrailingRadius: .corner(18), style: .continuous)
+    }
+
+    /// The prompt, in the accent laid over the ground: the user's words
+    /// stand out from the agent's by it, without a block of colour each.
     private var bubble: some View {
         Text(entry.text ?? "")
             .font(.body)
-            .foregroundStyle(Color.kouAccentInk)
+            .foregroundStyle(Color.kouFg)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.kouAccent.gradient, in: .rect(cornerRadius: .corner(20)))
+            .background {
+                ZStack {
+                    Self.shape.fill(Color.kouGround)
+                    Self.shape.fill(Color.kouAccent.opacity(0.14))
+                    Self.shape.strokeBorder(Color.kouAccent.opacity(0.38), lineWidth: 1)
+                }
+            }
     }
 
     /// The prompt's images, with where the session keeps each.
@@ -101,7 +115,7 @@ struct UserBubble: View {
                                 RemoteImage(client: context.client, path: picture.path)
                                     .frame(width: 72, height: 72)
                                     .clipShape(.rect(cornerRadius: .corner(14)))
-                                    .overlay(RoundedRectangle(cornerRadius: .corner(14)).strokeBorder(.separator, lineWidth: 0.5))
+                                    .overlay(RoundedRectangle(cornerRadius: .corner(14)).strokeBorder(Color.kouAccent.opacity(0.38), lineWidth: 1))
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(picture.label)
@@ -114,7 +128,7 @@ struct UserBubble: View {
             }
             bubble
                 // Pressed, the prompt lifts as it is drawn, not as a box.
-                .contentShape(.contextMenuPreview, .rect(cornerRadius: .corner(20)))
+                .contentShape(.contextMenuPreview, Self.shape)
                 .contextMenu {
                     Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = entry.text }
                     if let context, entry.messageID != nil, entry.state == nil {
@@ -136,13 +150,14 @@ struct UserBubble: View {
                 .opacity(entry.state == "pending" ? 0.7 : 1)
             // As the page's header of a prompt: when, with which model, and
             // how it went.
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if entry.forced == true {
                     Label("forced in", systemImage: "bolt.fill")
+                        .foregroundStyle(Color.kouAccent)
                 }
                 switch entry.state {
                 case "pending": Label("sending", systemImage: "clock")
-                case "undelivered": Label("not delivered", systemImage: "exclamationmark.circle.fill").foregroundStyle(.red)
+                case "undelivered": Label("not delivered", systemImage: "exclamationmark.circle.fill").foregroundStyle(Color.kouErr)
                 default: EmptyView()
                 }
                 if let images = entry.images, !images.isEmpty {
@@ -150,18 +165,19 @@ struct UserBubble: View {
                 }
                 if let model = entry.model, !model.isEmpty {
                     Text(model)
-                        .font(.system(.caption2, design: .monospaced))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
                 if let at = entry.at {
                     Text(Format.time(at))
                         .monospacedDigit()
+                        .foregroundStyle(Color.kouFg3)
                 }
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            .font(.system(.caption2, design: .monospaced))
+            .foregroundStyle(Color.kouFg4)
             .labelStyle(.titleAndIcon)
+            .padding(.trailing, 4)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 40)
@@ -196,19 +212,21 @@ struct PromptEditor: View {
                     .focused($focused)
                     .scrollContentBackground(.hidden)
                     .padding(10)
-                    .background(.fill.quaternary, in: .rect(cornerRadius: .corner(16)))
+                    .kouPanel(radius: 16, stroke: Color.kouAccent.opacity(0.38))
                 if after > 0 {
                     Text("Replaces the \(after == 1 ? "entry" : "\(after) entries") below · changes to files stay")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                 }
             }
             .padding()
+            .background(Color.kouGround)
             .navigationTitle("Edit prompt")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     if running {
@@ -277,17 +295,24 @@ struct ReasoningBlock: View {
             } label: {
                 // As the page: "Thinking", and the gist — the thought's first
                 // line — so that a row of thoughts says what each was.
-                HStack(spacing: 6) {
+                HStack(spacing: 7) {
                     Image(systemName: "brain")
+                        .font(.caption)
+                        .foregroundStyle(moving ? Color.kouAccent : Color.kouFg3)
                         .symbolEffect(.pulse, isActive: moving)
                     Text("Thinking")
+                        .textCase(.uppercase)
+                        .font(.kouEyebrow)
+                        .tracking(Font.eyebrowTracking)
+                        .foregroundStyle(Color.kouFg3)
                         .modifier(Shimmer(active: moving))
+                        .fixedSize()
                     if !open, let gist {
                         // A new line of thought comes up from under the last.
                         ZStack(alignment: .leading) {
                             Text(gist.text)
-                                .fontWeight(.regular)
-                                .foregroundStyle(.tertiary)
+                                .font(.footnote)
+                                .foregroundStyle(Color.kouFg3)
                                 .lineLimit(1)
                                 .id(gist.line)
                                 .transition(.push(from: .bottom))
@@ -297,10 +322,10 @@ struct ReasoningBlock: View {
                     }
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.bold))
+                        .foregroundStyle(Color.kouFg4)
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
                 .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
@@ -310,14 +335,14 @@ struct ReasoningBlock: View {
                     .environment(\.textReveal, moving)
                     .environment(\.textCaret, moving)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .padding(.leading, 12)
+                    .foregroundStyle(Color.kouFg2)
+                    .padding(.leading, 13)
                     .overlay(alignment: .leading) {
                         Rectangle()
-                            .stroke(.tertiary, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                            .stroke(Color.kouLine2, style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
                             .frame(width: 1)
                     }
-                    .padding(.leading, 7)
+                    .padding(.leading, 6)
                     .transition(.opacity)
             }
         }
@@ -382,16 +407,21 @@ struct ToolBlock: View {
             Button {
                 withAnimation(.snappy) { open.toggle() }
             } label: {
+                // As the page's head of a call: its state's glyph, its name
+                // as a label, and what it was given, which says the most.
                 HStack(spacing: 8) {
                     ToolStateIcon(tool: tool, live: live)
                         .frame(width: 18)
                     Text(tool?.name ?? "Tool")
-                        .font(.system(.subheadline, design: .monospaced, weight: .semibold))
+                        .textCase(.uppercase)
+                        .font(.kouEyebrow)
+                        .tracking(0.9)
+                        .foregroundStyle(state == "failed" ? Color.kouErr : Color.kouFg2)
                         .lineLimit(1)
                         .layoutPriority(1)
-                    Text(ToolSummary.of(tool))
+                    summary(tool)
                         .font(.system(.footnote, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Spacer(minLength: 0)
@@ -399,7 +429,7 @@ struct ToolBlock: View {
                         .layoutPriority(1)
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kouFg4)
                         .rotationEffect(.degrees(open ? 90 : 0))
                 }
                 .contentShape(.rect)
@@ -435,7 +465,7 @@ struct ToolBlock: View {
                 // Closed, a failed call still says why.
                 Text(ToolSummary.firstLine(error))
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.kouErr)
                     .lineLimit(2)
                     .padding(.leading, 26)
             } else if let running, !running.all.isEmpty {
@@ -447,9 +477,22 @@ struct ToolBlock: View {
                     .onTapGesture { withAnimation(.snappy) { open = true } }
             }
         }
-        .padding(12)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.fill.quaternary, in: .rect(cornerRadius: .corner(14)))
+        // A failed call's panel is edged in the failure's colour; a running
+        // one has the run's light going round it.
+        .kouPanel(radius: 12, stroke: state == "failed" ? Color.kouErr.opacity(0.4) : Color.kouLine)
+        .runLight(state == "running", in: RoundedRectangle(cornerRadius: .corner(12), style: .continuous))
+        .animation(.smooth(duration: 0.3), value: state)
+    }
+
+    /// The gist of the call's input; a command, as the page writes it, after
+    /// a prompt's "$".
+    private func summary(_ tool: Tool?) -> Text {
+        let gist = ToolSummary.of(tool)
+        guard tool?.name?.lowercased() == "bash", !gist.isEmpty else { return Text(gist) }
+        return Text("\(Text("$ ").foregroundStyle(Color.kouFg4))\(gist)")
     }
 
     /// What the page writes after a call's input: what a Write or an Edit
@@ -470,17 +513,18 @@ struct ToolBlock: View {
             }
             if let code = tool?.exitCode, code != 0 {
                 Text("Exit \(code)")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.kouWarn)
             }
             if let word = ToolBlock.word[state] {
                 Text(word)
                     .textCase(.uppercase)
                     .fontWeight(.bold)
-                    .foregroundStyle(state == "failed" ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+                    .tracking(0.6)
+                    .foregroundStyle(state == "failed" ? Color.kouErr : Color.kouFg3)
             }
         }
         .font(.system(.caption2, design: .monospaced))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Color.kouFg4)
         .lineLimit(1)
         .fixedSize()
     }
@@ -495,19 +539,18 @@ struct ToolBlock: View {
                 CodeBlock(language: tool.name?.lowercased() == "code" ? "code" : "input", code: ToolSummary.pretty(input), maxLines: 30, keep: .head)
             }
             if let calls = tool.calls, !calls.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Calls · \(calls.count)")
-                        .font(.system(.caption2, design: .monospaced, weight: .semibold))
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 5) {
+                    SectionLabel("Calls", count: calls.count)
                     ForEach(Array(calls.enumerated()), id: \.offset) { _, call in
                         HStack(alignment: .firstTextBaseline, spacing: 6) {
                             Image(systemName: ToolBlock.callSymbol(call.state))
-                                .foregroundStyle(call.state == "failed" ? .red : .secondary)
+                                .foregroundStyle(call.state == "failed" ? Color.kouErr : Color.kouFg4)
                             Text(call.name).bold()
+                                .foregroundStyle(Color.kouFg)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(call.gist ?? call.input ?? "").foregroundStyle(.secondary).lineLimit(1)
+                                Text(call.gist ?? call.input ?? "").foregroundStyle(Color.kouFg3).lineLimit(1)
                                 if let error = call.error, !error.isEmpty {
-                                    Text(ToolSummary.firstLine(error)).foregroundStyle(.red).lineLimit(2)
+                                    Text(ToolSummary.firstLine(error)).foregroundStyle(Color.kouErr).lineLimit(2)
                                 }
                             }
                         }
@@ -518,7 +561,7 @@ struct ToolBlock: View {
             if let error = tool.error, !error.isEmpty {
                 Text(error)
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.kouErr)
                     .textSelection(.enabled)
             }
             if let change = tool.change, change.text != nil {
@@ -530,7 +573,7 @@ struct ToolBlock: View {
                 if let output = tool.output, !output.isEmpty {
                     Text(ChangeBlock.said(output))
                         .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                         .textSelection(.enabled)
                 }
             } else if let output = tool.output, !output.isEmpty {
@@ -546,7 +589,7 @@ struct ToolBlock: View {
             if let running, running.skipped > 0 || running.cut {
                 Text(Self.skippedNote(running))
                     .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.kouFg4)
             }
             if let logs = tool.logs, !logs.isEmpty {
                 CodeBlock(language: "console", code: ToolSummary.tail(logs), maxLines: 30)
@@ -556,15 +599,13 @@ struct ToolBlock: View {
             }
             if let files = tool.files, !files.isEmpty {
                 Label(files.joined(separator: ", "), systemImage: "doc")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(Color.kouFg3)
             }
             if [tool.output, tool.stderr, tool.error, tool.logs, tool.value].allSatisfy({ ($0 ?? "").isEmpty }), (tool.calls ?? []).isEmpty,
                (running?.all ?? "").isEmpty, tool.change?.text == nil
             {
-                Text(state == "running" || state == "queued" ? "Waiting for output…" : "No output")
-                    .font(.footnote)
-                    .foregroundStyle(.tertiary)
+                Eyebrow(state == "running" || state == "queued" ? "Waiting for output…" : "No output", color: .kouFg4)
             }
         }
     }
@@ -625,9 +666,9 @@ private struct ViewedPicture: View {
             } label: {
                 RemoteImage(client: context.client, path: path, contentMode: .fit, retryMissing: true)
                     .frame(width: frame.width, height: frame.height)
-                    .background(.fill.quaternary)
+                    .background(Color.kouSurface)
                     .clipShape(.rect(cornerRadius: .corner(10)))
-                    .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(.separator, lineWidth: 0.5))
+                    .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(Color.kouLine2, lineWidth: 1))
                     .contentShape(.rect(cornerRadius: .corner(10)))
             }
             .buttonStyle(PressStyle())
@@ -636,7 +677,7 @@ private struct ViewedPicture: View {
             if let about = Self.describe(image) {
                 Text(about)
                     .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.kouFg4)
                     .lineLimit(1)
             }
         }
@@ -681,27 +722,30 @@ struct ToolStateIcon: View {
     let live: Bool
 
     var body: some View {
-        switch ToolBlock.state(tool, live: live) {
-        case "running":
-            ProgressView()
-                .controlSize(.mini)
-        case "queued":
-            Image(systemName: "circle.dotted")
-                .foregroundStyle(.secondary)
-        case "done":
-            if let code = tool?.exitCode, code != 0 {
-                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
-            } else {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+        // The page's glyphs — □ ■ ✓ ✕ ⊘ ◌ — light, so that a column of
+        // finished calls stays quiet and the running and failed ones show.
+        Group {
+            switch ToolBlock.state(tool, live: live) {
+            case "running":
+                LiveDot(size: 6)
+            case "queued":
+                Image(systemName: "square")
+                    .imageScale(.small)
+                    .foregroundStyle(Color.kouFg3)
+            case "done":
+                Image(systemName: "checkmark")
+                    .foregroundStyle(tool?.exitCode.map { $0 != 0 } == true ? Color.kouWarn : Color.kouOK)
+            case "failed":
+                Image(systemName: "xmark").foregroundStyle(Color.kouErr)
+            case "canceled":
+                Image(systemName: "nosign").foregroundStyle(Color.kouFg3)
+            default:
+                // Unfinished, with no run: cut short.
+                Image(systemName: "circle.dashed").foregroundStyle(Color.kouFg3)
             }
-        case "failed":
-            Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
-        case "canceled":
-            Image(systemName: "slash.circle").foregroundStyle(.secondary)
-        default:
-            // Unfinished, with no run: cut short.
-            Image(systemName: "pause.circle").foregroundStyle(.secondary)
         }
+        .font(.footnote.weight(.bold))
+        .contentTransition(.symbolEffect(.replace))
     }
 }
 
@@ -747,36 +791,48 @@ struct NoticeRow: View {
     @State private var open = false
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             Button {
                 if expandable { withAnimation(.snappy) { open.toggle() } }
             } label: {
-                HStack(spacing: 4) {
-                    Label(text, systemImage: "info.circle")
-                        .multilineTextAlignment(.center)
-                    if expandable {
-                        // As the page's notice with a detail: it opens.
-                        Image(systemName: "chevron.right")
-                            .font(.caption2.weight(.bold))
-                            .rotationEffect(.degrees(open ? 90 : 0))
+                // As a mark on a rule: the transcript goes on through it.
+                HStack(spacing: 10) {
+                    Hairline()
+                        .frame(minWidth: 14)
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        Text(text)
+                            .multilineTextAlignment(.center)
+                        if expandable {
+                            // As the page's notice with a detail: it opens.
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Color.kouFg4)
+                                .rotationEffect(.degrees(open ? 90 : 0))
+                        }
                     }
+                    .font(.footnote)
+                    .foregroundStyle(Color.kouFg3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
+                    Hairline()
+                        .frame(minWidth: 14)
                 }
-                .font(.footnote)
-                .foregroundStyle(.secondary)
                 .contentShape(.rect)
             }
             .buttonStyle(.plain)
             .disabled(!expandable)
+            .accessibilityLabel(text)
             if open, let detail {
                 MarkdownText(text: detail)
                     .font(.footnote)
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.fill.quaternary, in: .rect(cornerRadius: .corner(12)))
+                    .kouPanel(radius: 12)
                     .transition(.opacity)
             }
         }
         .frame(maxWidth: .infinity)
+        .padding(.vertical, 2)
     }
 
     private var expandable: Bool { detail?.isEmpty == false }
@@ -788,15 +844,16 @@ struct ErrorBlock: View {
     @State private var open = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(text, systemImage: "exclamationmark.octagon.fill")
+        VStack(alignment: .leading, spacing: 8) {
+            Eyebrow("Error", color: .kouErr)
+            Text(text)
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(.red)
+                .foregroundStyle(Color.kouFg)
                 .textSelection(.enabled)
             if let detail, !detail.isEmpty {
                 Text(detail)
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg2)
                     .lineLimit(open ? nil : 12)
                     .textSelection(.enabled)
                 if detail.split(separator: "\n", omittingEmptySubsequences: false).count > 12 || detail.count > 900 {
@@ -805,12 +862,21 @@ struct ErrorBlock: View {
                     }
                     .font(.caption.weight(.medium))
                     .buttonStyle(.borderless)
+                    .tint(Color.kouErr)
                 }
             }
         }
-        .padding(12)
+        .padding(.vertical, 12)
+        .padding(.trailing, 12)
+        .padding(.leading, 15)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.1), in: .rect(cornerRadius: .corner(14)))
+        .kouPanel(radius: 12, fill: Color.kouErr.opacity(0.07), stroke: Color.kouErr.opacity(0.35))
+        // Its edge in the failure's colour, as the cockpit marks an error.
+        .overlay(alignment: .leading) {
+            UnevenRoundedRectangle(topLeadingRadius: .corner(12), bottomLeadingRadius: .corner(12), style: .continuous)
+                .fill(Color.kouErr)
+                .frame(width: 3)
+        }
         .contextMenu {
             Button("Copy", systemImage: "doc.on.doc") {
                 UIPasteboard.general.string = [text, detail ?? ""].filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -841,10 +907,7 @@ struct CodeBlock: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
                 if let language, !language.isEmpty {
-                    Text(language)
-                        .font(.system(.caption2, design: .monospaced, weight: .semibold))
-                        .textCase(.uppercase)
-                        .foregroundStyle(.secondary)
+                    Eyebrow(language, color: language == "stderr" ? .kouWarn : .kouFg4)
                 }
                 Spacer()
                 Button {
@@ -859,7 +922,7 @@ struct CodeBlock: View {
                         .contentShape(.rect)
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+                .foregroundStyle(copied ? Color.kouOK : Color.kouFg3)
                 .accessibilityLabel(copied ? "Copied" : "Copy")
                 .sensoryFeedback(.success, trigger: copies)
                 .task(id: copies) {
@@ -894,14 +957,13 @@ struct CodeBlock: View {
                     .padding(.top, -4)
             }
         }
-        .background(Color.kouSurface, in: .rect(cornerRadius: .corner(12)))
-        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+        .kouPanel(radius: 10, fill: .kouSurface)
     }
 
     private func more(_ n: Int, _ where: String) -> some View {
         Text("… \(n) more line\(n == 1 ? "" : "s") \(`where`)")
             .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Color.kouFg4)
             .padding(.horizontal, 10)
     }
 
@@ -1175,7 +1237,7 @@ struct Shimmer: ViewModifier {
                     GeometryReader { proxy in
                         let width = proxy.size.width
                         let band = max(28, width * 0.6)
-                        LinearGradient(colors: [.clear, .primary, .clear], startPoint: .leading, endPoint: .trailing)
+                        LinearGradient(colors: [.clear, Color.kouFg, .clear], startPoint: .leading, endPoint: .trailing)
                             .frame(width: band)
                             .offset(x: -band + (width + band) * phase)
                     }
@@ -1269,7 +1331,7 @@ struct LiveTail: View {
             .clipped()
         }
         .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(Color.kouFg2)
         .mask {
             LinearGradient(stops: [.init(color: .black.opacity(more ? 0.1 : 1), location: 0),
                                    .init(color: .black, location: more ? 0.5 : 0)],

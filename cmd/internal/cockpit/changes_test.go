@@ -312,3 +312,45 @@ func TestHomeIsNotRecorded(t *testing.T) {
 		t.Fatalf("sentence %q", got)
 	}
 }
+
+// A run that a front-end let go of, and that went on, records its changes
+// under the front-end that takes it up, from the last snapshot recorded.
+func TestChangesOfARunTakenUp(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	ws := t.TempDir()
+	sessions := filepath.Join(ws, ".harness", "sessions")
+	write(t, ws, "main.go", "package main\n")
+	c := cockpit.NewChanges(ws, sessions, "")
+	if _, err := c.Resume("session-1", "message-1"); err == nil {
+		t.Fatal("a run with no snapshot to start from was taken up")
+	}
+	tracker, err := c.Begin(t.Context(), "session-1", "message-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The front-end lets go of the run, which changes the workspace while
+	// no one follows it.
+	tracker.Cancel()
+	for range tracker.Updates() {
+	}
+	write(t, ws, "main.go", "package main\n\nfunc main() {}\n")
+
+	resumed, err := c.Resume("session-1", "message-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed.Finish()
+	var last cockpit.ChangeUpdate
+	for u := range resumed.Updates() {
+		last = u
+	}
+	if !last.Final || last.Message != "message-1" || !slices.Equal(last.Changed, []string{"main.go"}) {
+		t.Fatalf("last update = %+v", last)
+	}
+	ex, ok := c.Exchange("session-1", "message-1")
+	if !ok || ex.Before == ex.After || ex.After != last.Tree || !slices.Equal(ex.Latest, []string{"main.go"}) {
+		t.Fatalf("exchange = %+v, %v", ex, ok)
+	}
+}

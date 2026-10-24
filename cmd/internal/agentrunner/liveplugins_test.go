@@ -56,3 +56,45 @@ func TestRunToolsResolveTheToolsTheRunHasNot(t *testing.T) {
 		}
 	}
 }
+
+// countingRegistry counts how many times the tools' definitions are made.
+type countingRegistry struct {
+	tool.Registry
+	made *int
+}
+
+func (counting countingRegistry) StaticDefinitions() []tool.Definition {
+	*counting.made++
+	return counting.Registry.StaticDefinitions()
+}
+
+// Each call a session holds of a built-in tool the profile leaves out is
+// resolved as the session is restored, to read its result; the refusal of
+// a new call, which lists every tool the run has, is made only for one.
+func TestRunToolsMakeTheRefusalOnlyForANewCall(t *testing.T) {
+	directory := t.TempDir()
+	translators := tool.StaticTranslators{
+		Read: file.New(file.KindRead, tool.ReadName, file.Config{Directory: directory}),
+		Edit: file.New(file.KindEdit, tool.EditName, file.Config{Directory: directory}),
+	}
+	made := 0
+	registry := countingRegistry{Registry: tool.NewRegistry(translators, tool.ReadName), made: &made}
+	tools := runTools{Registry: registry, live: &livePlugins{}, builtins: builtinTranslators(translators)}
+	for range 3 {
+		translator, exists := tools.Resolve("Edit")
+		if !exists {
+			t.Fatal("Edit does not resolve")
+		}
+		if _, err := translator.TranslateResult("call", tool.CallStatus{Error: "turned away"}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if made != 0 {
+		t.Fatalf("restoring 3 calls made the tools' definitions %d times", made)
+	}
+	translator, _ := tools.Resolve("Edit")
+	want := tool.Unavailable(registry.Registry, "Edit")
+	if status := translator.Translate(nil, llm.ToolCall{CallID: "call", Name: "Edit"}); status.Error != want || made == 0 {
+		t.Fatalf("status of a new call = %+v, want the error %q", status, want)
+	}
+}

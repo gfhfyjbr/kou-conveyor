@@ -94,6 +94,9 @@
 
 /* ---------------------------------------------------------------- corners */
 
+/* Square unless the appearance rounds it (theme.css: --radius…): the mark
+   of the live changes is a dot as the corners round. */
+.changes-live i { border-radius: min(var(--radius-sm), 3px); }
 /* Round, the file shown is a rounded block, with no bar along its edge;
    its text stays where it was. */
 :root[data-corners="round"] .ct-row { width: calc(100% - 8px); margin: 0 4px; padding: 0 8px 0 calc(10px + var(--depth, 0) * 14px); border-left: 0; border-radius: var(--radius-sm); }

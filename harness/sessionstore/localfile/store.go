@@ -3,6 +3,7 @@ package localfile
 
 import (
 	"context"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -27,15 +28,18 @@ type cachedWriteState struct {
 }
 
 // cachedReadState is a session file as last decoded, with what the file was
-// when it was read: which file, its size, and its modification time.
+// when it was read: which file, its size, and its modification time; and
+// the file's mapping, if the state was decoded from one.
 type cachedReadState struct {
 	state         storedState
 	committedSize int64
 	file          os.FileInfo
+	mapped        *mapping
 }
 
 type Store struct {
 	directory            string
+	mapLogs              bool
 	writeStateCacheMutex sync.Mutex
 	writeStateCache      map[session.ID]cachedWriteState
 	readStateCacheMutex  sync.Mutex
@@ -63,6 +67,22 @@ func New(directory string) (*Store, error) {
 		readStateCache:  make(map[session.ID]cachedReadState),
 		observers:       make(map[sessionstore.ObserverID]sessionstore.Observer),
 	}, nil
+}
+
+// MapLogs makes the store map session files into memory to read them, rather
+// than read them onto the heap, and decode operations' states (tools'
+// outputs and pictures, the bulk of a session) as the parts of the mapping
+// they are: what the process keeps of a session is then pages of the file,
+// which the system drops and reads again as it needs, not memory of its own.
+// The pages a process has read count in its resident memory, as ps and top
+// show it, all the same: the store gives them back (mapping) once it has
+// decoded a file, and again as it lets go of what it decoded, which it reads
+// through as it is read, and holds the file open until then.
+// A mapping lasts as long as the process, even when nothing refers to it any
+// more: it suits a process that reads its session a few times, as a runner
+// does, and not one that reads sessions over and over.
+func (store *Store) MapLogs() {
+	store.mapLogs = true
 }
 
 func (store *Store) AddObserver(observer sessionstore.Observer) sessionstore.ObserverID {
@@ -199,13 +219,14 @@ func (store *Store) AppendToolCallStatus(
 	}
 	operations := status.Operations
 	status.Operations = nil
+	recorded := head.itemOperations(status, operations)
 	item, err := head.appendToolCallStatus(status, operations, time.Now().UTC())
 	if err != nil {
 		return err
 	}
 	if err := store.append(id, head, committedSize, recordItem, itemRecord{
 		Item:       item,
-		Operations: operations,
+		Operations: recorded,
 	}); err != nil {
 		return err
 	}
@@ -286,28 +307,51 @@ func (store *Store) readState(
 	ctx context.Context,
 	id session.ID,
 ) (storedState, int64, error) {
+	state, committedSize, mapped, err := store.readMappedState(ctx, id)
+	mapped.close()
+	return state, committedSize, err
+}
+
+// readMappedState reads a session like readState, and returns the mapping
+// of the file it decoded, if it mapped it (MapLogs), its pages given back:
+// the caller is to release it as it lets go of the state.
+func (store *Store) readMappedState(
+	ctx context.Context,
+	id session.ID,
+) (storedState, int64, *mapping, error) {
 	if err := validateSessionID(id); err != nil {
-		return storedState{}, 0, err
+		return storedState{}, 0, nil, err
 	}
 	if err := context.Cause(ctx); err != nil {
-		return storedState{}, 0, err
+		return storedState{}, 0, nil, err
 	}
-	encoded, err := os.ReadFile(store.sessionPath(id))
+	var (
+		encoded []byte
+		mapped  *mapping
+		err     error
+	)
+	if store.mapLogs {
+		encoded, mapped, err = mapFile(store.sessionPath(id))
+	} else {
+		encoded, err = os.ReadFile(store.sessionPath(id))
+	}
 	if err != nil {
-		return storedState{}, 0, fmt.Errorf("read session %q: %w", id, err)
+		return storedState{}, 0, nil, fmt.Errorf("read session %q: %w", id, err)
 	}
-	state, committedSize, err := decodeLog(encoded)
+	var options []json.Options
+	if mapped != nil {
+		options = append(options, aliasing(encoded))
+	}
+	state, committedSize, err := decodeLog(encoded, options...)
+	mapped.drop()
+	if err == nil && state.Snapshot.Session.ID != id {
+		err = fmt.Errorf("file contains session %q", state.Snapshot.Session.ID)
+	}
 	if err != nil {
-		return storedState{}, 0, fmt.Errorf("read session %q: %w", id, err)
+		mapped.close()
+		return storedState{}, 0, nil, fmt.Errorf("read session %q: %w", id, err)
 	}
-	if state.Snapshot.Session.ID != id {
-		return storedState{}, 0, fmt.Errorf(
-			"read session %q: file contains session %q",
-			id,
-			state.Snapshot.Session.ID,
-		)
-	}
-	return state, committedSize, nil
+	return state, committedSize, mapped, nil
 }
 
 // sharedState reads a session like readState, but it keeps what it decoded
@@ -339,19 +383,24 @@ func (store *Store) sharedState(
 			return cached.state, cached.committedSize, nil
 		}
 	}
-	state, committedSize, err := store.readState(ctx, id)
+	state, committedSize, mapped, err := store.readMappedState(ctx, id)
 	if err != nil {
 		return storedState{}, 0, err
 	}
-	if statErr == nil {
-		store.readStateCacheMutex.Lock()
-		store.readStateCache[id] = cachedReadState{
-			state:         state,
-			committedSize: committedSize,
-			file:          file,
-		}
-		store.readStateCacheMutex.Unlock()
+	if statErr != nil {
+		mapped.close()
+		return state, committedSize, nil
 	}
+	store.readStateCacheMutex.Lock()
+	previous := store.readStateCache[id]
+	store.readStateCache[id] = cachedReadState{
+		state:         state,
+		committedSize: committedSize,
+		file:          file,
+		mapped:        mapped,
+	}
+	store.readStateCacheMutex.Unlock()
+	previous.mapped.release()
 	return state, committedSize, nil
 }
 
@@ -363,8 +412,10 @@ func sameFileVersion(cached, current os.FileInfo) bool {
 
 func (store *Store) evictCachedReadState(id session.ID) {
 	store.readStateCacheMutex.Lock()
+	cached := store.readStateCache[id]
 	delete(store.readStateCache, id)
 	store.readStateCacheMutex.Unlock()
+	cached.mapped.release()
 }
 
 func (store *Store) loadWriteState(

@@ -209,6 +209,18 @@ func TestTranscriptReadsSessionFileRecords(t *testing.T) {
 	if call.Tool.State != ToolDone || call.Tool.Output != "a b c" || call.Tool.Input != "ls" {
 		t.Fatalf("tool = %#v", call.Tool)
 	}
+	// The status recorded as the operation finished names it by its ID, as
+	// the file has it already.
+	apply(t, tr, fileLine(t, "item", map[string]any{
+		"Item": sessionstore.Item{
+			Sequence: 5, RecordedAt: recorded, Kind: sessionstore.ItemToolCallStatus,
+			Data: sessionstore.ToolCallStatus{TurnID: "turn-1", CallID: "call-1", Status: waiting},
+		},
+		"Operations": []operation.ID{"op-1"},
+	}))
+	if call.Tool.State != ToolDone || call.Tool.Output != "a b c" {
+		t.Fatalf("tool after its last status = %#v", call.Tool)
+	}
 	if tr.Entry("input:in-1").Text != "hello" {
 		t.Fatalf("entries = %#v", tr.Entries)
 	}
@@ -374,16 +386,40 @@ func TestTranscriptFinish(t *testing.T) {
 
 func TestClean(t *testing.T) {
 	for input, want := range map[string]string{
-		"\x1b[32mok\x1b[0m\tdone": "ok\tdone",
-		"10%\r50%\r100%\nnext":    "100%\nnext",
-		"line\r\nbreak\x07":       "line\nbreak",
-		"bad\xffutf8":             "bad\uFFFDutf8",
+		"\x1b[32mok\x1b[0m\tdone":         "ok\tdone",
+		"10%\r50%\r100%\nnext":            "100%\nnext",
+		"line\r\nbreak\x07":               "line\nbreak",
+		"bad\xffutf8":                     "bad\uFFFDutf8",
+		"del\x7f and next\u0085":          "del and next",
+		"plain\ttext\nкириллица 🙂 \uFFFD": "plain\ttext\nкириллица 🙂 \uFFFD",
 	} {
 		if got := Clean(input); got != want {
 			t.Errorf("Clean(%q) = %q, want %q", input, got, want)
 		}
 	}
+	// What most tools print has nothing to clean: it is kept, not copied.
+	plain := strings.Repeat("ok  \tgithub.com/x/y\t0.4s\n", 100)
+	if allocs := testing.AllocsPerRun(10, func() { plain = Clean(plain) }); allocs != 0 {
+		t.Errorf("Clean of plain text allocates %v times", allocs)
+	}
 	if got := Headline("  a\n b   c ", 3); got != "a …" {
 		t.Errorf("Headline = %q", got)
 	}
+}
+
+// Clean keeps text it has nothing to do to as it is, and cleans the rest:
+// the two come to the same.
+func FuzzClean(f *testing.F) {
+	for _, seed := range []string{
+		"", "go test ./...\n\tok", "\x1b[32mok\x1b[0m", "10%\r50%", "line\r\nbreak", "bell\x07", "del\x7f",
+		"next\u0085line", "\u009b31m", "already \uFFFD", "bad\xffutf8", "кириллица ћ ě … € 🙂", "\u202eflipped\u200b",
+		"\x1b]8;;http://x\x07link\x1b]8;;\x07", "tab\tand\vvertical\fform",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, s string) {
+		if got, want := Clean(s), clean(s); got != want {
+			t.Fatalf("Clean(%q) = %q, but cleaning it makes %q", s, got, want)
+		}
+	})
 }

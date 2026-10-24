@@ -14,6 +14,7 @@ struct CanvasBoard: View {
     @Binding var chosen: CGFloat?
     var act: (NodeAction) -> Void
     @GestureState private var pinch: CGFloat = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The scale a board starts at, unless the whole canvas fits larger.
     static let start: CGFloat = 0.25
@@ -56,10 +57,17 @@ struct CanvasBoard: View {
         let place = Placement(origin: bounds.origin, scale: scale)
         return ZStack(alignment: .topLeading) {
             BoardGrid(step: Self.gridStep(at: scale))
-            Canvas { context, _ in
-                for edge in model.edges {
-                    guard let from = model.node(edge.from.node)?.frame, let to = model.node(edge.to.node)?.frame else { continue }
-                    Self.draw(Self.wire(from: from, to: to).placed(by: place), style: style(of: edge), in: &context)
+            // A live wire's dashes march to its target, as the cockpit's
+            // do; the timeline stands still while none is live, or with
+            // less motion.
+            let marching = !reduceMotion && model.edges.contains { style(of: $0) == .live }
+            TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !marching)) { timeline in
+                let phase = marching ? timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) * 24 : 0
+                Canvas { context, _ in
+                    for edge in model.edges {
+                        guard let from = model.node(edge.from.node)?.frame, let to = model.node(edge.to.node)?.frame else { continue }
+                        Self.draw(Self.wire(from: from, to: to).placed(by: place), style: style(of: edge), phase: phase, in: &context)
+                    }
                 }
             }
             ForEach(model.nodes) { node in
@@ -100,6 +108,9 @@ struct CanvasBoard: View {
             .font(.body.weight(.semibold))
             .buttonStyle(.glass)
             .buttonBorderShape(.circle)
+            // The board's own controls, in its ink: the accent is for what
+            // runs on it.
+            .tint(Color.kouFg)
         }
     }
 
@@ -204,35 +215,43 @@ struct CanvasBoard: View {
 
     /// Draws a wire placed on the board: its strokes keep their width at
     /// any scale.
-    static func draw(_ wire: Wire, style: EdgeStyle, in context: inout GraphicsContext) {
+    static func draw(_ wire: Wire, style: EdgeStyle, phase: CGFloat = 0, in context: inout GraphicsContext) {
         let start = wire.start, end = wire.end
         var path = Path()
         path.move(to: start)
         path.addCurve(to: end, control1: wire.control1, control2: wire.control2)
+        // As the cockpit draws its wires: in the faint ink at rest, dashed
+        // in the warning's while its messages wait for the user, sparse
+        // while off, and lit in the accent while its source works.
         let color: Color = switch style {
         case .live: .kouAccent
-        case .approve: .yellow
-        case .off: Color.secondary.opacity(0.25)
-        case .quiet: Color.secondary.opacity(0.6)
+        case .approve: .kouWarn
+        case .off: Color.kouFg4.opacity(0.55)
+        case .quiet: .kouFg4
         }
         let dash: [CGFloat] = switch style {
-        case .live: [7, 5]
-        case .approve: [5, 4]
-        case .off: [2, 5]
+        case .live, .approve: [7, 5]
+        case .off: [2, 6]
         case .quiet: []
         }
-        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: style == .live ? 2.5 : 1.75, lineCap: .round, dash: dash))
+        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: style == .live ? 2.25 : 1.5, lineCap: .round, dash: dash,
+                                                                     dashPhase: style == .live ? -phase : 0))
         var head = Path()
         head.move(to: CGPoint(x: end.x - 7, y: end.y - 4.5))
         head.addLine(to: end)
         head.addLine(to: CGPoint(x: end.x - 7, y: end.y + 4.5))
-        context.stroke(head, with: .color(color), style: StrokeStyle(lineWidth: 1.75, lineCap: .round, lineJoin: .round))
-        context.fill(Path(ellipseIn: CGRect(x: start.x - 3.5, y: start.y - 3.5, width: 7, height: 7)), with: .color(color))
+        context.stroke(head, with: .color(color), style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        // The port it leaves by, ringed in the board's ground.
+        let port = CGRect(x: start.x - 3.5, y: start.y - 3.5, width: 7, height: 7)
+        context.fill(Path(ellipseIn: port), with: .color(color))
+        context.stroke(Path(ellipseIn: port.insetBy(dx: -1, dy: -1)), with: .color(.kouGroupedGround), lineWidth: 1.5)
         if style == .approve {
             // A hand halfway: its messages wait for the user.
             let middle = wire.point(at: 0.5)
-            context.fill(Path(ellipseIn: CGRect(x: middle.x - 10, y: middle.y - 10, width: 20, height: 20)), with: .color(.yellow))
-            context.draw(Text(Image(systemName: "hand.raised.fill")).font(.system(size: 10, weight: .bold)).foregroundStyle(Color.black),
+            let disc = CGRect(x: middle.x - 10, y: middle.y - 10, width: 20, height: 20)
+            context.fill(Path(ellipseIn: disc), with: .color(.kouWarn))
+            context.stroke(Path(ellipseIn: disc.insetBy(dx: -1, dy: -1)), with: .color(.kouGroupedGround), lineWidth: 2)
+            context.draw(Text(Image(systemName: "hand.raised.fill")).font(.system(size: 10, weight: .bold)).foregroundStyle(Color.kouGroupedGround),
                          at: middle)
         }
     }
@@ -251,19 +270,21 @@ struct BoardGrid: View {
             while y < size.height {
                 var x = step / 2
                 while x < size.width {
-                    dots.addEllipse(in: CGRect(x: x - 1, y: y - 1, width: 2, height: 2))
+                    dots.addEllipse(in: CGRect(x: x - 0.9, y: y - 0.9, width: 1.8, height: 1.8))
                     x += step
                 }
                 y += step
             }
-            context.fill(dots, with: .color(.secondary.opacity(0.25)))
+            // The cockpit's dots: its ink, faintly.
+            context.fill(dots, with: .color(Color.kouFg.opacity(0.13)))
         }
     }
 }
 
-/// NodeCard is a node on the board: a pane of glass tinted by what its
-/// program does. Its words keep their size; the card shows what its size
-/// on the screen has room for.
+/// NodeCard is a node on the board, as the cockpit draws one: a panel under
+/// a header strip — its kind's glyph, its title, its state's square — with
+/// what it does below; a line runs along the strip while it works. Its words
+/// keep their size; the card shows what its size on the screen has room for.
 struct NodeCard: View {
     let node: CanvasNode
     let status: NodeStatus?
@@ -276,7 +297,7 @@ struct NodeCard: View {
     var size = CGSize(width: 320, height: 200)
 
     /// Detail is how much of a card is shown: its kind's mark alone; the
-    /// mark over its title; its title with its state under it; and what it
+    /// mark over its title; its header with its state under it; and what it
     /// does under that, with the counts of the messages that wait for it.
     enum Detail {
         case mark, title, state, whole
@@ -289,134 +310,236 @@ struct NodeCard: View {
         return .whole
     }
 
+    private var state: String { node.isProposed ? "proposed" : status?.state ?? "stopped" }
+    private var isNote: Bool { node.kind == CanvasNode.note }
+    private var working: Bool { state == "busy" || state == "starting" }
+
     var body: some View {
-        let state = node.isProposed ? "proposed" : status?.state ?? "stopped"
-        let tint = node.isProposed ? Color.yellow : StateBadge.color(state)
         let detail = Self.detail(for: size)
-        let corner: CGFloat = .corner(min(16, max(6, min(size.width, size.height) / 5)))
+        let shape = RoundedRectangle(cornerRadius: .corner(min(12, max(4, min(size.width, size.height) / 6))), style: .continuous)
         Group {
             switch detail {
-            case .mark:
-                mark(tint: tint)
-            case .title:
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 4) {
-                        Image(systemName: NodeKindIcon.symbol(node.kind))
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(symbolColor)
-                        Spacer(minLength: 2)
-                        signal(tint: tint, counted: false)
-                    }
-                    Text(title)
-                        .font(.caption2.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.6)
-                }
-                .padding(6)
-            case .state, .whole:
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Image(systemName: NodeKindIcon.symbol(node.kind))
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(symbolColor)
-                        Text(title)
-                            .font(.footnote.weight(.semibold))
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.75)
-                            .layoutPriority(1)
-                        Spacer(minLength: 2)
-                        signal(tint: tint, counted: detail == .whole)
-                    }
-                    HStack(spacing: 4) {
-                        Text(line(state))
-                            .font(.caption2.monospaced().weight(.medium))
-                            .foregroundStyle(tint)
-                            .lineLimit(1)
-                        if detail == .whole {
-                            Spacer(minLength: 2)
-                            if awaiting > 0 {
-                                badge("\(awaiting)", symbol: "hand.raised.fill", tint: .yellow)
-                            }
-                            if pending - awaiting > 0 {
-                                badge("\(pending - awaiting)", symbol: "tray.full.fill", tint: .kouAccent)
-                            }
-                        }
-                    }
-                    if detail == .whole {
-                        Text(summary(for: node))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                            .clipped()
-                    }
-                }
-                .padding(detail == .whole ? 12 : 8)
+            case .mark: mark
+            case .title: small
+            case .state: card(whole: false)
+            case .whole: card(whole: true)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .glassEffect(.regular.tint(tint.opacity(state == "stopped" || state == "exited" ? 0.04 : 0.16)).interactive(),
-                     in: .rect(cornerRadius: corner))
-        .overlay {
-            if node.isProposed {
-                RoundedRectangle(cornerRadius: corner)
-                    .strokeBorder(Color.yellow.opacity(0.85), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+        .background {
+            ZStack {
+                shape.fill(Color.kouPanel)
+                if isNote { shape.fill(Color.kouWarn.opacity(0.05)) }
             }
         }
-        .contentShape(.rect(cornerRadius: corner))
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(edge, style: StrokeStyle(lineWidth: 1, dash: node.isProposed ? [5, 3] : [])))
+        .shadow(color: .black.opacity(0.22), radius: 8, y: 5)
+        .contentShape(shape)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title), \(node.kind), \(line(state))")
+        .accessibilityLabel("\(title), \(node.kind), \(line)")
+    }
+
+    /// Its outline: the stronger line; the warning's while it waits or is
+    /// proposed, the error's when it failed, the accent's while it works.
+    private var edge: Color {
+        switch state {
+        case "proposed", "waiting": Color.kouWarn.opacity(0.6)
+        case "error": Color.kouErr.opacity(0.6)
+        case "busy", "starting": Color.kouAccent.opacity(0.45)
+        default: isNote ? Color.kouWarn.opacity(0.22) : Color.kouLine2
+        }
+    }
+
+    /// A card with room for words: its header, then its state and what it
+    /// does, or — with room for it — what it says, over a foot of what it
+    /// does now and what waits for it.
+    private func card(whole: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            head(whole: whole)
+            Group {
+                if whole {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(summary(for: node))
+                            .font(.caption)
+                            .foregroundStyle(node.isProposed ? Color.kouFg3 : Color.kouFg2)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .clipped()
+                        foot
+                    }
+                } else {
+                    stateLine
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, whole ? 8 : 7)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                if node.isProposed {
+                    Hatch().stroke(Color.kouWarn.opacity(0.14), lineWidth: 1)
+                }
+            }
+        }
+    }
+
+    /// The header strip: what it is and its state, on the raised ground
+    /// over a hairline — the warning's for a note, which has no state.
+    private func head(whole: Bool) -> some View {
+        HStack(spacing: 7) {
+            glyph
+                .font(.system(size: 11, weight: .semibold))
+            Text(title)
+                .font(.system(size: 12.5, weight: .semibold))
+                .foregroundStyle(Color.kouFg)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .layoutPriority(1)
+            Spacer(minLength: 4)
+            // Without room for its word, the state is said under the
+            // header, the square with it: the header keeps the hand alone.
+            if whole {
+                signal(word: true)
+            } else if awaiting > 0 {
+                signal(word: false)
+            }
+        }
+        .padding(.horizontal, 9)
+        .frame(height: 28)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(isNote ? Color.clear : Color.kouSurface)
+        .overlay(alignment: .bottom) {
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(isNote ? Color.kouWarn.opacity(0.2) : Color.kouLine)
+                if state == "busy" {
+                    ScanLine()
+                }
+            }
+            .frame(height: 1)
+        }
+    }
+
+    /// Under a header with no room for the word: the state — its square
+    /// and its word, whole — and what it does, where it has room for a few
+    /// letters at least; a note's first words.
+    @ViewBuilder
+    private var stateLine: some View {
+        if isNote {
+            Text(summary(for: node))
+                .font(.caption)
+                .foregroundStyle(Color.kouFg2)
+                .lineLimit(1)
+        } else {
+            let badge = StateBadge(state: state)
+            if let doing {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 7) {
+                        badge
+                        Text(verbatim: doing)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(working ? Color.kouAccent : Color.kouFg3)
+                            .lineLimit(1)
+                            // Measured as its first letters, it shows as many
+                            // as fit.
+                            .frame(minWidth: 0, idealWidth: 40, maxWidth: .infinity, alignment: .leading)
+                    }
+                    badge
+                }
+            } else {
+                badge
+            }
+        }
+    }
+
+    /// What it does now, and the counts of what waits for it.
+    @ViewBuilder
+    private var foot: some View {
+        let queued = pending - awaiting
+        if doing != nil || awaiting > 0 || queued > 0 {
+            HStack(spacing: 5) {
+                if let doing {
+                    Text(verbatim: doing)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(working ? Color.kouAccent : Color.kouFg3)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 2)
+                if awaiting > 0 {
+                    CountBadge(count: awaiting, symbol: "hand.raised.fill", tint: .kouWarn, size: 10)
+                }
+                if queued > 0 {
+                    CountBadge(count: queued, symbol: "tray.full.fill", tint: .kouFg2, size: 10)
+                }
+            }
+        }
+    }
+
+    /// What it does now: its activity, or what its state says of itself.
+    private var doing: String? {
+        if node.isProposed { return "waits for you" }
+        if let activity = status?.activity, !activity.isEmpty { return activity }
+        if let detail = status?.detail, !detail.isEmpty { return detail }
+        return nil
+    }
+
+    private var line: String {
+        doing.map { "\(state) · \($0)" } ?? state
     }
 
     private var title: String {
         node.title.isEmpty ? node.kind.capitalized : node.title
     }
 
-    private var symbolColor: Color {
-        node.kind == CanvasNode.agent ? .kouAccent : .primary
+    /// Its kind's glyph: the accent's for an agent and for what works, the
+    /// warning's for a note, the quiet ink for the rest — as the cockpit's.
+    private var glyph: some View {
+        Image(systemName: NodeKindIcon.symbol(node.kind))
+            .foregroundStyle(isNote ? Color.kouWarn : node.kind == CanvasNode.agent || working ? Color.kouAccent : Color.kouFg3)
     }
 
     /// A card too small for words: its kind's mark, and its signal.
-    private func mark(tint: Color) -> some View {
-        Image(systemName: NodeKindIcon.symbol(node.kind))
+    private var mark: some View {
+        glyph
             .font(.system(size: max(9, min(18, min(size.width, size.height) * 0.42)), weight: .semibold))
-            .foregroundStyle(symbolColor)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay(alignment: .topTrailing) {
-                signal(tint: tint, counted: false)
+                signal(word: false)
                     .padding(4)
             }
     }
 
-    /// The node's state as a dot; a hand instead while messages wait for
-    /// the user's approval, unless the card counts them.
+    /// A card with room for its title alone: its mark and signal over it.
+    private var small: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 4) {
+                glyph
+                    .font(.system(size: 9.5, weight: .semibold))
+                Spacer(minLength: 2)
+                signal(word: false)
+            }
+            Text(title)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color.kouFg)
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .padding(6)
+    }
+
+    /// The node's state: its square, with the word where there is room; a
+    /// hand instead while messages wait for the user's approval, unless the
+    /// card counts them. A note has none.
     @ViewBuilder
-    private func signal(tint: Color, counted: Bool) -> some View {
-        if awaiting > 0 && !counted {
+    private func signal(word: Bool) -> some View {
+        if isNote {
+            EmptyView()
+        } else if awaiting > 0 && !word {
             Image(systemName: "hand.raised.fill")
                 .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(Color.yellow)
+                .foregroundStyle(Color.kouWarn)
         } else {
-            Circle()
-                .fill(tint)
-                .frame(width: 7, height: 7)
+            StateBadge(state: state, word: word)
         }
-    }
-
-    private func badge(_ count: String, symbol: String, tint: Color) -> some View {
-        Label(count, systemImage: symbol)
-            .labelStyle(.titleAndIcon)
-            .font(.caption2.monospaced().weight(.bold))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(tint, in: .cornerCapsule)
-            .foregroundStyle(tint == .yellow ? Color.black : tint == .kouAccent ? Color.kouAccentInk : Color.white)
-    }
-
-    private func line(_ state: String) -> String {
-        if node.isProposed { return "proposed · waits for you" }
-        if let activity = status?.activity, !activity.isEmpty { return "\(state) · \(activity)" }
-        if let detail = status?.detail, !detail.isEmpty { return "\(state) · \(detail)" }
-        return state
     }
 
     private func summary(for node: CanvasNode) -> String {
@@ -445,5 +568,50 @@ struct NodeCard: View {
         default:
             return node.config?["command"]?.string ?? ""
         }
+    }
+}
+
+/// ScanLine runs along a working node's hairline, as the cockpit's does: a
+/// stretch of the accent crossing it. With less motion it lies still.
+struct ScanLine: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { geometry in
+            let width = geometry.size.width
+            let bar = max(width * 0.28, 12)
+            if reduceMotion {
+                Rectangle()
+                    .fill(Color.kouAccent.opacity(0.7))
+            } else {
+                Rectangle()
+                    .fill(LinearGradient(colors: [Color.kouAccent.opacity(0), .kouAccent, .kouAccent], startPoint: .leading, endPoint: .trailing))
+                    .frame(width: bar)
+                    .keyframeAnimator(initialValue: 0.0, repeating: true) { line, t in
+                        line.offset(x: -bar + t * (width + bar))
+                    } keyframes: { _ in
+                        LinearKeyframe(1, duration: 1.6)
+                    }
+            }
+        }
+        .clipped()
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+/// Hatch is the stripes over what an agent proposed: not the canvas's yet.
+struct Hatch: Shape {
+    var gap: CGFloat = 10
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        var x = rect.minX - rect.height
+        while x < rect.maxX {
+            path.move(to: CGPoint(x: x, y: rect.maxY))
+            path.addLine(to: CGPoint(x: x + rect.height, y: rect.minY))
+            x += gap
+        }
+        return path
     }
 }

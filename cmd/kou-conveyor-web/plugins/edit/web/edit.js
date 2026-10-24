@@ -150,7 +150,9 @@ export default function activate(cockpit) {
     // The session goes back to before the first of these prompts the runner
     // has; one it never got exists only on this page.
     const persisted = removed.map((id) => v.entries.get(id)).find((e) => e.kind === 'user' && !e.state);
-    const first = v.order.find((id) => v.entries.get(id).kind === 'user') === edit.id;
+    // (Not if prompts come before those the view read: a chat on a canvas
+    // reads the end of its transcript.)
+    const first = !v.earlierPrompts?.length && v.order.find((id) => v.entries.get(id).kind === 'user') === edit.id;
     // The edited prompt runs again with the model it ran with, unless one was
     // chosen for the session.
     const model = v.model || v.entries.get(edit.id)?.model || session.nextModel(v);

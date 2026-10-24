@@ -6,6 +6,9 @@
 // back to the board.
 const MAX_HEIGHT = 160;
 const BUBBLE_FOR = 20000;
+// The foreman's glyph, ◈, drawn: a font's diamond cannot bend its corners
+// where the appearance rounds them (canvas.css).
+const GLYPH = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.6 14.4 8 8 14.4 1.6 8z" fill="none" stroke="currentColor" stroke-width="1.3"/><path class="cv-foreman-core" d="M8 5.4 10.6 8 8 10.6 5.4 8z" fill="currentColor"/></svg>';
 
 export function createForeman(env) {
   const { h, cockpit } = env;
@@ -17,7 +20,7 @@ export function createForeman(env) {
   const stop = h('button', { class: 'act', type: 'button', hidden: true, title: 'Stop the foreman\'s run', onclick: () => stopRun() }, 'Stop');
   const send = h('button', { class: 'cv-foreman-send', type: 'submit', title: 'Ask (⏎)', 'aria-label': 'Ask the foreman' }, '⏎');
   const field = h('form', { class: 'cv-foreman-field', onsubmit: (event) => { event.preventDefault(); ask(); } },
-    h('span', { class: 'cv-foreman-glyph', 'aria-hidden': 'true', text: '◈' }), input, state, stop, send);
+    h('span', { class: 'cv-foreman-glyph', 'aria-hidden': 'true' }, cockpit.svg(GLYPH)), input, state, stop, send);
   const bubbleText = h('div', { class: 'cv-bubble-text' });
   const bubble = h('div', { class: 'cv-bubble', hidden: true, role: 'status' },
     h('div', { class: 'cv-bubble-head' }, h('span', { class: 'label', text: '◈ Foreman' }),

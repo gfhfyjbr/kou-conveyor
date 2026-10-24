@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // commandResult is what a shell command left: its streams, bounded, and
@@ -34,7 +36,7 @@ func runCommand(ctx context.Context, shell, directory, command string, environme
 	}
 	runContext, cancel := context.WithCancel(ctx)
 	defer cancel()
-	cmd := exec.Command(shell, "-c", command)
+	cmd := spawn.Command(shell, "-c", command)
 	cmd.Dir = directory
 	cmd.Env = environment
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

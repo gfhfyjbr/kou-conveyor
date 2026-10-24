@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/fswatch"
 )
 
 // The fingerprint follows the programs' Go code, and nothing else.
@@ -121,6 +124,63 @@ func (stream *pluginEvents) until2(kind string, ok func(map[string]any) bool) ma
 		if event := stream.next(kind); ok(event) {
 			return event
 		}
+	}
+}
+
+// A build waits to be taken up while a run the server cannot hand over is at
+// work. A change of the code meanwhile sends it back to be built first: the
+// waiting notices it when the system tells of it, and where the system tells
+// of nothing, within a second.
+func TestTakeUpWaitsForTheCodeToChange(t *testing.T) {
+	for _, told := range []bool{true, false} {
+		t.Run(map[bool]string{true: "told of changes", false: "looking every second"}[told], func(t *testing.T) {
+			root := t.TempDir()
+			writeFiles(t, root, map[string]string{"go.mod": "module example.com/x\n", "cmd/tool/main.go": "package main\n"})
+			var changes <-chan struct{}
+			if told {
+				files, err := fswatch.Watch(goSources(root)...)
+				if errors.Is(err, errors.ErrUnsupported) {
+					t.Skip("the system tells of no changes here")
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer files.Close()
+				changes = files.Changes()
+			}
+			h := newHarness(t)
+			h.server.rebuild = &rebuilder{root: root, dir: t.TempDir(), exe: filepath.Join(t.TempDir(), "kou-conveyor-web")}
+			h.server.mu.Lock()
+			h.server.active["busy"] = &run{} // attached to the server: it cannot go over
+			h.server.mu.Unlock()
+			t.Cleanup(func() {
+				h.server.mu.Lock()
+				delete(h.server.active, "busy")
+				h.server.mu.Unlock()
+			})
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			again := make(chan string, 1)
+			go func() { again <- h.server.takeUp(ctx, nil, goFingerprint(root), changes) }()
+
+			select {
+			case fingerprint := <-again:
+				t.Fatalf("takeUp returned %q while nothing changed", fingerprint)
+			case <-time.After(2500 * time.Millisecond):
+			}
+			if status := h.server.rebuild.current(); status.State != "waiting" {
+				t.Fatalf("status = %+v", status)
+			}
+			writeFiles(t, root, map[string]string{"cmd/tool/more.go": "package main\n"})
+			select {
+			case fingerprint := <-again:
+				if want := goFingerprint(root); fingerprint != want {
+					t.Fatalf("takeUp returned %q, want the new code's %q", fingerprint, want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("the change went unnoticed")
+			}
+		})
 	}
 }
 

@@ -99,9 +99,19 @@ type retiredTool struct {
 	translator tool.Translator
 	refusal    string
 	refetch    bool // as liveTool's
+	// For a built-in tool the profile leaves out, the refusal is the
+	// coordinator's for a tool there is not (tool.Unavailable), of the
+	// tools the run has (unavailable) and the name the call gives (name):
+	// it lists every tool, and is made only as a new call is turned away,
+	// not as each call the session holds is resolved to read its result.
+	unavailable tool.Registry
+	name        string
 }
 
 func (retired retiredTool) Translate(tool.Context, llm.ToolCall) tool.CallStatus {
+	if retired.unavailable != nil {
+		return tool.ErrorStatus(tool.Unavailable(retired.unavailable, retired.name), 0)
+	}
 	return tool.ErrorStatus(retired.refusal, 0)
 }
 
@@ -135,7 +145,7 @@ func (tools runTools) Resolve(name string) (tool.Translator, bool) {
 	// A new call of a built-in tool the profile leaves out is told what
 	// the coordinator tells a call of a tool there is not.
 	if translator, exists := byName(tools.builtins, name); exists && translator != nil {
-		return retiredTool{translator: translator, refusal: tool.Unavailable(tools.Registry, name)}, true
+		return retiredTool{translator: translator, unavailable: tools.Registry, name: name}, true
 	}
 	return nil, false
 }

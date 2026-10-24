@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,13 @@ func newHarnessWith(t *testing.T, configure func(*options)) *harness {
 	o.SettingsFile = t.TempDir() + "/settings.json"
 	if configure != nil {
 		configure(&o)
+	}
+	// A model titles new sessions over the connection, which tests have none
+	// of: the tests of titles turn them on.
+	if path := cockpit.PreferencesPath(o.SettingsFile); path != "" {
+		if err := cockpit.SaveAutoTitles(path, false); err != nil {
+			t.Fatal(err)
+		}
 	}
 	s := newServer(ctx, o, &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080})
 	h := &harness{T: t, server: s, http: httptest.NewServer(s.handler()), cancel: cancel}
@@ -195,9 +203,12 @@ func TestSessionGoesCompressedAndOnlyWhenChanged(t *testing.T) {
 	if res.StatusCode != http.StatusOK || !res.Uncompressed || tag == "" || len(session["entries"].([]any)) == 0 {
 		t.Fatalf("status %d, uncompressed %v, etag %q, session %v", res.StatusCode, res.Uncompressed, tag, session["title"])
 	}
-	plain, _ := h.do("GET", "/api/sessions/"+sessionID, "", "Accept-Encoding", "identity")
+	plain, plainSession := h.do("GET", "/api/sessions/"+sessionID, "", "Accept-Encoding", "identity")
 	if plain.Header.Get("Content-Encoding") != "" || plain.Header.Get("ETag") != tag {
 		t.Fatalf("identity: encoding %q, etag %q, want %q", plain.Header.Get("Content-Encoding"), plain.Header.Get("ETag"), tag)
+	}
+	if !reflect.DeepEqual(plainSession, session) {
+		t.Fatalf("identity: the session differs from the compressed one:\n%v\n%v", plainSession, session)
 	}
 	same, _ := h.do("GET", "/api/sessions/"+sessionID, "", "If-None-Match", tag)
 	if same.StatusCode != http.StatusNotModified {
@@ -407,7 +418,7 @@ func TestServesCockpit(t *testing.T) {
 	h := newHarness(t)
 	for path, want := range map[string]string{
 		"/": "text/html", "/kernel/host.js": "text/javascript", "/kernel/dom.js": "text/javascript", "/kernel/kernel.css": "text/css",
-		"/theme.js": "text/javascript", "/favicon.svg": "image/svg+xml",
+		"/theme.js": "text/javascript", "/favicon.svg": "image/svg+xml", "/apple-touch-icon.png": "image/png",
 	} {
 		res, _ := h.do("GET", path, "")
 		if res.StatusCode != http.StatusOK || !strings.HasPrefix(res.Header.Get("Content-Type"), want) {

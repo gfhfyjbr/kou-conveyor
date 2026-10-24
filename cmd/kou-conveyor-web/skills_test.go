@@ -35,6 +35,8 @@ func TestPluginListingHasTheSkills(t *testing.T) {
 	t.Setenv("KOU_CONVEYOR_TUNNEL_CONFIG", "")
 	h := newHarness(t)
 	h.server.watch.interval = 20 * time.Millisecond
+	// Where the system tells of changes to files (macOS), it alone tells of these.
+	h.server.watch.safety = time.Minute
 	ws := h.server.workspaces.startup()
 	writeFiles(t, skill.HarnessDirectory(ws.Path), skillFile("commit", "The project's commits."))
 	writeFiles(t, skill.AgentsDirectory(ws.Path), skillFile("deploy", "Deploy it."))
@@ -71,6 +73,9 @@ func TestPluginListingHasTheSkills(t *testing.T) {
 
 	stream := h.pluginEvents("/api/plugins/events")
 	stream.next("plugins")
+	// The system may tell of the files written before the page came a while
+	// after; once it has, only the skill added below has the watch look.
+	time.Sleep(300 * time.Millisecond)
 	writeFiles(t, skill.AgentsDirectory(home), skillFile("later", "Later."))
 	stream.until(func(listing map[string]any) bool { return skillsOf(t, listing)["later@~/.agents/skills"] != nil })
 }

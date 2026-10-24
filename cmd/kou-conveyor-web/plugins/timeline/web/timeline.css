@@ -2,6 +2,20 @@
 
 .log { max-width: var(--measure); margin: 0 auto; padding: 28px 24px 48px; }
 
+/* The entries before those the view read (session.showEarlier). */
+.earlier {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 18px;
+  padding: 0 0 12px;
+  border-bottom: 1px dashed var(--line-2);
+  font: 11px/1.5 var(--mono);
+  color: var(--fg-3);
+}
+.earlier-text { flex: 1; min-width: 12ch; }
+
 .entries { list-style: none; margin: 0; padding: 0; position: relative; }
 .entries:not(:empty)::before {
   content: "";
@@ -571,6 +585,8 @@
 .tool-files code { border-radius: max(3px, var(--radius-sm)); }
 .entry[data-kind="user"] .text, .empty-card { border-radius: var(--radius-lg); }
 .lane i { border-radius: min(var(--radius-sm), 2px); }
+/* The nodes on the timeline are dots as the corners round. */
+.entry::before { border-radius: min(var(--radius-sm), 3.5px); }
 /* Round, no bars along the left edge: a prompt is a box of its own, whose
    whole border says its state; an error says itself by its tint. */
 :root[data-corners="round"] .entry[data-kind="user"] .text { padding-left: 15px; border-left-width: 1px; border-left-color: var(--line); }

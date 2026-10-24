@@ -439,6 +439,86 @@ func TestStorePersistsRepeatedToolCallStatuses(t *testing.T) {
 	}
 }
 
+// A tool's output is written once: the status recorded as its operations
+// finish names one the file has as it is by its ID, and holds whole one the
+// file has otherwise. Its observers and its readers get it whole.
+func TestStoreWritesAFinishedOperationOnce(t *testing.T) {
+	directory := t.TempDir()
+	store := newStore(t, directory)
+	createSessionWithTurn(t, store, "session-1", "turn-1", "")
+	var observed []sessionstore.Item
+	store.AddObserver(func(_ session.ID, item sessionstore.Item) {
+		observed = append(observed, item)
+	})
+	first := operation.Operation{
+		ID: "operation-1", Type: "test", Version: 1, Status: operation.StatusReady,
+		State: jsontext.Value(`{"step":1}`),
+	}
+	second := first
+	second.ID = "operation-2"
+	status := sessionstore.ToolCallStatus{
+		TurnID:     "turn-1",
+		CallID:     "call-1",
+		Status:     tool.CallStatus{WaitingFor: []operation.ID{"operation-1", "operation-2"}},
+		Operations: []operation.Operation{first, second},
+	}
+	if err := store.AppendToolCallStatus(t.Context(), "session-1", status); err != nil {
+		t.Fatal(err)
+	}
+	completed := first
+	completed.Status = operation.StatusCompleted
+	completed.State = jsontext.Value(`{"output":"the whole output of the tool"}`)
+	if err := store.SaveOperation(t.Context(), "session-1", completed); err != nil {
+		t.Fatal(err)
+	}
+	failed := second
+	failed.Status = operation.StatusFailed
+	failed.State = jsontext.Value(`{"error":"one the file has not saved"}`)
+	status.Operations = []operation.Operation{completed, failed}
+	if err := store.AppendToolCallStatus(t.Context(), "session-1", status); err != nil {
+		t.Fatal(err)
+	}
+
+	encoded, err := os.ReadFile(filepath.Join(directory, "session-1.session.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count := bytes.Count(encoded, []byte("the whole output of the tool")); count != 1 {
+		t.Fatalf("the output is written %d times:\n%s", count, encoded)
+	}
+	lines := bytes.Split(bytes.TrimSuffix(encoded, []byte("\n")), []byte("\n"))
+	if last := lines[len(lines)-1]; !bytes.Contains(last, []byte(`"Operations":["operation-1",{"ID":"operation-2"`)) {
+		t.Fatalf("last record = %s", last)
+	}
+	if got := observed[len(observed)-1].Data.(sessionstore.ToolCallStatus).Operations; !reflect.DeepEqual(got, status.Operations) {
+		t.Fatalf("observed operations = %#v", got)
+	}
+
+	var resumes []sessionstore.ResumeState
+	for _, mapped := range []bool{false, true} {
+		reader := newStore(t, directory)
+		if mapped {
+			reader.MapLogs()
+		}
+		page, err := reader.Items(t.Context(), "session-1", sessionstore.BeforeFirst, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		last := page.Items[len(page.Items)-1].Data.(sessionstore.ToolCallStatus)
+		if !reflect.DeepEqual(last.Operations, status.Operations) {
+			t.Fatalf("mapped %v: read operations = %#v", mapped, last.Operations)
+		}
+		resume, err := reader.Resume(t.Context(), "session-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumes = append(resumes, resume)
+	}
+	if !reflect.DeepEqual(resumes[0], resumes[1]) {
+		t.Fatalf("a mapped session resumes as %#v, a read one as %#v", resumes[1], resumes[0])
+	}
+}
+
 func TestReopenedStoreContinuesFromDerivedWriteState(t *testing.T) {
 	directory := t.TempDir()
 	store := newStore(t, directory)

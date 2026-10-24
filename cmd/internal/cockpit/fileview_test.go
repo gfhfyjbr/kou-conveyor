@@ -139,7 +139,7 @@ func edited(t *testing.T, content, old, replacement string, all bool) *FileView 
 		t.Fatal(err)
 	}
 	state.Result = &result
-	return fileOpOf(state).view()
+	return fileOpOf(state).view(highlightTime)
 }
 
 // An edit shows in the lines of its file: those it changed, whole, and

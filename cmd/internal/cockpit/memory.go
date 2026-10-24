@@ -134,7 +134,7 @@ func restoreMemory(dir, id, messageID string, cut logCut) error {
 // wrote them. What the remaining runs wrote after that is lost, rather than
 // the rewound run read what the discarded ones wrote.
 func notesBefore(id string, snaps []memorySnapshot, cut logCut) (string, bool) {
-	if !bytes.Contains(cut.removedCalls, []byte(id+notesSuffix)) {
+	if !cut.notesNamed {
 		return "", false
 	}
 	notes, at := "", time.Time{}

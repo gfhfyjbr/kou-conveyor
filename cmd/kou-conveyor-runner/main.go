@@ -19,7 +19,7 @@ func main() {
 		agentrunner.Config{
 			Name:         "kou-conveyor-runner",
 			ParseRequest: parseRequest,
-			Providers:    agentrunner.DefaultProviders(),
+			Providers:    tuneMemory(os.Getenv, agentrunner.DefaultProviders()),
 			// The user's plugins live beside the cockpits' settings.
 			PluginConfigDirectory: plugin.ConfigDirectory,
 		},

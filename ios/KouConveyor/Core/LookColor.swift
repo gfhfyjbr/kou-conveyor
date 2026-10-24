@@ -46,11 +46,28 @@ enum LookColor {
     static let graphite = (dark: ["#0c0c0b", "#121211", "#191917", "#22221f"],
                            light: ["#f4f3ef", "#fbfaf7", "#ecebe5", "#e2e0d8"])
 
+    /// Graphite's lines and text, in dark and in light: the hairline, the
+    /// stronger line, and the text from the strongest to the faintest (the
+    /// cockpits' line, line-2 and fg to fg-4).
+    static let graphiteInk = (dark: ["#262623", "#373632", "#ecebe6", "#b3b1a9", "#7f7d76", "#5a5852"],
+                              light: ["#dcdad2", "#c6c3b9", "#151513", "#46453f", "#77756c", "#a19e94"])
+
     /// grounds are a shade's bg to bg-4 in dark or in light, or nil for a
     /// shade no cockpit has.
     static func grounds(shade name: String, dark: Bool) -> [String]? {
+        tinted(dark ? graphite.dark : graphite.light, shade: name, dark: dark)
+    }
+
+    /// inks are a shade's line, line-2 and fg to fg-4 in dark or in light,
+    /// or nil for a shade no cockpit has: tinted as its grounds are.
+    static func inks(shade name: String, dark: Bool) -> [String]? {
+        tinted(dark ? graphiteInk.dark : graphiteInk.light, shade: name, dark: dark)
+    }
+
+    /// tinted are graphite's greys in a shade: each keeps its lightness and
+    /// takes the shade's hue, at graphite's chroma times the shade's.
+    private static func tinted(_ base: [String], shade name: String, dark: Bool) -> [String]? {
         guard let shade = shades.first(where: { $0.name == name }) else { return nil }
-        let base = dark ? graphite.dark : graphite.light
         if shade.name == "graphite" { return base }
         let k = dark ? shade.dark : shade.light
         return base.map { hex in

@@ -192,7 +192,7 @@ struct SessionScreen: View {
         .background(Color.kouGround)
         .environment(\.defaultMinListRowHeight, 0)
         .contentMargins(.vertical, 5, for: .scrollContent)
-        // The run's row comes and goes softly; not the transcript read with it.
+        // How the run ended comes softly; not the transcript read with it.
         .animation(placed ? .smooth(duration: 0.25) : nil, value: model.isBusy)
         .opacity(placed || model.entries.isEmpty ? 1 : 0)
         // Once in place, it comes softly, not all at once.
@@ -249,7 +249,8 @@ struct SessionScreen: View {
         }
     }
 
-    /// The transcript's rows: the entries, the run's state, the queue.
+    /// The transcript's rows: the entries, and how the last run ended. What
+    /// a run does, and the queue, are on the composer (Dock).
     @ViewBuilder
     private var rows: some View {
         if model.earlier > 0 {
@@ -266,17 +267,11 @@ struct SessionScreen: View {
             EntryView(entry: entry, live: live, output: model.outputs[entry.id], context: context)
                 .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .modifier(TranscriptRow())
+                // Calls in a row stand close, as one stack of work.
+                .modifier(TranscriptRow(vertical: entry.kind == Entry.tool ? 3.5 : 8))
         }
         runState
             .modifier(TranscriptRow())
-        if !model.queued.isEmpty {
-            QueueView(model: model) { item in
-                editText = item.text
-                editing = item
-            }
-            .modifier(TranscriptRow())
-        }
         Color.clear
             .frame(height: 1)
             .modifier(TranscriptRow(vertical: 0))
@@ -298,32 +293,40 @@ struct SessionScreen: View {
             kept = model.entries.first?.rowID
             Task { await model.showEarlier() }
         } label: {
-            HStack(spacing: 6) {
-                if model.loadingEarlier {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: "chevron.up")
+            // A mark on the rule, as the transcript's notices are.
+            HStack(spacing: 10) {
+                Hairline()
+                HStack(spacing: 6) {
+                    if model.loadingEarlier {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: "arrow.up")
+                            .font(.caption2.weight(.bold))
+                    }
+                    Text("Earlier · \(model.earlier)")
+                        .textCase(.uppercase)
+                        .font(.kouEyebrow)
+                        .tracking(Font.eyebrowTracking)
                 }
-                Text("Show earlier · \(model.earlier) more")
+                .foregroundStyle(Color.kouAccent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.kouAccentSoft, in: .cornerCapsule)
+                .fixedSize()
+                Hairline()
             }
-            .font(.footnote.weight(.medium))
+            .contentShape(.rect)
         }
-        .buttonStyle(.bordered)
-        .buttonBorderShape(.cornerCapsule)
+        .buttonStyle(.plain)
         .disabled(model.loadingEarlier)
         .frame(maxWidth: .infinity)
+        .accessibilityLabel("Show earlier, \(model.earlier) more")
     }
 
     @ViewBuilder
     private var runState: some View {
-        if model.isBusy {
-            ActivityRow(activity: model.activity, started: model.started, reconnecting: model.reconnecting)
-                .transition(.blurReplace)
-        } else if model.interrupted, !model.entries.isEmpty, !model.external {
-            Label("The last run stopped before the agent finished.", systemImage: "pause.circle")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity)
+        if !model.isBusy, model.interrupted, !model.entries.isEmpty, !model.external {
+            NoticeRow(text: "The last run stopped before the agent finished.", detail: nil)
         }
     }
 
@@ -335,19 +338,14 @@ struct SessionScreen: View {
         if model.loading || !placed && !model.entries.isEmpty {
             if arrived { LoadingSpinner() }
         } else if let error = model.loadError, model.entries.isEmpty {
-            ContentUnavailableView("Session unavailable", systemImage: "exclamationmark.bubble", description: Text(error))
+            KouEmpty(symbol: "exclamationmark.bubble", title: "Session unavailable", message: error, tone: .kouErr)
         } else if model.fresh, model.entries.isEmpty, model.reserved {
-            ContentUnavailableView {
-                Label("Not started yet", systemImage: "point.3.connected.trianglepath.dotted")
-            } description: {
-                Text("This node's agent starts with its first prompt, from here or from the canvas, which gives it the canvas's brief with it.")
-            }
+            KouEmpty(symbol: "point.3.connected.trianglepath.dotted", title: "Not started yet",
+                     message: "This node's agent starts with its first prompt, from here or from the canvas, which gives it the canvas's brief with it.")
         } else if model.fresh, model.entries.isEmpty {
-            ContentUnavailableView {
-                Label("New session", systemImage: "sparkles")
-            } description: {
-                Text("The agent runs on the computer the cockpit runs on, in \(app.workspace?.name ?? "the workspace").")
-            }
+            KouEmpty(symbol: "sparkles", title: "New session",
+                     message: "The agent runs on the computer the cockpit runs on, in \(app.workspace?.name ?? "the workspace").",
+                     tone: .kouAccent)
         }
     }
 
@@ -366,22 +364,38 @@ struct SessionScreen: View {
         .animation(.snappy, value: canvas?.notice)
     }
 
+    /// The composer, and the dock on it: what the run does, what waits in
+    /// the queue. Drawn after the dock, the composer is over its trays' foot.
     private var bottomBar: some View {
-        VStack(spacing: 8) {
-            if !attachments.isEmpty {
-                AttachmentStrip(attachments: attachments, remove: remove)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+        VStack(spacing: 0) {
+            Dock(model: model) { item in
+                editText = item.text
+                editing = item
             }
-            ComposerOptions(
-                modelTitle: nextModelTitle,
-                chosen: model.chosenModel != nil,
-                pickModel: { sheet = .models },
-                notify: { model.notice = SessionModel.Notice(text: $0, isError: false) }
-            )
             composer
+                .animation(.snappy, value: attachments.count)
         }
-        .animation(.snappy, value: attachments.count)
         .background { BarBase() }
+    }
+
+    /// The images of the prompt, at the top of the composer's panel.
+    @ViewBuilder
+    private var attachmentStrip: some View {
+        if !attachments.isEmpty {
+            AttachmentStrip(attachments: attachments, remove: remove)
+                .transition(.opacity)
+        }
+    }
+
+    /// The choices of the next prompt, in the composer's row.
+    private var composerOptions: ComposerOptions {
+        ComposerOptions(
+            modelTitle: nextModelTitle,
+            provider: nextModelProvider,
+            chosen: model.chosenModel != nil,
+            pickModel: { sheet = .models },
+            notify: { model.notice = SessionModel.Notice(text: $0, isError: false) }
+        )
     }
 
     /// The composer, and dictation into it: apart for the type checker's sake.
@@ -389,7 +403,8 @@ struct SessionScreen: View {
         Composer(text: $draft, phase: model.phase, external: model.external,
                  images: attachments.count, send: send, stop: stop,
                  pickPhotos: { pickingPhotos = true }, paste: pasteImage,
-                 listening: listening, dictate: dictate)
+                 listening: listening, dictate: dictate,
+                 top: attachmentStrip, options: composerOptions)
             // Watched apart, as the draft is: read in this body, the words
             // heard drew the whole screen again at each of them.
             .modifier(DictationWatch(voice: voice) { write(dictated: $0) })
@@ -458,6 +473,14 @@ struct SessionScreen: View {
         return app.modelTitle(model.nextModel ?? app.defaultModel(model.workspace), in: model.workspace)
     }
 
+    /// The provider of the next prompt's model, which colours its mark: the
+    /// catalog's, else the model's ID, which names it often enough.
+    private var nextModelProvider: String? {
+        let id = model.nextModel ?? app.defaultModel(model.workspace)
+        let info = app.catalog(model.workspace)?.find(id)
+        return info?.provider ?? info?.providerName ?? id
+    }
+
     private var editingShown: Binding<Bool> {
         Binding(get: { editing != nil }, set: { if !$0 { editing = nil } })
     }
@@ -520,6 +543,9 @@ struct SessionScreen: View {
         } label: {
             Label("Session", systemImage: "ellipsis")
         }
+        // As the other screens' menus: in the ink — the accent is for what
+        // runs and what is sent.
+        .tint(Color.kouFg)
     }
 
     private var subtitle: String {
@@ -569,14 +595,17 @@ struct SessionScreen: View {
         app.workspaces.first { $0.id == model.workspace }?.voice == true
     }
 
-    /// dictate starts dictation, or stops it: what is said goes after what
-    /// the composer holds.
-    private func dictate() {
+    /// dictate starts dictation (on), or stops it: what is said goes after
+    /// what the composer holds. Each only from where it can: the key let go
+    /// after dictation failed does not start it again.
+    private func dictate(_ on: Bool) {
         switch voice.state {
         case .idle:
+            guard on else { return }
             dictation = Dictation(base: draft)
             voice.start(client: model.client, workspace: model.workspace)
         case .starting, .listening:
+            guard !on else { return }
             voice.stop()
         case .finishing:
             break
@@ -762,139 +791,176 @@ struct AttachmentStrip: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 ForEach(attachments) { attachment in
-                    VStack(spacing: 4) {
-                        Group {
-                            if let preview = attachment.preview {
-                                Image(uiImage: preview)
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                Image(systemName: "photo")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(width: 58, height: 58)
-                        .background(.fill.quaternary)
-                        .clipShape(.rect(cornerRadius: .corner(12)))
-                        // A light picture keeps its edge on the light screen.
-                        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.separator, lineWidth: 0.5))
-                        .overlay(alignment: .topTrailing) {
-                            Button {
-                                withAnimation(.snappy) { remove(attachment) }
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .symbolRenderingMode(.palette)
-                                    .foregroundStyle(.white, .black.opacity(0.6))
-                                    .font(.body)
-                                    // The mark is small; the finger finds a
-                                    // larger circle around it.
-                                    .padding(6)
-                                    .contentShape(.circle)
-                            }
-                            .buttonStyle(.plain)
-                            .offset(x: 12, y: -12)
-                            .accessibilityLabel("Remove \(attachment.label)")
-                        }
-                        Text(attachment.label.dropFirst().dropLast())
-                            .font(.caption2.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                    thumbnail(attachment)
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
                 }
             }
-            .padding(.horizontal, 16)
+            // Room for the marks that take them away, over their corners.
+            .padding(.horizontal, 12)
             .padding(.top, 12)
+            .padding(.bottom, 2)
+        }
+    }
+
+    /// An image: its picture, with the label the prompt names it by on a
+    /// shade at its foot, and the mark that takes it away over its corner.
+    private func thumbnail(_ attachment: Attachment) -> some View {
+        let shape = RoundedRectangle(cornerRadius: .corner(10), style: .continuous)
+        return ZStack(alignment: .bottomLeading) {
+            Group {
+                if let preview = attachment.preview {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Image(systemName: "photo")
+                        .foregroundStyle(Color.kouFg3)
+                }
+            }
+            .frame(width: 60, height: 60)
+            .background(Color.kouWell)
+            Text(attachment.label.dropFirst().dropLast())
+                .font(.kouTag)
+                .tracking(0.5)
+                .textCase(.uppercase)
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .padding(.horizontal, 5)
+                .padding(.top, 8)
+                .padding(.bottom, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(LinearGradient(colors: [.black.opacity(0), .black.opacity(0.62)], startPoint: .top, endPoint: .bottom))
+        }
+        .frame(width: 60, height: 60)
+        .clipShape(shape)
+        // A light picture keeps its edge on the light screen.
+        .overlay(shape.strokeBorder(Color.kouLine2, lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+            Button {
+                withAnimation(.snappy) { remove(attachment) }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .heavy))
+                    .foregroundStyle(Color.kouFg)
+                    .frame(width: 18, height: 18)
+                    .background(Color.kouChip, in: .circle)
+                    .overlay(Circle().strokeBorder(Color.kouLine2, lineWidth: 1))
+                    // The mark is small; the finger finds a larger circle
+                    // around it.
+                    .padding(6)
+                    .contentShape(.circle)
+            }
+            .buttonStyle(.plain)
+            .offset(x: 12, y: -12)
+            .accessibilityLabel("Remove \(attachment.label)")
         }
     }
 }
 
 // MARK: The composer's options
 
-/// ComposerOptions are the choices of the next prompt, above the field: its
-/// model, the effort, the tools and the sandbox of the next runs.
+/// ComposerOptions are the choices of the next prompt, as keys of the
+/// composer's row: its model, and its effort as the cockpit's bars — whose
+/// menu has the tools and the sandbox of the next runs as well.
 struct ComposerOptions: View {
     @Environment(AppModel.self) private var app
     /// The next prompt's model; nil until it is known.
     let modelTitle: String?
+    /// Who makes it, which colours its mark.
+    let provider: String?
     /// A model was chosen for the session, not left to its default.
     let chosen: Bool
     var pickModel: () -> Void
     var notify: (String) -> Void
 
     var body: some View {
-        GlassEffectContainer(spacing: 8) {
-            HStack(spacing: 8) {
-                Button(action: pickModel) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "cpu")
-                        // Until the model is known, the place of its name.
-                        Text(modelTitle ?? "Default model")
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .redacted(reason: modelTitle == nil ? .placeholder : [])
-                        Image(systemName: "chevron.up.chevron.down")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(chosen ? Color.kouAccent : .primary)
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel(modelTitle.map { "Model: \($0)" } ?? "Model")
-
-                Menu {
-                    Picker("Effort", selection: effortChoice) {
-                        ForEach(app.effortLevels, id: \.self) { level in
-                            Label(Effort.title(level), systemImage: Effort.symbol(level, in: app.effortLevels))
-                                .tag(level)
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: Effort.symbol(app.effort, in: app.effortLevels))
-                        Text(Effort.title(app.effort))
-                            .lineLimit(1)
-                    }
-                    .font(.footnote.weight(.medium))
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Effort: \(Effort.title(app.effort))")
-
-                Spacer(minLength: 0)
-
-                Menu {
-                    if let profiles = app.preferences?.toolProfiles, !profiles.isEmpty {
-                        Menu {
-                            choices(profiles, current: app.toolProfile ?? "auto") { value in
-                                save(PreferencesChange(toolProfile: value), "Tools for the next runs: \(value)")
-                            }
-                        } label: {
-                            Label("Tools: \(app.toolProfile ?? "auto")", systemImage: "wrench.and.screwdriver")
-                        }
-                    }
-                    if let sandboxes = app.preferences?.sandboxes, !sandboxes.isEmpty {
-                        Menu {
-                            choices(sandboxes, current: app.sandbox ?? "off") { value in
-                                save(PreferencesChange(sandbox: value), "Sandbox for the next runs: \(value)")
-                            }
-                        } label: {
-                            Label("Sandbox: \(app.sandbox ?? "off")", systemImage: "shippingbox")
-                        }
-                    }
-                    Button("Reload the settings", systemImage: "arrow.clockwise") {
-                        Task { await app.loadSettings() }
-                    }
-                } label: {
-                    Image(systemName: "slider.horizontal.3")
-                        .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.glass)
-                .accessibilityLabel("Tools and sandbox")
-            }
+        HStack(spacing: 6) {
+            modelKey
+            effortKey
         }
-        .padding(.horizontal, 12)
+    }
+
+    /// The model: its maker's mark and its name, the accent's once it was
+    /// chosen for the session; the name gives way first as the row narrows.
+    private var modelKey: some View {
+        Button(action: pickModel) {
+            HStack(spacing: 6) {
+                ProviderMark(provider: provider, size: 18)
+                // Until the model is known, the place of its name. A little
+                // smaller before it is cut: the stop key of a run takes room.
+                Text(modelTitle ?? "Default model")
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(chosen ? Color.kouAccent : Color.kouFg)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                    .truncationMode(.middle)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(Color.kouFg3)
+            }
+            .redacted(reason: modelTitle == nil ? .placeholder : [])
+            .padding(.leading, 7)
+            .padding(.trailing, 9)
+        }
+        .buttonStyle(ComposerKeyStyle())
+        .accessibilityLabel(modelTitle.map { "Model: \($0)" } ?? "Model")
+    }
+
+    /// The effort: its bars and its name. Its menu sets it, and the tools
+    /// and the sandbox the next runs go with.
+    private var effortKey: some View {
+        Menu {
+            Section("Effort") {
+                Picker("Effort", selection: effortChoice) {
+                    ForEach(app.effortLevels, id: \.self) { level in
+                        Label(Effort.title(level), systemImage: Effort.symbol(level, in: app.effortLevels))
+                            .tag(level)
+                    }
+                }
+            }
+            Section("Next runs") {
+                if let profiles = app.preferences?.toolProfiles, !profiles.isEmpty {
+                    Menu {
+                        choices(profiles, current: app.toolProfile ?? "auto") { value in
+                            save(PreferencesChange(toolProfile: value), "Tools for the next runs: \(value)")
+                        }
+                    } label: {
+                        Label("Tools: \(app.toolProfile ?? "auto")", systemImage: "wrench.and.screwdriver")
+                    }
+                }
+                if let sandboxes = app.preferences?.sandboxes, !sandboxes.isEmpty {
+                    Menu {
+                        choices(sandboxes, current: app.sandbox ?? "off") { value in
+                            save(PreferencesChange(sandbox: value), "Sandbox for the next runs: \(value)")
+                        }
+                    } label: {
+                        Label("Sandbox: \(app.sandbox ?? "off")", systemImage: "shippingbox")
+                    }
+                }
+                Button("Reload the settings", systemImage: "arrow.clockwise") {
+                    Task { await app.loadSettings() }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                EffortBars(level: app.effort, levels: app.effortLevels)
+                Text(verbatim: Effort.short(app.effort))
+                    .font(.kouTag)
+                    .tracking(0.9)
+                    .foregroundStyle(Color.kouFg2)
+                    .fixedSize()
+                    .contentTransition(.numericText())
+            }
+            .padding(.horizontal, 9)
+        }
+        .menuStyle(.button)
+        .buttonStyle(ComposerKeyStyle())
+        .fixedSize()
+        .animation(.snappy, value: app.effort)
+        .accessibilityLabel("Effort: \(Effort.title(app.effort))")
+        .accessibilityHint("Also the tools and the sandbox of the next runs")
     }
 
     @ViewBuilder
@@ -952,6 +1018,14 @@ enum Effort {
         }
     }
 
+    /// A level in the capitals of the cockpit's row, as short as it goes.
+    static func short(_ level: String) -> String {
+        switch level {
+        case "medium": "MED"
+        default: level.uppercased()
+        }
+    }
+
     /// A gauge filled as far as the level goes among the levels.
     static func symbol(_ level: String, in levels: [String]) -> String {
         guard let index = levels.firstIndex(of: level), levels.count > 1 else { return "gauge.with.dots.needle.50percent" }
@@ -963,6 +1037,161 @@ enum Effort {
         case ..<0.84: return "gauge.with.dots.needle.67percent"
         default: return "gauge.with.dots.needle.100percent"
         }
+    }
+}
+
+/// EffortBars are the effort as the cockpit's row has it (effort.css): a
+/// bar a level, each taller than the one before, lit up to the level.
+struct EffortBars: View {
+    let level: String
+    let levels: [String]
+
+    var body: some View {
+        let lit = levels.firstIndex(of: level) ?? -1
+        let steps = CGFloat(max(levels.count - 1, 1))
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(levels.indices), id: \.self) { i in
+                RoundedRectangle(cornerRadius: min(.corner(1.5), 1.5), style: .continuous)
+                    .fill(i <= lit ? Color.kouAccent : Color.kouLine2)
+                    .frame(width: 3.5, height: 4 + 10 * CGFloat(i) / steps)
+            }
+        }
+        .frame(height: 14, alignment: .bottom)
+        .animation(.snappy, value: lit)
+        .accessibilityHidden(true)
+    }
+}
+
+/// The composer's measures: its panel's corners, the room round its row,
+/// and its keys — a finger's, their corners the panel's less that room, so
+/// the keys at its ends turn with it.
+enum ComposerMetrics {
+    static let radius: CGFloat = 20
+    static let gap: CGFloat = 8
+    static let key: CGFloat = 34
+    static var keyRadius: CGFloat { radius - gap }
+}
+
+/// ComposerKeyStyle is a key of the composer's row: cut into its panel — a
+/// ground darker than the panel's, a hairline round it — and pressed in a
+/// little. A label sets its own width; the style, its height.
+struct ComposerKeyStyle: ButtonStyle {
+    var fill: Color = .kouWell
+    var stroke: Color = .kouLine
+    var ink: Color = .kouFg
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .modifier(ComposerKeyFace(fill: fill, stroke: stroke, ink: ink, pressed: configuration.isPressed))
+    }
+}
+
+/// ComposerKeyFace is how a key of the composer's row looks, a button or
+/// not (MicKey): its ground, its edge, and pressed in.
+struct ComposerKeyFace: ViewModifier {
+    var fill: Color = .kouWell
+    var stroke: Color = .kouLine
+    var ink: Color = .kouFg
+    var pressed = false
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: .corner(ComposerMetrics.keyRadius), style: .continuous)
+        content
+            .foregroundStyle(ink)
+            .frame(height: ComposerMetrics.key)
+            .background(fill, in: shape)
+            .overlay(shape.strokeBorder(stroke, lineWidth: 1))
+            .contentShape(shape)
+            .opacity(pressed ? 0.8 : 1)
+            .scaleEffect(pressed ? 0.94 : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.7), value: pressed)
+    }
+}
+
+/// MicKey is the composer's microphone. Tapped, it starts dictation, and
+/// tapped again stops it; held, it listens while it is held, and stops as
+/// it is let go — what is said stays in the composer, to send or go on with.
+private struct MicKey: View {
+    let listening: VoiceInput.State
+    var dictate: (_ on: Bool) -> Void
+    /// Says when a finger comes on the key (true) and goes from it: the row
+    /// keeps its keys where they are meanwhile.
+    var holding: (Bool) -> Void = { _ in }
+    /// Whether a finger is on the key: its look.
+    @GestureState private var held = false
+    /// The finger on the key, from when it comes down until it goes up.
+    @State private var touch: Touch?
+
+    /// A touch held this long talks only while it is held; a shorter one is
+    /// a tap, and dictation goes on after it.
+    static let hold: TimeInterval = 0.3
+
+    /// Touch is a finger on the key: when it came down, and whether it
+    /// started dictation.
+    private struct Touch {
+        /// By the touches' own clock, which is theirs alone: an end that
+        /// comes with the touch goes by it.
+        let down: Date
+        /// By the app's, for a touch taken away, which ends without one.
+        let seen: Date
+        let started: Bool
+    }
+
+    var body: some View {
+        // Live, it is the accent's: what is said goes in.
+        let live = listening != .idle
+        Image(systemName: listening == .listening ? "waveform" : "mic")
+            .font(.system(size: 15, weight: .semibold))
+            .symbolEffect(.variableColor.iterative, isActive: listening == .listening)
+            .symbolEffect(.pulse, isActive: listening == .starting || listening == .finishing)
+            .frame(width: ComposerMetrics.key)
+            .modifier(ComposerKeyFace(fill: live ? .kouAccentSoft : .kouWell,
+                                      stroke: live ? Color.kouAccent.opacity(0.6) : .kouLine,
+                                      ink: live ? .kouAccent : .kouFg2, pressed: held))
+            // Down at once: dictation starts as the finger lands, not as it
+            // is lifted, and a finger that slides off still holds it. How
+            // long it was held goes by the touches' own times, not by when
+            // the app got to them: opening the microphone holds the app up a
+            // moment, and a tap let go meanwhile looked like a hold.
+            .gesture(DragGesture(minimumDistance: 0)
+                .updating($held) { _, held, _ in held = true }
+                .onChanged { value in
+                    if touch == nil { press(at: value.time) }
+                }
+                .onEnded { value in lift(at: value.time) })
+            .onChange(of: held) { _, held in
+                // A touch the system took away has no end of its own: it
+                // ends here, after the end that came with it, if one did.
+                guard !held, touch != nil else { return }
+                Task { lift(at: nil) }
+            }
+            // Gone from the row under the finger: nothing holds it now.
+            .onDisappear { holding(false) }
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityLabel(listening == .idle ? "Dictate" : "Stop dictating")
+            .accessibilityHint("Hold to talk, or tap to start and again to stop.")
+            .accessibilityAction { dictate(listening == .idle) }
+    }
+
+    /// press takes a finger come down on the key: idle, it starts dictation;
+    /// going, started by a tap, the finger stops it; finishing, it waits.
+    private func press(at time: Date) {
+        let start = listening == .idle
+        touch = Touch(down: time, seen: .now, started: start)
+        holding(true)
+        if listening != .finishing { dictate(start) }
+    }
+
+    /// lift takes the finger going up, at the time it did by the touches'
+    /// clock, or, taken away, now: after a hold, the dictation it started
+    /// stops; after a tap, it goes on.
+    private func lift(at time: Date?) {
+        guard let touch else { return }
+        self.touch = nil
+        holding(false)
+        let held = time.map { $0.timeIntervalSince(touch.down) } ?? Date.now.timeIntervalSince(touch.seen)
+        if touch.started, held >= Self.hold { dictate(false) }
     }
 }
 
@@ -1122,132 +1351,6 @@ struct JumpButton: View {
     }
 }
 
-/// ActivityRow says what the agent does while a run goes on.
-struct ActivityRow: View {
-    let activity: String?
-    let started: Date?
-    let reconnecting: Bool
-    /// The spinner is a new one each time the row shows. The transcript's
-    /// List gives the cell of a row taken away to the next row of its kind,
-    /// spinner and all: the row of a run that ended came back for the next
-    /// run — or for this one, followed anew — with UIKit's spinner stopped,
-    /// and so hidden, beside "Thinking".
-    @State private var spinner = 0
-
-    var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-                .controlSize(.small)
-                .id(spinner)
-            Text(reconnecting ? "Reconnecting…" : (activity ?? "Working"))
-                .font(.subheadline.weight(.medium))
-                .lineLimit(1)
-                .contentTransition(.opacity)
-            if let started {
-                Text(started, style: .timer)
-                    .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
-        .glassEffect(.regular.tint(Color.kouAccent.opacity(0.12)), in: .cornerCapsule)
-        .animation(.smooth, value: activity)
-        .onAppear { spinner &+= 1 }
-    }
-}
-
-/// QueueView is what waits for the agent: messages sent while it worked,
-/// each to put to it now, edit, move or drop.
-struct QueueView: View {
-    let model: SessionModel
-    var edit: (QueueItem) -> Void
-
-    var body: some View {
-        let items = model.queued
-        let paused = model.queue?.paused == true
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Label(paused ? "Queue paused" : "Queued · \(items.count)", systemImage: paused ? "pause.circle" : "tray.full")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Menu {
-                    if paused {
-                        Button("Resume the queue", systemImage: "play.fill") { Task { await model.resumeQueue() } }
-                    } else {
-                        Button("Pause the queue", systemImage: "pause.fill") { Task { await model.pauseQueue() } }
-                    }
-                    Button("Clear the queue", systemImage: "trash", role: .destructive) { Task { await model.clearQueue() } }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.subheadline)
-                }
-                .accessibilityLabel("Queue")
-            }
-            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: item.forced == true ? "bolt.fill" : "clock")
-                        .font(.caption)
-                        .foregroundStyle(item.forced == true ? Color.kouAccent : .secondary)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(item.text)
-                            .font(.subheadline)
-                            .lineLimit(3)
-                        if let images = item.images, !images.isEmpty {
-                            Label("\(images.count) image\(images.count == 1 ? "" : "s")", systemImage: "photo")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer(minLength: 0)
-                    if item.forced != true {
-                        Menu {
-                            actions(item, index: index, count: items.count)
-                        } label: {
-                            Image(systemName: "ellipsis")
-                                .font(.footnote.weight(.semibold))
-                                .frame(width: 28, height: 22)
-                                .contentShape(.rect)
-                        }
-                        .foregroundStyle(.secondary)
-                    }
-                }
-                .contentShape(.rect)
-                .contextMenu {
-                    if item.forced != true { actions(item, index: index, count: items.count) }
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.fill.quaternary, in: .rect(cornerRadius: .corner(16)))
-    }
-
-    @ViewBuilder
-    private func actions(_ item: QueueItem, index: Int, count: Int) -> some View {
-        Button("Put to the agent now", systemImage: "bolt.fill") {
-            Task { await model.change(item, QueueChange(force: true)) }
-        }
-        Button("Edit…", systemImage: "pencil") { edit(item) }
-        if index > 0 {
-            Button("Move up", systemImage: "arrow.up") {
-                Task { await model.change(item, QueueChange(position: index - 1)) }
-            }
-        }
-        if index < count - 1 {
-            Button("Move down", systemImage: "arrow.down") {
-                Task { await model.change(item, QueueChange(position: index + 1)) }
-            }
-        }
-        Button("Copy", systemImage: "doc.on.doc") { UIPasteboard.general.string = item.text }
-        Divider()
-        Button("Drop", systemImage: "trash", role: .destructive) {
-            Task { await model.drop(item) }
-        }
-    }
-}
-
 /// NoticeBanner is a word for the user over the transcript, which goes by
 /// itself.
 struct NoticeBanner: View {
@@ -1257,16 +1360,17 @@ struct NoticeBanner: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "info.circle.fill")
-                .foregroundStyle(notice.isError ? .red : Color.kouAccent)
+                .foregroundStyle(notice.isError ? Color.kouErr : Color.kouAccent)
             Text(notice.text)
                 .font(.footnote)
+                .foregroundStyle(Color.kouFg)
                 .lineLimit(3)
             Spacer(minLength: 0)
             Button("Dismiss", systemImage: "xmark", action: dismiss)
                 .labelStyle(.iconOnly)
                 .font(.footnote)
                 .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -1278,10 +1382,12 @@ struct NoticeBanner: View {
     }
 }
 
-/// Composer is where the user writes to the agent: while it works, what is
-/// sent waits in the queue; held, the send button puts it to the agent at
-/// once.
-struct Composer: View {
+/// Composer is where the user writes to the agent: one panel, as the
+/// cockpit's — the images on top, the text, and a row of keys under it: what
+/// to add, the model, the effort, and at its end stop, the microphone and
+/// send. While the agent works, what is sent waits in the queue; held, the
+/// send key puts it to the agent at once.
+struct Composer<Top: View, Options: View>: View {
     @Binding var text: String
     let phase: SessionModel.Phase
     let external: Bool
@@ -1292,14 +1398,26 @@ struct Composer: View {
     var pickPhotos: () -> Void
     var paste: () -> Void
     /// How dictation goes, nil where the cockpit does not take it; dictate
-    /// starts and stops it.
+    /// starts it (true) and stops it.
     var listening: VoiceInput.State? = nil
-    var dictate: () -> Void = {}
+    var dictate: (_ on: Bool) -> Void = { _ in }
+    /// What goes on top of the panel: the images.
+    let top: Top
+    /// The keys of the next prompt's choices, after the one that adds.
+    let options: Options
     /// Whether the microphone stays by the send button: once dictation
     /// wrote in the composer, for more of it, until the composer is
     /// emptied — typed over, it does not go from under the fingers.
     @State private var stays = false
-    @Namespace private var glass
+    /// Whether the send key was there as the microphone was pressed: kept
+    /// while it is held, so that no key comes under the finger and pushes
+    /// the microphone from under it — dictation writes as it hears. Nil
+    /// while the microphone is not held.
+    @State private var heldSends: Bool?
+    /// Whether the text has the keyboard: the panel's corners light up.
+    @State private var focused = false
+    /// Counts what was sent, for the touch of it.
+    @State private var sent = 0
 
     // Stops at the first letter: a long text is not copied to say so.
     private var empty: Bool { !text.contains { !$0.isWhitespace } }
@@ -1310,55 +1428,59 @@ struct Composer: View {
     /// Whether dictation goes: starting, listening or finishing.
     private var dictating: Bool { dictates && listening != .idle }
 
-    // The microphone and the send button share the end of the row: an
-    // empty composer has the microphone there, one with text the send
-    // button, in its place — the first key does not change the width of
-    // the field, which laid its text out again at every frame of the change
-    // and held the keys typed meanwhile. Both are there while dictation
-    // goes, and after, for more of it.
+    // The microphone and the send key share the end of the row: an empty
+    // composer has the microphone there, one with text the send key, in
+    // its place. Both are there while dictation goes, and after, for more
+    // of it. The text is over the row, as wide as the panel: no key that
+    // comes or goes changes its width, which laid its text out again at
+    // every frame of the change.
 
     /// The microphone is there while the composer is empty, while dictation
     /// goes, and after it, until the composer is emptied.
     private var mic: Bool { dictates && (empty || dictating || stays) }
-    /// The send button is there but where the microphone has its place
-    /// alone.
+    /// The send key is there but where the microphone has its place alone.
     private var sends: Bool { !dictates || !empty || dictating || stays }
+    /// The send key as shown: while the microphone is held, as it was when
+    /// it was pressed; let go, it comes where the finger was.
+    private var sendsShown: Bool { heldSends ?? sends }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            Menu {
-                Button("Photo Library", systemImage: "photo.on.rectangle", action: pickPhotos)
-                Button("Paste Image", systemImage: "doc.on.clipboard", action: paste)
-            } label: {
-                Image(systemName: "plus")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 26, height: 30)
+        let radius = CGFloat.corner(ComposerMetrics.radius)
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        VStack(alignment: .leading, spacing: 2) {
+            top
+                .clipShape(UnevenRoundedRectangle(topLeadingRadius: radius, topTrailingRadius: radius, style: .continuous))
+            ComposerField(text: $text, placeholder: placeholder, editable: !external, focused: $focused)
+            HStack(spacing: 6) {
+                addKey
+                // Before the space: what the keys at the ends leave, the
+                // model's name takes, and gives way only past it.
+                options
+                    .layoutPriority(1)
+                Spacer(minLength: 0)
+                buttons
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .disabled(external || images >= 20)
-            .accessibilityLabel("Add an image")
-
-            ComposerField(text: $text, placeholder: placeholder, editable: !external)
-                .frame(minHeight: 46)
-                // Its own glass, out of the buttons' container: in it, the
-                // text view went with the glass the buttons morphed in —
-                // drawn again at every frame, at times under the glass,
-                // blurred or not at all, the field's outline left empty.
-                .glassEffect(.regular, in: .rect(cornerRadius: .corner(23)))
-
-            GlassEffectContainer(spacing: 10) {
-                HStack(alignment: .bottom, spacing: 10) {
-                    buttons
-                }
+            .padding([.horizontal, .bottom], ComposerMetrics.gap)
+        }
+        .background(Color.kouDock, in: shape)
+        // Its edge says how it is: the focus's, a run's tinge, or at rest.
+        .overlay(shape.strokeBorder(edge, lineWidth: 1))
+        // The cockpit's registration marks belong to square corners: on
+        // round ones they bent into arcs, so a round panel shows the focus
+        // by its edge alone.
+        .overlay {
+            if radius == 0 {
+                CornerTicks(radius: 0, color: focused ? .kouAccent : .kouFg4)
             }
         }
         .animation(.smooth(duration: 0.3), value: working)
         .animation(.smooth(duration: 0.3), value: empty)
         .animation(.smooth(duration: 0.3), value: mic)
-        .animation(.smooth(duration: 0.3), value: sends)
-        .padding(.horizontal, 12)
+        .animation(.smooth(duration: 0.3), value: sendsShown)
+        .animation(.easeOut(duration: 0.2), value: focused)
+        .padding(.horizontal, 10)
         .padding(.bottom, 8)
+        .sensoryFeedback(.impact(flexibility: .soft, intensity: 0.7), trigger: sent)
         .onChange(of: dictating) { _, dictating in
             if dictating { stays = true }
         }
@@ -1367,60 +1489,83 @@ struct Composer: View {
         }
     }
 
-    /// Stop, the microphone and send, at the end of the row: one goes into
-    /// another in their glass.
+    /// The panel's edge: brighter with the keyboard, a tinge of the accent
+    /// while the agent works, a hairline at rest.
+    private var edge: Color {
+        if focused { return .kouFg4 }
+        return working ? Color.kouAccent.opacity(0.4) : .kouLine2
+    }
+
+    /// The key that adds an image: from the library, or pasted.
+    private var addKey: some View {
+        let addable = !external && images < 20
+        return Menu {
+            Button("Photo Library", systemImage: "photo.on.rectangle", action: pickPhotos)
+            Button("Paste Image", systemImage: "doc.on.clipboard", action: paste)
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: ComposerMetrics.key)
+        }
+        .menuStyle(.button)
+        .buttonStyle(ComposerKeyStyle(ink: addable ? .kouFg2 : .kouFg4))
+        .disabled(!addable)
+        .accessibilityLabel("Add an image")
+    }
+
+    /// Stop, the microphone and send, at the end of the row.
     @ViewBuilder
     private var buttons: some View {
         if working {
+            // The cockpit's stop: the error's colour, waiting dimmed once
+            // asked.
             Button(action: stop) {
-                Image(systemName: phase == .stopping ? "hourglass" : "stop.fill")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 26, height: 30)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .symbolEffect(.pulse, isActive: phase == .stopping)
+                    .frame(width: ComposerMetrics.key)
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
+            .buttonStyle(ComposerKeyStyle(stroke: Color.kouErr.opacity(0.5), ink: .kouErr))
             .disabled(phase == .stopping)
-            .glassEffectID("stop", in: glass)
-            .accessibilityLabel("Stop the run")
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
+            .accessibilityLabel(phase == .stopping ? "Stopping" : "Stop the run")
         }
 
         if mic, let listening {
-            Button(action: dictate) {
-                Image(systemName: listening == .listening ? "waveform" : "mic")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(listening == .idle ? Color.primary : Color.kouAccent)
-                    .symbolEffect(.variableColor.iterative, isActive: listening == .listening)
-                    .symbolEffect(.pulse, isActive: listening == .starting || listening == .finishing)
-                    .frame(width: 26, height: 30)
+            MicKey(listening: listening, dictate: dictate) { holding in
+                heldSends = holding ? sends : nil
             }
-            .buttonStyle(.glass)
-            .buttonBorderShape(.circle)
-            .disabled(listening == .finishing)
-            .glassEffectID("mic", in: glass)
-            .accessibilityLabel(listening == .idle ? "Dictate" : "Stop dictating")
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
         }
 
-        if sends {
+        if sendsShown {
+            // Nothing to send yet: a key like its neighbours, as the
+            // cockpit's; else the accent, the screen's one call to act.
             let blocked = empty || external || phase == .starting
             Button {
+                sent &+= 1
                 send(false)
             } label: {
                 Image(systemName: working ? "text.badge.plus" : "arrow.up")
-                    .font(.body.weight(.bold))
-                    .frame(width: 26, height: 30)
+                    .font(.system(size: 15, weight: .bold))
+                    .frame(width: ComposerMetrics.key)
             }
-            .buttonStyle(.glassProminent)
-            .buttonBorderShape(.circle)
+            .buttonStyle(ComposerKeyStyle(fill: blocked ? .kouWell : .kouAccent,
+                                          stroke: blocked ? .kouLine : .kouAccent,
+                                          ink: blocked ? .kouFg4 : .kouAccentInk))
             .disabled(blocked)
-            // A prominent glass button is drawn alike disabled or
-            // not: grey says there is nothing to send yet.
-            .tint(blocked ? Color(uiColor: .systemGray3) : nil)
-            .glassEffectID("send", in: glass)
+            .transition(.scale(scale: 0.6).combined(with: .opacity))
             .accessibilityLabel(working ? "Queue the message" : "Send")
             .contextMenu {
                 if working {
-                    Button("Put to the agent now", systemImage: "bolt.fill") { send(true) }
-                    Button("Queue for after this run", systemImage: "text.badge.plus") { send(false) }
+                    Button("Put to the agent now", systemImage: "bolt.fill") {
+                        sent &+= 1
+                        send(true)
+                    }
+                    Button("Queue for after this run", systemImage: "text.badge.plus") {
+                        sent &+= 1
+                        send(false)
+                    }
                 }
             }
         }
@@ -1444,13 +1589,17 @@ struct ComposerField: UIViewRepresentable {
     @Binding var text: String
     let placeholder: String
     let editable: Bool
+    /// Whether it has the keyboard, as it tells.
+    @Binding var focused: Bool
 
     /// The most lines the field grows to.
     static let maxLines = 7
     /// Past this many characters a text cannot fit in fewer lines than the
     /// most, at any width the composer has: it is not measured.
     static let measured = 1500
-    static let inset = UIEdgeInsets(top: 11, left: 16, bottom: 11, right: 16)
+    /// Its text in the composer's panel: from the panel's edge as the
+    /// cockpit's, a little nearer the row of keys than the panel's top.
+    static let inset = UIEdgeInsets(top: 13, left: 14, bottom: 7, right: 14)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1464,7 +1613,6 @@ struct ComposerField: UIViewRepresentable {
         view.backgroundColor = .clear
         view.font = .preferredFont(forTextStyle: .body)
         view.adjustsFontForContentSizeCategory = true
-        view.textColor = .label
         view.textContainerInset = Self.inset
         view.textContainer.lineFragmentPadding = 0
         view.isScrollEnabled = true
@@ -1501,9 +1649,20 @@ struct ComposerField: UIViewRepresentable {
 
     private func update(_ view: UITextView, coordinator: Coordinator) {
         if view.isEditable != editable { view.isEditable = editable }
-        // Its colour is set on all of the text: only when it changes.
-        let color: UIColor = editable ? .label : .secondaryLabel
-        if view.textColor != color { view.textColor = color }
+        // Its colour is set on all of the text: only when it changes. The
+        // look's colours are the same instances until its shade changes.
+        let look = Look.shared
+        let color = editable ? look.uiPalette.fg : look.uiPalette.fg3
+        if coordinator.color !== color {
+            view.textColor = color
+            coordinator.color = color
+            coordinator.placeholder?.textColor = look.uiPalette.fg4
+        }
+        // The caret is the accent's, as the cockpit's focus is.
+        if coordinator.tint !== look.accentUIColor {
+            view.tintColor = look.accentUIColor
+            coordinator.tint = look.accentUIColor
+        }
         if view.accessibilityLabel != placeholder { view.accessibilityLabel = placeholder }
         if coordinator.placeholder?.text != placeholder { coordinator.placeholder?.text = placeholder }
         coordinator.placeholder?.isHidden = view.hasText
@@ -1548,10 +1707,21 @@ struct ComposerField: UIViewRepresentable {
         weak var placeholder: UILabel?
         /// What the field last wrote to the binding, or was set to.
         var written: String
+        /// The colours last set: the text's, the caret's.
+        var color: UIColor?
+        var tint: UIColor?
 
         init(_ parent: ComposerField) {
             self.parent = parent
             written = parent.text
+        }
+
+        func textViewDidBeginEditing(_ view: UITextView) {
+            if !parent.focused { parent.focused = true }
+        }
+
+        func textViewDidEndEditing(_ view: UITextView) {
+            if parent.focused { parent.focused = false }
         }
 
         func textViewDidChange(_ view: UITextView) {
@@ -1744,7 +1914,7 @@ private struct PictureLightbox: View {
         } else if failed {
             Label("The picture did not load", systemImage: "photo.badge.exclamationmark")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
         } else {
             ProgressView()
         }
@@ -1756,10 +1926,10 @@ private struct PictureLightbox: View {
         HStack(spacing: 8) {
             Text(picture.title)
                 .fontWeight(.semibold)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.kouFg)
             if let about = picture.about {
                 Text(about)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg2)
             }
         }
         .font(.system(.caption, design: .monospaced))

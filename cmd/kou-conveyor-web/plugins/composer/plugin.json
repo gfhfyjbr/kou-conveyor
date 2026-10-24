@@ -1,5 +1,5 @@
 {
   "name": "composer",
-  "description": "Where prompts are written: the composer, its drafts, the run and force buttons, and the banners and activity over it.",
+  "description": "Where prompts are written: the composer, its drafts, the run and force buttons, the banners and activity over it, and the session's figures by it: cache hits, context left, tokens per second, turns — in a tray or a line under it, folded under an arrow or not, or in a chip in its row, as Settings → Session figures has it.",
   "web": {"script": "web/composer.js", "style": "web/composer.css", "after": ["layout", "session"]}
 }

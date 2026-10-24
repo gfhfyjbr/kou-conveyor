@@ -107,10 +107,22 @@ export default function activate(cockpit) {
       // compaction is what streamed of the summary of the compaction the run
       // makes now — { pieces }: by their IDs, { kind, text } — or null.
       compaction: null,
+      // tail is how many of the transcript's last entries the view read, 0
+      // for all of them: a chat on a canvas reads its end ("session.tail"),
+      // as a session of thousands, read whole, is megabytes. earlier is how
+      // many entries come before those read, earlierPrompts the prompts
+      // among them, which the models and the numbers of the prompts read
+      // go by; showEarlier reads more of them.
+      tail: 0,
+      earlier: 0,
+      earlierPrompts: [],
+      loadingEarlier: false,
     };
   }
 
   function firstPrompt(v) {
+    const earliest = v.earlierPrompts?.[0];
+    if (earliest) return (earliest.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
     for (const id of v.order) {
       const e = v.entries.get(id);
       if (e.kind === 'user') return (e.text || '').replace(/\s+/g, ' ').trim().slice(0, 80);
@@ -126,18 +138,21 @@ export default function activate(cockpit) {
     return null;
   }
 
+  // ran says a prompt ran with a model that is known.
+  const ranWith = (e) => e?.kind === 'user' && !!e.model && e.state !== 'undelivered';
+
   // lastModel is the model the session's last prompt ran with, if known.
   function lastModel(v) {
     for (let i = (v?.order.length || 0) - 1; i >= 0; i--) {
       const e = v.entries.get(v.order[i]);
       if (e.kind === 'user' && e.model && e.state !== 'undelivered') return e.model;
     }
-    return '';
+    return v?.earlierPrompts?.findLast(ranWith)?.model || '';
   }
 
   // previousModel is the model of the prompt before the one with the given ID.
   function previousModel(v, id) {
-    let model = '';
+    let model = v.earlierPrompts?.findLast(ranWith)?.model || '';
     for (const other of v.order) {
       if (other === id) return model;
       const e = v.entries.get(other);
@@ -151,6 +166,9 @@ export default function activate(cockpit) {
   function promptNumbered(v, arg) {
     const n = Number.parseInt(String(arg).replace(/^#/, ''), 10);
     if (!(n >= 1)) return { error: 'Give the number of a prompt, as shown beside it.' };
+    if (n <= (v.earlierPrompts?.length || 0)) {
+      return { error: `Prompt ${n} is among the earlier entries, which are not loaded: show them first, at the top of the transcript.` };
+    }
     for (const [id, number] of v.users) {
       if (number === n) return { entry: v.entries.get(id) };
     }
@@ -169,6 +187,7 @@ export default function activate(cockpit) {
     return {
       id: v.id, ws: v.ws, fresh: v.fresh, title: v.title || firstPrompt(v), interrupted: !!v.interrupted,
       running: !!v.run, external: !!v.external, activity: v.run?.activity || '', usage: v.usage ? { ...v.usage } : null,
+      outdated: !!v.run?.outdated,
       prompts: v.users.size, entries: v.order.length, queued: v.queue.items.length, paused: !!v.queue.paused,
       pinned: !!v.pinned, gone: !!v.gone, loading: !!v.loading, editing: !!v.edit,
     };
@@ -205,7 +224,7 @@ export default function activate(cockpit) {
       } else {
         v.order.push(entry.id);
       }
-      if (entry.kind === 'user') v.users.set(entry.id, v.users.size + 1);
+      if (entry.kind === 'user') v.users.set(entry.id, (v.earlierPrompts?.length || 0) + v.users.size + 1);
     }
     if (preview && v.entries.has(preview)) drop(v, preview);
     // A tool call that ended shows what it printed in full.
@@ -375,6 +394,12 @@ export default function activate(cockpit) {
     }
     if (!mine || v.loading) return;
     if (v.fresh) v.fresh = false;
+    // The title a model made of the first prompt may come after the run that
+    // the view follows is over.
+    if (mine.auto_titled && !v.renamed && mine.title && v.title !== mine.title) {
+      v.title = mine.title;
+      cockpit.render();
+    }
     // Another tab started a run, or a terminal appended to the session: the
     // file only grows, so a size other than the one this view read means there
     // is more to show.
@@ -462,6 +487,10 @@ export default function activate(cockpit) {
       v.edit = previous.edit;
       v.effort = previous.effort;
     }
+    // A plugin may have the view read only the transcript's end (a chat on a
+    // canvas); read again, it reads at least as much as it shows.
+    if (quiet) v.tail = previous.tail ? Math.max(previous.tail, previous.order.length) : 0;
+    else v.tail = Math.max(0, Math.floor(Number(cockpit.hooks.first('session.tail', { id, ws: v.ws })) || 0));
     v.loading = !quiet;
     const controller = new AbortController();
     v.abort = controller;
@@ -472,7 +501,7 @@ export default function activate(cockpit) {
 
     let data;
     try {
-      data = await api(wsPath(v.ws, `/sessions/${encodeURIComponent(id)}`), { signal: controller.signal });
+      data = await api(wsPath(v.ws, `/sessions/${encodeURIComponent(id)}${v.tail ? `?last=${v.tail}` : ''}`), { signal: controller.signal });
     } catch (error) {
       if (error.name === 'AbortError' || (!quiet && v !== view())) return;
       if (quiet) return; // keep showing what we have
@@ -517,6 +546,8 @@ export default function activate(cockpit) {
     if (data.effort) v.effort = data.effort;
     else if (!v.effort) v.effort = prefs.get(`effort.${v.ws || 'default'}.${v.id || 'new'}`, '');
     if (quiet) v.resumeDismissed = previous.resumeDismissed;
+    v.earlier = data.earlier || 0;
+    v.earlierPrompts = Array.isArray(data.earlier_prompts) ? data.earlier_prompts : [];
     for (const entry of data.entries) upsert(v, entry);
     // An edit outlives a reload only while its prompt is there and nothing
     // runs; the edit plugin decides.
@@ -525,6 +556,52 @@ export default function activate(cockpit) {
     if (data.run) attach(v, data.run);
     cockpit.emit('session:sessions', state.sessions);
     cockpit.emit('session:queue', v);
+    cockpit.emit('session', summary(v));
+  }
+
+  // EARLIER_PAGE is how many entries more showEarlier reads at a time.
+  const EARLIER_PAGE = 200;
+
+  // showEarlier reads the entries before those a view read (its tail):
+  // EARLIER_PAGE more, or all of them, and puts them before those.
+  async function showEarlier(v = view(), { all = false } = {}) {
+    if (!v || !(v.earlier > 0) || v.loadingEarlier) return;
+    const tail = all ? 0 : v.order.length + EARLIER_PAGE;
+    v.loadingEarlier = true;
+    touch(v);
+    let data;
+    try {
+      data = await api(wsPath(v.ws, `/sessions/${encodeURIComponent(v.id)}${tail ? `?last=${tail}` : ''}`));
+    } catch (error) {
+      if (v === view()) toast(`Could not load the earlier entries: ${error.message}`, 'error');
+      return;
+    } finally {
+      v.loadingEarlier = false;
+      touch(v);
+    }
+    if (v !== view()) return;
+    // What the view has starts where it started in what came; a session
+    // that changed otherwise meanwhile (rewound) is read anew.
+    const entries = Array.isArray(data.entries) ? data.entries : [];
+    const first = v.order.find((id) => !v.entries.get(id)?.streaming);
+    const at = first === undefined ? -1 : entries.findIndex((e) => e?.id === first);
+    if (at < 0) {
+      openSession(v.id, { push: false });
+      return;
+    }
+    const older = entries.slice(0, at).filter((e) => e?.id && !e.gone && !v.entries.has(e.id));
+    for (const entry of older) {
+      entry.text ??= '';
+      v.entries.set(entry.id, entry);
+    }
+    v.order = [...older.map((e) => e.id), ...v.order];
+    v.tail = tail;
+    v.earlier = data.earlier || 0;
+    v.earlierPrompts = Array.isArray(data.earlier_prompts) ? data.earlier_prompts : [];
+    // The prompts keep their numbers, counted from the session's first.
+    let n = v.earlierPrompts.length;
+    for (const id of v.order) if (v.entries.get(id)?.kind === 'user') v.users.set(id, ++n);
+    touch(v);
     cockpit.emit('session', summary(v));
   }
 
@@ -568,6 +645,9 @@ export default function activate(cockpit) {
       started: run.started_at ? Date.parse(run.started_at) : Date.now(),
       activity: run.activity || (run.stopping ? 'Stopping' : run.compact ? 'Compacting context' : 'Working'), source,
       compact: !!run.compact,
+      // The run's runner goes on as it was built when the run started, and
+      // the server has a newer one: restart() takes it up.
+      outdated: !!run.outdated,
     };
     // The events come from the start of the run: what streamed of a
     // compaction going on comes again.
@@ -601,9 +681,19 @@ export default function activate(cockpit) {
     cockpit.render();
   }
 
+  // unread says an entry of a run's events is one of those before the ones
+  // the view read (its tail): the events go back to the run's start, which
+  // may be before them.
+  function unread(v, entry) {
+    if (!(v.earlier > 0) || !entry?.id || v.entries.has(entry.id) || v.entries.has(entry.replaces)) return false;
+    const first = v.order.find((id) => !v.entries.get(id)?.streaming);
+    return Date.parse(entry.at) < Date.parse(v.entries.get(first)?.at);
+  }
+
   function handleEvent(v, event) {
     switch (event.type) {
       case 'entry':
+        if (unread(v, event.entry)) break;
         // A forced prompt shows up where the agent read it, and lights up.
         if (event.entry.forced && !v.entries.has(event.entry.id)) v.arrived.add(event.entry.id);
         compactionEntry(v, event.entry);
@@ -632,6 +722,15 @@ export default function activate(cockpit) {
         break;
       case 'log':
         log(event.text, v);
+        break;
+      case 'title':
+        // A model made the session's title of its first prompt; one the user
+        // gave it stays.
+        if (event.text && !v.renamed) {
+          v.title = event.text;
+          cockpit.render();
+        }
+        refreshSessions();
         break;
       case 'done':
         finish(v, event);
@@ -669,6 +768,14 @@ export default function activate(cockpit) {
     cockpit.render();
     refreshSessions();
     cockpit.emit('session:finish', v, event);
+    // The run was stopped to start again with the new runner (restart): the
+    // run that goes on from where it got to has the session.
+    if (event.restarted && event.next && v === view()) {
+      state.outcome = null;
+      attach(v, { id: event.next.id, started_at: event.next.started_at });
+      toast('The run goes on with the new runner', 'info', 'esc');
+      return;
+    }
     // The next queued prompt took over the session: follow it.
     if (event.next && v === view()) {
       const left = v.queue.items.length;
@@ -860,6 +967,27 @@ export default function activate(cockpit) {
     }
   }
 
+  // restart stops the run to start it again at once, from where it got to,
+  // with the runner the server has now: one built since the run started
+  // (v.run.outdated). The run that goes on comes with the done event.
+  async function restart() {
+    const v = view();
+    const run = v?.run;
+    if (!run?.id || run.phase === 'stopping') return;
+    run.phase = 'stopping';
+    run.activity = 'Restarting';
+    cockpit.render();
+    try {
+      await api(`/api/runs/${encodeURIComponent(run.id)}/restart`, { method: 'POST' });
+      toast('Restarting the run with the new runner', 'info', 'esc');
+    } catch (error) {
+      if (error.status === 404) return; // it already ended; the stream says so
+      if (v.run === run) run.phase = 'running';
+      toast(`Could not restart the run: ${error.message}`, 'error');
+      cockpit.render();
+    }
+  }
+
   function continueRun() {
     const v = view();
     if (!v.interrupted || v.external) return toast('The last run finished; there is nothing to continue.');
@@ -954,12 +1082,14 @@ export default function activate(cockpit) {
     try {
       const res = await api(sessionPath(ws, id), { method: 'PATCH', body: { title } });
       const v = view();
+      // Without the user's title, the session has back the one a model made
+      // of its first prompt, if any, else that prompt.
       if (v.ws === ws && v.id === id) {
         v.title = res.title || firstPrompt(v);
-        v.renamed = !!res.title;
+        v.renamed = res.renamed ?? !!res.title;
         cockpit.render();
       }
-      toast(title ? 'Session renamed' : 'Title reset to the first prompt');
+      toast(title ? 'Session renamed' : res.title ? 'Title reset to the generated one' : 'Title reset to the first prompt');
     } catch (error) {
       toast(error.message, 'error');
     }
@@ -1191,16 +1321,16 @@ export default function activate(cockpit) {
 
   cockpit.provide('session', {
     get state() { return state; },
-    CONTINUE, PHASE_LABEL,
+    CONTINUE, PHASE_LABEL, EARLIER_PAGE,
     view, summary, entries: () => (view() ? view().order.map((id) => view().entries.get(id)) : []),
     sessionList: () => state.sessions.map((s) => ({ id: s.id, title: s.title, updated_at: s.updated_at, pinned: !!s.pinned, running: !!s.run_id })),
     workspaceList: () => state.workspaces.map((w) => ({ id: w.id, name: w.name, path: w.path, current: w.id === state.ws })),
     currentWorkspace, sessionHash, workspaceHash, sessionPath,
     runPhase, firstPrompt, lastPrompt, lastModel, previousModel, promptNumbered, runBlocked, busy, sessionInfo,
     nextModel, defaultModel,
-    newSession, open: (id) => { if (id !== view()?.id) openSession(id); }, openSession, switchTo, ensureView, routeSessions,
+    newSession, open: (id) => { if (id !== view()?.id) openSession(id); }, openSession, showEarlier, switchTo, ensureView, routeSessions,
     refreshSessions, refreshWorkspaces, refreshConfig, selectWorkspace, switchWorkspace, removeWorkspace, addedWorkspace,
-    submit, prompt: (text) => submit(String(text)), compact, stop, stopCommand, continueRun,
+    submit, prompt: (text) => submit(String(text)), compact, stop, stopCommand, continueRun, restart,
     setQueue, followQueued, attach, upsert, touch, log, refreshTools,
     rename, pin, remove, branch, exportSession, menuItems, beginRename,
     renameCommand, pinCommand, forkCommand, exportCommand, deleteCommand, resume, copyAnswer,

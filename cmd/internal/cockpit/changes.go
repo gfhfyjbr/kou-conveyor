@@ -19,6 +19,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // Changes records how runs change their workspace, so the cockpits can show
@@ -121,9 +123,9 @@ func (c *Changes) ensure(ctx context.Context) error {
 		_ = os.WriteFile(filepath.Join(c.dir, ".gitignore"), []byte("*\n"), 0o600)
 		head := filepath.Join(c.repo(), "HEAD")
 		if _, err := os.Stat(head); err != nil {
-			cmd := exec.CommandContext(ctx, "git", "init", "--bare", "--quiet", c.repo())
+			cmd := spawn.CommandContext(ctx, "git", "init", "--bare", "--quiet", c.repo())
 			cmd.Env = gitEnv(nil)
-			stopGently(cmd)
+			stopGently(cmd.Cmd)
 			if out, err := cmd.CombinedOutput(); err != nil {
 				// Another cockpit may be creating it: it is there once
 				// HEAD is.
@@ -285,10 +287,10 @@ func (c *Changes) git(ctx context.Context, args ...string) ([]byte, error) {
 		"-c", "core.quotepath=false", "-c", "gc.auto=0",
 		"--git-dir=" + c.repo(), "--work-tree=" + c.workspace,
 	}
-	cmd := exec.CommandContext(ctx, "git", append(full, args...)...)
+	cmd := spawn.CommandContext(ctx, "git", append(full, args...)...)
 	cmd.Dir = c.workspace
 	cmd.Env = gitEnv([]string{"GIT_INDEX_FILE=" + c.index()})
-	stopGently(cmd)
+	stopGently(cmd.Cmd)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
@@ -615,6 +617,22 @@ func (c *Changes) Begin(ctx context.Context, session, message string) (*Tracker,
 	}
 	t := &Tracker{
 		c: c, session: session, message: message, previous: tree,
+		wake: make(chan struct{}, 1), stop: make(chan bool, 1), updates: make(chan ChangeUpdate, 32),
+	}
+	go t.loop()
+	return t, nil
+}
+
+// Resume goes on with the snapshots of a prompt's run that a front-end
+// before this one followed and let go of while it went on (a detached run):
+// from the last snapshot recorded, without another to start from.
+func (c *Changes) Resume(session, message string) (*Tracker, error) {
+	ex, ok := c.Exchange(session, message)
+	if !ok {
+		return nil, fmt.Errorf("no snapshot recorded that the run of %s started from", message)
+	}
+	t := &Tracker{
+		c: c, session: session, message: message, previous: ex.After,
 		wake: make(chan struct{}, 1), stop: make(chan bool, 1), updates: make(chan ChangeUpdate, 32),
 	}
 	go t.loop()

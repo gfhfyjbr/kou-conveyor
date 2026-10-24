@@ -191,6 +191,11 @@ func Highlight(name, text string, deadline time.Time) Result {
 	if lexer == nil {
 		return Result{Complete: true}
 	}
+	return highlightWith(lexer, text, deadline)
+}
+
+// highlightWith highlights text with lexer until deadline (none if zero).
+func highlightWith(lexer chroma.Lexer, text string, deadline time.Time) Result {
 	result := Result{Language: lexer.Config().Name}
 	it, err := chroma.Coalesce(lexer).Tokenise(nil, text)
 	if err != nil {

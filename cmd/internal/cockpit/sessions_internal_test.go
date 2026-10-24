@@ -238,6 +238,117 @@ func TestLoadSessionReadsOnWhatTheFileGained(t *testing.T) {
 	}
 }
 
+// LoadSession, and a rewind, read a file whole as reading it a record at a
+// time does, though they draw the tools its records change only once all
+// are in: a Code call's code, what a Write wrote, and an Edit as it ended,
+// not as it began.
+func TestLoadSessionDrawsTheToolsOfAFileReadWhole(t *testing.T) {
+	marshal := func(v any) []byte {
+		t.Helper()
+		data, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	sequence := 100
+	item := func(kind sessionstore.ItemKind, data any, operations ...operation.Operation) []byte {
+		sequence++
+		return fileLine(t, "item", map[string]any{
+			"Item": sessionstore.Item{
+				Sequence: sessionstore.Sequence(sequence), RecordedAt: recorded.Add(time.Duration(sequence) * time.Second),
+				Kind: kind, Data: data,
+			},
+			"Operations": operations,
+		})
+	}
+	file := func(id operation.ID, status operation.Status, state operation.FileState) operation.Operation {
+		return operation.Operation{ID: id, Type: operation.TypeFile, Version: operation.VersionFile, Status: status, State: marshal(state)}
+	}
+	status := func(call string, o operation.Operation) []byte {
+		return item(sessionstore.ItemToolCallStatus, sessionstore.ToolCallStatus{
+			TurnID: "turn-4", CallID: call, Status: tool.CallStatus{WaitingFor: []operation.ID{o.ID}},
+		}, o)
+	}
+	checkpoint := func(o operation.Operation) []byte {
+		return fileLine(t, "operation", map[string]any{"Operation": o})
+	}
+	call := func(id, name, arguments string) llm.Item {
+		return llm.Item{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: name, Arguments: arguments}}
+	}
+	write := operation.FileState{Action: operation.FileWrite, Path: "/work/b.go", Content: "package b\n\nfunc B() int { return 2 }\n"}
+	edit := operation.FileState{Action: operation.FileEdit, Path: "/work/b.go", OldString: "return 2", NewString: "return 3"}
+	edited := edit
+	edited.Result = &operation.FileResult{
+		Text:  "Edited /work/b.go: replaced 1 occurrence at line 3. The file now reads around the first change:\n     2\t\n     3\tfunc B() int { return 3 }",
+		Files: []string{"/work/b.go"}, Lines: 2,
+	}
+	records := append(richSession(t),
+		item(sessionstore.ItemTurn, session.Turn{ID: "turn-4", PreviousTurnID: "turn-3", Type: session.TurnRegular, Model: "model-a"}),
+		item(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: "turn-4", Response: llm.Response{Output: []llm.Item{
+			call("call-7", "Write", `{"path":"/work/b.go"}`),
+			call("call-8", "Edit", `{"path":"/work/b.go"}`),
+			call("call-9", "Code", `{"code":"const out = await bash('ls')"}`),
+		}}}),
+		status("call-7", file("op-7", operation.StatusReady, write)),
+		checkpoint(file("op-7", operation.StatusCompleted, write)),
+		status("call-8", file("op-8", operation.StatusReady, edit)),
+		checkpoint(file("op-8", operation.StatusCompleted, edited)),
+	)
+	dir := t.TempDir()
+	path := SessionPath(dir, "rich")
+	data := append(bytes.Join(records, []byte{'\n'}), '\n')
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadSession(dir, "rich")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := foldSession(t, path)
+	sameTranscript(t, got, want, "read whole")
+	rewound, err := readTranscript(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameTranscript(t, rewound, want, "read for a rewind")
+
+	tools := map[string]*Tool{}
+	for _, e := range got.Entries {
+		if e.Tool != nil {
+			tools[e.Tool.CallID] = e.Tool
+		}
+	}
+	for _, id := range []string{"call-2", "call-9"} {
+		if tools[id] == nil || len(tools[id].Syntax) == 0 {
+			t.Errorf("%s: the code is not highlighted: %+v", id, tools[id])
+		}
+	}
+	change := func(id string) *FileView {
+		if tool := tools[id]; tool != nil {
+			return tool.Change
+		}
+		return nil
+	}
+	if c := change("call-7"); c == nil || c.Kind != "write" || c.Content != write.Content || len(c.Syntax) == 0 {
+		t.Errorf("the Write shows %+v", c)
+	}
+	if c := change("call-8"); c == nil || c.Kind != "edit" || c.Line != 3 || len(c.Syntax) == 0 {
+		t.Errorf("the Edit shows %+v, not the edit as it ended", c)
+	}
+}
+
+// A panic drawing a tool is the caller's, as it was when tools were drawn
+// one by one, not the end of the program.
+func TestDrawToolsPanicsInTheCaller(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("drawTools did not panic")
+		}
+	}()
+	drawTools([]*Tool{{Name: "Code", Input: "1 + 1"}, nil, {Name: "Code", Input: "2"}})
+}
+
 // A file written over, cut short, replaced or gone is read again from the
 // start, and so is one read as transcripts kept pictures they now do not.
 func TestLoadSessionReadsAgainAFileThatIsNotTheOneRead(t *testing.T) {

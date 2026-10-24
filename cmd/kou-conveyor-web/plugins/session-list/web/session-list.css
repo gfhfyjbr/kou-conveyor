@@ -97,17 +97,51 @@
 .rename { border-radius: var(--radius-sm); }
 .session[data-running] .n::before { border-radius: min(var(--radius-sm), 3.5px); }
 /* Round, the session in view is a rounded block: no bar along its edge,
-   its number in the accent says it. */
-:root[data-corners="round"] .session { border-left-color: transparent; border-radius: var(--radius); }
-/* …tinted with the accent, as the row under the pointer is not (it is lit
-   while the pointer is on its ⋯ too). No lines between the rows: a gap
-   keeps the two apart when they are next to each other, and the line that
-   shows where a dragged row goes fills it. */
+   its number in the accent says it. The rows are as wide as the tools over
+   them (the workspace, the new session, the filter: 12px in, 6px in a rail
+   in blocks — layout.css), with as much room inside: their numbers stand
+   level with the tools' text, and so do the groups' names and the label
+   over the rows (layout.css). A row's title has as much room after it as
+   its number before it. */
+:root[data-corners="round"] .session { border-left-color: transparent; border-radius: var(--radius); padding-left: 12px; }
+:root[data-corners="round"] .sessions { padding-left: 12px; padding-right: 12px; }
+:root[data-corners="round"] .session-group { padding-left: 14px; padding-right: 14px; }
+:root[data-corners="round"] .sessions-empty { margin-left: 14px; margin-right: 14px; }
+/* The ⋯ stands halfway down the row, as its number does at the other end,
+   and as far from the row's edge: not up by the title, over the corner. */
+:root[data-corners="round"] .session-row > .more { top: calc(50% - 11px); right: 7px; }
+/* With a pointer, the ⋯ shows only under it: the title and the line under
+   it run on to the row's end, and fade out under the ⋯ while it shows. On
+   a touch screen the ⋯ always shows, and the room for it stays, as it does
+   while the title is renamed. */
+@media (hover: hover) {
+  :root[data-corners="round"] .session:not(:has(> .rename)) { padding-right: 14px; }
+  :root[data-corners="round"] .session-row:has(> .more):is(:hover, :has(> .more:is(:focus-visible, [aria-expanded="true"]))) > .session :is(.t, .m) {
+    -webkit-mask-image: linear-gradient(to left, transparent 23px, #000 39px);
+    mask-image: linear-gradient(to left, transparent 23px, #000 39px);
+  }
+}
+/* …set in the page's ground with a hairline round it, as the selected tab
+   is (layout.css): no tint, so its title and its accent line keep their
+   contrast. The row under the pointer is lit instead (while the pointer is
+   on its ⋯ too). No lines between the rows: a gap keeps the two apart when
+   they are next to each other, and the line that shows where a dragged row
+   goes fills it. */
 :root[data-corners="round"] .session-row:hover > .session { background: var(--bg-3); }
-:root[data-corners="round"] .session[aria-current="true"] { background: color-mix(in srgb, var(--accent) 14%, var(--bg-2)); }
-:root[data-corners="round"] .session-row:hover > .session[aria-current="true"] { background: color-mix(in srgb, var(--accent) 19%, var(--bg-2)); }
+:root[data-corners="round"] .session[aria-current="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-2); }
+:root[data-corners="round"] .session-row:hover > .session[aria-current="true"] { background: var(--bg); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, var(--line-2)); }
 :root[data-corners="round"] .session-row + .session-row { margin-top: 2px; }
 :root[data-corners="round"] .session-row[data-drop="before"]::after { top: -2px; }
 :root[data-corners="round"] .session-row[data-drop="after"]::after { bottom: -2px; }
-/* The rail in blocks (layout.css): the rows keep close to its edges. */
-:root[data-corners="round"]:not([data-rail-compact]) .sessions { padding: 0 6px 8px; }
+/* The rail in blocks (layout.css): the view parts its block in two, the
+   tools (the workspace, the new session, the filter) over the sessions,
+   the ground between them, as between the rail's other blocks. The gap
+   says where the rows begin, as the label over them did: it goes. The
+   rows keep close to the edges of their block, as the tools do; the first
+   group's name stands as far down in it as the workspace's label in the
+   tools' block. */
+:root[data-corners="round"]:not([data-rail-compact]) .rail-view[data-view="sessions"] { gap: 8px; background: none; border: 0; border-radius: 0; }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-view[data-view="sessions"] > :is(.rail-tools, .sessions) { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius-lg); }
+:root[data-corners="round"]:not([data-rail-compact]) .rail-view[data-view="sessions"] > .rail-label { display: none; }
+:root[data-corners="round"]:not([data-rail-compact]) .sessions { padding: 6px; }
+:root[data-corners="round"]:not([data-rail-compact]) .session-group:first-child { padding-top: 10px; }

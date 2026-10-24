@@ -5,6 +5,8 @@ import (
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"reflect"
+	"unsafe"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/inbox"
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
@@ -34,7 +36,119 @@ type sessionRecord struct {
 
 type itemRecord struct {
 	Item       sessionstore.Item
-	Operations []operation.Operation `json:",omitempty"`
+	Operations []ItemOperation `json:",omitempty"`
+}
+
+// ItemOperation is an operation as the item record of a tool call's status
+// holds it. The first status recorded for a call holds its operations whole.
+// A status that repeats it, as the one recorded once they finish, holds an
+// operation the file already has as it is (its latest checkpoint, or the
+// first status) by its ID alone, a JSON string where the operation would be:
+// the item is Saved, with only the ID set. A finished operation's state, a
+// tool's whole output, is so written once rather than twice.
+type ItemOperation struct {
+	operation.Operation
+	Saved bool
+}
+
+func (value ItemOperation) MarshalJSONTo(encoder *jsontext.Encoder) error {
+	if value.Saved {
+		return encoder.WriteToken(jsontext.String(string(value.ID)))
+	}
+	return json.MarshalEncode(encoder, value.Operation)
+}
+
+func (value *ItemOperation) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
+	if decoder.PeekKind() == '"' {
+		token, err := decoder.ReadToken()
+		if err != nil {
+			return err
+		}
+		*value = ItemOperation{Operation: operation.Operation{ID: operation.ID(token.String())}, Saved: true}
+		return nil
+	}
+	*value = ItemOperation{}
+	return json.UnmarshalDecode(decoder, &value.Operation)
+}
+
+// itemOperations returns the operations of a tool call's status as its item
+// record holds them, from the head as it is before it takes the status in.
+func (head *sessionHead) itemOperations(
+	status sessionstore.ToolCallStatus,
+	operations []operation.Operation,
+) []ItemOperation {
+	if len(operations) == 0 {
+		return nil
+	}
+	_, repeated := head.toolCallStatuses[toolCallStatusKey{turnID: status.TurnID, callID: status.CallID}]
+	values := make([]ItemOperation, len(operations))
+	for index, value := range operations {
+		position, saved := head.operationPositions[value.ID]
+		saved = saved && repeated && reflect.DeepEqual(head.Operations[position], value)
+		values[index] = ItemOperation{Operation: value, Saved: saved}
+	}
+	return values
+}
+
+// recordedOperations returns the operations the item record of a tool call's
+// status holds, each one it holds by ID as the head has it.
+func (head *sessionHead) recordedOperations(
+	status sessionstore.ToolCallStatus,
+	values []ItemOperation,
+) ([]operation.Operation, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	_, repeated := head.toolCallStatuses[toolCallStatusKey{turnID: status.TurnID, callID: status.CallID}]
+	operations := make([]operation.Operation, len(values))
+	for index, value := range values {
+		if !value.Saved {
+			operations[index] = value.Operation
+			continue
+		}
+		if !repeated {
+			return nil, fmt.Errorf(
+				"first status of call %q names operation %q without its state",
+				status.CallID,
+				value.ID,
+			)
+		}
+		position, exists := head.operationPositions[value.ID]
+		if !exists {
+			return nil, fmt.Errorf(
+				"status of call %q names operation %q, which the session has not saved",
+				status.CallID,
+				value.ID,
+			)
+		}
+		operations[index] = head.Operations[position]
+	}
+	return operations, nil
+}
+
+// aliasing is the option that decodes raw JSON values, such as operations'
+// states, from the bytes of a mapped session file as the parts of the
+// mapping they are rather than as copies. Those of other bytes are copied.
+func aliasing(mapped []byte) json.Options {
+	start := uintptr(unsafe.Pointer(unsafe.SliceData(mapped)))
+	end := start + uintptr(len(mapped))
+	return json.WithUnmarshalers(json.UnmarshalFromFunc(
+		func(decoder *jsontext.Decoder, value *jsontext.Value) error {
+			raw, err := decoder.ReadValue()
+			if err != nil {
+				return err
+			}
+			at := uintptr(unsafe.Pointer(unsafe.SliceData(raw)))
+			if at >= start && at+uintptr(len(raw)) <= end {
+				// With no room past its end, a value appended to is copied
+				// rather than written over the record that follows it.
+				*value = raw[:len(raw):len(raw)]
+			} else {
+				*value = bytes.Clone(raw)
+			}
+			return nil
+		},
+	))
 }
 
 type operationRecord struct {
@@ -71,7 +185,9 @@ func encodeInitialLog(value session.Session, items []sessionstore.Item) ([]byte,
 		record := itemRecord{Item: item}
 		if item.Kind == sessionstore.ItemToolCallStatus {
 			status := item.Data.(sessionstore.ToolCallStatus)
-			record.Operations = status.Operations
+			for _, value := range status.Operations {
+				record.Operations = append(record.Operations, ItemOperation{Operation: value})
+			}
 			status.Operations = nil
 			record.Item.Data = status
 		}
@@ -84,7 +200,9 @@ func encodeInitialLog(value session.Session, items []sessionstore.Item) ([]byte,
 	return encoded, nil
 }
 
-func decodeLog(encoded []byte) (storedState, int64, error) {
+// decodeLog decodes a session file's bytes with the decoding options given,
+// such as aliasing.
+func decodeLog(encoded []byte, options ...json.Options) (storedState, int64, error) {
 	lastNewline := bytes.LastIndexByte(encoded, '\n')
 	if lastNewline < 0 {
 		return storedState{}, 0, fmt.Errorf("session log has no committed records")
@@ -99,7 +217,7 @@ func decodeLog(encoded []byte) (storedState, int64, error) {
 	inheritedItemCount := 0
 	for lineIndex, line := range lines {
 		var record logRecord
-		if err := json.Unmarshal(line, &record); err != nil {
+		if err := json.Unmarshal(line, &record, options...); err != nil {
 			return storedState{}, 0, fmt.Errorf("decode record %d: %w", lineIndex+1, err)
 		}
 		switch record.Type {
@@ -131,7 +249,7 @@ func decodeLog(encoded []byte) (storedState, int64, error) {
 				return storedState{}, 0, fmt.Errorf("session record must be first")
 			}
 			var itemValue itemRecord
-			if err := json.Unmarshal(record.Data, &itemValue); err != nil {
+			if err := json.Unmarshal(record.Data, &itemValue, options...); err != nil {
 				return storedState{}, 0, fmt.Errorf("decode item record: %w", err)
 			}
 			wantSequence := sessionstore.Sequence(itemCount + 1)
@@ -163,7 +281,7 @@ func decodeLog(encoded []byte) (storedState, int64, error) {
 				return storedState{}, 0, fmt.Errorf("session record must be first")
 			}
 			var update operationRecord
-			if err := json.Unmarshal(record.Data, &update); err != nil {
+			if err := json.Unmarshal(record.Data, &update, options...); err != nil {
 				return storedState{}, 0, fmt.Errorf("decode operation record: %w", err)
 			}
 			records = append(records, decodedRecord{
@@ -217,11 +335,12 @@ func replayItem(state *storedState, record itemRecord) error {
 			record.Item.RecordedAt,
 		)
 	case sessionstore.ItemToolCallStatus:
-		return state.appendToolCallStatus(
-			record.Item.Data.(sessionstore.ToolCallStatus),
-			record.Operations,
-			record.Item.RecordedAt,
-		)
+		status := record.Item.Data.(sessionstore.ToolCallStatus)
+		operations, err := state.recordedOperations(status, record.Operations)
+		if err != nil {
+			return err
+		}
+		return state.appendToolCallStatus(status, operations, record.Item.RecordedAt)
 	default:
 		return fmt.Errorf("unexpected owned item kind %q", record.Item.Kind)
 	}

@@ -132,7 +132,7 @@ struct RemoteImage: View {
             } else if failed {
                 Image(systemName: "photo.badge.exclamationmark")
                     .font(.title3)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg3)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(placeholder)
             } else {
@@ -147,7 +147,7 @@ struct RemoteImage: View {
     /// A thumbnail keeps its place while it loads.
     @ViewBuilder private var placeholder: some View {
         if contentMode == .fill {
-            Rectangle().fill(.fill.quaternary)
+            Rectangle().fill(Color.kouChip)
         }
     }
 
@@ -259,11 +259,8 @@ struct PictureViewer: View {
                         .ignoresSafeArea()
                         .accessibilityLabel(title)
                 } else if let problem {
-                    ContentUnavailableView {
-                        Label("The picture did not load", systemImage: "photo.badge.exclamationmark")
-                    } description: {
-                        Text(problem)
-                    } actions: {
+                    KouEmpty(symbol: "photo.badge.exclamationmark", title: "The picture did not load",
+                             message: problem) {
                         Button("Try again") { Task { await load() } }
                             .buttonStyle(.glass)
                     }
@@ -279,6 +276,7 @@ struct PictureViewer: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 if let image {
                     ToolbarItem(placement: .primaryAction) {

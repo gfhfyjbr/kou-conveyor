@@ -88,11 +88,12 @@ func editPlace(text string) (line, replacements int) {
 	return line, replacements
 }
 
-// view draws what the operation does, as FileView shows it.
-func (op fileOp) view() *FileView {
-	deadline := time.Now().Add(highlightTime)
+// view draws what the operation does, as FileView shows it, highlighting it
+// for at most budget.
+func (op fileOp) view(budget time.Duration) *FileView {
+	deadline := time.Now().Add(budget)
 	if op.kind == "write" {
-		return &FileView{Kind: op.kind, Content: op.content, Syntax: highlight.Highlight(op.path, op.content, deadline).Runs}
+		return &FileView{Kind: op.kind, Content: op.content, Syntax: highlight.Remembered(op.path, op.content, deadline).Runs}
 	}
 	view := &FileView{Kind: op.kind, Line: op.line}
 	before, after, from := op.old, op.replacement, op.line
@@ -195,8 +196,8 @@ func editDiff(name, old, replacement string, line int, deadline time.Time) (stri
 			}
 		}
 	}
-	before := highlight.Lines(old, highlight.Highlight(name, old, deadline).Runs)
-	after := highlight.Lines(replacement, highlight.Highlight(name, replacement, deadline).Runs)
+	before := highlight.Lines(old, highlight.Remembered(name, old, deadline).Runs)
+	after := highlight.Lines(replacement, highlight.Remembered(name, replacement, deadline).Runs)
 	shift := max(line-1, 0)
 	var text strings.Builder
 	var runs []int32

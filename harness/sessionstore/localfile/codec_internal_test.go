@@ -169,7 +169,7 @@ func TestDecodeLogFoldsOperationUpdates(t *testing.T) {
 		},
 	}
 	encoded = append(encoded, mustRecord(t, recordItem, itemRecord{
-		Item: status, Operations: []operation.Operation{initial},
+		Item: status, Operations: whole(initial),
 	})...)
 	updated := initial
 	updated.Status = operation.StatusAwaiting
@@ -259,7 +259,7 @@ func TestDecodeLogRejectsInvalidRecords(t *testing.T) {
 	withResponse := append(append([]byte(nil), withTurn...), mustRecord(t, recordItem, itemRecord{Item: response})...)
 	initial := validOperation("operation-1", operation.StatusReady)
 	withStatus := append(append([]byte(nil), withTurn...), mustRecord(t, recordItem, itemRecord{
-		Item: status, Operations: []operation.Operation{initial},
+		Item: status, Operations: whole(initial),
 	})...)
 
 	tests := []struct {
@@ -407,14 +407,14 @@ func TestDecodeLogRejectsInvalidRecords(t *testing.T) {
 						Status: tool.CallStatus{WaitingFor: []operation.ID{"operation-1"}},
 					},
 				},
-				Operations: []operation.Operation{initial},
+				Operations: whole(initial),
 			})...),
 			want: "file does not exist",
 		},
 		{
 			name: "operations on turn",
 			encoded: append(append([]byte(nil), header...), mustRecord(t, recordItem, itemRecord{
-				Item: turn, Operations: []operation.Operation{validOperation("operation-1", operation.StatusReady)},
+				Item: turn, Operations: whole(validOperation("operation-1", operation.StatusReady)),
 			})...),
 			want: "initializes operations",
 		},
@@ -427,9 +427,9 @@ func TestDecodeLogRejectsInvalidRecords(t *testing.T) {
 			name: "invalid initialized operation",
 			encoded: append(append([]byte(nil), withTurn...), mustRecord(t, recordItem, itemRecord{
 				Item: status,
-				Operations: []operation.Operation{{
+				Operations: whole(operation.Operation{
 					Type: "test", Version: 1, Status: operation.StatusReady,
-				}},
+				}),
 			})...),
 			want: "operation ID is empty",
 		},
@@ -444,7 +444,7 @@ func TestDecodeLogRejectsInvalidRecords(t *testing.T) {
 						Status: tool.CallStatus{WaitingFor: []operation.ID{"operation-1"}},
 					},
 				},
-				Operations: []operation.Operation{initial},
+				Operations: whole(initial),
 			})...),
 			want: `initialize operation "operation-1": file already exists`,
 		},
@@ -458,6 +458,44 @@ func TestDecodeLogRejectsInvalidRecords(t *testing.T) {
 				},
 			})...),
 			want: "inherited item 1 initializes operations",
+		},
+		{
+			name: "first status naming its operation",
+			encoded: append(append([]byte(nil), withTurn...), mustRecord(t, recordItem, itemRecord{
+				Item: status, Operations: saved("operation-1"),
+			})...),
+			want: `first status of call "call-1" names operation "operation-1" without its state`,
+		},
+		{
+			name: "status naming an operation never saved",
+			encoded: append(append([]byte(nil), withStatus...), mustRecord(t, recordItem, itemRecord{
+				Item: sessionstore.Item{
+					Sequence: 3, RecordedAt: stateUpdatedAt,
+					Kind: sessionstore.ItemToolCallStatus, Data: status.Data,
+				},
+				Operations: saved("operation-2"),
+			})...),
+			want: `status of call "call-1" names operation "operation-2", which the session has not saved`,
+		},
+		{
+			name: "inherited status naming an operation",
+			encoded: append(append(append([]byte(nil), withTurn...), mustRecord(t, recordItem, itemRecord{
+				Item: status, Operations: saved("operation-1"),
+			})...), mustRecord(t, recordItem, itemRecord{
+				Item: sessionstore.Item{
+					Sequence: 3, RecordedAt: stateUpdatedAt,
+					Kind: sessionstore.ItemFork,
+					Data: sessionstore.Fork{ParentID: "parent", PreviousTurnID: "turn-1"},
+				},
+			})...),
+			want: "inherited item 1 initializes operations",
+		},
+		{
+			name: "turn naming an operation",
+			encoded: append(append([]byte(nil), header...), mustRecord(t, recordItem, itemRecord{
+				Item: turn, Operations: saved("operation-1"),
+			})...),
+			want: `item 0 of kind "turn" initializes operations`,
 		},
 		{
 			name: "operation update inside inherited prefix",
@@ -550,4 +588,69 @@ func mustRecord(t *testing.T, kind recordType, value any) []byte {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+// whole returns operations as an item record holds them whole.
+func whole(operations ...operation.Operation) []ItemOperation {
+	values := make([]ItemOperation, len(operations))
+	for index, value := range operations {
+		values[index] = ItemOperation{Operation: value}
+	}
+	return values
+}
+
+// saved returns operations as an item record names them, by their IDs.
+func saved(ids ...operation.ID) []ItemOperation {
+	values := make([]ItemOperation, len(ids))
+	for index, id := range ids {
+		values[index] = ItemOperation{Operation: operation.Operation{ID: id}, Saved: true}
+	}
+	return values
+}
+
+// A status that names an operation by its ID holds it as the file saved it
+// last before the status, not as the file saves it later.
+func TestDecodeLogResolvesSavedOperations(t *testing.T) {
+	turn := sessionstore.Item{
+		Sequence: 1, RecordedAt: stateUpdatedAt,
+		Kind: sessionstore.ItemTurn, Data: session.Turn{ID: "turn-1", Type: session.TurnRegular},
+	}
+	status := sessionstore.Item{
+		Sequence: 2, RecordedAt: stateUpdatedAt,
+		Kind: sessionstore.ItemToolCallStatus,
+		Data: sessionstore.ToolCallStatus{
+			TurnID: "turn-1", CallID: "call-1",
+			Status: tool.CallStatus{WaitingFor: []operation.ID{"operation-1"}},
+		},
+	}
+	repeated := status
+	repeated.Sequence = 3
+	initial := validOperation("operation-1", operation.StatusReady)
+	awaiting := initial
+	awaiting.Status = operation.StatusAwaiting
+	awaiting.State = jsontext.Value(`{"step":2}`)
+	completed := initial
+	completed.Status = operation.StatusCompleted
+	completed.State = jsontext.Value(`{"step":3}`)
+	encoded := bytes.Join([][]byte{
+		emptyLog(t),
+		mustRecord(t, recordItem, itemRecord{Item: turn}),
+		mustRecord(t, recordItem, itemRecord{Item: status, Operations: whole(initial)}),
+		mustRecord(t, recordOperation, operationRecord{Operation: awaiting}),
+		mustRecord(t, recordItem, itemRecord{Item: repeated, Operations: saved("operation-1")}),
+		mustRecord(t, recordOperation, operationRecord{Operation: completed}),
+	}, nil)
+	if !bytes.Contains(encoded, []byte(`"Operations":["operation-1"]`)) {
+		t.Fatalf("log = %s", encoded)
+	}
+	state, _, err := decodeLog(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := state.Items[2].Data.(sessionstore.ToolCallStatus).Operations; !reflect.DeepEqual(got, []operation.Operation{awaiting}) {
+		t.Fatalf("named operations = %#v", got)
+	}
+	if !reflect.DeepEqual(state.Operations, []operation.Operation{completed}) {
+		t.Fatalf("saved operations = %#v", state.Operations)
+	}
 }

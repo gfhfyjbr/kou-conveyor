@@ -25,7 +25,6 @@ import { openEvents } from '/kernel/events.js';
 const WAITING = new Set(['pending', 'awaiting_approval']);
 const KEEP_MESSAGES = 200;
 const KEEP_ACTIVITY = 200;
-const KEEP_FEED = 200;
 
 export function createModel(cockpit, ws, id, { title = '' } = {}) {
   const listeners = new Map();
@@ -45,12 +44,11 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
     queue: [],
     messages: [],
     activity: [],
-    feeds: new Map(),
     // ran: whether the session of an agent node has a transcript (true) or
     // not yet (false), by session; not there till a read or an event says.
     // A node has its session's ID from when it is made, the transcript only
-    // once a run of it began: till then there is no chat to show
-    // (nodes/agent.js).
+    // once a run of it began: till then the stage has no session to open
+    // (canvas.js openAgentSession, nodes/agent.js).
     ran: new Map(),
     outputs: new Map(),
     logs: new Map(),
@@ -251,13 +249,6 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
         // A run of its session is under way: there is a transcript.
         heard.set(event.node, ++events);
         noteRan(node(event.node)?.runtime?.session, true);
-        const list = m.feeds.get(event.node);
-        if (list && event.entry) {
-          const at = list.findIndex((e) => e.id === event.entry.id);
-          if (at >= 0) list[at] = event.entry;
-          else list.push(event.entry);
-          if (list.length > KEEP_FEED) list.splice(0, list.length - KEEP_FEED);
-        }
         emit('agent', event);
         return;
       }
@@ -515,32 +506,6 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
     emit('change', 'geometry', [...places.keys()]);
   }
 
-  // feed is an agent node's transcript: its tail read once, then what its
-  // events add.
-  async function feed(nid, { tail = 40 } = {}) {
-    if (m.feeds.has(nid)) return m.feeds.get(nid);
-    const list = [];
-    m.feeds.set(nid, list);
-    const mark = events;
-    try {
-      const data = await api(`/nodes/${encodeURIComponent(nid)}/transcript?tail=${tail}`);
-      const known = new Set(list.map((e) => e.id));
-      list.unshift(...(data.entries || []).filter((e) => !known.has(e.id)));
-      list.running = !!data.running;
-      list.session = data.session || '';
-      learn(nid, data, mark);
-    } catch (error) {
-      // Not an agent yet, or gone: its events fill it. Any other failure
-      // (a relay away, the server restarting) is not kept: it is read
-      // again the next time it is asked for.
-      if (error?.status !== 404 && error?.status !== 400) {
-        if (m.feeds.get(nid) === list) m.feeds.delete(nid);
-        list.error = true;
-      }
-    }
-    return list;
-  }
-
   // hasSession says an agent node's session has a transcript: none has
   // before a run of it began.
   async function hasSession(nid) {
@@ -607,7 +572,7 @@ export function createModel(cockpit, ws, id, { title = '' } = {}) {
   }
 
   return Object.assign(m, {
-    on, emit, load, close, apply, undo, redo, moveLocal, feed, hasSession, foreman, build, refreshHooks,
+    on, emit, load, close, apply, undo, redo, moveLocal, hasSession, foreman, build, refreshHooks,
     node, edge, pendingFor, awaitingFor, titleOf, path, api,
     send: (nid, body) => api(`/nodes/${encodeURIComponent(nid)}/send`, { method: 'POST', body }),
     read: (nid, what = 'tail', lines = 0) => api(`/nodes/${encodeURIComponent(nid)}/read?what=${encodeURIComponent(what)}${lines ? `&lines=${lines}` : ''}`),

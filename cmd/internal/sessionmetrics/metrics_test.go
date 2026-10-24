@@ -323,6 +323,35 @@ func TestReadMeasuresASession(t *testing.T) {
 	}
 }
 
+// The session store records the status of a call whose operations finished
+// with each one it saved as it is named by its ID: such a status reads as
+// one that holds the operation whole.
+func TestReadTakesStatusesThatNameTheirOperations(t *testing.T) {
+	log := func(operations any) []byte {
+		l := newSampleLog(t, start)
+		l.prompt(0, "Do the task", "")
+		l.respond(time.Second, session.TurnRegular, usage(1000, 0, 1000, 10), nil, bash("call-1", "ls"))
+		l.started("call-1", "op-1")
+		l.ended(time.Minute, "op-1")
+		l.sequence++
+		l.record("item", map[string]any{
+			"Item": sessionstore.Item{
+				Sequence: l.sequence, RecordedAt: l.at, Kind: sessionstore.ItemToolCallStatus,
+				Data: sessionstore.ToolCallStatus{
+					TurnID: l.last, CallID: "call-1", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-1"}},
+				},
+			},
+			"Operations": operations,
+		})
+		return l.b.Bytes()
+	}
+	whole := read(t, log([]operation.Operation{{ID: "op-1", Type: "test", Version: 1, Status: operation.StatusCompleted}}), Options{})
+	named := read(t, log([]operation.ID{"op-1"}), Options{})
+	if named.Unreadable != 0 || !reflect.DeepEqual(named, whole) {
+		t.Fatalf("a status naming its operation reads as %+v, one holding it as %+v", named, whole)
+	}
+}
+
 func TestReadCountsFromSince(t *testing.T) {
 	log, compacted := sample(t)
 	r := read(t, log, Options{Since: compacted})

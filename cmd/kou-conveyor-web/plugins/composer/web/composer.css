@@ -172,6 +172,329 @@
 .send[data-mode="force"] { background: var(--bg); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-2)); animation: fade 0.12s ease-out; }
 .send[data-mode="force"]:hover { background: var(--accent-soft); }
 
+/* ---------------------------------------------------------------- figures */
+
+/* The session's figures hang under the prompt in a tray a little narrower
+   than it, as the summary of a compaction sits over it: a label, a value
+   and, for a share, a meter of cells, the activity's. Narrow, the meters go
+   first, then the long names; narrower still, the units; and a figure that
+   does not fit at all wraps to a line out of sight, whole. The settings
+   (Session figures, composer.js) make them a line there instead, or a chip
+   in the prompt's row, and fold the tray or the line under the prompt. */
+.stats-dock { --stats-h: 26px; --cells: 8; position: relative; }
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  height: var(--stats-h);
+  margin: 0 24px;
+  border: 1px solid var(--line-2);
+  border-top: 0;
+  background: var(--bg);
+  font: 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+  white-space: nowrap;
+  overflow: hidden;
+  container: stats / inline-size;
+  animation: fade 0.24s ease-out;
+}
+.stat {
+  position: relative;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 100%;
+  padding: 0 12px;
+}
+.stat + .stat { border-left: 1px solid var(--line); }
+.stat-k { font-size: 9.5px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--fg-4); }
+.stat-v { font-weight: 600; color: var(--fg-2); }
+.stat-u { margin-left: -2px; color: var(--fg-4); }
+.stat-u:empty, .stat-short { display: none; }
+.stat[data-tone="warn"] { --tone: var(--warn); }
+.stat[data-tone="err"] { --tone: var(--err); }
+.stat[data-tone] .stat-v { color: var(--tone); }
+.stat-meter {
+  flex: none;
+  width: calc(var(--cells, 8) * 7px - 2px); /* cells of 5px, 2px apart */
+  height: 5px;
+  background: var(--line-2);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+  mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+}
+.stat-meter i {
+  display: block;
+  width: calc(var(--fill, 0) * 100%);
+  width: calc(round(var(--fill, 0) * var(--cells, 8), 1) * 7px - 2px); /* whole cells */
+  height: 100%;
+  background: var(--tone, var(--accent));
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s;
+}
+@container stats (max-width: 480px) {
+  .stat { gap: 5px; padding: 0 6px; }
+  .stat-k { letter-spacing: 0.04em; }
+  .stat-meter, .stat-long { display: none; }
+  .stat-short { display: inline; }
+}
+@container stats (max-width: 285px) {
+  .stat { gap: 3px; padding: 0 3px; }
+  .stat-k { letter-spacing: 0.02em; }
+  .stat-u { display: none; }
+}
+
+/* The line: the figures with neither frame nor rules, a dot between them,
+   as quiet as a field's hint, from where the prompt's text starts; their
+   meters have four cells. */
+.stats-dock[data-style="line"] { --stats-h: 22px; --cells: 4; }
+.stats-dock[data-style="line"] .stats { margin: 0; padding: 0 5px; border: 0; background: none; color: var(--fg-4); }
+.stats-dock[data-style="line"] .stat { flex: none; gap: 6px; padding: 0 10px; }
+.stats-dock[data-style="line"] .stat + .stat { border-left: 0; }
+.stats-dock[data-style="line"] .stat + .stat::before { content: ""; position: absolute; top: calc(50% - 1.5px); left: -1.5px; width: 3px; height: 3px; background: var(--line-2); }
+.stats-dock[data-style="line"] .stat-v { color: var(--tone, var(--fg-3)); }
+@container stats (max-width: 480px) {
+  .stats-dock[data-style="line"] .stat { gap: 5px; padding: 0 7px; }
+}
+@container stats (max-width: 285px) {
+  .stats-dock[data-style="line"] .stat { gap: 3px; padding: 0 4px; }
+}
+
+/* Folded, the tray or the line is under the prompt: its fold has no
+   height. A click on the arrow brings the figures out, the prompt lifting
+   off them as a lid off a drawer: they stay where they are drawn, the fold
+   growing as fast as they come down into it, and fade in. Another click
+   puts them back under it. */
+.stats-dock[data-compact="true"] .stats-fold {
+  height: 0;
+  overflow: hidden;
+  transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.stats-dock[data-compact="true"] .stats {
+  animation: none;
+  opacity: 0;
+  transform: translateY(-100%);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease 0.12s;
+}
+.stats-dock[data-compact="true"][data-open="true"] .stats-fold {
+  height: var(--stats-h);
+  transition: height 0.38s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.stats-dock[data-compact="true"][data-open="true"] .stats {
+  opacity: 1;
+  transform: none;
+  transition: transform 0.38s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.24s ease;
+}
+
+/* The arrow: a little tray of its own, hanging from the prompt's foot, or
+   from the figures' once they are out, turned up then. Folded or out, it
+   waits under that edge, and slides out from under it — the edge clipping
+   it as it goes — as the pointer comes to the prompt, to the figures or to
+   the strip under them, or the keyboard to the arrow; it goes back a moment
+   after the pointer leaves. On a touch screen, or when the settings say
+   so, it stays out. It takes the colour of a context running out; under
+   the line, it is the arrow alone. Its clip reaches past its sides and
+   foot, where a finger's larger target is. */
+.stats-tab {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 12px;
+  translate: -50% -100%;
+  clip-path: inset(100% -16px 0);
+  pointer-events: none;
+  border: 1px solid var(--line-2);
+  border-top: 0;
+  background: var(--bg);
+  color: var(--fg-4);
+  cursor: pointer;
+  transition: translate 0.22s cubic-bezier(0.4, 0, 0.2, 1) 0.35s, clip-path 0.22s cubic-bezier(0.4, 0, 0.2, 1) 0.35s, color 0.12s, background-color 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+.stats-tab:focus-visible,
+.stats-dock[data-hover="false"] .stats-tab {
+  translate: -50% 0;
+  clip-path: inset(0 -16px -8px);
+  pointer-events: auto;
+  transition: translate 0.28s cubic-bezier(0.32, 0.72, 0, 1), clip-path 0.28s cubic-bezier(0.32, 0.72, 0, 1), color 0.12s, background-color 0.12s;
+}
+@media (hover: hover) {
+  /* The strip under the prompt's foot, as wide as it, the arrow in it. */
+  .stats-dock[data-compact="true"][data-hover="true"]::after { content: ""; position: absolute; top: 100%; right: 0; left: 0; height: 12px; }
+  .composer:hover ~ .stats-dock .stats-tab,
+  .stats-dock:hover .stats-tab {
+    translate: -50% 0;
+    clip-path: inset(0 -16px -8px);
+    pointer-events: auto;
+    transition: translate 0.28s cubic-bezier(0.32, 0.72, 0, 1) 0.06s, clip-path 0.28s cubic-bezier(0.32, 0.72, 0, 1) 0.06s, color 0.12s, background-color 0.12s;
+  }
+}
+@media (hover: none) {
+  .stats-tab { translate: -50% 0; clip-path: inset(0 -16px -8px); pointer-events: auto; transition: color 0.12s, background-color 0.12s; }
+}
+.stats-tab svg { display: block; width: 9px; height: 5px; transition: rotate 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
+.stats-tab:hover, .stats-tab:focus-visible { color: var(--fg-2); background: var(--bg-3); }
+.stats-dock[data-open="true"] .stats-tab svg { rotate: 180deg; }
+.stats-dock[data-tone="warn"] .stats-tab { color: var(--warn); }
+.stats-dock[data-tone="err"] .stats-tab { color: var(--err); }
+.stats-dock[data-style="line"] .stats-tab { border-color: transparent; background: none; }
+/* A finger has more of it to hit than it shows. */
+@media (hover: none) and (pointer: coarse) {
+  .stats-tab::before { content: ""; position: absolute; inset: 0 -14px -6px; }
+}
+
+/* The chip: a control of the prompt's row, as the model and the effort
+   are, with the first figure shown — the context left, unless it is not —
+   on a dial, a meter of five cells, or round, a ring. Over it, as the
+   pointer comes or while a click keeps it, a card of them all. */
+.stats-chip { position: relative; flex: none; display: flex; }
+.stats-face {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--control, 32px);
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  font: 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-4);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s, background-color 0.12s;
+}
+.stats-face:hover, .stats-chip[data-open="true"] .stats-face { border-color: var(--line-2); background: var(--bg-3); }
+.stats-face[data-tone="warn"] { --tone: var(--warn); }
+.stats-face[data-tone="err"] { --tone: var(--err); }
+.stats-chip .stats-face[data-tone] { border-color: color-mix(in srgb, var(--tone) 45%, var(--line)); }
+.stats-face-v { font: 600 12px/1 var(--mono); color: var(--tone, var(--fg-2)); }
+.stats-face-u:empty { display: none; }
+.stats-dial {
+  flex: none;
+  width: 33px; /* five cells of 5px, 2px apart */
+  height: 5px;
+  background: var(--line-2);
+  -webkit-mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+  mask: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px);
+}
+.stats-dial i {
+  display: block;
+  width: calc(var(--stats-dial, 0) * 100%);
+  width: calc(round(var(--stats-dial, 0) * 5, 1) * 7px - 2px); /* whole cells */
+  height: 100%;
+  background: var(--tone, var(--accent));
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s;
+}
+/* The ring turns to its share, the property a number. */
+@property --stats-dial { syntax: "<number>"; inherits: true; initial-value: 0; }
+
+/* The card opens over the chip, from its edge, and within the composer
+   (composer.js: --dx). */
+.stats-card {
+  --cells: 14;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: var(--dx, 0px);
+  z-index: 40;
+  width: 272px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  box-shadow: var(--shadow);
+  font: 10.5px/1 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+  white-space: nowrap;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px) scale(0.98);
+  transform-origin: calc(24px - var(--dx, 0px)) 100%;
+  transition: opacity 0.12s ease 0.06s, transform 0.12s ease 0.06s, visibility 0s linear 0.18s;
+}
+/* A bridge over the gap to the chip, for the pointer on its way. */
+.stats-card::after { content: ""; position: absolute; top: 100%; right: 0; left: 0; height: 9px; }
+.stats-chip[data-open="true"] .stats-card {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1), visibility 0s;
+}
+@media (hover: hover) {
+  .stats-chip:not([data-hush]):hover .stats-card {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    transition: opacity 0.16s ease 0.12s, transform 0.22s cubic-bezier(0.32, 0.72, 0, 1) 0.12s, visibility 0s linear 0.12s;
+  }
+}
+.stats-chip[data-hush] .stats-card { transition-delay: 0s; }
+/* Its figures, in tiles two by two — the last alone the width of two —
+   their values large and their meters long; under them, whose window it
+   is. */
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border-bottom: 1px solid var(--line); }
+.stats-grid .stat {
+  display: grid;
+  grid-template: "k k" auto "v u" auto "m m" auto / auto 1fr;
+  align-items: baseline;
+  gap: 8px 5px;
+  height: auto;
+  padding: 11px 12px 12px;
+  border: 0;
+  background: var(--bg-2);
+}
+.stats-grid .stat:last-child:nth-child(odd) { grid-column: 1 / -1; }
+.stats-grid .stat-k { grid-area: k; }
+.stats-grid .stat-v { grid-area: v; font-size: 17px; color: var(--tone, var(--fg)); }
+.stats-grid .stat-u { grid-area: u; margin: 0; }
+.stats-grid .stat-meter { grid-area: m; }
+.stats-note { margin: 0; padding: 8px 12px 9px; font: 10px/1.5 var(--mono); color: var(--fg-4); white-space: normal; }
+.stats-note:empty { display: none; }
+/* The chip takes room in the row: so that the buttons that send stay on
+   its line, the effort's name goes sooner than without it, then the chip's
+   unit; then the effort's level — its bars say it, as effort.css has it on
+   the narrowest phones —, some of the chip's padding and of the room the
+   model keeps at least (models.css), and the chip's dial. Narrower still,
+   the row breaks, as it does round there without the chip. */
+@container composer-row (max-width: 600px) {
+  .composer-row:has(.stats-chip:not([hidden])) .think .label { display: none; }
+}
+@container composer-row (max-width: 480px) {
+  .stats-face-u { display: none; }
+}
+@container composer-row (max-width: 400px) {
+  .composer-row:has(.stats-chip:not([hidden])) .think-label { display: none; }
+  .composer-row:has(.stats-chip:not([hidden])) .model-pick { min-width: 80px; }
+  .stats-face { padding: 0 8px; }
+}
+@container composer-row (max-width: 370px) {
+  .stats-dial { display: none; }
+}
+
+/* The looks' marks in the settings: under the prompt's foot a tray, or a
+   line; a chip; nothing. */
+.stats-mark { position: relative; display: block; flex: none; width: 18px; height: 11px; color: var(--fg-4); transition: color 0.12s; }
+.look label:hover .stats-mark { color: var(--fg-3); }
+.look input:checked ~ span .stats-mark { color: var(--accent); }
+.stats-mark:is([data-look="tray"], [data-look="line"]) { background: linear-gradient(currentColor 0 0) 0 0 / 100% 1.5px no-repeat; }
+.stats-mark[data-look="tray"]::after { content: ""; position: absolute; top: 1.5px; right: 3px; left: 3px; height: 7px; border: 1px solid currentColor; border-top: 0; background: linear-gradient(currentColor 0 0) 50% 0 / 1px 100% no-repeat; }
+.stats-mark[data-look="line"]::after { content: ""; position: absolute; top: 6px; right: 1px; left: 1px; height: 1.5px; background: repeating-linear-gradient(90deg, currentColor 0 3px, transparent 3px 5px); }
+.stats-mark[data-look="chip"] { width: 16px; border: 1px solid currentColor; }
+.stats-mark[data-look="chip"]::after { content: ""; position: absolute; top: calc(50% - 1px); left: 2px; width: 6px; height: 2px; background: currentColor; }
+.stats-mark[data-look="off"] { width: 16px; border: 1px dashed currentColor; }
+/* What the look leaves out: folding a chip, the figures of none. */
+.set-section[data-section="figures"] [data-off="true"] { opacity: 0.45; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .stats { animation: none; }
+  .stat-meter i, .stats-dial i { transition: none; }
+  .stats-dock[data-compact="true"] .stats, .stats-card { transform: none; }
+}
+
 /* ---------------------------------------------------------------- touch */
 
 @media (hover: none) and (pointer: coarse) {
@@ -193,12 +516,22 @@
 /* Square unless the appearance rounds them (theme.css: --radius…). */
 .composer { border-radius: var(--radius-lg); }
 .send, .resume { border-radius: var(--radius); }
+/* Their marks are dots as the corners round. */
+.resume-mark { border-radius: min(var(--radius-sm), 3.5px); }
+.compacting-mark { border-radius: min(var(--radius-sm), 3px); }
 /* The summary of a compaction is a tray on what is under it: rounded on
    top only. */
 .compacting { border-radius: var(--radius) var(--radius) 0 0; }
 /* Round, the offer to resume says its kind by its border, with no bar. */
 :root[data-corners="round"] .resume { padding-left: 13px; border-left-width: 1px; border-left-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
 :root[data-corners="round"] .resume:is([data-kind="gone"], [data-kind="missing"]) { border-left-color: color-mix(in srgb, var(--err) 40%, var(--line)); }
+/* Round, the buttons' icons bend their corners as the buttons do: each is
+   drawn smaller and brought back to its size by a stroke of its own colour
+   with round joins. The bolt is thin, so its stroke is lighter, or it
+   swells. */
+:root[data-corners="round"] .send svg path { stroke-linejoin: round; stroke-linecap: round; }
+:root[data-corners="round"] .send:is([data-mode="run"], [data-mode="stop"]) svg path { stroke: currentColor; stroke-width: 3.3px; transform: scale(0.76); transform-box: fill-box; transform-origin: center; }
+:root[data-corners="round"] .send[data-mode="force"] svg path { stroke: currentColor; stroke-width: 1.8px; transform: scale(0.88); transform-box: fill-box; transform-origin: center; }
 /* Round, the prompt has no corner marks (theme.css, .ticks): its corners
    bend, and its border says it has the focus. */
 :root[data-corners="round"] .composer::before { display: none; }
@@ -206,3 +539,33 @@
    corners, as wide as the queue (queue.css), which goes on from it when it
    shows under it. Only its sides: its foot comes and goes (above). */
 :root[data-corners="round"] .compacting { margin-inline: calc(9px + var(--radius-lg)); }
+/* The tray of figures under it is rounded at its foot only, as the arrow
+   that hangs there when they are folded; round, the tray is as wide as the
+   summary over the composer, the line's dots are round and the meters are
+   bars — in the chip's card as wide as their tiles. The chip has the
+   corners of the controls by it, its card those of a popover, and the
+   dial of the chip is a ring. */
+.stats, .stats-tab { border-radius: 0 0 var(--radius) var(--radius); }
+:root[data-corners="round"] .stats-dock:not([data-style="line"]) .stats { margin-inline: calc(9px + var(--radius-lg)); }
+:root[data-corners="round"] .stats-dock[data-style="line"] .stat + .stat::before { border-radius: 50%; }
+:root[data-corners="round"] .stat-meter { width: calc(var(--cells, 8) * 5.5px); height: 4px; border-radius: 2px; -webkit-mask: none; mask: none; }
+:root[data-corners="round"] .stat-meter i { width: calc(var(--fill, 0) * 100%); border-radius: inherit; }
+:root[data-corners="round"] .stats-grid .stat-meter { width: 100%; }
+.stats-face { border-radius: var(--radius); }
+.stats-card { border-radius: var(--radius-lg); }
+:root[data-corners="round"] .stats-grid { border-radius: calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px) 0 0; overflow: hidden; }
+:root[data-corners="round"] .stats-dial {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: conic-gradient(var(--tone, var(--accent)) calc(var(--stats-dial, 0) * 1turn), var(--line-2) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  transition: --stats-dial 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+}
+:root[data-corners="round"] .stats-dial i { display: none; }
+/* Round, the marks of the looks bend as well. */
+:root[data-corners="round"] .stats-mark[data-look="tray"]::after { border-radius: 0 0 2.5px 2.5px; }
+:root[data-corners="round"] .stats-mark:is([data-look="chip"], [data-look="off"]) { border-radius: 3px; }
+:root[data-corners="round"] .stats-mark[data-look="chip"]::after { border-radius: 1px; }
+:root[data-corners="round"] .stats-mark[data-look="line"]::after { top: 5px; height: 3px; background: radial-gradient(circle, currentColor 0 1px, transparent 1.2px) 0 50% / 4px 3px repeat-x; }

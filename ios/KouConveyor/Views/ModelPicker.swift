@@ -18,6 +18,8 @@ struct ModelPicker: View {
 
     private struct Group: Identifiable {
         let name: String
+        /// Its provider's key, which its mark is coloured by.
+        var provider: String?
         var models: [ModelInfo] = []
         /// Models that make pictures or sound rather than answers: shown
         /// only when searched for.
@@ -29,43 +31,52 @@ struct ModelPicker: View {
     var body: some View {
         NavigationStack {
             List {
-                if words.isEmpty {
-                    Section {
-                        defaultRow
-                    } footer: {
-                        Text(footer)
-                    }
-                }
-                ForEach(groups) { group in
-                    let shown = (group.models + (words.isEmpty ? [] : group.media)).filter { matches($0) }
-                    if !shown.isEmpty {
-                        Section(group.name) {
-                            ForEach(shown) { row($0) }
-                        }
-                    } else if words.isEmpty, !group.media.isEmpty {
-                        Section(group.name) {
-                            Text("Only models that make media: search for one by name.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
+                SwiftUI.Group {
+                    if words.isEmpty {
+                        Section {
+                            defaultRow
+                        } footer: {
+                            FormNote(verbatim: footer)
                         }
                     }
-                }
-                if let typed, catalog?.find(typed) == nil {
-                    Section {
-                        Button {
-                            pick(typed)
-                        } label: {
-                            Label("Use “\(typed)”", systemImage: "character.cursor.ibeam")
+                    ForEach(groups) { group in
+                        let shown = (group.models + (words.isEmpty ? [] : group.media)).filter { matches($0) }
+                        if !shown.isEmpty {
+                            Section {
+                                ForEach(shown) { row($0) }
+                            } header: {
+                                head(group, count: shown.count)
+                            }
+                        } else if words.isEmpty, !group.media.isEmpty {
+                            Section {
+                                Text("Only models that make media: search for one by name.")
+                                    .font(.footnote)
+                                    .foregroundStyle(Color.kouFg3)
+                            } header: {
+                                head(group, count: nil)
+                            }
                         }
-                    } footer: {
-                        Text("A model the list does not have, by its ID: the provider decides whether it takes it.")
+                    }
+                    if let typed, catalog?.find(typed) == nil {
+                        Section {
+                            Button {
+                                pick(typed)
+                            } label: {
+                                ActionLabel("Use “\(typed)”", symbol: "character.cursor.ibeam", tone: .kouAccent)
+                            }
+                        } footer: {
+                            FormNote("A model the list does not have, by its ID: the provider decides whether it takes it.")
+                        }
                     }
                 }
+                .kouRow()
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .overlay {
                 if catalog == nil {
                     if let error {
-                        ContentUnavailableView("Models unavailable", systemImage: "cpu", description: Text(error))
+                        KouEmpty(symbol: "cpu", title: "Models unavailable", message: error, tone: .kouErr)
                     } else {
                         LoadingSpinner()
                     }
@@ -81,14 +92,17 @@ struct ModelPicker: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .primaryAction) {
                     if loading {
                         ProgressView()
+                            .tint(Color.kouFg3)
                     } else {
                         Button("Ask the providers again", systemImage: "arrow.clockwise") {
                             Task { await reload(fresh: true) }
                         }
+                        .tint(Color.kouFg)
                     }
                 }
             }
@@ -97,60 +111,77 @@ struct ModelPicker: View {
 
     private var catalog: ModelCatalog? { app.catalog(workspace) }
 
+    /// A provider's head: its mark in its colour, its name in the cockpit's
+    /// capitals, how many of its models show.
+    private func head(_ group: Group, count: Int?) -> some View {
+        HStack(spacing: 8) {
+            ProviderMark(provider: group.provider ?? group.name, size: 18)
+            ListHead(group.name, count: count)
+        }
+    }
+
     private var defaultRow: some View {
         Button {
             pick(nil)
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
+                RowIcon("sparkles", tone: chosen == nil ? .kouAccent : .kouFg2)
                 VStack(alignment: .leading, spacing: 3) {
-                    // Color.primary, not .primary: in a button's label
-                    // .primary is the button's tint.
                     Text(last != nil ? "As the session ran last" : "The workspace's default")
-                        .foregroundStyle(Color.primary)
+                        .foregroundStyle(Color.kouFg)
                     Text(app.modelTitle(last ?? app.defaultModel(workspace), in: workspace))
-                        .font(.caption)
-                        .foregroundStyle(Color.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg3)
                 }
-                Spacer(minLength: 0)
-                if chosen == nil {
-                    Image(systemName: "checkmark")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Color.kouAccent)
-                }
+                Spacer(minLength: 8)
+                mark(chosen == nil)
             }
             .contentShape(.rect)
         }
+        .accessibilityAddTraits(chosen == nil ? .isSelected : [])
     }
 
     private func row(_ model: ModelInfo) -> some View {
         Button {
             pick(model.id)
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.title)
-                        .foregroundStyle(Color.primary)
+                    Text(verbatim: model.title)
+                        .foregroundStyle(Color.kouFg)
+                    // What tells of it, in mono, as the cockpit's list has
+                    // its ID and its window.
                     let detail = detail(model)
                     if !detail.isEmpty {
-                        Text(detail)
-                            .font(.caption)
-                            .foregroundStyle(Color.secondary)
+                        Text(verbatim: detail)
+                            .font(.kouMeta)
+                            .foregroundStyle(Color.kouFg3)
                             .lineLimit(2)
                     }
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: 8)
                 if model.cooling == true {
                     Image(systemName: "snowflake")
-                        .foregroundStyle(.orange)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(Color.kouWarn)
                         .accessibilityLabel("Cooling down")
                 }
-                if chosen == model.id {
-                    Image(systemName: "checkmark")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(Color.kouAccent)
-                }
+                mark(chosen == model.id)
             }
             .contentShape(.rect)
+        }
+        .accessibilityAddTraits(chosen == model.id ? .isSelected : [])
+    }
+
+    /// The chosen one's mark: the accent's check; the others, none — a long
+    /// list of rings would be all the eye saw.
+    @ViewBuilder
+    private func mark(_ chosen: Bool) -> some View {
+        if chosen {
+            Image(systemName: "checkmark")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.kouAccent)
+                .transition(.scale.combined(with: .opacity))
         }
     }
 
@@ -172,7 +203,7 @@ struct ModelPicker: View {
             let name = model.providerName.flatMap { $0.isEmpty ? nil : $0 } ?? "Other"
             if byName[name] == nil {
                 order.append(name)
-                byName[name] = Group(name: name)
+                byName[name] = Group(name: name, provider: model.provider)
             }
             if model.media == true {
                 byName[name]?.media.append(model)

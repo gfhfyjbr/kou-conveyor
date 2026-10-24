@@ -1,13 +1,186 @@
-/* help: the keyboard sheet. */
+/* help: the keyboard sheet. Its head — the title, the filter, the close —
+   and its foot stay; only the body between them scrolls, in sections whose
+   titles hold at its top while their lines pass under them. The sheet keeps
+   its height as the filter narrows it, so nothing jumps while one types.
+   Not overflow: hidden on the sheet — it would cut the corners' ticks. */
 
-.sheet { width: min(540px, 100%); }
-.sheet header { justify-content: space-between; height: 44px; padding-right: 8px; border-bottom: 1px solid var(--line); }
-.sheet dl { display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; margin: 0; padding: 18px 20px 20px; align-items: center; }
-.sheet dt { white-space: nowrap; }
-.sheet dd { margin: 0; color: var(--fg-2); font-size: 13px; }
-.sheet { max-height: 80vh; overflow-y: auto; }
-.sheet-sub { display: flex; align-items: center; gap: 12px; padding: 12px 20px 0; border-top: 1px solid var(--line); font: 11px var(--mono); color: var(--fg-4); }
-.sheet-sub kbd { margin: 0 2px; }
-.sheet .sheet-commands { gap: 8px 16px; padding-top: 12px; }
-.sheet-commands code { font-size: 12px; color: var(--fg); }
-.sheet-commands .args { font: 11.5px var(--mono); color: var(--fg-3); }
+#sheet {
+  --sheet-top: max(16px, env(safe-area-inset-top));
+  --sheet-bottom: max(16px, env(safe-area-inset-bottom));
+  align-items: center;
+  padding: var(--sheet-top) max(16px, env(safe-area-inset-right)) var(--sheet-bottom) max(16px, env(safe-area-inset-left));
+}
+#sheet .sheet {
+  display: flex;
+  flex-direction: column;
+  width: min(680px, 100%);
+  height: min(720px, calc(100vh - var(--sheet-top) - var(--sheet-bottom)));
+  height: min(720px, calc(100dvh - var(--sheet-top) - var(--sheet-bottom)));
+}
+
+/* ---------------------------------------------------------------- head */
+
+#sheet .sheet-head {
+  flex: none;
+  gap: 0;
+  height: 48px;
+  padding: 0 8px 0 20px;
+  border-bottom: 1px solid var(--line);
+}
+.sheet-head .label { flex: none; padding-right: 16px; border-right: 1px solid var(--line); line-height: 16px; color: var(--fg-2); }
+.sheet-find {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  align-self: stretch;
+  padding: 0 8px 0 16px;
+  color: var(--fg-4);
+  cursor: text;
+  transition: color 0.12s;
+}
+.sheet-find:focus-within { color: var(--fg-2); }
+.sheet-find svg { flex: none; width: 14px; height: 14px; }
+.sheet-find input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: none;
+  -webkit-appearance: none;
+  appearance: none;
+  font: 13px var(--mono);
+  color: var(--fg);
+  text-overflow: ellipsis;
+}
+.sheet-find input::placeholder { color: var(--fg-4); }
+.sheet-find input::-webkit-search-cancel-button { -webkit-appearance: none; display: none; }
+.sheet-clear { flex: none; margin-right: 4px; }
+.sheet-head .icon { flex: none; font-size: 15px; }
+
+/* ---------------------------------------------------------------- body */
+
+.sheet-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-bottom: 12px;
+}
+.sheet-scroll:focus { outline: none; }
+
+.sheet-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 16px 20px 8px;
+  /* Its foot fades: the lines passing under it melt away, not cut off. */
+  background: linear-gradient(var(--bg-2) calc(100% - 6px), transparent);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.sheet-group:first-child .sheet-group-head { padding-top: 14px; }
+.sheet-group-head i { flex: 1; min-width: 16px; height: 1px; background: var(--line); }
+.sheet-group-head small { flex: none; font: 500 10.5px/1 var(--mono); letter-spacing: 0; text-transform: none; color: var(--fg-4); }
+.sheet-group-head small kbd { min-width: 16px; height: 16px; margin: 0 2px; font-size: 9.5px; }
+
+/* A line: its keys in a column as wide as the widest (help.js measures it),
+   what they do beside. */
+.sheet-list { margin: 0; padding: 0 8px; }
+.sheet-row {
+  display: grid;
+  grid-template-columns: var(--lead, max-content) minmax(0, 1fr);
+  column-gap: 20px;
+  align-items: start;
+  padding: 5px 12px;
+  border-radius: var(--radius-sm);
+}
+.sheet-row:hover { background: var(--bg-3); }
+.sheet-row dt { min-width: 0; }
+.sheet-row dd { min-width: 0; margin: 0; font-size: 13px; line-height: 20px; color: var(--fg-2); overflow-wrap: break-word; }
+.sheet-row:hover dd { color: var(--fg); }
+.sheet-lead { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; max-width: 100%; min-height: 20px; vertical-align: top; }
+.sheet-lead .combo { display: inline-flex; gap: 3px; }
+.sheet-row kbd { min-width: 20px; height: 20px; padding: 0 5px; font-size: 11px; color: var(--fg-2); }
+.sheet-row kbd + kbd { margin-left: 0; }
+.sheet-row kbd.hit { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 60%, var(--line-2)); background: var(--accent-soft); }
+.sheet-row .sep { color: var(--fg-4); }
+.sheet-scroll mark { margin: 0 -1px; padding: 0 1px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--fg); }
+
+/* A command: its name in the key column; what it takes over what it does. */
+.sheet-commands .sheet-lead { display: inline; font: 500 12px/20px var(--mono); color: var(--fg); overflow-wrap: anywhere; }
+.sheet-commands .sig { display: block; font: 11.5px/20px var(--mono); color: var(--fg-3); overflow-wrap: anywhere; }
+.sheet-commands .aka { color: var(--fg-4); }
+.sheet-commands .args + .aka { margin-left: 12px; }
+.sheet-commands .aka code { color: var(--fg-3); }
+.sheet-commands .what { display: block; }
+
+.sheet-empty { display: grid; justify-items: center; gap: 10px; padding: 64px 24px; text-align: center; }
+.sheet-empty p { margin: 0; font-size: 13px; color: var(--fg-2); }
+.sheet-empty q { color: var(--fg); }
+.sheet-empty .sheet-empty-hint { font: 11px/1.5 var(--mono); color: var(--fg-4); }
+
+/* ---------------------------------------------------------------- foot */
+
+.sheet-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 36px;
+  padding: 0 20px;
+  border-top: 1px solid var(--line);
+  font: 10.5px var(--mono);
+  color: var(--fg-4);
+}
+.sheet-count { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-hint { flex: none; display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.sheet-hint kbd + kbd { margin-left: 0; }
+.sheet-hint kbd:last-of-type { margin-right: 4px; }
+
+/* ---------------------------------------------------------------- narrow, touch */
+
+/* A phone: the sheet takes the screen, within its safe area. */
+@media (max-width: 560px) {
+  #sheet {
+    --sheet-top: max(8px, env(safe-area-inset-top));
+    --sheet-bottom: max(8px, env(safe-area-inset-bottom));
+    padding-left: max(8px, env(safe-area-inset-left));
+    padding-right: max(8px, env(safe-area-inset-right));
+  }
+  #sheet .sheet {
+    height: calc(100vh - var(--sheet-top) - var(--sheet-bottom));
+    height: calc(100dvh - var(--sheet-top) - var(--sheet-bottom));
+  }
+  #sheet .sheet-head { padding-left: 14px; }
+  .sheet-head .label { padding-right: 12px; }
+  .sheet-find { gap: 8px; padding-left: 12px; }
+  .sheet-group-head { padding-left: 14px; padding-right: 14px; }
+  .sheet-list { padding: 0 4px; }
+  .sheet-row { column-gap: 14px; padding: 5px 10px; }
+  .sheet-foot { padding: 0 14px; }
+}
+
+/* A touch screen: no keys to hint at, a close a finger hits, and a filter
+   of 16px, under which a phone zooms the page in to type. */
+@media (hover: none) and (pointer: coarse) {
+  #sheet .sheet-head { height: 52px; }
+  .sheet-find input { font-size: 16px; }
+  .sheet-head .icon { width: 40px; height: 40px; }
+  .sheet-clear { height: 32px; line-height: 30px; }
+  .sheet-row { padding-top: 6px; padding-bottom: 6px; }
+  .sheet-row:hover { background: none; }
+  .sheet-row:hover dd { color: var(--fg-2); }
+  .sheet-hint { display: none; }
+}

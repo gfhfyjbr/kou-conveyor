@@ -31,31 +31,56 @@ struct NewNodeSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // The node as it is to be: its kind's mark, and the title it
+                // is given, which the user may change.
                 Section {
-                    TextField("Title", text: $title)
-                }
-                Section {
-                    ForEach(fields) { field in
-                        FieldRow(field: field, value: Binding(get: { values[field.key] }, set: { values[field.key] = $0 }))
+                    HStack(spacing: 14) {
+                        GlyphTile(symbol: NodeKindIcon.symbol(spec.kind),
+                                  tone: spec.kind == CanvasNode.agent ? .kouAccent : .kouFg2, size: 48)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Eyebrow(spec.kind, color: .kouFg4)
+                            TextField("Title", text: $title,
+                                      prompt: Text(verbatim: spec.title.isEmpty ? "Title" : spec.title).foregroundStyle(Color.kouFg4))
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(Color.kouFg)
+                                .submitLabel(.done)
+                        }
                     }
-                } footer: {
-                    Text("Its other settings are in its details once it is on the canvas.")
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+                }
+                if !fields.isEmpty {
+                    Section {
+                        ForEach(fields) { field in
+                            FieldRow(field: field, value: Binding(get: { values[field.key] }, set: { values[field.key] = $0 }))
+                        }
+                    } header: {
+                        Eyebrow("To start")
+                    } footer: {
+                        FormNote("Its other settings are in its details once it is on the canvas.")
+                    }
+                    .kouRow()
                 }
                 if let notice = model.notice, notice.isError {
                     Section {
-                        Text(notice.text)
-                            .foregroundStyle(.red)
+                        ErrorNote(text: notice.text)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .navigationTitle("New \(spec.title.isEmpty ? spec.kind : spec.title)")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add") { add() }
+                    Button("Add", systemImage: "checkmark") { add() }
                         .disabled(!complete || working)
                 }
             }
@@ -103,40 +128,33 @@ struct AdoptSessionSheet: View {
 
     var body: some View {
         NavigationStack {
+            // As the sessions' own list draws them.
             List(shown) { session in
                 Button {
                     adopt(session)
                 } label: {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(session.title.isEmpty ? "Untitled session" : session.title)
-                            .foregroundStyle(Color.primary)
-                            .lineLimit(2)
-                        HStack(spacing: 8) {
-                            if session.lastActive > .distantPast {
-                                Text(session.lastActive, format: .relative(presentation: .named))
-                            }
-                            if session.running {
-                                Text("running")
-                                    .foregroundStyle(Color.kouAccent)
-                            }
-                        }
-                        .font(.caption)
-                        .foregroundStyle(Color.secondary)
-                    }
+                    SessionRow(session: session)
                 }
+                .tint(Color.kouFg)
                 .disabled(working)
+                .listRowBackground(Color.kouGround)
+                .listRowSeparatorTint(Color.kouLine)
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.kouGround)
             .overlay {
                 if let error {
-                    ContentUnavailableView("Sessions unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
+                    KouEmpty(symbol: "exclamationmark.triangle", title: "Sessions unavailable", message: error, tone: .kouErr)
                 } else if sessions == nil {
                     LoadingSpinner()
                 } else if shown.isEmpty {
                     if query.isEmpty {
-                        ContentUnavailableView("No sessions", systemImage: "text.bubble",
-                                               description: Text("Every session of the workspace is on a canvas already."))
+                        KouEmpty(symbol: "text.bubble", title: "No sessions",
+                                 message: "Every session of the workspace is on a canvas already.")
                     } else {
-                        ContentUnavailableView.search(text: query)
+                        KouEmpty(symbol: "magnifyingglass", title: "Nothing found",
+                                 message: "No session's title has «\(query)» in it.")
                     }
                 }
             }
@@ -145,7 +163,8 @@ struct AdoptSessionSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
             }
             .task {
@@ -184,42 +203,87 @@ struct ForemanSheet: View {
     @State private var working = false
     @FocusState private var focused: Bool
 
-    private var hasForeman: Bool {
-        model.nodes.contains { $0.kind == CanvasNode.agent && $0.preset == CanvasNode.foreman }
+    private var foreman: CanvasNode? {
+        model.nodes.first { $0.kind == CanvasNode.agent && $0.preset == CanvasNode.foreman }
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section {
+                    head
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+                }
+                Section {
                     TextField("What should be built or done?", text: $text, axis: .vertical)
                         .lineLimit(4...14)
+                        .foregroundStyle(Color.kouFg)
                         .focused($focused)
+                } header: {
+                    Eyebrow("The task")
                 } footer: {
-                    Text(hasForeman
+                    FormNote(foreman != nil
                         ? "The foreman gets it as a prompt: it adds, wires and runs the nodes it needs."
                         : "The canvas gets a foreman — a kou agent that adds, wires and runs the nodes it needs — with this as its first prompt.")
                 }
+                .kouRow()
                 if let notice = model.notice, notice.isError {
                     Section {
-                        Text(notice.text)
-                            .foregroundStyle(.red)
+                        ErrorNote(text: notice.text)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .navigationTitle("Ask the foreman")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Ask") { ask() }
+                    Button("Ask", systemImage: "arrow.up") { ask() }
                         .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working)
                 }
             }
             .onAppear { focused = true }
         }
+    }
+
+    /// The foreman the task goes to, and what it does now — or the one the
+    /// task makes, dashed till it is on the canvas.
+    private var head: some View {
+        HStack(spacing: 14) {
+            if let foreman {
+                NodeTile(node: foreman, state: model.nodeState(foreman), size: 48)
+            } else {
+                GlyphTile(symbol: NodeKindIcon.symbol(CanvasNode.agent), tone: .kouAccent, size: 48, dashed: true)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text(verbatim: foreman.map { model.title(of: $0.id) } ?? "Foreman")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(Color.kouFg)
+                    .lineLimit(1)
+                Text("Builds the canvas and runs it")
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg3)
+                    .lineLimit(1)
+                Group {
+                    if let foreman {
+                        StateBadge(state: model.nodeState(foreman))
+                    } else {
+                        StateMark(word: "new", tone: .kouAccent)
+                    }
+                }
+                .padding(.top, 3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 4)
     }
 
     private func ask() {
@@ -257,52 +321,73 @@ struct CanvasSettingsSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    TextField("Title", text: $title)
-                    Toggle("Live", isOn: $live)
-                } footer: {
-                    Text("A live canvas runs its sources and delivers its messages, the cockpit's page open or not; a paused one keeps its messages for later.")
-                }
-                Section {
-                    Picker("Nodes agents make", selection: $spawn) {
-                        Text("Run at once").tag("allow")
-                        Text("Wait for approval").tag("ask")
-                        Text("Not allowed").tag("deny")
+                Group {
+                    Section {
+                        TextField("Title", text: $title)
+                            .foregroundStyle(Color.kouFg)
+                        Toggle(isOn: $live) {
+                            Label {
+                                Text("Live")
+                                    .foregroundStyle(Color.kouFg)
+                            } icon: {
+                                RowIcon(live ? "dot.radiowaves.left.and.right" : "pause", tone: live ? .kouAccent : .kouFg2)
+                            }
+                        }
+                    } header: {
+                        Eyebrow("Canvas")
+                    } footer: {
+                        FormNote("A live canvas runs its sources and delivers its messages, the cockpit's page open or not; a paused one keeps its messages for later.")
                     }
-                    number("Nodes at most", $maxNodes, 1...10000)
-                    number("Terminals at most", $maxTerminals, 1...64)
-                    number("New nodes a minute", $spawnsPerMinute, 1...10000)
-                    number("Agents deep", $maxDepth, 1...10000)
-                } header: {
-                    Text("Autonomy")
-                } footer: {
-                    Text("What the canvas's agents may put on it by themselves.")
+                    Section {
+                        Picker(selection: $spawn) {
+                            Text("Run at once").tag("allow")
+                            Text("Wait for approval").tag("ask")
+                            Text("Not allowed").tag("deny")
+                        } label: {
+                            Text("Nodes agents make")
+                                .foregroundStyle(Color.kouFg)
+                        }
+                        .tint(Color.kouFg2)
+                        number("Nodes at most", $maxNodes, 1...10000)
+                        number("Terminals at most", $maxTerminals, 1...64)
+                        number("New nodes a minute", $spawnsPerMinute, 1...10000)
+                        number("Agents deep", $maxDepth, 1...10000)
+                    } header: {
+                        Eyebrow("Autonomy")
+                    } footer: {
+                        FormNote("What the canvas's agents may put on it by themselves.")
+                    }
+                    Section {
+                        number("Messages in a chain", $maxHops, 1...10000)
+                        number("Messages a minute per wire", $edgeRate, 1...10000)
+                        number("Messages a minute in all", $canvasRate, 1...10000)
+                    } header: {
+                        Eyebrow("Routing")
+                    } footer: {
+                        FormNote("What stops agents answering each other forever.")
+                    }
                 }
-                Section {
-                    number("Messages in a chain", $maxHops, 1...10000)
-                    number("Messages a minute per wire", $edgeRate, 1...10000)
-                    number("Messages a minute in all", $canvasRate, 1...10000)
-                } header: {
-                    Text("Routing")
-                } footer: {
-                    Text("What stops agents answering each other forever.")
-                }
+                .kouRow()
                 if let notice = model.notice, notice.isError {
                     Section {
-                        Text(notice.text)
-                            .foregroundStyle(.red)
+                        ErrorNote(text: notice.text)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .disabled(model.readOnly)
             .navigationTitle("Canvas settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("Save", systemImage: "checkmark") { save() }
                         .disabled(working || model.readOnly)
                 }
             }
@@ -314,11 +399,18 @@ struct CanvasSettingsSheet: View {
         }
     }
 
+    /// A limit: its words, and its figure in mono, which rolls as it steps.
     private func number(_ title: String, _ value: Binding<Int>, _ range: ClosedRange<Int>) -> some View {
         Stepper(value: value, in: range) {
-            LabeledContent(title) {
-                Text("\(value.wrappedValue)")
-                    .monospacedDigit()
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .foregroundStyle(Color.kouFg)
+                Spacer(minLength: 4)
+                Text(verbatim: "\(value.wrappedValue)")
+                    .font(.system(.body, design: .monospaced, weight: .medium))
+                    .foregroundStyle(Color.kouFg2)
+                    .contentTransition(.numericText(value: Double(value.wrappedValue)))
+                    .animation(.snappy(duration: 0.2), value: value.wrappedValue)
             }
         }
     }
@@ -384,28 +476,62 @@ struct SaveTemplateSheet: View {
     var body: some View {
         NavigationStack {
             Form {
+                // What is kept: the canvas, and what it is made of.
                 Section {
-                    TextField("Name", text: $name)
-                    TextField("What it is for", text: $description, axis: .vertical)
-                        .lineLimit(2...6)
-                } footer: {
-                    Text("A new canvas can start from it: its nodes, their settings and wires, without their sessions and messages.")
+                    HStack(spacing: 14) {
+                        GlyphTile(symbol: "square.on.square", tone: .kouFg2, size: 48)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: (model.doc?.title).flatMap { $0.isEmpty ? nil : $0 } ?? "Canvas")
+                                .font(.title3.weight(.bold))
+                                .foregroundStyle(Color.kouFg)
+                                .lineLimit(1)
+                            Text(verbatim: Self.count(model.nodes.count, "node") + " · " + Self.count(model.edges.count, "wire"))
+                                .font(.kouMeta)
+                                .foregroundStyle(Color.kouFg3)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.vertical, 4)
+                    .listRowBackground(Color.clear)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
                 }
+                Group {
+                    Section {
+                        TextField("Name", text: $name)
+                            .foregroundStyle(Color.kouFg)
+                    } header: {
+                        Eyebrow("Name")
+                    }
+                    Section {
+                        TextField("What it is for", text: $description, axis: .vertical)
+                            .lineLimit(2...6)
+                            .foregroundStyle(Color.kouFg)
+                    } header: {
+                        Eyebrow("What it is for")
+                    } footer: {
+                        FormNote("A new canvas can start from it: its nodes, their settings and wires, without their sessions and messages.")
+                    }
+                }
+                .kouRow()
                 if let notice = model.notice, notice.isError {
                     Section {
-                        Text(notice.text)
-                            .foregroundStyle(.red)
+                        ErrorNote(text: notice.text)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .navigationTitle("Save as template")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { save() }
+                    Button("Save", systemImage: "checkmark") { save() }
                         .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || working)
                 }
             }
@@ -413,6 +539,10 @@ struct SaveTemplateSheet: View {
                 if name.isEmpty { name = model.doc?.title ?? "" }
             }
         }
+    }
+
+    private static func count(_ count: Int, _ word: String) -> String {
+        "\(count) \(word)\(count == 1 ? "" : "s")"
     }
 
     private func save() {
@@ -454,77 +584,97 @@ struct MessageSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("From", value: name(current.from?.node))
-                    LabeledContent("To", value: name(current.to?.node))
-                    if let at = current.at {
-                        LabeledContent("At") {
-                            Text(at, format: .dateTime.hour().minute().second())
-                        }
-                    }
-                    if current.state != nil {
-                        LabeledContent("State") {
-                            Text(MessageRow.describe(current))
-                                .foregroundStyle(MessageRow.color(current.state ?? ""))
-                        }
-                    }
-                    if let hops = current.hops, hops > 1 {
-                        LabeledContent("In a chain of", value: "\(hops) messages")
-                    }
+                    head
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
                 }
-                Section {
-                    if editing {
-                        TextEditor(text: $draft)
-                            .frame(minHeight: 220)
-                    } else {
-                        Text(text)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        if current.truncated == true, whole == nil {
-                            ProgressView()
-                        }
-                    }
-                } header: {
-                    Text(current.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Text")
-                }
-                if current.isWaiting, !model.readOnly {
+                Group {
                     Section {
-                        if current.awaitsApproval {
-                            Button(editing ? "Send as edited" : "Send", systemImage: "paperplane.fill") { approve() }
-                                .disabled(working || editing && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            if !editing {
-                                Button("Edit, then send", systemImage: "pencil") {
-                                    draft = (whole ?? current).text ?? ""
-                                    editing = true
-                                }
-                                .disabled(working || current.truncated == true && whole == nil)
+                        if let title = current.title, !title.isEmpty {
+                            Text(verbatim: title)
+                                .font(.headline)
+                                .foregroundStyle(Color.kouFg)
+                        }
+                        // In mono, as the cockpit sets what goes along a wire.
+                        if editing {
+                            TextEditor(text: $draft)
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(Color.kouFg)
+                                .scrollContentBackground(.hidden)
+                                .frame(minHeight: 220)
+                        } else {
+                            Text(text)
+                                .font(.system(.callout, design: .monospaced))
+                                .foregroundStyle(Color.kouFg)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            if current.truncated == true, whole == nil {
+                                ProgressView()
+                                    .tint(Color.kouFg3)
                             }
                         }
-                        Button("Drop", systemImage: "trash", role: .destructive) { drop() }
+                    } header: {
+                        ListHead(editing ? "Editing" : "Text") {
+                            if editing {
+                                Tag("Not sent", tone: .kouWarn)
+                            }
+                        }
+                    }
+                    if current.isWaiting, !model.readOnly {
+                        Section {
+                            if current.awaitsApproval {
+                                Button {
+                                    approve()
+                                } label: {
+                                    ActionLabel(editing ? "Send as edited" : "Send", symbol: "paperplane.fill", tone: .kouAccent)
+                                }
+                                .disabled(working || editing && draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                if !editing {
+                                    Button {
+                                        draft = (whole ?? current).text ?? ""
+                                        editing = true
+                                    } label: {
+                                        ActionLabel("Edit, then send", symbol: "pencil")
+                                    }
+                                    .disabled(working || current.truncated == true && whole == nil)
+                                }
+                            }
+                            Button(role: .destructive) {
+                                drop()
+                            } label: {
+                                ActionLabel("Drop", symbol: "trash", tone: .kouErr, ink: .kouErr)
+                            }
                             .disabled(working)
-                    } footer: {
-                        Text(current.awaitsApproval
-                            ? "Its wire asks before each message goes."
-                            : "It goes once «\(name(current.to?.node))» is free\(model.isLive ? "" : " and the canvas is live").")
+                        } footer: {
+                            FormNote(verbatim: current.awaitsApproval
+                                ? "Its wire asks before each message goes."
+                                : "It goes once «\(name(current.to?.node))» is free\(model.isLive ? "" : " and the canvas is live").")
+                        }
                     }
                 }
+                .kouRow()
                 if let error {
                     Section {
-                        Text(error)
-                            .foregroundStyle(.red)
+                        ErrorNote(text: error)
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets())
                     }
                 }
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .navigationTitle("Message")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(editing ? "Cancel" : "Close") {
+                    Button(editing ? "Cancel" : "Close", systemImage: "xmark") {
                         if editing {
                             editing = false
                         } else {
                             dismiss()
                         }
                     }
+                    .tint(Color.kouFg)
                 }
             }
             .task {
@@ -536,6 +686,44 @@ struct MessageSheet: View {
                 }
             }
         }
+    }
+
+    /// Where it goes along, as its wire is drawn — dashed while it waits —,
+    /// how it stands and when it came.
+    private var head: some View {
+        let state = current.state ?? ""
+        let tone = MessageRow.color(state)
+        return VStack(alignment: .leading, spacing: 14) {
+            WireRoute(model: model, from: current.from?.node, to: current.to?.node, tone: tone,
+                      dash: current.awaitsApproval ? [4, 4] : state == CanvasMessage.pending ? [2, 4]
+                          : state == CanvasMessage.dropped ? [1, 5] : [])
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                if current.state != nil {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Rectangle()
+                            .fill(tone)
+                            .frame(width: 6, height: 6)
+                            .alignmentGuide(.firstTextBaseline) { $0[.bottom] }
+                        Text(verbatim: MessageRow.describe(current))
+                            .font(.kouMeta)
+                            .foregroundStyle(tone)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                Spacer(minLength: 8)
+                if let at = current.at {
+                    Text(at, format: .dateTime.hour().minute().second())
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg4)
+                }
+            }
+            if let hops = current.hops, hops > 1 {
+                Text(verbatim: "In a chain of \(hops) messages")
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg3)
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func name(_ node: String?) -> String {
@@ -568,5 +756,85 @@ struct MessageSheet: View {
                 error = model.notice?.text
             }
         }
+    }
+}
+
+/// WireRoute is a wire as the board draws it, from its source down to its
+/// target: in the warning's dashes while what goes along it waits for the
+/// user, sparse while off, plain while it goes on its own. An end that is
+/// no node is the user.
+struct WireRoute: View {
+    let model: CanvasModel
+    let from: String?
+    let to: String?
+    var tone: Color = .kouFg3
+    var dash: [CGFloat] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            end("From", from)
+            Path { path in
+                path.move(to: CGPoint(x: 1, y: 0))
+                path.addLine(to: CGPoint(x: 1, y: 22))
+            }
+            .stroke(tone, style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: dash))
+            .frame(width: 2, height: 22)
+            // Under the middle of the tiles.
+            .padding(.leading, 16)
+            .padding(.vertical, 5)
+            end("To", to)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func end(_ label: String, _ id: String?) -> some View {
+        let node = id.flatMap { $0.isEmpty ? nil : model.node($0) }
+        let you = id?.isEmpty ?? true
+        return HStack(spacing: 12) {
+            if let node {
+                NodeTile(node: node, state: model.nodeState(node))
+            } else {
+                GlyphTile(symbol: you ? "person.fill" : "square.dashed", tone: .kouFg3)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Eyebrow(label, color: .kouFg4)
+                Text(verbatim: you ? "You" : model.title(of: id ?? ""))
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(Color.kouFg)
+                    .lineLimit(1)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// GlyphTile is a mark on a node's tile, for what is no node of the canvas:
+/// one yet to be made — dashed —, the user at a wire's end, a template.
+struct GlyphTile: View {
+    let symbol: String
+    var tone: Color = .kouFg2
+    var size: CGFloat = 34
+    var dashed = false
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: .corner(size * 0.26), style: .continuous)
+        Image(systemName: symbol)
+            .font(.system(size: size * 0.42, weight: .medium))
+            .foregroundStyle(tone)
+            .frame(width: size, height: size)
+            .background(Color.kouPanel, in: shape)
+            .overlay {
+                shape.strokeBorder(dashed ? tone.opacity(0.6) : Color.kouLine,
+                                   style: StrokeStyle(lineWidth: 1, dash: dashed ? [3, 2.5] : []))
+            }
+            .accessibilityHidden(true)
+    }
+}
+
+extension CanvasModel {
+    /// nodeState is a node's state as its tile shows it: proposed till the
+    /// user approves it, stopped till the canvas says otherwise.
+    func nodeState(_ node: CanvasNode) -> String {
+        node.isProposed ? "proposed" : status[node.id]?.state ?? "stopped"
     }
 }

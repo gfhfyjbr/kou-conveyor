@@ -179,9 +179,11 @@ func (s *server) handlePreferences(w http.ResponseWriter, r *http.Request) {
 
 // preferencesView is what the cockpit reads of the preferences: the effort
 // and the model last chosen, which new sessions start with, the tool
-// profile and the sandbox of the next runs, and the choices there are; and
-// how both cockpits look. Shared says whether there are preferences to
-// keep: without, what a cockpit chooses stays its own.
+// profile and the sandbox of the next runs, and the choices there are; how
+// both cockpits look; and whether, and by which model ("" the prompt's),
+// new sessions are titled after their first prompt. Shared says whether
+// there are preferences to keep: without, what a cockpit chooses stays its
+// own.
 func (s *server) preferencesView() map[string]any {
 	effort, saved := s.effort()
 	path := cockpit.PreferencesPath(s.opt.SettingsFile)
@@ -199,13 +201,15 @@ func (s *server) preferencesView() map[string]any {
 		"tool_profile": cmp.Or(p.ToolProfile, string(tool.ProfileAuto)), "tool_profiles": profiles,
 		"sandbox": cmp.Or(p.Sandbox, runconfig.SandboxOff), "sandboxes": sandboxes,
 		"accent": cmp.Or(p.Accent, cockpit.DefaultAccent), "shade": cmp.Or(p.Shade, cockpit.DefaultShade), "radius": p.Radius,
+		"auto_titles": !p.NoAutoTitles, "title_model": p.TitleModel,
 		"shared": path != "",
 	}
 }
 
 // handleSavePreferences records the effort or the model last chosen in a
-// composer, the tool profile or the sandbox, or how the cockpits look, for
-// both cockpits: the terminal one picks them up too.
+// composer, the tool profile or the sandbox, how the cockpits look, or how
+// new sessions are titled, for both cockpits: the terminal one picks them
+// up too.
 func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	var change struct {
 		Effort      *string `json:"effort"`
@@ -215,6 +219,8 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 		Accent      *string `json:"accent"`
 		Shade       *string `json:"shade"`
 		Radius      *int    `json:"radius"`
+		AutoTitles  *bool   `json:"auto_titles"`
+		TitleModel  *string `json:"title_model"`
 	}
 	if !decodeJSON(w, r, &change) {
 		return
@@ -255,9 +261,16 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("radius must be 0 to %d", cockpit.MaxRadius))
 		return
 	}
+	if change.TitleModel != nil {
+		// "" has each session titled by the model its first prompt runs with.
+		if *change.TitleModel = strings.TrimSpace(*change.TitleModel); cockpit.ValidModel(*change.TitleModel) != nil {
+			writeError(w, http.StatusBadRequest, "title_model must be a model ID without spaces, or empty")
+			return
+		}
+	}
 	if change.Effort == nil && change.LastModel == nil && change.ToolProfile == nil && change.Sandbox == nil &&
-		change.Accent == nil && change.Shade == nil && change.Radius == nil {
-		writeError(w, http.StatusBadRequest, "nothing to save: effort, last_model, tool_profile, sandbox, accent, shade or radius")
+		change.Accent == nil && change.Shade == nil && change.Radius == nil && change.AutoTitles == nil && change.TitleModel == nil {
+		writeError(w, http.StatusBadRequest, "nothing to save: effort, last_model, tool_profile, sandbox, accent, shade, radius, auto_titles or title_model")
 		return
 	}
 	path := cockpit.PreferencesPath(s.opt.SettingsFile)
@@ -287,6 +300,12 @@ func (s *server) handleSavePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 	if err == nil && change.Radius != nil {
 		err = cockpit.SaveRadius(path, *change.Radius)
+	}
+	if err == nil && change.AutoTitles != nil {
+		err = cockpit.SaveAutoTitles(path, *change.AutoTitles)
+	}
+	if err == nil && change.TitleModel != nil {
+		err = cockpit.SaveTitleModel(path, *change.TitleModel)
 	}
 	s.settingsMu.Unlock()
 	if err != nil {
@@ -364,7 +383,11 @@ func (s *server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	meta := cockpit.LoadMeta(ws.opt.SessionDir, id)
-	writeJSON(w, http.StatusOK, map[string]any{"id": id, "title": meta.Title, "pinned": meta.Pinned, "effort": meta.Effort})
+	// The title is the one shown: without the user's, the one a model made of
+	// the first prompt, if any; renamed says whether it is the user's.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": id, "title": meta.ShownTitle(), "renamed": meta.Title != "", "pinned": meta.Pinned, "effort": meta.Effort,
+	})
 }
 
 // handleOrderPins puts the workspace's pinned sessions in the order the

@@ -24,6 +24,8 @@ struct CodeText: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        // The selection's handles in the accent, as the app's own text's.
+        view.tintColor = UIColor(Color.kouAccent)
         guard context.coordinator.shown !== text else { return }
         context.coordinator.shown = text
         view.attributedText = text
@@ -66,7 +68,7 @@ enum Highlight {
     }
 
     static func plain(_ text: String) -> NSAttributedString {
-        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: UIColor.label])
+        NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: CodeInk.fg])
     }
 
     /// attributed colors text by its runs: pairs of a length, in UTF-16 code
@@ -95,29 +97,36 @@ enum Highlight {
         return result
     }
 
-    /// The color of a class of highlighting, as Pygments names them short.
+    /// The color of a class of highlighting, as Pygments names them short,
+    /// in the cockpit's tokens (theme.css, .tk-*).
     static func color(for name: String) -> UIColor? {
         switch name {
         case "": return nil
-        case "kt", "nc", "nn": return .systemTeal
-        case "kc", "no", "m", "l", "py": return .systemIndigo
-        case "nf": return .systemBlue
-        case "nb": return .systemPurple
-        case "nt", "ow": return .systemPink
-        case "na", "nd", "cp", "se": return .systemOrange
-        case "gd", "gr", "err": return .systemRed
-        case "gi": return .systemGreen
-        case "gh", "gu": return .systemBlue
-        case "gp", "go": return .secondaryLabel
+        case "k", "kd", "kn", "kr", "kp", "ow", "nt", "gh": return CodeInk.keyword
+        case "kt", "nc": return CodeInk.type
+        case "kc", "no", "m", "mi", "mf", "mh", "mo", "l", "nd", "cp", "ss", "nl": return CodeInk.constant
+        case "nb", "bp", "se", "si", "sr": return CodeInk.builtin
+        case "nf", "fm", "na", "gu": return CodeInk.function
+        case "sd", "c", "c1", "cm", "ch", "cs", "gp": return CodeInk.comment
+        case "p": return CodeInk.punct
+        case "o", "go": return CodeInk.op
+        case "py", "nv", "vc", "vg", "vi", "nn": return CodeInk.prop
+        case "gd", "gr", "err": return CodeInk.err
+        case "gi": return CodeInk.ok
         default: break
         }
-        if name.hasPrefix("k") { return .systemPink }
-        if name.hasPrefix("s") { return .systemRed }
-        if name.hasPrefix("c") { return .secondaryLabel }
+        // The classes the server may name longer: by their family.
+        if name.hasPrefix("k") { return CodeInk.keyword }
+        if name.hasPrefix("s") { return CodeInk.string }
+        if name.hasPrefix("c") { return CodeInk.comment }
+        if name.hasPrefix("m") { return CodeInk.constant }
         return nil
     }
 
-    /// diff colors a unified diff: what it adds, what it removes, its hunks.
+    /// diff colors a unified diff as the cockpit's changes panel does: the
+    /// lines it adds on the success's tint and those it removes on the
+    /// failure's, their signs in those colours; its hunks on a faint band;
+    /// the lines around them a step back.
     static func diff(_ patch: String) -> NSAttributedString {
         let result = NSMutableAttributedString()
         let base = font
@@ -128,23 +137,64 @@ enum Highlight {
                        "new mode", "Binary files"]
         result.beginEditing()
         for (i, line) in lines.enumerated() {
-            var attributes: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: UIColor.label]
+            let end = i < lines.count - 1 ? "\n" : ""
+            var attributes: [NSAttributedString.Key: Any] = [.font: base, .foregroundColor: CodeInk.op]
+            var sign: UIColor?
             if headers.contains(where: { line.hasPrefix($0) }) || line == "---" || line == "+++" {
                 attributes[.font] = bold
-                attributes[.foregroundColor] = UIColor.secondaryLabel
+                attributes[.foregroundColor] = CodeInk.comment
             } else if line.hasPrefix("@@") {
-                attributes[.foregroundColor] = UIColor.systemBlue
-                attributes[.backgroundColor] = UIColor.systemBlue.withAlphaComponent(0.08)
+                attributes[.foregroundColor] = CodeInk.comment
+                attributes[.backgroundColor] = CodeInk.hunk
             } else if line.hasPrefix("+") {
-                attributes[.backgroundColor] = UIColor.systemGreen.withAlphaComponent(0.16)
+                attributes[.foregroundColor] = CodeInk.fg
+                attributes[.backgroundColor] = CodeInk.added
+                sign = CodeInk.ok
             } else if line.hasPrefix("-") {
-                attributes[.backgroundColor] = UIColor.systemRed.withAlphaComponent(0.16)
+                attributes[.foregroundColor] = CodeInk.fg
+                attributes[.backgroundColor] = CodeInk.removed
+                sign = CodeInk.err
             } else if line.hasPrefix("\\") {
-                attributes[.foregroundColor] = UIColor.secondaryLabel
+                attributes[.foregroundColor] = CodeInk.comment
             }
-            result.append(NSAttributedString(string: i < lines.count - 1 ? line + "\n" : line, attributes: attributes))
+            if let sign {
+                var signed = attributes
+                signed[.foregroundColor] = sign
+                result.append(NSAttributedString(string: String(line.prefix(1)), attributes: signed))
+                result.append(NSAttributedString(string: String(line.dropFirst()) + end, attributes: attributes))
+            } else {
+                result.append(NSAttributedString(string: line + end, attributes: attributes))
+            }
         }
         result.endEditing()
         return result
+    }
+}
+
+/// CodeInk is the cockpit's colours of code (theme.css, --syn-*): the
+/// tokens' own, whatever the accent, and greys of the graphite shade; in
+/// light, darker. Constant, they colour code away from the main thread.
+enum CodeInk {
+    static let fg = Look.dynamic(light: "#1c1c19", dark: "#e3e2dc")
+    static let keyword = Look.dynamic(light: "#c23d0a", dark: "#ff8a57")
+    static let type = Look.dynamic(light: "#2d5f9a", dark: "#7aa7d9")
+    static let constant = Look.dynamic(light: "#9c3d87", dark: "#d28bc4")
+    static let builtin = Look.dynamic(light: "#1f7a72", dark: "#6fc2b8")
+    static let function = Look.dynamic(light: "#8a5a00", dark: "#efc36e")
+    static let string = Look.dynamic(light: "#2e7a34", dark: "#9ccf83")
+    static let comment = Look.dynamic(light: "#8f8c83", dark: "#6d6b64")
+    static let punct = Look.dynamic(light: "#6f6c64", dark: "#8c8a83")
+    static let op = Look.dynamic(light: "#55534c", dark: "#b3b1a9")
+    static let prop = Look.dynamic(light: "#3d3c38", dark: "#cfcdc5")
+    static let err = Look.dynamic(light: "#cc1f3d", dark: "#ff5468")
+    static let ok = Look.dynamic(light: "#2e7a34", dark: "#9ccf83")
+    /// A diff's lines put in and taken out, and its hunks' band.
+    static let added = tint(light: "#2e7a34", dark: "#9ccf83", alpha: 0.11)
+    static let removed = tint(light: "#cc1f3d", dark: "#ff5468", alpha: 0.10)
+    static let hunk = tint(light: "#1c1c19", dark: "#e3e2dc", alpha: 0.06)
+
+    private static func tint(light: String, dark: String, alpha: CGFloat) -> UIColor {
+        let light = Look.uiColor(light).withAlphaComponent(alpha), dark = Look.uiColor(dark).withAlphaComponent(alpha)
+        return UIColor { $0.userInterfaceStyle == .dark ? dark : light }
     }
 }

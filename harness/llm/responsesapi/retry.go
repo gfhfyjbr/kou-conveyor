@@ -34,6 +34,11 @@ func retryableResponseError(err *APIError, retryableStatuses []int) bool {
 	case "authentication_error", "permission_error", "insufficient_quota", "usage_limit_reached":
 		return false
 	}
+	if imagesRejected(err) {
+		// Sent as it is, the request would be rejected again for its images;
+		// the adapter sends it without them instead (images.go).
+		return false
+	}
 	if err.StatusCode < http.StatusOK || err.StatusCode >= http.StatusMultipleChoices {
 		return slices.Contains(retryableStatuses, err.StatusCode)
 	}

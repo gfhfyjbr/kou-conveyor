@@ -199,6 +199,11 @@
 
 /* Square unless the appearance rounds them (theme.css: --radius…). */
 .attachment, .prompt-image, .tool-image { border-radius: var(--radius); }
+/* The picture a call read is part of the call's card, its border going on
+   down from the card's: the two bend where the whole ends, not where they
+   meet, or the joint pinches in at both ends. */
+.tool:has(+ .tool-image) { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.tool + .tool-image { border-top-left-radius: 0; border-top-right-radius: 0; }
 .tool-image-frame, .attachment-thumb, .queue-images img { border-radius: var(--radius-sm); }
 .image-preview-card { border-radius: var(--radius-lg); }
 /* The pictures bend with what holds them: a thumbnail's frame clips its

@@ -47,6 +47,11 @@ type Preferences struct {
 	Accent string `json:"accent,omitzero"`
 	Shade  string `json:"shade,omitzero"`
 	Radius int    `json:"radius,omitzero"`
+	// TitleModel is the model that titles a new session after its first
+	// prompt (GenerateTitle); "" has the model the prompt runs with do it.
+	// NoAutoTitles leaves new sessions titled by their first prompt.
+	TitleModel   string `json:"title_model,omitzero"`
+	NoAutoTitles bool   `json:"no_auto_titles,omitzero"`
 }
 
 // Terminal themes.
@@ -102,8 +107,27 @@ func LoadPreferences(path string) Preferences {
 	if p.TerminalTheme != TerminalThemeKou && p.TerminalTheme != TerminalThemeShell {
 		p.TerminalTheme = ""
 	}
+	if ValidModel(p.TitleModel) != nil {
+		p.TitleModel = ""
+	}
 	normalAppearance(&p)
 	return p
+}
+
+// SaveTitleModel records the model that titles new sessions after their
+// first prompt, "" for the model the prompt runs with, keeping the other
+// preferences.
+func SaveTitleModel(path, model string) error {
+	if model != "" && ValidModel(model) != nil {
+		return fmt.Errorf("unknown model %q", model)
+	}
+	return savePreferences(path, func(p *Preferences) { p.TitleModel = model })
+}
+
+// SaveAutoTitles records whether a model titles new sessions after their
+// first prompt, keeping the other preferences.
+func SaveAutoTitles(path string, on bool) error {
+	return savePreferences(path, func(p *Preferences) { p.NoAutoTitles = !on })
 }
 
 // maxPanelColumns is the most columns a saved panel width can be: wider

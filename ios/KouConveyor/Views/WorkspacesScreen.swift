@@ -16,11 +16,19 @@ struct WorkspaceList: View {
         List {
             Section {
                 ForEach(workspaces) { row($0) }
+            } header: {
+                SectionLabel("Open in the cockpit", count: workspaces.count)
+                    .kouHeader()
             } footer: {
                 Text("Workspaces are opened and closed in the cockpit on your computer.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.kouFg4)
+                    .padding(.top, 10)
             }
         }
-        .groupedBackground()
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.kouGround)
         .animation(.smooth, value: workspaces.map(\.id))
         .refreshable {
             await app.refresh()
@@ -37,6 +45,10 @@ struct WorkspaceList: View {
                          unavailable: summary == nil && activity.unavailable.contains(workspace.id),
                          current: workspace.id == app.workspace?.id)
         }
+        .navigationLinkIndicatorVisibility(.hidden)
+        .listRowBackground(Color.kouGround)
+        .listRowSeparatorTint(Color.kouLine)
+        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 18))
         .contextMenu {
             Button("New session", systemImage: "square.and.pencil") { newSession(in: workspace) }
             Button("Copy path", systemImage: "doc.on.doc") { UIPasteboard.general.string = workspace.path }
@@ -70,8 +82,9 @@ struct WorkspaceList: View {
     }
 }
 
-/// WorkspaceRow is a workspace as its sessions are listed: its mark, when it
-/// was last written to, its latest session, and how many run.
+/// WorkspaceRow is a workspace as its sessions are listed: its monogram,
+/// when it was last written to, its latest session, how many run and where
+/// it is.
 private struct WorkspaceRow: View {
     let workspace: Workspace
     let summary: WorkspaceSummary?
@@ -82,35 +95,39 @@ private struct WorkspaceRow: View {
     private var running: Int { summary?.running ?? workspace.running ?? 0 }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            WorkspaceTile(workspace: workspace, current: current)
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .top, spacing: 14) {
+            Monogram(name: workspace.name, size: 44, current: current)
+                .padding(current ? 0 : 3)
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(workspace.name)
-                        .font(.body.weight(.semibold))
+                    Text(verbatim: workspace.name)
+                        .font(.system(.headline, design: .default, weight: .bold).width(.expanded))
+                        .foregroundStyle(Color.kouFg)
                         .lineLimit(1)
+                    if current {
+                        Tag("shown", tone: .kouAccent)
+                    }
                     Spacer(minLength: 0)
                     if let date = summary?.lastActive {
-                        // Read again each minute: "now" turns "2 min. ago".
+                        // Read again each minute: "now" turns "2m".
                         TimelineView(.everyMinute) { _ in
-                            Text(Self.since(date))
+                            Text(verbatim: date.kouAge)
                         }
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(running > 0 ? Color.kouAccent : Color.kouFg4)
                     }
                 }
                 latest
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg2)
                     .lineLimit(1)
                 details
-                    .font(.caption)
-                    .lineLimit(1)
+                    .padding(.top, 2)
             }
             // The row's separator starts under its text, not under its mark.
             .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
         }
-        .padding(.vertical, 4)
+        .contentShape(.rect)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(current ? .isSelected : [])
     }
@@ -119,13 +136,14 @@ private struct WorkspaceRow: View {
     @ViewBuilder private var latest: some View {
         if let summary {
             if let session = summary.latest {
-                Text(session.title.isEmpty ? "Untitled" : session.title)
+                Text(verbatim: session.title.isEmpty ? "Untitled" : session.title)
             } else {
                 Text("No sessions yet")
+                    .foregroundStyle(Color.kouFg4)
             }
         } else if unavailable {
             Label("Sessions unavailable", systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Color.kouWarn)
         } else {
             // Its shape, while the sessions are on their way.
             Text("The session written to last")
@@ -134,76 +152,22 @@ private struct WorkspaceRow: View {
     }
 
     private var details: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 8) {
             if running > 0 {
-                HStack(spacing: 3) {
-                    Image(systemName: "circle.dotted.circle")
-                        .symbolEffect(.rotate, options: .repeat(.continuous))
-                    Text("\(running) running")
+                HStack(spacing: 2) {
+                    LiveDot(size: 6)
+                    Eyebrow("\(running) running", color: .kouAccent)
                 }
-                .foregroundStyle(Color.kouAccent)
                 .fixedSize()
+            } else if let summary {
+                Eyebrow(summary.sessions == 1 ? "1 session" : "\(summary.sessions) sessions", color: .kouFg3)
+                    .fixedSize()
             }
-            Text(running > 0 ? "· \(facts)" : facts)
-                .foregroundStyle(.secondary)
+            Text(verbatim: workspace.display ?? workspace.path)
+                .font(.kouMeta)
+                .foregroundStyle(Color.kouFg4)
+                .lineLimit(1)
+                .truncationMode(.head)
         }
-    }
-
-    /// How many sessions it has, and where it is.
-    private var facts: String {
-        let place = workspace.display ?? workspace.path
-        guard let summary else { return place }
-        let count = summary.sessions == 1 ? "1 session" : "\(summary.sessions) sessions"
-        return "\(count) · \(place)"
-    }
-
-    /// "now", "4 min. ago", "2 days ago".
-    private static func since(_ date: Date) -> String {
-        if Date.now.timeIntervalSince(date) < 60 { return "now" }
-        return date.formatted(.relative(presentation: .numeric, unitsStyle: .abbreviated))
-    }
-}
-
-/// WorkspaceTile is a workspace's mark: the first letter of its name, on a
-/// color of its own, and a check on the one the app shows.
-private struct WorkspaceTile: View {
-    let workspace: Workspace
-    let current: Bool
-
-    var body: some View {
-        Text(initial)
-            .font(.system(size: 19, weight: .semibold, design: .rounded))
-            .foregroundStyle(.white)
-            .frame(width: 42, height: 42)
-            .background(color.gradient, in: .rect(cornerRadius: .corner(11), style: .continuous))
-            .overlay(alignment: .bottomTrailing) {
-                if current {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 15, weight: .bold))
-                        .symbolRenderingMode(.palette)
-                        .foregroundStyle(Color.kouAccentInk, Color.kouAccent)
-                        // Cut out of the mark by the row's own color.
-                        .background(Circle().fill(Color(uiColor: .secondarySystemGroupedBackground)).padding(-2))
-                        .offset(x: 5, y: 5)
-                }
-            }
-            .accessibilityHidden(true)
-    }
-
-    private var initial: String {
-        workspace.name.first { $0.isLetter || $0.isNumber }.map { String($0).uppercased() } ?? "•"
-    }
-
-    private static let palette: [Color] = [.orange, .pink, .purple, .indigo, .blue, .teal, .green, .cyan, .red, .brown]
-
-    /// The same for a workspace on every launch: FNV-1a of its ID, where
-    /// Swift's own hashing changes from one launch to the next.
-    private var color: Color {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in workspace.id.utf8 {
-            hash ^= UInt64(byte)
-            hash &*= 0x0000_0100_0000_01b3
-        }
-        return Self.palette[Int(hash % UInt64(Self.palette.count))]
     }
 }

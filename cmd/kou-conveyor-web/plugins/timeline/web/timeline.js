@@ -79,10 +79,16 @@ export default function activate(cockpit) {
   const loadError = h('div', { class: 'load-error', id: 'load-error', hidden: true },
     h('b', { text: 'Could not load this session' }), errorText,
     h('button', { class: 'act', id: 'load-retry', type: 'button', onclick: () => session.openSession(view().id, { push: false }) }, 'Retry'));
+  // A view that read only the transcript's end (a chat on a canvas) says
+  // how much is before it, and reads it on demand (session.showEarlier).
+  const earlierText = h('span', { class: 'earlier-text' });
+  const earlierMore = h('button', { class: 'act', type: 'button', onclick: () => session.showEarlier?.(view()) });
+  const earlierAll = h('button', { class: 'act', type: 'button', onclick: () => session.showEarlier?.(view(), { all: true }) }, 'Show all');
+  const earlier = h('div', { class: 'earlier', id: 'earlier', hidden: true }, earlierText, earlierMore, earlierAll);
   // Not a live region: the stream would be read out piece by piece, and the
   // entries drawn as the view scrolls with it. The header says the run's state.
   const list = h('ol', { class: 'entries', id: 'entries' });
-  const log = h('div', { class: 'log' }, empty, loading, loadError, list);
+  const log = h('div', { class: 'log' }, empty, loading, loadError, earlier, list);
   cockpit.ui.mount('stage.main', { id: 'timeline', order: 0, node: log });
 
   const jumpCount = h('span', { id: 'jump-count', text: '0' });
@@ -698,6 +704,18 @@ export default function activate(cockpit) {
     loading.hidden = !v.loading;
     loadError.hidden = !v.failed;
     errorText.textContent = v.failed;
+    const before = v.loading ? 0 : v.earlier || 0;
+    earlier.hidden = !(before > 0);
+    if (before > 0) {
+      const page = Math.min(before, session.EARLIER_PAGE || 200);
+      earlierText.textContent = v.loadingEarlier
+        ? 'Loading the earlier entries…'
+        : `${before} earlier ${before === 1 ? 'entry is' : 'entries are'} not loaded`;
+      earlierMore.hidden = page >= before;
+      earlierMore.textContent = `Show ${page} more`;
+      earlierAll.textContent = page < before ? 'Show all' : 'Show them';
+      earlierMore.disabled = earlierAll.disabled = !!v.loadingEarlier;
+    }
     emptyPath.textContent = session.currentWorkspace?.()?.path || session.state?.config?.workspace || '';
   }
 

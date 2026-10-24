@@ -62,14 +62,14 @@ struct SurfaceHtml: View {
                         .controlSize(.small)
                     Text("Framing the page…")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                 }
                 .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
             }
             if let note {
                 Label(note, systemImage: "exclamationmark.circle")
                     .font(.caption2)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.kouWarn)
             }
         }
         .task(id: "\(env.path)#\(id)#\(env.live)") { await frame() }

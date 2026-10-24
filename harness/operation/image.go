@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	_ "golang.org/x/image/bmp"
-	"golang.org/x/image/draw"
 	_ "golang.org/x/image/tiff"
 	_ "golang.org/x/image/webp"
 
@@ -283,7 +282,7 @@ func prepareViewImage(ctx context.Context, chunks [][]byte, config ViewImageConf
 	}
 	if ratio < 1 {
 		resized := image.NewNRGBA(image.Rect(0, 0, width, height))
-		draw.BiLinear.Scale(resized, resized.Bounds(), source, source.Bounds(), draw.Src, nil)
+		scaleBiLinear(resized, source)
 		source = resized
 	}
 
@@ -297,7 +296,7 @@ func prepareViewImage(ctx context.Context, chunks [][]byte, config ViewImageConf
 	case format == "jpeg" && ratio == 1:
 		_, err = io.Copy(encoder, viewImageReader(chunks))
 	case format == "jpeg":
-		err = jpeg.Encode(encoder, source, &jpeg.Options{Quality: 90})
+		err = jpeg.Encode(encoder, opaqueRGBA(source), &jpeg.Options{Quality: 90})
 	default:
 		err = png.Encode(encoder, source)
 	}

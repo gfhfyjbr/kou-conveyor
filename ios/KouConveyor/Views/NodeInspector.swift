@@ -31,6 +31,8 @@ struct NodeInspector: View {
     @State private var removing = false
     @State private var working = false
     @State private var lookedForHook = false
+    /// The terminal's keys pressed, for the tap each gives.
+    @State private var keyed = 0
 
     private enum InspectorSheet: Identifiable {
         case edge(CanvasEdge)
@@ -58,16 +60,20 @@ struct NodeInspector: View {
             Group {
                 if let node {
                     form(node)
+                        // Its title is the head's, in the bar once that is
+                        // scrolled away.
+                        .headTitle(model.title(of: nodeID))
                 } else {
-                    ContentUnavailableView("Gone", systemImage: "square.dashed",
-                                           description: Text("The node is no longer on the canvas."))
+                    KouEmpty(symbol: "square.dashed", title: "Gone", message: "The node is no longer on the canvas.")
+                        .navigationTitle("Node")
+                        .navigationBarTitleDisplayMode(.inline)
                 }
             }
-            .navigationTitle(node == nil ? "Node" : model.title(of: nodeID))
-            .navigationBarTitleDisplayMode(.inline)
+            .background(Color.kouGroupedGround)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 if let node, editable {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -105,86 +111,113 @@ struct NodeInspector: View {
             header(node)
             if let notice = model.notice, notice.isError {
                 Section {
-                    Label(notice.text, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+                    ErrorNote(text: notice.text)
                         .onTapGesture { model.notice = nil }
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
                 }
             }
-            switch node.kind {
-            case CanvasNode.agent: lately(node)
-            case CanvasNode.terminal: terminal(node)
-            case CanvasNode.source: source(node)
-            case CanvasNode.note: note(node)
-            default: EmptyView()
-            }
-            waiting
-            settings(node)
-            access(node)
-            wires(node)
-            details(node)
-            if editable, !node.isProposed {
-                Section {
-                    Button(role: .destructive) {
-                        askRemove(node)
-                    } label: {
-                        Label("Remove from the canvas", systemImage: "trash")
+            Group {
+                switch node.kind {
+                case CanvasNode.agent: lately(node)
+                case CanvasNode.terminal: terminal(node)
+                case CanvasNode.source: source(node)
+                case CanvasNode.note: note(node)
+                default: EmptyView()
+                }
+                waiting
+                settings(node)
+                access(node)
+                wires(node)
+                details(node)
+                if editable, !node.isProposed {
+                    Section {
+                        Button(role: .destructive) {
+                            askRemove(node)
+                        } label: {
+                            ActionLabel("Remove from the canvas", symbol: "trash", tone: .kouErr, ink: .kouErr)
+                        }
                     }
                 }
             }
+            .kouRow()
         }
+        .groupedBackground()
+        .listSectionSpacing(22)
     }
 
     @ViewBuilder
     private func header(_ node: CanvasNode) -> some View {
         Section {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: NodeKindIcon.symbol(node.kind))
-                    .font(.title2)
-                    .foregroundStyle(node.kind == CanvasNode.agent ? Color.kouAccent : Color.secondary)
-                    .frame(width: 32)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(Self.kindName(of: node, in: model))
-                        .font(.headline)
-                    if let line = statusLine(node) {
-                        Text(line)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(5)
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 14) {
+                    NodeTile(node: node, state: state, size: 48)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(verbatim: model.title(of: nodeID))
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(Color.kouFg)
+                            .lineLimit(2)
+                        Text(verbatim: Self.kindName(of: node, in: model))
+                            .font(.kouMeta)
+                            .foregroundStyle(Color.kouFg3)
+                            .lineLimit(1)
+                        if node.kind != CanvasNode.note {
+                            StateBadge(state: state)
+                                .padding(.top, 3)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                if let line = statusLine(node) {
+                    Text(line)
+                        .font(.subheadline)
+                        .foregroundStyle(node.isProposed ? Color.kouWarn : state == "error" ? Color.kouErr : Color.kouFg2)
+                        .lineLimit(5)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if node.isProposed, editable {
+                    HStack(spacing: 8) {
+                        Button {
+                            Task { await model.approve(node: nodeID) }
+                        } label: {
+                            Label("Approve: let it run", systemImage: "checkmark")
+                                .foregroundStyle(Color.kouAccentInk)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .tint(Color.kouAccent)
+                        Button("Discard", systemImage: "xmark", role: .destructive) {
+                            Task { if await model.remove(nodeID, discarding: true) { dismiss() } }
+                        }
+                        .buttonStyle(.glass)
+                        .tint(Color.kouErr)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                }
+            }
+            .padding(.vertical, 4)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
+        }
+        let chat = !inChat && NodeChat.route(for: node, in: model) != nil
+        let stop = editable && node.kind == CanvasNode.agent && state == "busy"
+        if chat || stop {
+            Section {
+                if chat {
+                    Button {
+                        openChat(node)
+                    } label: {
+                        ActionLabel("Open the chat", symbol: "bubble.left.and.bubble.right.fill", tone: .kouAccent)
                     }
                 }
-                Spacer(minLength: 8)
-                if node.kind != CanvasNode.note {
-                    StateBadge(state: state)
+                if stop {
+                    Button(role: .destructive) {
+                        Task { await model.stop(nodeID) }
+                    } label: {
+                        ActionLabel("Stop the run", symbol: "stop.fill", tone: .kouErr, ink: .kouErr)
+                    }
                 }
             }
-            .padding(.vertical, 2)
-            if node.isProposed, editable {
-                Button {
-                    Task { await model.approve(node: nodeID) }
-                } label: {
-                    Label("Approve: let it run", systemImage: "checkmark.circle.fill")
-                }
-                Button(role: .destructive) {
-                    Task { if await model.remove(nodeID, discarding: true) { dismiss() } }
-                } label: {
-                    Label("Discard", systemImage: "xmark.circle")
-                }
-            }
-            if !inChat, NodeChat.route(for: node, in: model) != nil {
-                Button {
-                    openChat(node)
-                } label: {
-                    Label("Open the chat", systemImage: "bubble.left.and.bubble.right.fill")
-                }
-            }
-            if editable, node.kind == CanvasNode.agent, state == "busy" {
-                Button(role: .destructive) {
-                    Task { await model.stop(nodeID) }
-                } label: {
-                    Label("Stop the run", systemImage: "stop.fill")
-                }
-            }
+            .kouRow()
         }
     }
 
@@ -212,10 +245,12 @@ struct NodeInspector: View {
     @ViewBuilder
     private func lately(_ node: CanvasNode) -> some View {
         if !inChat, let feed = model.feeds[nodeID], !feed.isEmpty {
-            Section("Lately") {
+            Section {
                 ForEach(feed.suffix(3)) { entry in
                     FeedRow(entry: entry)
                 }
+            } header: {
+                Eyebrow("Lately")
             }
         }
     }
@@ -224,12 +259,18 @@ struct NodeInspector: View {
     private func terminal(_ node: CanvasNode) -> some View {
         Section {
             ScreenView(text: screen)
-                .listRowInsets(EdgeInsets())
+                .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
             if editable {
                 keys
+                // As a shell's prompt: the command after its "$".
                 HStack(spacing: 10) {
+                    Text(verbatim: "$")
+                        .font(.system(.body, design: .monospaced, weight: .bold))
+                        .foregroundStyle(Color.kouAccent)
+                        .accessibilityHidden(true)
                     TextField("Type a command", text: $typed)
                         .font(.system(.body, design: .monospaced))
+                        .foregroundStyle(Color.kouFg)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .submitLabel(.send)
@@ -238,17 +279,19 @@ struct NodeInspector: View {
                         .labelStyle(.iconOnly)
                         .font(.title2)
                         .buttonStyle(.borderless)
+                        .tint(Color.kouAccent)
                         .disabled(typed.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         } header: {
-            Text("Screen")
+            Eyebrow("Screen")
         } footer: {
             if let readError {
                 Text(readError)
-                    .foregroundStyle(.red)
+                    .font(.footnote)
+                    .foregroundStyle(Color.kouErr)
             } else if let agent = model.status[nodeID]?.agent, agent.detected == true {
-                Text("What you type goes to \(agent.title ?? agent.id ?? "its agent") as a prompt.")
+                FormNote(verbatim: "What you type goes to \(agent.title ?? agent.id ?? "its agent") as a prompt.")
             }
         }
         if editable {
@@ -257,32 +300,32 @@ struct NodeInspector: View {
                     Button(role: .destructive) {
                         Task { await model.stop(nodeID) }
                     } label: {
-                        Label("Stop what runs (⌃C)", systemImage: "stop.fill")
+                        ActionLabel("Stop what runs (⌃C)", symbol: "stop.fill", tone: .kouErr, ink: .kouErr)
                     }
                     Button {
                         Task { await model.restart(nodeID) }
                     } label: {
-                        Label("Restart", systemImage: "arrow.clockwise")
+                        ActionLabel("Restart", symbol: "arrow.clockwise")
                     }
                 } else {
                     Button {
                         Task { await model.restart(nodeID) }
                     } label: {
-                        Label("Start", systemImage: "play.fill")
+                        ActionLabel("Start", symbol: "play.fill", tone: .kouAccent)
                     }
                 }
                 if let agent = node.runtime?.agentSession, !agent.isEmpty {
                     Button {
                         Task { await model.restart(nodeID, resume: true) }
                     } label: {
-                        Label("Resume its agent's session", systemImage: "arrow.uturn.forward")
+                        ActionLabel("Resume its agent's session", symbol: "arrow.uturn.forward")
                     }
                 }
             } footer: {
                 if node.runtime?.agentSession?.isEmpty == false {
-                    Text("Restart starts its program anew; resuming starts it again in the conversation its agent had.")
+                    FormNote("Restart starts its program anew; resuming starts it again in the conversation its agent had.")
                 } else {
-                    Text("Restart starts its program anew.")
+                    FormNote("Restart starts its program anew.")
                 }
             }
         }
@@ -300,20 +343,18 @@ struct NodeInspector: View {
         TerminalKey(label: "⌃D", name: "C-d"),
     ]
 
+    /// The keys a phone's keyboard has not, as a row of key caps.
     private var keys: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            GlassEffectContainer(spacing: 6) {
-                HStack(spacing: 6) {
-                    ForEach(Self.terminalKeys, id: \.name) { key in
-                        Button(key.label) { press(key.name) }
-                            .font(.system(.footnote, design: .monospaced, weight: .semibold))
-                            .buttonStyle(.glass)
-                            .controlSize(.small)
-                    }
+            HStack(spacing: 6) {
+                ForEach(Self.terminalKeys, id: \.name) { key in
+                    Button(key.label) { press(key.name) }
+                        .buttonStyle(KeycapStyle())
                 }
-                .padding(.vertical, 2)
             }
+            .padding(.vertical, 3)
         }
+        .sensoryFeedback(.impact(weight: .light), trigger: keyed)
     }
 
     @ViewBuilder
@@ -323,16 +364,17 @@ struct NodeInspector: View {
                 TextField("What it puts out", text: Binding(get: { fireText ?? node.config?["text"]?.string ?? "" },
                                                             set: { fireText = $0 }), axis: .vertical)
                     .lineLimit(2...8)
+                    .foregroundStyle(Color.kouFg)
                 Button {
                     fire(node)
                 } label: {
-                    Label("Fire", systemImage: "bolt.fill")
+                    ActionLabel("Fire", symbol: "bolt.fill", tone: .kouAccent)
                 }
                 .disabled(!editable || !model.isLive || working)
             } header: {
-                Text("Fire it")
+                Eyebrow("Fire it")
             } footer: {
-                Text(model.isLive ? "It puts the text out along its wires." : "The canvas is paused: it fires once the canvas is live.")
+                FormNote(verbatim: model.isLive ? "It puts the text out along its wires." : "The canvas is paused: it fires once the canvas is live.")
             }
         }
         if node.preset == "webhook" {
@@ -340,49 +382,60 @@ struct NodeInspector: View {
                 if let hook = model.hooks[nodeID] {
                     Text(hook)
                         .font(.system(.footnote, design: .monospaced))
+                        .foregroundStyle(Color.kouFg2)
                         .textSelection(.enabled)
                     Button {
                         UIPasteboard.general.string = hook
                         model.notice = CanvasNotice(text: "The address was copied.")
                     } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
+                        ActionLabel("Copy", symbol: "doc.on.doc")
                     }
                 } else {
                     Button {
                         Task { await model.reload() }
                     } label: {
-                        Label("Look for its address", systemImage: "arrow.clockwise")
+                        ActionLabel("Look for its address", symbol: "arrow.clockwise")
                     }
                 }
             } header: {
-                Text("Address")
+                Eyebrow("Address")
             } footer: {
-                Text("A POST to this path of the cockpit fires it: the path is its secret.")
+                FormNote("A POST to this path of the cockpit fires it: the path is its secret.")
             }
         }
         output
-        Section("Log") {
+        Section {
             ScreenView(text: screen, height: 200, empty: "Nothing yet")
-                .listRowInsets(EdgeInsets())
+                .listRowInsets(EdgeInsets(top: 10, leading: 10, bottom: 10, trailing: 10))
+        } header: {
+            Eyebrow("Log")
         }
     }
 
     @ViewBuilder
     private var output: some View {
         if let output = model.outputs[nodeID] {
-            Section("Last output") {
-                VStack(alignment: .leading, spacing: 4) {
+            Section {
+                VStack(alignment: .leading, spacing: 5) {
                     if let title = output.title, !title.isEmpty {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Color.kouFg)
                     }
                     Text(output.preview)
                         .font(.subheadline)
+                        .foregroundStyle(Color.kouFg2)
                         .lineLimit(10)
                         .textSelection(.enabled)
+                }
+            } header: {
+                // When it came, at the head's end, as an instrument logs it.
+                HStack {
+                    Eyebrow("Last output")
+                    Spacer(minLength: 8)
                     Text(output.at, format: .dateTime.hour().minute().second())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg4)
                 }
             }
         }
@@ -391,22 +444,26 @@ struct NodeInspector: View {
     @ViewBuilder
     private func note(_ node: CanvasNode) -> some View {
         let text = node.config?["text"]?.string ?? ""
-        Section("Note") {
+        Section {
             if noteDraft != nil {
                 TextEditor(text: Binding(get: { self.noteDraft ?? "" }, set: { self.noteDraft = $0 }))
+                    .scrollContentBackground(.hidden)
+                    .foregroundStyle(Color.kouFg)
                     .frame(minHeight: 180)
                 HStack {
                     Button("Cancel") { noteDraft = nil }
+                        .tint(Color.kouFg2)
                     Spacer()
                     Button("Save") { saveNote() }
                         .fontWeight(.semibold)
+                        .tint(Color.kouAccent)
                         .disabled(working)
                 }
                 .buttonStyle(.borderless)
             } else {
                 if text.isEmpty {
                     Text("Empty")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                 } else {
                     MarkdownText(text: text)
                 }
@@ -414,10 +471,12 @@ struct NodeInspector: View {
                     Button {
                         noteDraft = text
                     } label: {
-                        Label("Edit", systemImage: "pencil")
+                        ActionLabel("Edit", symbol: "pencil")
                     }
                 }
             }
+        } header: {
+            Eyebrow("Note")
         }
     }
 
@@ -436,12 +495,13 @@ struct NodeInspector: View {
                     } label: {
                         MessageRow(model: model, message: message)
                     }
+                    .tint(Color.kouFg)
                     .swipeActions(edge: .leading) {
                         if editable, message.awaitsApproval {
                             Button("Send", systemImage: "paperplane.fill") {
                                 Task { await model.approve(message) }
                             }
-                            .tint(.green)
+                            .tint(Color.kouAccent)
                         }
                     }
                     .swipeActions(edge: .trailing) {
@@ -449,15 +509,15 @@ struct NodeInspector: View {
                             Button("Drop", systemImage: "trash") {
                                 Task { await model.drop(message) }
                             }
-                            .tint(.red)
+                            .tint(Color.kouErr)
                         }
                     }
                 }
             } header: {
-                Text("Waiting for it")
+                ListHead("Waiting for it", count: waiting.count)
             } footer: {
                 if waiting.contains(where: \.awaitsApproval) {
-                    Text("Those its wires hold for you go on once you send them, as they are or edited: swipe right, or tap one.")
+                    FormNote("Those its wires hold for you go on once you send them, as they are or edited: swipe right, or tap one.")
                 }
             }
         }
@@ -478,23 +538,33 @@ struct NodeInspector: View {
                 if !draft.isEmpty {
                     HStack {
                         Button("Revert") { draft = [:] }
+                            .tint(Color.kouFg2)
                         Spacer()
                         Button("Save") { saveSettings() }
                             .fontWeight(.semibold)
+                            .tint(Color.kouAccent)
                             .disabled(working)
                     }
                     .buttonStyle(.borderless)
                 }
             } header: {
-                Text("Settings")
+                ListHead("Settings") {
+                    if !draft.isEmpty {
+                        Tag("Not saved", tone: .kouWarn)
+                    }
+                }
             }
         } else if model.kinds == nil, node.kind != CanvasNode.note {
-            Section("Settings") {
+            Section {
                 HStack(spacing: 10) {
                     ProgressView()
+                        .controlSize(.small)
+                        .tint(Color.kouFg3)
                     Text("Reading its settings…")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                 }
+            } header: {
+                Eyebrow("Settings")
             }
         }
     }
@@ -509,11 +579,18 @@ struct NodeInspector: View {
             sheet = .models
         } label: {
             LabeledContent {
-                Text(app.modelTitle(currentModel, in: model.workspace))
-                    .foregroundStyle(Color.secondary)
+                HStack(spacing: 6) {
+                    Text(app.modelTitle(currentModel, in: model.workspace))
+                        .font(.system(.subheadline, design: .monospaced))
+                        .foregroundStyle(Color.kouFg2)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.kouFg4)
+                }
             } label: {
                 Text("Model")
-                    .foregroundStyle(Color.primary)
+                    .foregroundStyle(Color.kouFg)
             }
         }
         .disabled(!editable)
@@ -535,18 +612,26 @@ struct NodeInspector: View {
         if node.kind == CanvasNode.agent || node.kind == CanvasNode.terminal {
             let current = node.access.flatMap { $0.isEmpty ? nil : $0 } ?? Self.defaultAccess(of: node)
             Section {
-                Picker("Access", selection: Binding(get: { current }, set: { access in
+                Picker(selection: Binding(get: { current }, set: { access in
                     Task { await model.setAccess(nodeID, access) }
                 })) {
                     ForEach(Self.accesses, id: \.self) { access in
                         Text(access.capitalized).tag(access)
                     }
+                } label: {
+                    Label {
+                        Text("Access")
+                            .foregroundStyle(Color.kouFg)
+                    } icon: {
+                        RowIcon(Self.accessSymbol(current))
+                    }
                 }
+                .tint(Color.kouFg2)
                 .disabled(!editable)
             } header: {
-                Text("On the canvas")
+                Eyebrow("On the canvas")
             } footer: {
-                Text(Self.describe(access: current))
+                FormNote(verbatim: Self.describe(access: current))
             }
         }
     }
@@ -570,12 +655,13 @@ struct NodeInspector: View {
                     } label: {
                         EdgeRow(model: model, edge: edge, from: nodeID)
                     }
+                    .tint(Color.kouFg)
                     .swipeActions(edge: .trailing) {
                         if editable {
                             Button("Remove", systemImage: "trash") {
                                 Task { await model.remove(edge: edge) }
                             }
-                            .tint(.red)
+                            .tint(Color.kouErr)
                         }
                     }
                 }
@@ -600,14 +686,14 @@ struct NodeInspector: View {
                             }
                         }
                     } label: {
-                        Label("Wire it…", systemImage: "point.topleft.down.to.point.bottomright.curvepath")
+                        ActionLabel("Wire it…", symbol: "point.topleft.down.to.point.bottomright.curvepath")
                     }
                 }
             } header: {
-                Text("Wires")
+                ListHead("Wires", count: edges.isEmpty ? nil : edges.count)
             } footer: {
                 if !edges.isEmpty {
-                    Text("Tap a wire to say whether its messages wait for you, and what they say.")
+                    FormNote("Tap a wire to say whether its messages wait for you, and what they say.")
                 }
             }
         }
@@ -615,7 +701,7 @@ struct NodeInspector: View {
 
     @ViewBuilder
     private func details(_ node: CanvasNode) -> some View {
-        Section("Details") {
+        Section {
             LabeledContent("Made by", value: Self.creator(of: node, in: model))
             if let depth = node.depth, depth > 0 {
                 LabeledContent("Depth", value: "\(depth)")
@@ -643,10 +729,12 @@ struct NodeInspector: View {
             }
             LabeledContent("ID") {
                 Text(node.id)
-                    .font(.system(.footnote, design: .monospaced))
                     .textSelection(.enabled)
             }
+        } header: {
+            Eyebrow("Details")
         }
+        .labeledContentStyle(.kou)
     }
 
     @ViewBuilder
@@ -715,6 +803,7 @@ struct NodeInspector: View {
     }
 
     private func press(_ key: String) {
+        keyed += 1
         Task {
             do {
                 try await model.send(to: nodeID, text: nil, keys: [key])
@@ -831,6 +920,18 @@ struct NodeInspector: View {
         return preset.isEmpty || preset == "shell" || preset == "command" ? "talk" : "build"
     }
 
+    /// The mark of an access, from a closed eye to a key.
+    static func accessSymbol(_ access: String) -> String {
+        switch access {
+        case "none": "eye.slash"
+        case "observe": "eye"
+        case "talk": "bubble.left.and.text.bubble.right"
+        case "build": "hammer"
+        case "admin": "key"
+        default: "questionmark"
+        }
+    }
+
     static func describe(access: String) -> String {
         switch access {
         case "none": "It does nothing to the canvas."
@@ -843,6 +944,57 @@ struct NodeInspector: View {
     }
 }
 
+/// ActionLabel is a form row's action: its symbol on a row's chip, its words
+/// in the row's ink — the failure's for those that stop or remove. Disabled,
+/// it fades, which a row's own colours do not on their own.
+struct ActionLabel: View {
+    let title: String
+    let symbol: String
+    var tone: Color = .kouFg2
+    var ink: Color = .kouFg
+    @Environment(\.isEnabled) private var enabled
+
+    init(_ title: String, symbol: String, tone: Color = .kouFg2, ink: Color = .kouFg) {
+        self.title = title
+        self.symbol = symbol
+        self.tone = tone
+        self.ink = ink
+    }
+
+    var body: some View {
+        Label {
+            Text(verbatim: title)
+                .foregroundStyle(ink)
+        } icon: {
+            RowIcon(symbol, tone: tone)
+        }
+        .opacity(enabled ? 1 : 0.45)
+    }
+}
+
+/// KeycapStyle is a terminal key's: a cap of the shade in mono, its edge
+/// under it, that goes down onto the edge when pressed and lights in the
+/// accent.
+struct KeycapStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        let shape = RoundedRectangle(cornerRadius: .corner(7), style: .continuous)
+        let pressed = configuration.isPressed
+        configuration.label
+            .font(.system(.footnote, design: .monospaced, weight: .semibold))
+            .foregroundStyle(pressed ? Color.kouAccent : Color.kouFg)
+            .lineLimit(1)
+            .frame(minWidth: 26, minHeight: 30)
+            .padding(.horizontal, 9)
+            .background(pressed ? Color.kouAccentSoft : Color.kouChip, in: shape)
+            .overlay(shape.strokeBorder(pressed ? Color.kouAccent.opacity(0.5) : Color.kouLine2, lineWidth: 1))
+            .offset(y: pressed ? 1.5 : 0)
+            .background(shape.fill(Color.kouLine2).offset(y: 1.5))
+            .padding(.bottom, 1.5)
+            .contentShape(shape)
+            .animation(.snappy(duration: 0.12), value: pressed)
+    }
+}
+
 /// EdgeRow is a wire of a node: where it goes or comes from, and how.
 struct EdgeRow: View {
     let model: CanvasModel
@@ -852,31 +1004,32 @@ struct EdgeRow: View {
 
     var body: some View {
         let outgoing = edge.from.node == from
+        let other = outgoing ? edge.to.node : edge.from.node
+        let mode = edge.effectiveMode
         HStack(spacing: 12) {
-            Image(systemName: outgoing ? "arrow.right" : "arrow.left")
-                .font(.body.weight(.semibold))
-                .foregroundStyle(Color.secondary)
-                .frame(width: 22)
+            RowIcon(outgoing ? "arrow.right" : "arrow.left", tone: mode == CanvasEdge.approve ? .kouWarn : .kouFg3)
             VStack(alignment: .leading, spacing: 3) {
-                Text(outgoing ? "To «\(model.title(of: edge.to.node))»" : "From «\(model.title(of: edge.from.node))»")
-                    .foregroundStyle(Color.primary)
+                Text("\(Text(outgoing ? "To" : "From").foregroundStyle(Color.kouFg3)) \(Text(verbatim: model.title(of: other)).foregroundStyle(Color.kouFg))")
                     .lineLimit(1)
                 Text(Self.describe(edge))
-                    .font(.caption)
-                    .foregroundStyle(Color.secondary)
+                    .font(.kouMeta)
+                    .foregroundStyle(mode == CanvasEdge.approve ? Color.kouWarn : Color.kouFg3)
+                    .lineLimit(2)
             }
             Spacer(minLength: 4)
-            switch edge.effectiveMode {
+            switch mode {
             case CanvasEdge.approve:
                 Image(systemName: "hand.raised.fill")
-                    .foregroundStyle(Color.yellow)
+                    .foregroundStyle(Color.kouWarn)
             case CanvasEdge.off:
                 Image(systemName: "pause.circle")
-                    .foregroundStyle(Color.secondary)
+                    .foregroundStyle(Color.kouFg4)
             default:
                 EmptyView()
             }
         }
+        // An idle wire is drawn faint on the board; so here.
+        .opacity(mode == CanvasEdge.off ? 0.6 : 1)
     }
 
     static func describe(_ edge: CanvasEdge) -> String {
@@ -917,58 +1070,88 @@ struct EdgeSheet: View {
         NavigationStack {
             Form {
                 Section {
-                    LabeledContent("From", value: model.title(of: edge.from.node))
-                    LabeledContent("To", value: model.title(of: edge.to.node))
+                    route
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 4, bottom: 4, trailing: 4))
                 }
-                Section {
-                    Picker("Messages", selection: $mode) {
-                        Text("Go on their own").tag(CanvasEdge.auto)
-                        Text("Wait for you").tag(CanvasEdge.approve)
-                        Text("Off").tag(CanvasEdge.off)
-                    }
-                    Picker("Delivery", selection: $deliver) {
-                        Text("When it is free").tag(CanvasEdge.queue)
-                        Text("At once").tag(CanvasEdge.now)
-                    }
-                    Picker("Where it comes from", selection: $header) {
-                        Text("As the target wants").tag("default")
-                        Text("Said first").tag("on")
-                        Text("Not said").tag("off")
-                    }
-                } footer: {
-                    Text(hint)
-                }
-                Section {
-                    TextEditor(text: $template)
-                        .font(.system(.callout, design: .monospaced))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .frame(minHeight: 110)
-                } header: {
-                    Text("Template")
-                } footer: {
-                    Text(verbatim: "Empty, the output goes as it is: {{text}}. A template may also use {{title}}, {{data.<path>}}, {{from.title}}, {{from.id}}, {{from.kind}}, {{edge.id}} and {{now}}.")
-                }
-                if !model.readOnly {
+                Group {
                     Section {
-                        Button("Remove the wire", systemImage: "trash", role: .destructive) {
-                            Task { if await model.remove(edge: edge) { dismiss() } }
+                        Picker("Messages", selection: $mode) {
+                            Text("Go on their own").tag(CanvasEdge.auto)
+                            Text("Wait for you").tag(CanvasEdge.approve)
+                            Text("Off").tag(CanvasEdge.off)
+                        }
+                        Picker("Delivery", selection: $deliver) {
+                            Text("When it is free").tag(CanvasEdge.queue)
+                            Text("At once").tag(CanvasEdge.now)
+                        }
+                        Picker("Where it comes from", selection: $header) {
+                            Text("As the target wants").tag("default")
+                            Text("Said first").tag("on")
+                            Text("Not said").tag("off")
+                        }
+                    } header: {
+                        Eyebrow("What goes along it")
+                    } footer: {
+                        FormNote(verbatim: hint)
+                    }
+                    .tint(Color.kouFg2)
+                    Section {
+                        TextEditor(text: $template)
+                            .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(Color.kouFg)
+                            .scrollContentBackground(.hidden)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .frame(minHeight: 110)
+                    } header: {
+                        Eyebrow("Template")
+                    } footer: {
+                        FormNote(verbatim: "Empty, the output goes as it is: {{text}}. A template may also use {{title}}, {{data.<path>}}, {{from.title}}, {{from.id}}, {{from.kind}}, {{edge.id}} and {{now}}.")
+                    }
+                    if !model.readOnly {
+                        Section {
+                            Button(role: .destructive) {
+                                Task { if await model.remove(edge: edge) { dismiss() } }
+                            } label: {
+                                ActionLabel("Remove the wire", symbol: "trash", tone: .kouErr, ink: .kouErr)
+                            }
                         }
                     }
                 }
+                .kouRow()
             }
+            .groupedBackground()
+            .listSectionSpacing(22)
             .disabled(model.readOnly)
             .navigationTitle("Wire")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save", systemImage: "checkmark") { save() }
                         .disabled(changes.isEmpty || working || model.readOnly)
                 }
             }
+        }
+    }
+
+    /// The wire as the board draws it, from its source down to its target;
+    /// it follows the choice before it is saved.
+    private var route: some View {
+        WireRoute(model: model, from: edge.from.node, to: edge.to.node, tone: wireTone,
+                  dash: mode == CanvasEdge.approve ? [4, 4] : mode == CanvasEdge.off ? [1, 5] : [])
+            .animation(.smooth, value: mode)
+    }
+
+    private var wireTone: Color {
+        switch mode {
+        case CanvasEdge.approve: .kouWarn
+        case CanvasEdge.off: Color.kouFg4.opacity(0.7)
+        default: .kouFg3
         }
     }
 
@@ -1030,12 +1213,12 @@ struct FieldRow: View {
             if let description = property.description, !description.isEmpty {
                 Text(description)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg3)
             }
             if let problem {
                 Text(problem)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Color.kouErr)
             }
         }
         .onChange(of: text) { _, new in
@@ -1050,23 +1233,32 @@ struct FieldRow: View {
     @ViewBuilder
     private var control: some View {
         if !property.choices.isEmpty {
-            Picker(title, selection: Binding(get: { value?.text ?? "" }, set: { value = $0.isEmpty ? nil : .string($0) })) {
+            Picker(selection: Binding(get: { value?.text ?? "" }, set: { value = $0.isEmpty ? nil : .string($0) })) {
                 if !field.required || value == nil {
                     Text(fallback).tag("")
                 }
                 ForEach(property.choices, id: \.self) { choice in
                     Text(choice).tag(choice)
                 }
-            }
-        } else if property.type == "boolean" {
-            Toggle(title, isOn: Binding(get: { value?.bool ?? property.defaultValue?.bool ?? false },
-                                        set: { value = .bool($0) }))
-        } else {
-            VStack(alignment: .leading, spacing: 4) {
+            } label: {
                 Text(title)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                TextField(field.title, text: $text, prompt: Text(prompt), axis: .vertical)
+                    .foregroundStyle(Color.kouFg)
+            }
+            .tint(Color.kouFg2)
+        } else if property.type == "boolean" {
+            Toggle(isOn: Binding(get: { value?.bool ?? property.defaultValue?.bool ?? false },
+                                 set: { value = .bool($0) })) {
+                Text(title)
+                    .foregroundStyle(Color.kouFg)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Eyebrow(title)
+                // What a machine reads — a number, a list, a name — in mono;
+                // what a person reads, in the text's own face.
+                TextField(field.title, text: $text, prompt: Text(prompt).foregroundStyle(Color.kouFg4), axis: .vertical)
+                    .font(prose ? .body : .system(.body, design: .monospaced))
+                    .foregroundStyle(Color.kouFg)
                     .lineLimit(1...8)
                     .keyboardType(keyboard)
                     .textInputAutocapitalization(prose ? .sentences : .never)
@@ -1127,11 +1319,15 @@ struct FieldRow: View {
     }
 }
 
-/// ScreenView is a terminal's screen, or a log: light on black.
+/// ScreenView is a terminal's screen, or a log: a warm light on near black,
+/// in light as in dark — a terminal is dark whatever the phone is.
 struct ScreenView: View {
     let text: String?
     var height: CGFloat = 260
     var empty = "Not running"
+
+    static let ground = Color(uiColor: Look.uiColor("#0b0b0a"))
+    static let ink = Color(uiColor: Look.uiColor("#d6d4cb"))
 
     /// The text without the blank rows under its last line: a terminal's
     /// screen is as tall as the terminal, and shown from its bottom they
@@ -1150,7 +1346,7 @@ struct ScreenView: View {
         ScrollView(.vertical) {
             Text(shown)
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(.green.mix(with: .white, by: 0.35))
+                .foregroundStyle(Self.ink)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .padding(12)
@@ -1158,15 +1354,30 @@ struct ScreenView: View {
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
         .frame(height: height)
-        .background(Color.black)
+        .background(Self.ground)
+        .environment(\.colorScheme, .dark)
+        // A screen set in the card as in a bezel, its glass edged: on the
+        // dark shades its black is the ground's, and it would not show.
+        .clipShape(.rect(cornerRadius: .corner(10), style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: .corner(10), style: .continuous)
+                .strokeBorder(Color.kouLine2, lineWidth: 1)
+        }
         .overlay {
             if text == nil {
                 ProgressView()
-                    .tint(.white)
+                    .tint(Self.ink.opacity(0.6))
             } else if shown.isEmpty {
-                Text(empty)
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.6))
+                HStack(spacing: 7) {
+                    Rectangle()
+                        .strokeBorder(Self.ink.opacity(0.4), lineWidth: 1)
+                        .frame(width: 7, height: 7)
+                    Text(verbatim: empty)
+                        .textCase(.uppercase)
+                        .font(.kouEyebrow)
+                        .tracking(1.2)
+                        .foregroundStyle(Self.ink.opacity(0.45))
+                }
             }
         }
     }
@@ -1179,32 +1390,49 @@ struct FeedRow: View {
     var body: some View {
         switch entry.kind {
         case Entry.user:
+            // The user's words as the chat has them: in the accent laid over
+            // the card, round but for the corner they are said from.
             Text(entry.text ?? "")
+                .font(.subheadline)
                 .lineLimit(6)
-                .foregroundStyle(Color.kouAccentInk)
+                .foregroundStyle(Color.kouFg)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(Color.kouAccent.gradient, in: .rect(cornerRadius: .corner(16)))
+                .background {
+                    ZStack {
+                        UserBubble.shape.fill(Color.kouAccent.opacity(0.14))
+                        UserBubble.shape.strokeBorder(Color.kouAccent.opacity(0.38), lineWidth: 1)
+                    }
+                }
                 .frame(maxWidth: .infinity, alignment: .trailing)
                 .padding(.leading, 32)
         case Entry.tool:
+            // As the chat's head of a call: its state's glyph, its name as a
+            // label, and what it was given.
             HStack(spacing: 8) {
                 ToolStateIcon(tool: entry.tool.map { Tool(callID: entry.id, name: $0.name, state: $0.state, exitCode: $0.exitCode) }, live: true)
                     .frame(width: 18)
                 Text(entry.tool?.name ?? "tool")
-                    .font(.system(.footnote, design: .monospaced, weight: .semibold))
+                    .textCase(.uppercase)
+                    .font(.kouEyebrow)
+                    .tracking(0.9)
+                    .foregroundStyle(Color.kouFg2)
+                    .lineLimit(1)
+                    .layoutPriority(1)
                 Text(entry.tool?.summary ?? "")
                     .font(.system(.footnote, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg)
                     .lineLimit(1)
+                    .truncationMode(.middle)
             }
-            .padding(10)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.fill.quaternary, in: .rect(cornerRadius: .corner(12)))
+            .kouPanel(radius: 10)
         case Entry.reasoning:
             Label(entry.text ?? "Thinking", systemImage: "brain")
                 .font(.footnote)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
                 .lineLimit(3)
         case Entry.error:
             ErrorBlock(text: entry.text ?? "", detail: nil)

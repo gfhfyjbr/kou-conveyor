@@ -532,8 +532,11 @@ export default function activate(cockpit) {
       for (const button of [actionsButton, copyIdButton, copyTuiButton]) disable(button, v.fresh);
       return kvs(
         row('session.id', 'ID', v.fresh ? 'unsaved' : v.id.slice(0, 13)),
-        row('session.entries', 'Entries', String(v.order.length)),
-        row('session.started', 'Started', v.order.length ? fmt.stamp(v.entries.get(v.order[0]).at) : '—'),
+        // A view that read only the transcript's end (a chat on a canvas)
+        // counts those before it, and starts with its first prompt.
+        row('session.entries', 'Entries', String((v.earlier || 0) + v.order.length)),
+        row('session.started', 'Started', v.earlier > 0 ? (v.earlierPrompts?.[0]?.at ? fmt.stamp(v.earlierPrompts[0].at) : '—')
+          : v.order.length ? fmt.stamp(v.entries.get(v.order[0]).at) : '—'),
         sessionActions);
     },
   });

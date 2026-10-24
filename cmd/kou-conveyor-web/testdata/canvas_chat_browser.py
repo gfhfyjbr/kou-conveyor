@@ -29,14 +29,15 @@ TOASTS_JS = """(() => {
   }).observe(document, { childList: true, subtree: true });
 })();"""
 COULD_NOT = "could not stay open"
-# The agents whose feed a page showed, by title, as it showed: a node to
-# have its chat says the chat opens, not shows its feed a moment first.
+# The agents that said why they have no chat (.cv-chat-off), by title, as
+# they said it: a node to have its chat says the chat opens, not that it
+# has none a moment first. (No node shows a transcript of its own.)
 FED_JS = """(() => {
   window.__fed = {};
   const look = () => {
     for (const n of document.querySelectorAll(".cv-node[data-kind='agent']")) {
-      const feed = n.querySelector('.cv-agent-feed');
-      if (!feed || feed.hidden || n.dataset.lod === 'low') continue;
+      const off = n.querySelector('.cv-chat-off');
+      if (!off || off.hidden || n.dataset.lod === 'low') continue;
       window.__fed[n.querySelector('.cv-title')?.textContent || n.dataset.id] ??= Math.round(performance.now());
     }
   };
@@ -159,7 +160,8 @@ with sync_playwright() as p:
         sys.exit(1 if failures else 0)
 
     # The canvas: its streams go over sockets, so each kou agent in view has
-    # its whole chat — none its feed first, a moment, while the chat opens.
+    # its whole chat — none says it has none first, a moment, while the chat
+    # opens.
     page.goto(canvas_url)
     page.wait_for_selector(".cv-node[data-kind='agent']", timeout=15000)
     page.wait_for_timeout(800)
@@ -172,7 +174,8 @@ with sync_playwright() as p:
     shown = all_chats(page)
     check(shown is not None and len(shown) == 3, f"each agent in view has its whole chat {agents(page)}")
     fed = page.evaluate("window.__fed")
-    check(not fed, f"no agent showed its feed before its chat {fed}")
+    check(not fed, f"no agent said it had no chat before its chat {fed}")
+    check(page.locator(".cv-agent-feed, .cv-feed, .cv-e").count() == 0, "no agent shows a transcript of its own (the old feed)")
     page.screenshot(path=str(out / f"{label}-canvas-chats.png"))
 
     # The node none of whose runs began: its session has an ID and no
@@ -197,7 +200,7 @@ with sync_playwright() as p:
     ffr = [f for f in page.frames if "embed=canvas-chat" in f.url and fresh_sid in f.url]
     check(len(ffr) == 1 and ffr[0].locator(".dock textarea").count() >= 1, "never ran: with the chat's composer")
     check(len(ffr) == 1 and ffr[0].evaluate("location.hash").endswith("/s/" + fresh_sid), "never ran: the chat keeps to its session")
-    check(fresh.locator(".cv-chat-hint:visible, .cv-chat-note:visible").count() == 0, "never ran: no note")
+    check(fresh.locator(".cv-chat-off:visible").count() == 0, "never ran: no note")
     print("reads of the session that is not there yet:", missing)
     check(1 <= asked <= 2 and len(missing) == asked, f"never ran: its session is asked for once, not over and over ({asked}, then {len(missing)})")
     said = [t for t in toasts(page) if COULD_NOT in t or "not found" in t.lower()]
@@ -381,7 +384,7 @@ with sync_playwright() as p:
     afr = [f for f in page.frames if "embed=canvas-chat" in f.url and added_sid and added_sid in f.url]
     check(len(afr) == 1 and afr[0].locator(".dock textarea").count() >= 1, f"added: with the chat's composer ({added_sid})")
     check(len(afr) == 1 and afr[0].evaluate("location.hash").endswith("/s/" + added_sid), "added: the chat keeps to its session")
-    check(added.locator(".cv-chat-hint:visible, .cv-chat-note:visible").count() == 0, "added: no note")
+    check(added.locator(".cv-chat-off:visible").count() == 0, "added: no note")
     reads = [u for u in lost if added_sid and added_sid in u]
     check(1 <= len(reads) <= 2, f"added: its session is asked for once, not over and over ({len(reads)})")
     said = [t for t in toasts(page) if COULD_NOT in t or "not found" in t.lower() or "not added" in t.lower()]
@@ -434,10 +437,10 @@ with sync_playwright() as p:
     pan(-6000, 0)
     back = all_chats(page)
     check(back is not None and len(back) == chats and len(loads) == chats, f"back after that: the chats open anew ({len(loads)})")
-    # Meanwhile none showed its feed — back in view before the board looked
-    # again, a node shows its chat, kept, or that it opens.
+    # Meanwhile none said it had no chat — back in view before the board
+    # looked again, a node shows its chat, kept, or that it opens.
     fed = page.evaluate("window.__fed")
-    check(not fed, f"panned and zoomed away and back: no agent showed its feed meanwhile {fed}")
+    check(not fed, f"panned and zoomed away and back: no agent said it had no chat meanwhile {fed}")
 
     # What is let go is gone: chats let go and opened anew, the canvas left
     # and opened again, the page holds no more documents than before. (A
@@ -619,7 +622,7 @@ with sync_playwright() as p:
     one = chats_shown(ev)
     check(len(one) == 1, f"no sockets: one chat at a time {agents(ev)}")
     fed = ev.evaluate("window.__fed")
-    check(len(one) == 1 and one[0] not in fed, f"no sockets: the agent with the chat did not show its feed first {fed}")
+    check(len(one) == 1 and one[0] not in fed, f"no sockets: the agent with the chat did not say it had none first {fed}")
     helper_ev, second_ev = node_of(ev, "Helper"), node_of(ev, "Second")
     def take(node):
         node.locator(".cv-head").first.click()
@@ -632,7 +635,9 @@ with sync_playwright() as p:
     take(second_ev)
     check(chats_shown(ev) == ["Second"], f"no sockets: picked, another takes the chat {agents(ev)}")
     check(ev.locator("iframe.cv-chat-frame").count() == 1, "no sockets: the chat it had is not kept")
-    check(helper_ev.locator(".cv-agent-feed").is_visible() and helper_ev.locator(".cv-chat-hint").is_visible(), "no sockets: the one that had it shows its feed, and the way back to its chat")
+    check(helper_ev.locator(".cv-chat-off").is_visible() and helper_ev.locator(".cv-chat-off button", has_text="Open the chat here").is_visible(),
+          "no sockets: the one that had it says why it has none, and offers the way back to its chat")
+    check(helper_ev.locator(".cv-agent-feed, .cv-feed, .cv-e").count() == 0, "no sockets: and shows no transcript of its own")
     ev.screenshot(path=str(out / f"{label}-canvas-events.png"))
     # The chats let go there are gone too.
     ev_cdp = context.new_cdp_session(ev)
@@ -684,9 +689,9 @@ with sync_playwright() as p:
     check(not ev_errors, f"no sockets: no page errors {ev_errors}")
     ev.close()
 
-    # A server that does not let the chat be framed: the nodes keep their
-    # feed and say why; once the server is back as one that lets it, the
-    # chat comes, with no reload.
+    # A server that does not let the chat be framed: the nodes say why, and
+    # offer the session on the stage; once the server is back as one that
+    # lets it, the chat comes, with no reload.
     old = browser.new_page(viewport={"width": 1440, "height": 900})
     old_errors = []
     old.on("pageerror", lambda e: old_errors.append(e.stack or str(e)))
@@ -702,9 +707,10 @@ with sync_playwright() as p:
     node_of(old, "Helper").locator(".cv-head").click()
     old.wait_for_timeout(1500)
     check(old.locator("iframe.cv-chat-frame").count() == 0, "framing denied: no chat frame")
-    check(old.locator(".cv-node[data-kind='agent'] .cv-agent-feed").first.is_visible(), "framing denied: the feed shows")
-    check(old.locator(".cv-chat-hint:visible").count() == 0, "framing denied: no way to a chat that cannot open")
-    check(old.locator(".cv-chat-note:visible").count() >= 1, "framing denied: the node says why")
+    denied = old.locator(".cv-node[data-kind='agent'] .cv-chat-off:visible")
+    check(denied.count() >= 1 and "framed" in denied.first.inner_text(), "framing denied: the node says why")
+    check(old.locator(".cv-chat-off button:visible", has_text="Open the chat here").count() == 0, "framing denied: no way to a chat that cannot open")
+    check(old.locator(".cv-chat-off button:visible", has_text="Open session").count() >= 1, "framing denied: the session, on the stage, instead")
     old.screenshot(path=str(out / f"{label}-canvas-denied.png"))
     node_of(old, "Helper").screenshot(path=str(out / f"{label}-node-denied.png"))
     check(not old_errors, f"framing denied: no page errors {old_errors}")
@@ -720,7 +726,7 @@ with sync_playwright() as p:
         print("no chat after the server came back:", str(e).splitlines()[0])
     check(len(asks) == 1, f"the server asked once again whether it lets the chat be framed ({len(asks)})")
     check(all_chats(old) is not None, f"the server back as one that lets it: the chats come, with no reload {agents(old)}")
-    check(old.locator(".cv-chat-note:visible").count() == 0, "and no node says it cannot")
+    check(old.locator(".cv-chat-off:visible").count() == 0, "and no node says it cannot")
     old.screenshot(path=str(out / f"{label}-canvas-back.png"))
     check(not old_errors, f"the server back: no page errors {old_errors}")
 

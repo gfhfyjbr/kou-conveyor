@@ -9,7 +9,7 @@
 // terminals draw live, the zoom says (lod.js).
 //
 // A wheel over a node pans the board, unless the node is the one selected
-// or in use: then what can scroll in it scrolls — its feed, its terminal.
+// or in use: then what can scroll in it scrolls — its chat, its terminal.
 import { GRID, snap, clampZoom, boundsOf, overlaps, sizeOf, portsOf, MIN_ZOOM, MAX_ZOOM } from './geometry.js';
 import { createEdges } from './edges.js';
 import { createFrame } from './frame.js';
@@ -308,8 +308,8 @@ export function createSurface(model, env) {
       const own = id === pinned && level !== 'low' ? 'full' : level;
       next.set(id, { visible, level: own });
       if (!visible || own === 'low' || n.proposed) continue;
-      // A terminal draws live where its text can be read; an agent's chat,
-      // as its feed, wherever a node has more than its header.
+      // A terminal draws live where its text can be read; an agent's chat
+      // wherever a node has more than its header.
       if (n.kind === 'terminal' && own === 'full') wanting.push(id);
       else if (n.kind === 'agent' && n.runtime?.session) chatting.push(id);
     }

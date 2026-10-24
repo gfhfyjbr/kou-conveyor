@@ -10,15 +10,17 @@ export const LOW = 0.35;
 // From LIVE on, terminals draw live.
 export const LIVE = 0.6;
 export const MAX_LIVE = 8;
-// A kou agent shows its whole chat — the cockpit's own, in a frame — in no
-// more than so many nodes at once, those used last; the others show their
-// feed. Each chat is a page of the cockpit, with the memory one takes and
-// event streams of its own. Over HTTP/1.1 a browser holds no more than six
-// connections to a host, for all its tabs together, and a stream read as an
-// EventSource keeps one: there is room for one chat then. Read over sockets
-// (kernel/events.js), or over HTTP/2 (a relay), the streams keep none of
-// them: CHATS chats show, COARSE_CHATS on a phone or a tablet.
-export const CHATS = 8;
+// A kou agent node is its whole chat — the cockpit's own, in a frame —
+// in view at a zoom where it can be read: every one of a canvas, up to so
+// many at once, those used last; the others say they wait and open when
+// used (nodes/agent.js). Each chat is a page of the cockpit, with the
+// memory one takes and event streams of its own. Over HTTP/1.1 a browser
+// holds no more than six connections to a host, for all its tabs
+// together, and a stream read as an EventSource keeps one: there is room
+// for one chat then. Read over sockets (kernel/events.js), or over HTTP/2
+// (a relay), the streams keep none of them: CHATS chats show, COARSE_CHATS
+// on a phone or a tablet, which has less memory to give them.
+export const CHATS = 12;
 export const COARSE_CHATS = 3;
 // The protocol the page came over.
 export const PROTOCOL = globalThis.performance?.getEntriesByType?.('navigation')?.[0]?.nextHopProtocol || '';

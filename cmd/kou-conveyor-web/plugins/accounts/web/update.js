@@ -18,7 +18,7 @@ const SNOOZE = 'gateway-update-later'; // { version, until }
 // What the server says of its own build, once go.mod moved.
 const BUILD = {
   building: 'Building the server anew',
-  waiting: 'Built — the server restarts once the agents at work finish',
+  waiting: 'Built — the server restarts once the agents attached to it finish',
   restarting: 'Restarting the server',
 };
 

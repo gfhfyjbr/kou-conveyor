@@ -14,21 +14,26 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 28) {
+                VStack(spacing: 30) {
                     hero
                     steps
                     if let error {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .font(.callout)
-                            .foregroundStyle(.red)
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .glassEffect(.regular.tint(.red.opacity(0.12)), in: .rect(cornerRadius: .corner(18)))
-                            .transition(.blurReplace)
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .foregroundStyle(Color.kouErr)
+                            Text(verbatim: error)
+                                .foregroundStyle(Color.kouFg)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .font(.callout)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .kouPanel(radius: 14, fill: Color.kouErr.opacity(0.08), stroke: Color.kouErr.opacity(0.45))
+                        .transition(.blurReplace)
                     }
                 }
                 .padding(.horizontal, 24)
-                .padding(.top, 40)
+                .padding(.top, 28)
                 .padding(.bottom, 24)
                 .frame(maxWidth: 560)
                 .frame(maxWidth: .infinity)
@@ -38,6 +43,7 @@ struct PairingView: View {
             .safeAreaBar(edge: .bottom) {
                 actions
             }
+            .sensoryFeedback(.error, trigger: error) { _, new in new != nil }
             .sheet(isPresented: $scanning) {
                 ScannerSheet { link in
                     scanning = false
@@ -53,44 +59,66 @@ struct PairingView: View {
         }
     }
 
+    /// The tunnel's orbit over the app's name: what the app is, before what
+    /// to do.
     private var hero: some View {
-        VStack(spacing: 18) {
-            PlanetMark(lineWidth: 1.1)
-                .foregroundStyle(Color.kouAccent)
-                .frame(width: 92, height: 92)
-                .padding(26)
-                .glassEffect(.regular.tint(Color.kouAccent.opacity(0.10)), in: .circle)
-            VStack(spacing: 6) {
-                Text("kou-conveyor")
-                    .font(.system(.largeTitle, design: .monospaced, weight: .bold))
+        VStack(spacing: 22) {
+            Orbit(color: .kouAccent, live: true, size: 172)
+            VStack(spacing: 10) {
+                Eyebrow("Pair this iPhone", color: .kouAccent)
+                Text(verbatim: "kou-conveyor")
+                    .font(.system(size: 34, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(Color.kouFg)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
                 Text("Your cockpit, carried through its relay: the sessions, the chat, the canvases — here.")
                     .font(.body)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg3)
                     .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
 
+    /// How to pair, as a track of three steps.
     private var steps: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            step(1, "In the cockpit, run **/tunnel**. If no relay is set up yet, the agent sets one up on a host of yours.")
+        VStack(alignment: .leading, spacing: 0) {
+            SectionLabel("How to pair")
+                .padding(.bottom, 16)
+            step(1, "In the cockpit, run `/tunnel`. If no relay is set up yet, the agent sets one up on a host of yours.")
             step(2, "The tunnel's dialog shows a pairing code and a link.")
-            step(3, "Scan the code here, or with the Camera app, or paste the link.")
+            step(3, "Scan the code here, or with the Camera app, or paste the link.", last: true)
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .glassEffect(.regular, in: .rect(cornerRadius: .corner(22)))
+        .kouPanel(radius: 18)
     }
 
-    private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Text("\(number)")
-                .font(.system(.subheadline, design: .monospaced, weight: .bold))
+    private func step(_ number: Int, _ text: LocalizedStringKey, last: Bool = false) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text(verbatim: String(format: "%02d", number))
+                .font(.system(.caption, design: .monospaced, weight: .bold))
                 .foregroundStyle(Color.kouAccent)
-                .frame(width: 18)
+                .frame(width: 30, height: 30)
+                .background(Color.kouAccentSoft, in: .circle)
+                .overlay(Circle().strokeBorder(Color.kouAccent.opacity(0.4), lineWidth: 1))
             Text(text)
                 .font(.subheadline)
+                .foregroundStyle(Color.kouFg2)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 5)
+                .padding(.bottom, last ? 0 : 18)
+        }
+        // The track down to the next step.
+        .background(alignment: .leading) {
+            if !last {
+                Rectangle()
+                    .fill(Color.kouLine2)
+                    .frame(width: 1)
+                    .padding(.top, 34)
+                    .padding(.bottom, 4)
+                    .padding(.leading, 14.5)
+            }
         }
     }
 
@@ -153,11 +181,16 @@ struct PairingView: View {
         .glassEffectID("manual", in: glass)
     }
 
+    /// The ground: the shade's, a field of dots fading out from the orbit,
+    /// and the accent's glow behind it — a chart table, not a poster.
     private var backdrop: some View {
         ZStack {
             Color.kouGround
-            RadialGradient(colors: [Color.kouAccent.opacity(0.28), .clear], center: .top, startRadius: 0, endRadius: 420)
-            RadialGradient(colors: [Color.indigo.opacity(0.18), .clear], center: .bottomTrailing, startRadius: 0, endRadius: 380)
+            DotField()
+                .mask(RadialGradient(colors: [.black, .black.opacity(0.35), .clear],
+                                     center: UnitPoint(x: 0.5, y: 0.24), startRadius: 0, endRadius: 520))
+            RadialGradient(colors: [Color.kouAccent.opacity(0.2), .clear],
+                           center: UnitPoint(x: 0.5, y: 0.24), startRadius: 0, endRadius: 340)
         }
         .ignoresSafeArea()
     }
@@ -189,6 +222,29 @@ struct PairingView: View {
                 withAnimation { self.error = error.localizedDescription }
             }
         }
+    }
+}
+
+/// DotField is a grid of dots in the shade's stronger line: the pairing
+/// screen's ground.
+private struct DotField: View {
+    var spacing: CGFloat = 22
+
+    var body: some View {
+        Canvas { context, size in
+            let dot = Path(ellipseIn: CGRect(x: -0.8, y: -0.8, width: 1.6, height: 1.6))
+            let shading = GraphicsContext.Shading.color(Color.kouLine2)
+            var y = spacing / 2
+            while y < size.height {
+                var x = (size.width.truncatingRemainder(dividingBy: spacing)) / 2
+                while x < size.width {
+                    context.fill(dot.offsetBy(dx: x, dy: y), with: shading)
+                    x += spacing
+                }
+                y += spacing
+            }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -257,34 +313,47 @@ struct ManualPairingSheet: View {
             Form {
                 Section {
                     TextField("https://relay.example.com:8420", text: $url)
+                        .font(.system(.body, design: .monospaced))
                         .keyboardType(.URL)
                         .textContentType(.URL)
                 } header: {
-                    Text("Relay")
+                    Eyebrow("Relay")
                 }
+                .kouRow()
                 Section {
                     SecureField("Token", text: $token)
+                        .font(.system(.body, design: .monospaced))
                         .textContentType(.password)
                 } header: {
-                    Text("Token")
+                    Eyebrow("Token")
                 } footer: {
-                    Text("On the relay's host: kou-conveyor-relay -print-config")
+                    Text("On the relay's host: \(Text(verbatim: "kou-conveyor-relay -print-config").font(.system(.footnote, design: .monospaced)).foregroundStyle(Color.kouFg2))")
+                        .font(.footnote)
+                        .foregroundStyle(Color.kouFg3)
                 }
+                .kouRow()
                 Section {
                     TextField("SHA-256, 64 hex digits", text: $fingerprint, axis: .vertical)
                         .font(.system(.footnote, design: .monospaced))
                 } header: {
-                    Text("Certificate fingerprint")
+                    Eyebrow("Certificate fingerprint")
                 } footer: {
-                    Text("For a relay with its own certificate (-tls self-signed, the default). Leave it empty for a certificate a CA signed, or for -tls off.")
+                    FormNote("For a relay with its own certificate (-tls self-signed, the default). Leave it empty for a certificate a CA signed, or for -tls off.")
                 }
+                .kouRow()
                 if let error {
                     Section {
-                        Label(error, systemImage: "exclamationmark.triangle.fill")
-                            .foregroundStyle(.red)
+                        Label {
+                            Text(verbatim: error)
+                                .foregroundStyle(Color.kouErr)
+                        } icon: {
+                            RowIcon("exclamationmark.triangle.fill", tone: .kouErr)
+                        }
                     }
+                    .kouRow()
                 }
             }
+            .groupedBackground()
             .autocorrectionDisabled()
             .textInputAutocapitalization(.never)
             .navigationTitle("Enter by hand")
@@ -292,6 +361,7 @@ struct ManualPairingSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Pair", systemImage: "checkmark") {

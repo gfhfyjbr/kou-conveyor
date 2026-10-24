@@ -13,7 +13,6 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // Sources bring events: a node with outputs only, whose events go along
@@ -519,7 +519,7 @@ func (s *processSource) runOnce(n *Node, def sourceDef, command []string, state 
 		ctx, stop = context.WithTimeout(ctx, 5*time.Minute)
 		defer stop()
 	}
-	cmd := exec.CommandContext(ctx, command[0], command[1:]...)
+	cmd := spawn.CommandContext(ctx, command[0], command[1:]...)
 	cmd.Dir = s.c.ws.Path
 	cmd.Env = append(os.Environ(), s.c.e.env(s.c, s.id, scopeSource, n.Runtime.Epoch)...)
 	cmd.Env = append(cmd.Env,

@@ -12,10 +12,15 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
@@ -26,6 +31,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore"
+	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore/localfile"
 )
 
 // Entry kinds.
@@ -136,6 +142,9 @@ type Tool struct {
 	// threw notes code that ended with an error, though its operation
 	// completed: the call failed.
 	threw bool
+	// undrawn notes a call changed while records are folded in bulk, to be
+	// drawn once they are all in (Transcript.fold).
+	undrawn bool
 }
 
 // CodeCall is one tool call the code of a Code call made.
@@ -216,6 +225,10 @@ type Transcript struct {
 	// when it was: the time between is how long its model took (Usage).
 	turn  session.TurnID
 	began time.Time
+	// folding is set while records are folded in bulk (fold): the tools
+	// they change are drawn once they are all in, and undrawn counts them.
+	folding bool
+	undrawn int
 }
 
 // stopNotice is the notice of a stop the session records with its reason:
@@ -476,14 +489,20 @@ func (t *Transcript) Apply(line []byte) ([]*Entry, error) {
 	case "item":
 		var record struct {
 			Item       sessionstore.Item
-			Operations []operation.Operation
+			Operations []localfile.ItemOperation
 		}
 		if err := json.Unmarshal(envelope.Data, &record); err != nil {
 			return nil, fmt.Errorf("decode session record: %w", err)
 		}
-		// Session files keep a status's operations next to the item.
+		// Session files keep a status's operations next to the item. One a
+		// status repeats by its ID alone, as the file already has it, the
+		// transcript took in from the record that has it whole.
 		if status, ok := record.Item.Data.(sessionstore.ToolCallStatus); ok && len(status.Operations) == 0 {
-			status.Operations = record.Operations
+			for _, value := range record.Operations {
+				if !value.Saved {
+					status.Operations = append(status.Operations, value.Operation)
+				}
+			}
 			record.Item.Data = status
 		}
 		return t.applyItem(record.Item), nil
@@ -646,7 +665,7 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 				if input := toolInput(value.Arguments); input != "" {
 					e.Tool.Input = input
 				}
-				e.Tool.highlightCode()
+				t.drawCode(e.Tool)
 				changed = append(changed, t.touch(e))
 			}
 		}
@@ -761,8 +780,100 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 	// Tools go on while a failed request to the model is tried again; that
 	// is what the run waits for.
 	t.Activity = cmp.Or(t.retrying, t.runningActivity())
-	tool.highlightCode()
-	tool.drawChange()
+	t.draw(tool)
+}
+
+// draw draws a tool's code and change as they are now — or, while records
+// are folded in bulk, once they are all in.
+func (t *Transcript) draw(tool *Tool) {
+	if t.folding {
+		t.leaveUndrawn(tool)
+		return
+	}
+	tool.highlightCode(highlightTime)
+	tool.drawChange(highlightTime)
+}
+
+// drawCode highlights a tool's code as it is now, or once the records
+// folded in bulk are all in.
+func (t *Transcript) drawCode(tool *Tool) {
+	if t.folding {
+		t.leaveUndrawn(tool)
+		return
+	}
+	tool.highlightCode(highlightTime)
+}
+
+// leaveUndrawn leaves a tool to draw once the records folded in bulk are
+// all in.
+func (t *Transcript) leaveUndrawn(tool *Tool) {
+	if !tool.undrawn {
+		tool.undrawn = true
+		t.undrawn++
+	}
+}
+
+// fold folds what fn applies into the transcript in bulk: the tools it
+// changes are drawn once it is done, each once, as it ended — not once for
+// every state it went through — and side by side. Highlighting is most of
+// the time a session read whole takes: chroma lexes a few megabytes a
+// second, and a long session has hundreds of edits.
+func (t *Transcript) fold(fn func()) {
+	t.folding = true
+	defer func() {
+		t.folding = false
+		if t.undrawn == 0 {
+			return
+		}
+		// Every tool is in the index, which nothing leaves.
+		tools := make([]*Tool, 0, t.undrawn)
+		for _, e := range t.index {
+			if e.Tool != nil && e.Tool.undrawn {
+				e.Tool.undrawn = false
+				if tools = append(tools, e.Tool); len(tools) == t.undrawn {
+					break
+				}
+			}
+		}
+		t.undrawn = 0
+		drawTools(tools)
+	}()
+	fn()
+}
+
+// drawWorkers is how many goroutines draw the tools of records folded in
+// bulk, at most. Lexing allocates a lot, and fast: past six, the collector
+// lags behind and the heap grows (a long session's peak 311 MB with six,
+// 340 MB with sixteen), for little more speed.
+const drawWorkers = 6
+
+// drawTools draws tools side by side; each tool's drawing is its own. A
+// panic drawing one is the caller's, as it was when tools were drawn one by
+// one: a server recovers it with the request, which a goroutine of its own
+// would not let it do.
+func drawTools(tools []*Tool) {
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	var failed sync.Once
+	var failure any
+	for range min(runtime.GOMAXPROCS(0), drawWorkers, len(tools)) {
+		wg.Go(func() {
+			defer func() {
+				if p := recover(); p != nil {
+					failed.Do(func() { failure = fmt.Sprintf("%v\n\ndrawing a tool:\n%s", p, debug.Stack()) })
+					next.Store(int64(len(tools))) // the others stop
+				}
+			}()
+			for i := next.Add(1) - 1; i < int64(len(tools)); i = next.Add(1) - 1 {
+				tools[i].highlightCode(foldHighlightTime)
+				tools[i].drawChange(foldHighlightTime)
+			}
+		})
+	}
+	wg.Wait()
+	if failure != nil {
+		panic(failure)
+	}
 }
 
 // highlightTime bounds the highlighting of the code a call shows — a Code
@@ -770,23 +881,31 @@ func (t *Transcript) refresh(e *Entry, at time.Time) {
 // shows plain.
 const highlightTime = 100 * time.Millisecond
 
-// highlightCode highlights a Code call's code, once for each code it shows.
-func (tool *Tool) highlightCode() {
+// foldHighlightTime is highlightTime for a tool drawn beside others, as
+// records folded in bulk are: lexers side by side allocate fast, the
+// collector runs that much more often, and each takes longer — up to two
+// and a half times, six at once on a small heap — so that a file
+// highlighted whole alone in time is still highlighted whole.
+const foldHighlightTime = 3 * highlightTime
+
+// highlightCode highlights a Code call's code, once for each code it shows,
+// for at most budget.
+func (tool *Tool) highlightCode(budget time.Duration) {
 	if tool.Input == tool.highlighted || !strings.EqualFold(tool.Name, "code") {
 		return
 	}
 	tool.highlighted = tool.Input
-	tool.Syntax = highlight.Highlight("code.js", tool.Input, time.Now().Add(highlightTime)).Runs
+	tool.Syntax = highlight.Remembered("code.js", tool.Input, time.Now().Add(budget)).Runs
 }
 
 // drawChange draws what a Write or an Edit call does (Change), once for
-// each thing it does.
-func (tool *Tool) drawChange() {
+// each thing it does, highlighting it for at most budget.
+func (tool *Tool) drawChange(budget time.Duration) {
 	switch {
 	case tool.file.kind == "":
 		tool.Change, tool.drawn = nil, fileOp{}
 	case tool.Change == nil || tool.drawn != tool.file:
-		tool.Change, tool.drawn = tool.file.view(), tool.file
+		tool.Change, tool.drawn = tool.file.view(budget), tool.file
 	}
 }
 
@@ -1104,6 +1223,14 @@ func payloadText(payload jsontext.Value) string {
 // control characters, repairs invalid UTF-8 and resolves carriage returns the
 // way a terminal would.
 func Clean(s string) string {
+	if plainText(s) {
+		return s
+	}
+	return clean(s)
+}
+
+// clean is Clean of text that is not plain.
+func clean(s string) string {
 	s = ansi.Strip(strings.ToValidUTF8(s, "\uFFFD"))
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	if strings.ContainsRune(s, '\r') {
@@ -1125,6 +1252,27 @@ func Clean(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// plainText reports text Clean has nothing to do to: valid UTF-8 without
+// control characters but newlines and tabs — no escape, no carriage
+// return. Most of what tools print is; it is kept as it is, not copied.
+func plainText(s string) bool {
+	for i := 0; i < len(s); {
+		if c := s[i]; c < utf8.RuneSelf {
+			if c < ' ' && c != '\n' && c != '\t' || c == 0x7f {
+				return false
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 || unicode.IsControl(r) {
+			return false
+		}
+		i += size
+	}
+	return true
 }
 
 // Headline collapses whitespace and shortens s to at most limit runes.

@@ -9,6 +9,11 @@ struct KouConveyorApp: App {
         // Taken while the app launches, for the tap on a turn-end
         // notification that launched it.
         TurnNotifier.shared.install()
+        // The large titles wide and heavy, as an instrument's: a workspace's
+        // name reads at a glance.
+        UINavigationBar.appearance().largeTitleTextAttributes = [
+            .font: UIFont.systemFont(ofSize: 32, weight: .heavy, width: .expanded),
+        ]
     }
 
     var body: some Scene {
@@ -33,6 +38,7 @@ struct KouConveyorApp: App {
 /// RootView pairs the app with a relay, then shows the cockpit behind it.
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.colorScheme) private var colorScheme
     /// Whether what streams of the agent's answer and thinking moves as it
     /// comes (the relay screen's setting), for every screen that shows it.
     @AppStorage(StreamSettings.motionKey) private var streamMotion = true
@@ -49,6 +55,7 @@ struct RootView: View {
         }
         .animation(.smooth, value: model.isPaired)
         .environment(\.streamMotion, streamMotion)
+        .environment(\.kouScheme, colorScheme)
         // The accent chosen (Look), here and in what UIKit shows: alerts,
         // menus, the share sheet.
         .tint(Color.kouAccent)
@@ -99,40 +106,60 @@ struct RootView: View {
     }
 }
 
-/// CockpitView is the cockpit through its relay: sessions, canvases, and
-/// the relay itself; while it is shown, the tunnel's mark floats above the
-/// tab bar.
+/// CockpitView is the cockpit through its relay: sessions, canvases, files,
+/// accounts and the relay itself. The tunnel says nothing while it carries;
+/// down, a strip over every screen says so, and the Relay tab is marked.
 struct CockpitView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
+    /// The tunnel's trouble, once it has lasted: a blip is not shown.
+    @State private var trouble: TunnelState?
 
     var body: some View {
         @Bindable var model = model
-        TabView(selection: $model.tab) {
-            Tab("Sessions", systemImage: "bubble.left.and.text.bubble.right", value: AppModel.Tab.sessions) {
-                SessionsScreen()
+        VStack(spacing: 0) {
+            if let trouble {
+                LinkStrip(state: trouble)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
-            Tab("Canvases", systemImage: "point.3.connected.trianglepath.dotted", value: AppModel.Tab.canvases) {
-                CanvasesScreen()
+            TabView(selection: $model.tab) {
+                Tab("Sessions", systemImage: "text.bubble", value: AppModel.Tab.sessions) {
+                    SessionsScreen()
+                }
+                Tab("Canvases", systemImage: "point.3.connected.trianglepath.dotted", value: AppModel.Tab.canvases) {
+                    CanvasesScreen()
+                }
+                Tab("Files", systemImage: "folder", value: AppModel.Tab.files) {
+                    FilesScreen()
+                }
+                Tab("Accounts", systemImage: "person.2", value: AppModel.Tab.accounts) {
+                    AccountsScreen()
+                }
+                Tab("Relay", systemImage: "antenna.radiowaves.left.and.right", value: AppModel.Tab.relay) {
+                    RelayScreen()
+                }
+                .badge(trouble == nil ? nil : Text(verbatim: "!"))
             }
-            Tab("Files", systemImage: "folder", value: AppModel.Tab.files) {
-                FilesScreen()
-            }
-            Tab("Accounts", systemImage: "person.2", value: AppModel.Tab.accounts) {
-                AccountsScreen()
-            }
-            Tab("Relay", systemImage: "globe", value: AppModel.Tab.relay) {
-                RelayScreen()
-            }
+            .tabBarMinimizeBehavior(.onScrollDown)
         }
-        .tabBarMinimizeBehavior(.onScrollDown)
-        .tabViewBottomAccessory {
-            TunnelAccessory()
-        }
+        .background(Color.kouGround.ignoresSafeArea())
         .environment(\.syntaxClasses, model.syntaxClasses)
         .task(id: scenePhase == .active) {
             guard scenePhase == .active else { return }
             await model.watch()
+        }
+        .task(id: TunnelState(model.link)) {
+            let state = TunnelState(model.link)
+            // Trouble shows only where what it keeps away is shown: before,
+            // the screens say it whole.
+            let shows = (state == .down || state == .cockpitOffline) && model.workspace != nil
+            if shows {
+                try? await Task.sleep(for: .seconds(1.5))
+                guard !Task.isCancelled else { return }
+            }
+            withAnimation(.spring(response: 0.45, dampingFraction: 0.85)) {
+                trouble = shows ? state : nil
+            }
         }
     }
 }
@@ -183,40 +210,50 @@ struct CockpitGate<Content: View>: View {
             Group {
                 switch model.link {
                 case .checking:
-                    ProgressView("Reaching the cockpit…")
+                    reaching
                 case .cockpitOffline:
-                    ContentUnavailableView {
-                        Label("The cockpit is not connected", systemImage: "moon.zzz")
-                    } description: {
-                        Text("The relay at \(model.relay?.address ?? "") is up, but no cockpit is connected to it. Run /tunnel in the cockpit, or start kou-conveyor-web.")
-                    } actions: {
-                        Button("Try again") { Task { await model.refresh() } }
-                            .buttonStyle(.glass)
+                    KouEmpty(symbol: "moon.zzz", title: "The cockpit is asleep",
+                             message: "The relay at \(model.relay?.address ?? "") is up, but no cockpit is connected to it. Run /tunnel in the cockpit, or start kou-conveyor-web.",
+                             tone: .kouWarn) {
+                        retry
                     }
                 case let .failed(message):
-                    ContentUnavailableView {
-                        Label("The relay is out of reach", systemImage: "wifi.exclamationmark")
-                    } description: {
-                        Text(message)
-                    } actions: {
-                        Button("Try again") { Task { await model.refresh() } }
-                            .buttonStyle(.glass)
+                    KouEmpty(symbol: "wifi.exclamationmark", title: "The relay is out of reach",
+                             message: message, tone: .kouErr) {
+                        retry
                     }
                 case .online:
                     // The relay answered, its workspaces are a moment behind.
                     if model.workspacesLoaded {
-                        ContentUnavailableView("No workspaces", systemImage: "folder.badge.questionmark",
-                                               description: Text("The cockpit has no workspace open."))
+                        KouEmpty(symbol: "folder.badge.questionmark", title: "No workspaces",
+                                 message: "The cockpit has no workspace open.")
                     } else {
-                        ProgressView("Reaching the cockpit…")
+                        reaching
                     }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // The gray of the lists that come in its place: on white, the
-            // screen turned gray at once as they came.
+            // The ground of the lists that come in its place: on another,
+            // the screen changed at once as they came.
             .background(Color.kouGroupedGround)
         }
+    }
+
+    private var reaching: some View {
+        KouEmpty(symbol: "dot.radiowaves.left.and.right", title: "Reaching the cockpit",
+                 message: model.relay?.address, tone: .kouAccent, waiting: true)
+    }
+
+    private var retry: some View {
+        Button {
+            Task { await model.refresh() }
+        } label: {
+            Label("Try again", systemImage: "arrow.clockwise")
+                .font(.subheadline.weight(.semibold))
+                .padding(.horizontal, 6)
+        }
+        .buttonStyle(.glass)
+        .buttonBorderShape(.cornerCapsule)
     }
 }
 
@@ -229,11 +266,15 @@ struct LoadingSpinner: View {
     @State private var shown = false
 
     var body: some View {
-        Group {
+        VStack(spacing: 12) {
+            ProgressView()
+                .tint(Color.kouFg3)
             if let title {
-                ProgressView(title)
-            } else {
-                ProgressView()
+                Text(title)
+                    .textCase(.uppercase)
+                    .font(.kouEyebrow)
+                    .tracking(Font.eyebrowTracking)
+                    .foregroundStyle(Color.kouFg3)
             }
         }
         .opacity(shown ? 1 : 0)

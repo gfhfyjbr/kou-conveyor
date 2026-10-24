@@ -31,29 +31,49 @@ struct ChangesSheet: View {
         _path = State(initialValue: first.map { [$0] } ?? [])
     }
 
+    /// A prompt listed: its place in the session, and its message.
+    private struct Listed: Identifiable {
+        let number: Int
+        let entry: Entry
+        let message: String
+        var id: String { message }
+    }
+
+    /// The prompts that changed something or may have, the latest first,
+    /// each with its place in the session.
+    private var listed: [Listed] {
+        prompts.enumerated().reversed().compactMap { n, entry in
+            entry.messageID.map { Listed(number: n + 1, entry: entry, message: $0) }
+        }
+    }
+
     var body: some View {
         NavigationStack(path: $path) {
+            let listed = listed
             List {
-                ForEach(prompts.reversed()) { prompt in
-                    if let message = prompt.messageID {
-                        NavigationLink(value: ChangesRoute.prompt(message: message, text: prompt.text ?? "")) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(prompt.text ?? "")
-                                    .lineLimit(2)
-                                if let at = prompt.at {
-                                    Text(at, format: .relative(presentation: .named))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
+                if !listed.isEmpty {
+                    Section {
+                        ForEach(listed) { item in
+                            NavigationLink(value: ChangesRoute.prompt(message: item.message, text: item.entry.text ?? "")) {
+                                PromptRow(number: item.number, text: item.entry.text ?? "", at: item.entry.at,
+                                          latest: item.message == listed.first?.message)
                             }
+                            .listRowBackground(Color.kouGround)
+                            .listRowSeparatorTint(Color.kouLine)
                         }
+                    } header: {
+                        SectionLabel("Prompts", count: listed.count)
+                            .kouHeader()
                     }
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(Color.kouGround)
             .overlay {
-                if prompts.isEmpty {
-                    ContentUnavailableView("No prompts yet", systemImage: "plusminus.circle",
-                                           description: Text("What each prompt changes in the workspace shows here."))
+                if listed.isEmpty {
+                    KouEmpty(symbol: "plusminus", title: "No prompts yet",
+                             message: "What each prompt changes in the workspace shows here.")
                 }
             }
             .navigationTitle("Changes")
@@ -61,6 +81,7 @@ struct ChangesSheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
             }
             .navigationDestination(for: ChangesRoute.self) { route in
@@ -75,6 +96,38 @@ struct ChangesSheet: View {
     }
 }
 
+/// PromptRow is a prompt of the session as the changes list it: its place
+/// in mono — the latest's in the accent, as the cockpit marks it —, its
+/// words, and how long ago it was said.
+struct PromptRow: View {
+    let number: Int
+    let text: String
+    let at: Date?
+    var latest = false
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(verbatim: number < 10 ? "0\(number)" : "\(number)")
+                .font(.kouMeta.weight(.semibold))
+                .foregroundStyle(latest ? Color.kouAccent : Color.kouFg4)
+                .monospacedDigit()
+                .frame(minWidth: 18, alignment: .leading)
+            Text(verbatim: text)
+                .font(.subheadline)
+                .foregroundStyle(Color.kouFg)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let at {
+                Text(verbatim: at.kouAge)
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg4)
+            }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+    }
+}
+
 /// ChangesScreen is what one prompt changed: its files, with the lines each
 /// gained and lost. While the prompt's run goes on, it follows them.
 struct ChangesScreen: View {
@@ -86,57 +139,117 @@ struct ChangesScreen: View {
     @State private var changes: ChangesView?
     @State private var error: String?
 
+    private var files: [FileChange] {
+        guard let changes, changes.available == true else { return [] }
+        return changes.files ?? []
+    }
+
     var body: some View {
+        let files = files
         List {
             Section {
-                Text(text)
-                    .font(.subheadline)
-                    .lineLimit(4)
-                if let changes, changes.available == true, let stat = changes.stat {
-                    HStack(spacing: 10) {
-                        Text("\(stat.files ?? 0) file\(stat.files == 1 ? "" : "s")")
-                        Text("+\(stat.added ?? 0)")
-                            .foregroundStyle(.green)
-                        Text("−\(stat.removed ?? 0)")
-                            .foregroundStyle(.red)
-                        Spacer(minLength: 0)
-                        if changes.live == true {
-                            Label("Running", systemImage: "circle.dotted")
-                                .foregroundStyle(Color.kouAccent)
-                        }
-                    }
-                    .font(.footnote.monospacedDigit())
+                head
+                    .listRowBackground(Color.kouGround)
+                    .listRowSeparator(.hidden)
+                    .listRowInsets(EdgeInsets(top: 14, leading: 20, bottom: 10, trailing: 20))
+                if let quiet {
+                    quiet
+                        .listRowBackground(Color.kouGround)
+                        .listRowSeparator(.hidden)
                 }
             }
-            if let changes, changes.available == true, let files = changes.files, !files.isEmpty {
-                Section("Files") {
+            if !files.isEmpty {
+                Section {
                     ForEach(files) { file in
                         NavigationLink(value: ChangesRoute.diff(message: message, file: file)) {
                             FileChangeRow(file: file)
                         }
+                        .listRowBackground(Color.kouGround)
+                        .listRowSeparatorTint(Color.kouLine)
                     }
+                } header: {
+                    SectionLabel("Files", count: files.count)
+                        .kouHeader(top: 8)
                 }
             }
         }
-        .overlay {
-            if let changes {
-                if changes.available != true {
-                    ContentUnavailableView("No changes", systemImage: "plusminus.circle",
-                                           description: Text(changes.reason ?? "No changes were recorded for this prompt."))
-                } else if changes.files?.isEmpty ?? true {
-                    ContentUnavailableView("No changes", systemImage: "checkmark.circle",
-                                           description: Text(changes.live == true ? "The run goes on: what it changes shows here." : "This prompt changed no files."))
-                }
-            } else if let error {
-                ContentUnavailableView("Changes unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
-            } else {
-                LoadingSpinner()
-            }
-        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.kouGround)
         .refreshable { await load() }
         .task { await follow() }
         .navigationTitle("Changes")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// The prompt, in the accent the chat says it in, and what it changed
+    /// in all as the cockpit's head counts it; while its run goes on, the
+    /// accent's blinking square.
+    private var head: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SectionLabel(title: "Prompt", count: nil, color: .kouFg3) {
+                if changes?.live == true {
+                    StateMark(word: "Running", tone: .kouAccent, blinking: true)
+                }
+            }
+            Text(verbatim: text)
+                .font(.subheadline)
+                .foregroundStyle(Color.kouFg)
+                .lineLimit(6)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background {
+                    ZStack {
+                        UserBubble.shape.fill(Color.kouAccent.opacity(0.14))
+                        UserBubble.shape.strokeBorder(Color.kouAccent.opacity(0.38), lineWidth: 1)
+                    }
+                }
+            // The counts only once there is something to count: else the
+            // empty state below says it.
+            if let changes, changes.available == true, let stat = changes.stat, !(changes.files ?? []).isEmpty {
+                let added = stat.added ?? 0, removed = stat.removed ?? 0
+                ReadingStrip {
+                    Reading(label: "Files") {
+                        Text(verbatim: "\(stat.files ?? 0)")
+                            .foregroundStyle(Color.kouFg)
+                    }
+                    Reading(label: "Added") {
+                        Text(verbatim: "+\(added)")
+                            .foregroundStyle(added > 0 ? Color.kouOK : Color.kouFg4)
+                    }
+                    Reading(label: "Removed") {
+                        Text(verbatim: "−\(removed)")
+                            .foregroundStyle(removed > 0 ? Color.kouErr : Color.kouFg4)
+                    }
+                }
+                .contentTransition(.numericText())
+                .animation(.snappy, value: stat.added)
+            }
+        }
+    }
+
+    /// What shows where the files would: why there are none, or that they
+    /// are on their way.
+    private var quiet: AnyView? {
+        if let changes {
+            if changes.available != true {
+                return AnyView(KouEmpty(symbol: "plusminus", title: "No changes",
+                                        message: changes.reason ?? "No changes were recorded for this prompt."))
+            }
+            if changes.files?.isEmpty ?? true {
+                return AnyView(KouEmpty(symbol: changes.live == true ? "hourglass" : "checkmark", title: "No changes",
+                                        message: changes.live == true ? "The run goes on: what it changes shows here." : "This prompt changed no files.",
+                                        waiting: changes.live == true))
+            }
+            return nil
+        }
+        if let error {
+            return AnyView(KouEmpty(symbol: "exclamationmark.triangle", title: "Changes unavailable", message: error, tone: .kouErr))
+        }
+        return AnyView(LoadingSpinner()
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 40))
     }
 
     private func load() async {
@@ -160,43 +273,48 @@ struct ChangesScreen: View {
     }
 }
 
+/// FileChangeRow is a file a prompt changed, as the cockpit's tree lists
+/// it: its state's letter in its colour, its name in mono — struck through
+/// once deleted —, where it is, and the lines it gained and lost.
 struct FileChangeRow: View {
     let file: FileChange
 
+    private var deleted: Bool { file.status == "deleted" }
+
     var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: symbol)
-                .foregroundStyle(tint)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text((file.path as NSString).lastPathComponent)
-                    .font(.subheadline.weight(.medium))
+        HStack(spacing: 12) {
+            Text(verbatim: Self.letter(file.status))
+                .font(.system(size: 12, weight: .heavy, design: .monospaced))
+                .foregroundStyle(Self.tone(file.status))
+                .frame(width: 14)
+                .accessibilityLabel(file.status ?? "modified")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(verbatim: (file.path as NSString).lastPathComponent)
+                    .font(.system(.subheadline, design: .monospaced, weight: .medium))
+                    .foregroundStyle(deleted ? Color.kouFg3 : Color.kouFg)
+                    .strikethrough(deleted, color: Color.kouFg4)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 if !detail.isEmpty {
-                    Text(detail)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Text(verbatim: detail)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg3)
                         .lineLimit(1)
                         .truncationMode(.head)
                 }
             }
-            Spacer(minLength: 4)
+            Spacer(minLength: 6)
             if file.binary == true {
-                Text("binary")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Tag("Binary", tone: .kouFg3)
             } else {
-                HStack(spacing: 6) {
-                    if let added = file.added, added > 0 {
-                        Text("+\(added)").foregroundStyle(.green)
-                    }
-                    if let removed = file.removed, removed > 0 {
-                        Text("−\(removed)").foregroundStyle(.red)
-                    }
+                VStack(alignment: .trailing, spacing: 5) {
+                    DiffCount(added: file.added ?? 0, removed: file.removed ?? 0, zeros: false)
+                        .font(.kouMeta)
+                    DiffMeter(added: file.added ?? 0, removed: file.removed ?? 0)
                 }
-                .font(.caption.monospacedDigit())
             }
         }
+        .padding(.vertical, 2)
     }
 
     private var detail: String {
@@ -204,22 +322,82 @@ struct FileChangeRow: View {
         return (file.path as NSString).deletingLastPathComponent
     }
 
-    private var symbol: String {
-        switch file.status ?? "" {
-        case "added": "plus.square.fill"
-        case "deleted": "minus.square.fill"
-        case "renamed": "arrow.right.square.fill"
-        default: "square.and.pencil"
+    /// A state's letter, as git and the cockpit say it.
+    static func letter(_ status: String?) -> String {
+        switch status ?? "" {
+        case "added": "A"
+        case "deleted": "D"
+        case "renamed": "R"
+        case "typechange": "T"
+        default: "M"
         }
     }
 
-    private var tint: Color {
-        switch file.status ?? "" {
-        case "added": .green
-        case "deleted": .red
-        case "renamed": .blue
-        default: .orange
+    /// A state's colour, the cockpit's (changes.css .ct-st).
+    static func tone(_ status: String?) -> Color {
+        switch status ?? "" {
+        case "added": .kouOK
+        case "deleted": .kouErr
+        case "renamed", "typechange": .kouAccent
+        default: .kouWarn
         }
+    }
+}
+
+/// DiffCount is a change's lines as the cockpit counts them: those put in
+/// in the success's colour, those taken out in the failure's.
+struct DiffCount: View {
+    let added: Int
+    let removed: Int
+    /// Whether a count of nothing shows.
+    var zeros = true
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if zeros || added > 0 {
+                Text(verbatim: "+\(added)")
+                    .foregroundStyle(Color.kouOK)
+            }
+            if zeros || removed > 0 {
+                Text(verbatim: "−\(removed)")
+                    .foregroundStyle(Color.kouErr)
+            }
+        }
+        .monospacedDigit()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(added) added, \(removed) removed")
+    }
+}
+
+/// DiffMeter is a change's lines as five squares: as many lit as there are
+/// lines, up to five, in the success's colour and the failure's by their
+/// share — how the change leans, at a glance.
+struct DiffMeter: View {
+    let added: Int
+    let removed: Int
+
+    var body: some View {
+        let (gained, lost) = Self.split(added: added, removed: removed)
+        HStack(spacing: 2) {
+            ForEach(0..<5, id: \.self) { n in
+                Rectangle()
+                    .fill(n < gained ? Color.kouOK : n < gained + lost ? Color.kouErr : Color.kouLine2)
+                    .frame(width: 6, height: 6)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// How many squares each lights: one at least for each that is not
+    /// nothing.
+    static func split(added: Int, removed: Int) -> (Int, Int) {
+        let total = added + removed
+        guard total > 0 else { return (0, 0) }
+        let lit = min(total, 5)
+        var gained = Int((Double(added) / Double(total) * Double(lit)).rounded())
+        if added > 0, gained == 0 { gained = 1 }
+        if removed > 0, gained == lit, lit > 1 { gained = lit - 1 }
+        return (gained, lit - gained)
     }
 }
 
@@ -240,21 +418,18 @@ struct DiffScreen: View {
                 CodeText(text: text)
                     .ignoresSafeArea(edges: .bottom)
             } else if file.binary == true {
-                ContentUnavailableView("Binary file", systemImage: "doc.badge.gearshape",
-                                       description: Text("There is no text diff to show."))
+                KouEmpty(symbol: "doc.badge.gearshape", title: "Binary file", message: "There is no text diff to show.")
             } else if let error {
-                ContentUnavailableView("Diff unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
+                KouEmpty(symbol: "exclamationmark.triangle", title: "Diff unavailable", message: error, tone: .kouErr)
             } else {
                 LoadingSpinner()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.kouGround)
         .safeAreaBar(edge: .top) {
-            if diff?.truncated == true {
-                Label("The diff is cut short: it is too long to show whole.", systemImage: "scissors")
-                    .font(.footnote)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .glassEffect(.regular, in: .cornerCapsule)
+            if text != nil || diff?.truncated == true {
+                head
             }
         }
         .navigationTitle((file.path as NSString).lastPathComponent)
@@ -269,9 +444,35 @@ struct DiffScreen: View {
                 } label: {
                     Label("More", systemImage: "ellipsis")
                 }
+                .tint(Color.kouFg)
             }
         }
         .task { await load() }
+    }
+
+    /// As the cockpit heads a diff: the file's state, its counts — and, in
+    /// the warning's colour, that the diff is cut short.
+    private var head: some View {
+        HStack(spacing: 10) {
+            Text(verbatim: FileChangeRow.letter(file.status))
+                .font(.system(size: 11, weight: .heavy, design: .monospaced))
+                .foregroundStyle(FileChangeRow.tone(file.status))
+            if file.binary != true {
+                DiffCount(added: file.added ?? 0, removed: file.removed ?? 0)
+                DiffMeter(added: file.added ?? 0, removed: file.removed ?? 0)
+            }
+            if diff?.truncated == true {
+                Label("Cut short: too long to show whole", systemImage: "scissors")
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(Color.kouWarn)
+                    .lineLimit(1)
+            }
+        }
+        .font(.kouMeta)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .glassEffect(.regular, in: .cornerCapsule)
+        .padding(.top, 4)
     }
 
     private func load() async {
@@ -345,10 +546,10 @@ struct ChangeBlock: View, @MainActor Equatable {
         let shown = ChangeRows.make(change, classes: classes, limit: open ? .max : Self.shown)
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text(Self.label(change, failed: failed))
+                Self.head(change, failed: failed)
                     .font(.system(.caption2, design: .monospaced, weight: .semibold))
                     .textCase(.uppercase)
-                    .foregroundStyle(.secondary)
+                    .tracking(0.6)
                     .lineLimit(1)
                 Spacer()
                 copyButton
@@ -359,7 +560,7 @@ struct ChangeBlock: View, @MainActor Equatable {
             if shown.rows.isEmpty {
                 Text("An empty file")
                     .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(Color.kouFg4)
                     .padding(.horizontal, 10)
                     .padding(.bottom, 10)
             } else {
@@ -373,19 +574,35 @@ struct ChangeBlock: View, @MainActor Equatable {
                 .padding(.bottom, shown.hidden > 0 ? 0 : 8)
             }
             if shown.hidden > 0 {
-                Button("Show \(shown.hidden) more \(shown.hidden == 1 ? "line" : "lines")") {
+                Button {
                     if let all { all() } else { withAnimation(.snappy) { open = true } }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(verbatim: "Show \(shown.hidden) more \(shown.hidden == 1 ? "line" : "lines")")
+                        Image(systemName: all == nil ? "chevron.down" : "arrow.up.left.and.arrow.down.right")
+                            .font(.system(size: 9, weight: .bold))
+                    }
+                    .font(.kouEyebrow)
+                    .textCase(.uppercase)
+                    .tracking(Font.eyebrowTracking)
+                    .foregroundStyle(Color.kouFg2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 9)
+                    .contentShape(.rect)
                 }
-                .font(.caption.weight(.medium))
-                .buttonStyle(.borderless)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .buttonStyle(.plain)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(Color.kouLine)
+                        .frame(height: 1)
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.kouSurface)
-        .clipShape(.rect(cornerRadius: .corner(12)))
-        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.separator.opacity(0.6), lineWidth: 0.5))
+        .clipShape(.rect(cornerRadius: .corner(10)))
+        .overlay(RoundedRectangle(cornerRadius: .corner(10)).strokeBorder(Color.kouLine, lineWidth: 1))
     }
 
     private var copyButton: some View {
@@ -401,7 +618,7 @@ struct ChangeBlock: View, @MainActor Equatable {
                 .contentShape(.rect)
         }
         .buttonStyle(.plain)
-        .foregroundStyle(copied ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
+        .foregroundStyle(copied ? Color.kouOK : Color.kouFg3)
         .accessibilityLabel(copied ? "Copied" : change.kind == "write" ? "Copy the content" : "Copy the diff")
         .sensoryFeedback(.success, trigger: copies)
         .task(id: copies) {
@@ -410,6 +627,25 @@ struct ChangeBlock: View, @MainActor Equatable {
             guard !Task.isCancelled else { return }
             withAnimation(.snappy) { copied = false }
         }
+    }
+
+    /// The head of a change, as the page's: what it is in its grey — in the
+    /// failure's colour when it was not done —, its counts in theirs.
+    static func head(_ change: Tool.Change, failed: Bool) -> Text {
+        let edit = change.kind != "write"
+        let word = Text(verbatim: edit ? (failed ? "Not applied" : "Diff") : (failed ? "Not written" : "Content"))
+            .foregroundStyle(failed ? Color.kouErr : Color.kouFg3)
+        let dot = Text(verbatim: " · ").foregroundStyle(Color.kouFg4)
+        guard edit else {
+            let n = change.lineCount
+            return Text("\(word)\(dot)\(Text(verbatim: "\(n) \(n == 1 ? "line" : "lines")").foregroundStyle(Color.kouFg3))")
+        }
+        let counts = change.counts
+        let numbers = Text("\(Text(verbatim: "+\(counts.added)").foregroundStyle(Color.kouOK)) \(Text(verbatim: "−\(counts.removed)").foregroundStyle(Color.kouErr))")
+        if let n = change.replacements, n > 1 {
+            return Text("\(word)\(dot)\(numbers)\(dot)\(Text(verbatim: "\(n) replacements").foregroundStyle(Color.kouFg3))")
+        }
+        return Text("\(word)\(dot)\(numbers)")
     }
 
     /// What a change is, as the page heads it: "Content · 120 lines",
@@ -448,14 +684,7 @@ struct ChangeStat: View {
     var body: some View {
         if change.kind == "edit", let diff = change.diff, !diff.isEmpty {
             let counts = change.counts
-            HStack(spacing: 4) {
-                Text(verbatim: "+\(counts.added)")
-                    .foregroundStyle(.green)
-                Text(verbatim: "−\(counts.removed)")
-                    .foregroundStyle(.red)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("\(counts.added) added, \(counts.removed) removed")
+            DiffCount(added: counts.added, removed: counts.removed)
         } else if change.kind == "write" {
             let n = change.lineCount
             Text("\(n) \(n == 1 ? "line" : "lines")")
@@ -486,17 +715,20 @@ struct ChangeSheet: View {
                         .padding(.vertical, 12)
                     }
                 } else if rows != nil {
-                    ContentUnavailableView("An empty file", systemImage: "doc")
+                    KouEmpty(symbol: "doc", title: "An empty file")
                 } else {
                     LoadingSpinner()
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.kouGround)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .navigationSubtitle(change.map { ChangeBlock.label($0, failed: failed) } ?? "")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close", systemImage: "xmark") { dismiss() }
+                        .tint(Color.kouFg)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -510,6 +742,7 @@ struct ChangeSheet: View {
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
+                    .tint(Color.kouFg)
                 }
             }
         }
@@ -693,7 +926,7 @@ struct ChangeRows: Sendable {
 
         init(_ name: String) {
             color = Highlight.color(for: name).map { Color(uiColor: $0) }
-            bold = ["gs", "gh", "gu"].contains(name)
+            bold = ["gs", "gh", "gu", "cs"].contains(name)
         }
 
         func apply(to piece: inout AttributedString) {
@@ -703,9 +936,10 @@ struct ChangeRows: Sendable {
     }
 }
 
-/// ChangeRowView is a row of a change: a line's numbers, its sign in a diff
-/// and its code — the lines put in on green, those taken out on red — or the
-/// lines between two hunks left out.
+/// ChangeRowView is a row of a change, as the cockpit draws a diff's: a
+/// line's numbers in the faintest grey, its sign in a diff and its code —
+/// the lines put in on the success's tint, those taken out on the
+/// failure's — or the lines between two hunks left out.
 private struct ChangeRowView: View {
     let row: ChangeRows.Row
     let diff: Bool
@@ -714,11 +948,11 @@ private struct ChangeRowView: View {
     var body: some View {
         if row.kind == .skipped {
             Text(row.code)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.kouFg3)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color(uiColor: .tertiarySystemFill))
+                .background(Color.kouFg.opacity(0.05))
                 .padding(.vertical, 3)
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
@@ -732,11 +966,12 @@ private struct ChangeRowView: View {
                 }
                 if diff {
                     Text(verbatim: sign)
-                        .foregroundStyle(signStyle)
+                        .foregroundStyle(signTone)
                         .padding(.trailing, 6)
                         .accessibilityHidden(row.kind == .kept)
                 }
                 Text(row.code)
+                    .foregroundStyle(row.kind == .kept ? Color.kouFg2 : Color.kouFg)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
@@ -750,7 +985,7 @@ private struct ChangeRowView: View {
     private func number(_ n: Int?) -> some View {
         let text = n.map(String.init) ?? ""
         return Text(verbatim: String(repeating: " ", count: max(digits - text.count, 0)) + text)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Color.kouFg4)
     }
 
     private var sign: String {
@@ -761,18 +996,18 @@ private struct ChangeRowView: View {
         }
     }
 
-    private var signStyle: AnyShapeStyle {
+    private var signTone: Color {
         switch row.kind {
-        case .added: AnyShapeStyle(.green)
-        case .removed: AnyShapeStyle(.red)
-        default: AnyShapeStyle(.tertiary)
+        case .added: .kouOK
+        case .removed: .kouErr
+        default: .kouFg4
         }
     }
 
     private var tint: Color {
         switch row.kind {
-        case .added: .green.opacity(0.14)
-        case .removed: .red.opacity(0.13)
+        case .added: Color.kouOK.opacity(0.11)
+        case .removed: Color.kouErr.opacity(0.10)
         default: .clear
         }
     }

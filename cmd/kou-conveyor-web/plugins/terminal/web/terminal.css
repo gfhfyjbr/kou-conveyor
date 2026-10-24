@@ -235,5 +235,6 @@ body.is-resizing-split { user-select: none; -webkit-user-select: none; }
 .restty-search-ui-root .restty-pane-search, .term-undo { border-radius: var(--radius); }
 .term-status, .restty-search-ui-root .restty-pane-search-input,
 .restty-search-ui-root .restty-pane-search-button { border-radius: var(--radius-sm); }
+.term-mark { border-radius: min(var(--radius-sm), 3px); }
 /* Round, the offer to undo has no accent bar along its edge. */
 :root[data-corners="round"] .term-undo { padding-left: 15px; border-left-width: 1px; border-left-color: var(--line-2); }

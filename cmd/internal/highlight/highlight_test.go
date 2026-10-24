@@ -116,6 +116,79 @@ func TestAppendLengthensARunOfTheSameClass(t *testing.T) {
 	}
 }
 
+// A text highlighted whole comes back whole at once, however little time is
+// left, with the runs Highlight gives it — in a file of another name too,
+// that the same lexer reads. A text cut short is not kept.
+func TestRememberedHighlightsATextWholeOnce(t *testing.T) {
+	text := strings.Repeat("func f() { return 1 + 2 } // remembered\n", 20000)
+	past := time.Unix(1, 0)
+	if r := Highlight("big.go", text, past); r.Complete {
+		t.Fatal("highlighted whole past the deadline")
+	}
+	for range 2 {
+		if r := Remembered("big.go", text, past); r.Complete {
+			t.Fatal("highlighted whole past the deadline, or kept cut short")
+		}
+	}
+	whole := Highlight("big.go", text, time.Time{})
+	first := Remembered("big.go", text, time.Time{})
+	if !first.Complete || first.Language != "Go" || !reflect.DeepEqual(first.Runs, whole.Runs) {
+		t.Fatalf("remembered %q, %d runs, complete %v; Highlight gives %d runs", first.Language, len(first.Runs), first.Complete, len(whole.Runs))
+	}
+	again := Remembered("other/name.go", text, past)
+	if !again.Complete || again.Language != "Go" || !reflect.DeepEqual(again.Runs, whole.Runs) {
+		t.Fatalf("again: %d runs, complete %v", len(again.Runs), again.Complete)
+	}
+	// The runs are shared; appending to them makes a copy.
+	if cap(again.Runs) != len(again.Runs) {
+		t.Fatalf("runs %d long with room for %d", len(again.Runs), cap(again.Runs))
+	}
+	// Another lexer reads the same text otherwise.
+	if py := Remembered("big.py", text, time.Time{}); py.Language != "Python" || reflect.DeepEqual(py.Runs, whole.Runs) {
+		t.Fatalf("as Python: %q, %d runs", py.Language, len(py.Runs))
+	}
+	if plain := Remembered("notes", "just words\n", past); !plain.Complete || plain.Runs != nil {
+		t.Fatalf("plain = %+v", plain)
+	}
+}
+
+// The texts used least recently go first, once the memo holds too much; a
+// text that alone would hold too much is not kept.
+func TestMemoLetsTheLeastRecentlyUsedGo(t *testing.T) {
+	result := func(runs int) Result { return Result{Language: "Go", Runs: make([]int32, runs), Complete: true} }
+	m := memo{limit: 3 * memoCost(result(2))}
+	key := func(n int) memoKey { return memoKey{lexer: "Go", size: n} }
+	for n := range 3 {
+		m.store(key(n), result(2))
+	}
+	if _, ok := m.lookup(key(0)); !ok {
+		t.Fatal("a text went while there was room")
+	}
+	m.store(key(3), result(2))
+	m.store(key(4), result(m.limit))
+	for n, want := range []bool{true, false, true, true, false} {
+		if _, ok := m.lookup(key(n)); ok != want {
+			t.Errorf("text %d kept: %v, want %v", n, ok, want)
+		}
+	}
+	if m.size != 3*memoCost(result(2)) || m.order.Len() != 3 || len(m.byKey) != 3 {
+		t.Fatalf("size %d, %d in order, %d by key", m.size, m.order.Len(), len(m.byKey))
+	}
+}
+
+// A text highlighted twice at once is kept once.
+func TestMemoKeepsATextOnce(t *testing.T) {
+	result := Result{Language: "Go", Runs: make([]int32, 2), Complete: true}
+	m := memo{limit: 10 * memoCost(result)}
+	key := memoKey{lexer: "Go", size: 2}
+	for range 2 {
+		m.store(key, result)
+	}
+	if m.size != memoCost(result) || m.order.Len() != 1 || len(m.byKey) != 1 {
+		t.Fatalf("size %d, %d in order, %d by key", m.size, m.order.Len(), len(m.byKey))
+	}
+}
+
 func TestCacheLetsTheOldestGo(t *testing.T) {
 	c := NewCache(40)
 	text := "a := 1\nb := 2\n"

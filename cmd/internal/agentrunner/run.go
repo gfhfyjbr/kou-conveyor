@@ -259,6 +259,45 @@ func RunMain(
 	stderr io.Writer,
 	config Config,
 ) int {
+	code := runMain(ctx, args, getenv, environ, input, output, stderr, config)
+	if detachedArgs(args) {
+		// A detached run's front-end may not be its parent: the last line
+		// tells it how the run ended.
+		fmt.Fprintf(output, "{\"type\":\"exit\",\"code\":%d}\n", code)
+	}
+	return code
+}
+
+// detachedArgs says whether args ask for -detached, which Run reads with
+// the other flags.
+func detachedArgs(args []string) bool {
+	detached := false
+	for _, arg := range args {
+		if arg == "--" {
+			break
+		}
+		name, value, set := strings.Cut(strings.TrimPrefix(strings.TrimPrefix(arg, "-"), "-"), "=")
+		if !strings.HasPrefix(arg, "-") || name != "detached" {
+			continue
+		}
+		detached = true
+		if set {
+			detached, _ = strconv.ParseBool(value)
+		}
+	}
+	return detached
+}
+
+func runMain(
+	ctx context.Context,
+	args []string,
+	getenv func(string) string,
+	environ func() []string,
+	input io.Reader,
+	output io.Writer,
+	stderr io.Writer,
+	config Config,
+) int {
 	err := Run(ctx, args, getenv, environ, input, output, stderr, config)
 	if err == nil {
 		return 0
@@ -321,6 +360,7 @@ func Run(
 	listSkillsFlag := flags.Bool("list-skills", false, "print the skills a run in the workspace would find, the project's and the system-wide ones, one JSON object per line, and exit")
 	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making; {\"stop\": {\"reason\": string}} stops the run, which records why")
 	stream := flags.Bool("stream", false, "also write, between the session items, what the session records later if at all: {\"type\": \"delta\", ...} lines with the text of the model's response as it streams, and {\"type\": \"output\", ...} lines with the output of the commands tool calls run, as they run")
+	detached := flags.Bool("detached", false, "run apart from the front-end, which may exit and another take the run up: stdin is a file the front-end appends to, which -steer reads past its end as it grows; file descriptor 3, when open, is the session's lock, which the run holds until it exits and keeps from the commands it runs; and the last line written is {\"type\": \"exit\", \"code\": integer}, the runner's exit status")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
 	toolGrace := flags.Duration("tool-grace", 3*time.Second, "how long the results of a turn's tool calls are gathered before they wake the model; a result that arrives while other calls run waits this long again for them")
 	toolGraceLimit := flags.Duration("tool-grace-limit", 15*time.Second, "the longest the results wait for the other calls, from when the calls started (0 does not extend the wait)")
@@ -376,10 +416,21 @@ func Run(
 		return listSkills(output, found)
 	}
 
+	if *detached {
+		// The session's lock stays the runner's: a command that inherited it
+		// would hold the session after the run.
+		keepLock()
+	}
 	// With -steer, messages for the running agent follow on stdin: after the
 	// request when it comes from stdin too.
 	var steering *jsontext.Decoder
 	if *steer {
+		if *detached {
+			// stdin is a file that the front-end appends the messages to.
+			following := make(chan struct{})
+			defer close(following)
+			input = &followReader{r: input, done: following}
+		}
 		steering = jsontext.NewDecoder(input)
 	}
 	if prompt != nil {
@@ -506,6 +557,9 @@ func Run(
 	if err != nil {
 		return fmt.Errorf("open session store: %w", err)
 	}
+	// A run reads its session once or twice: tools' outputs and pictures
+	// stay in the session file's pages rather than on the heap.
+	store.MapLogs()
 	sessionID, restored, err := openSession(ctx, store, parsed.SessionID, parsed.Compact)
 	if err != nil {
 		return err
@@ -840,6 +894,11 @@ func Run(
 	reporting := llm.WithPrefixReporter(llm.WithRetryReporter(runContext, func(retry llm.Retry) {
 		fmt.Fprintln(retries, RetryLine(retry))
 	}), prefixes.report)
+	// What an adapter got round instead of failing the run, such as images a
+	// model cannot read, is said on the same output.
+	reporting = llm.WithWarningReporter(reporting, func(message string) {
+		fmt.Fprintln(retries, WarningLine(message))
+	})
 	if observer.live != nil {
 		reporting = llm.WithStreamReporter(reporting, observer.stream)
 	}
@@ -1380,6 +1439,12 @@ func RetryLine(retry llm.Retry) string {
 	}
 	return fmt.Sprintf("retry> attempt %d of %d failed, trying again in %s: %s",
 		retry.Attempt, retry.MaxAttempts, retry.Delay.Round(100*time.Millisecond), reason)
+}
+
+// WarningLine is the diagnostic line of a warning a model request raised
+// without failing (llm.ReportWarning).
+func WarningLine(message string) string {
+	return "warn> " + strings.Join(strings.Fields(message), " ")
 }
 
 // lockedWriter serializes the writes of a goroutine that may outlive its

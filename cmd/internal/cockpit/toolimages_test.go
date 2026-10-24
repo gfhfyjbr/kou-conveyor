@@ -174,6 +174,42 @@ func TestToolImageFollowsTheFile(t *testing.T) {
 	if img, err := cockpit.ToolImage(sessions, id, "call-c"); err != nil || !bytes.Equal(img.Data, picture) {
 		t.Fatalf("picture of a later call: %v", err)
 	}
+	// The status recorded as a call finished names its operation by its ID,
+	// as the file has it already: the picture is the checkpoint's still.
+	write(sessionRecord(t, "item", map[string]any{
+		"Item": sessionstore.Item{
+			Sequence: 4, RecordedAt: time.Now().UTC(), Kind: sessionstore.ItemToolCallStatus,
+			Data: sessionstore.ToolCallStatus{TurnID: "turn-1", CallID: "call-a", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-a"}}},
+		},
+		"Operations": []operation.ID{"op-a"},
+	}))
+	if img, err := cockpit.ToolImage(sessions, id, "call-a"); err != nil || !bytes.Equal(img.Data, picture) {
+		t.Fatalf("picture of a call after its last status: %v", err)
+	}
+	loaded, err = cockpit.LoadSession(sessions, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := loaded.Entry("tool:call-a"); e == nil || e.Tool.Image == nil || e.Tool.State != cockpit.ToolDone {
+		t.Fatalf("loaded call after its last status = %+v", e)
+	}
+	// A status may name one of its call's operations and hold another, one
+	// that changed since the file last had it, whole: the picture is there.
+	write(
+		statusRecord(t, 5, "call-e",
+			viewOperation(t, "op-e0", operation.StatusFailed, &operation.ViewImageResult{Error: "not an image"}),
+			viewOperation(t, "op-e", operation.StatusReady, nil)),
+		sessionRecord(t, "item", map[string]any{
+			"Item": sessionstore.Item{
+				Sequence: 6, RecordedAt: time.Now().UTC(), Kind: sessionstore.ItemToolCallStatus,
+				Data: sessionstore.ToolCallStatus{TurnID: "turn-1", CallID: "call-e", Status: tool.CallStatus{WaitingFor: []operation.ID{"op-e0", "op-e"}}},
+			},
+			"Operations": []any{"op-e0", viewOperation(t, "op-e", operation.StatusCompleted, done)},
+		}),
+	)
+	if img, err := cockpit.ToolImage(sessions, id, "call-e"); err != nil || !bytes.Equal(img.Data, picture) {
+		t.Fatalf("picture of a call whose status names one of its operations: %v", err)
+	}
 	// A rewound session is another file, read anew.
 	replacement := path + ".new"
 	if err := os.WriteFile(replacement, statusRecord(t, 1, "call-d", viewOperation(t, "op-d", operation.StatusCompleted, done)), 0o600); err != nil {

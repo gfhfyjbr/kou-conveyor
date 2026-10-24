@@ -1,9 +1,11 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -51,7 +53,44 @@ func TestItemJSONRoundTrip(t *testing.T) {
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("round trip = %#v, want %#v", got, want)
 			}
+			var direct Item
+			if err := direct.UnmarshalJSON(encoded); err != nil || !reflect.DeepEqual(direct, want) {
+				t.Fatalf("UnmarshalJSON = %#v, %v; want %#v", direct, err, want)
+			}
 		})
+	}
+}
+
+// An item decoded with unmarshalers (json.WithUnmarshalers) decodes what it
+// holds with them too, as a session store that maps its files decodes raw
+// values as the parts of the mapping they are; it decodes to the same item,
+// and the other options it is decoded with are not its data's.
+func TestItemJSONDecodesDataWithTheUnmarshalersItIsGiven(t *testing.T) {
+	want := Item{ProviderID: "reasoning-1", Type: ItemReasoning, Data: Reasoning{
+		Summary: []string{"inspect"}, Raw: jsontext.Value(`{"encrypted":"opaque"}`),
+	}}
+	encoded := []byte(`{"ProviderID":"reasoning-1","Type":"reasoning","Data":{"Summary":["inspect"],"Raw":{"encrypted":"opaque"},"Later":1}}`)
+	var seen []string
+	unmarshalers := json.WithUnmarshalers(json.UnmarshalFromFunc(
+		func(decoder *jsontext.Decoder, value *jsontext.Value) error {
+			raw, err := decoder.ReadValue()
+			if err != nil {
+				return err
+			}
+			seen = append(seen, string(raw))
+			*value = bytes.Clone(raw)
+			return nil
+		},
+	))
+	var got Item
+	if err := json.Unmarshal(encoded, &got, unmarshalers, json.RejectUnknownMembers(true)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded with unmarshalers = %#v, want %#v", got, want)
+	}
+	if !slices.Contains(seen, `{"encrypted":"opaque"}`) {
+		t.Fatalf("the unmarshaler decoded %q, not the reasoning's raw value", seen)
 	}
 }
 

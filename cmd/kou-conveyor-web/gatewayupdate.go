@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // The accounts gateway is CLIProxyAPI, compiled into the server as a Go
@@ -297,7 +298,7 @@ func goProxies() []string {
 		if gobin, err := exec.LookPath("go"); err == nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			command := exec.CommandContext(ctx, gobin, "env", "GOPROXY")
+			command := spawn.CommandContext(ctx, gobin, "env", "GOPROXY")
 			command.Dir = os.TempDir() // outside any module
 			if output, err := command.Output(); err == nil {
 				value = strings.TrimSpace(string(output))
@@ -578,8 +579,8 @@ func (s *server) programPackages() []string {
 }
 
 // goCommand is a go command that runs in dir, outside any go.work.
-func (u *gatewayUpdates) goCommand(ctx context.Context, gobin, dir string, args ...string) *exec.Cmd {
-	command := exec.CommandContext(ctx, gobin, args...)
+func (u *gatewayUpdates) goCommand(ctx context.Context, gobin, dir string, args ...string) *spawn.Cmd {
+	command := spawn.CommandContext(ctx, gobin, args...)
 	command.Dir = dir
 	command.Env = append(append(os.Environ(), "GOWORK=off"), u.env...)
 	command.WaitDelay = 5 * time.Second

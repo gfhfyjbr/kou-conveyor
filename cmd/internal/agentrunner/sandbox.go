@@ -16,6 +16,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/worktree"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // The sandbox. A run can work apart from the user's checkout, and apart
@@ -168,7 +169,7 @@ func sandboxImage(ctx context.Context, workspace string, getenv func(string) str
 	if _, err := os.Stat(dockerfile); err == nil {
 		image := "kou-sandbox-" + workspaceHash(workspace)
 		fmt.Fprintf(report, "sandbox> building %s from %s\n", image, sandboxDockerfile)
-		command := exec.CommandContext(ctx, "docker", "build", "-q", "-t", image, filepath.Dir(dockerfile))
+		command := spawn.CommandContext(ctx, "docker", "build", "-q", "-t", image, filepath.Dir(dockerfile))
 		if out, err := command.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("build the sandbox image: %v: %s", err, strings.TrimSpace(string(out)))
 		}
@@ -195,7 +196,7 @@ func ensureContainer(ctx context.Context, workspace, image string, config *plugi
 	startContext, cancel := context.WithTimeout(ctx, containerStart)
 	defer cancel()
 	docker := func(arguments ...string) (string, error) {
-		command := exec.CommandContext(startContext, "docker", arguments...)
+		command := spawn.CommandContext(startContext, "docker", arguments...)
 		out, err := command.CombinedOutput()
 		if err != nil {
 			return strings.TrimSpace(string(out)), fmt.Errorf("docker %s: %v: %s", strings.Join(arguments, " "), err, strings.TrimSpace(string(out)))

@@ -1,10 +1,13 @@
 // composer: the prompt, in the layout's dock, with the banner of a run that
 // did not finish, the activity of the run going on or, while it compacts the
-// context, the summary it writes over it instead. Its row, under
-// the text, ends with the buttons that send it: icons alone. It offers the
-// slots composer.above (over the text: suggestions, images) and composer.row
-// (beside the buttons: the model, the effort), and asks plugins through
-// hooks:
+// context, the summary it writes over it instead, and the session's figures
+// by it: the cache's hits, the context left, the speed, the turns — in a
+// tray under it, on a line there or in a chip in its row, folded under it
+// or not, as its section of the settings says (Session figures). Its row,
+// under the text, ends with the buttons that send it: icons alone. It
+// offers the slots composer.above (over the text: suggestions, images) and
+// composer.row (beside the buttons: the model, the effort), and asks plugins
+// through hooks:
 //
 //   composer.key     (event) → true when a plugin took the key
 //   composer.submit  ({ raw, text, force, view }) → true when a plugin
@@ -18,13 +21,28 @@
 // and provides the composer service: value(), set(text, { focus, end }),
 // focus(), clear(), restore(text, images), input, form, draftKey(v),
 // saveDraft(), forget(ws, id), submit({ force }).
-// The buttons' icons: Run, Stop, Queue (a list and a plus) and Force.
+// The buttons' icons: Run, Stop, Queue (a list and a plus) and Force; and
+// the arrow of the figures folded under the prompt.
 const ICONS = {
   run: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2.75v10.5L13.25 8z" fill="currentColor"/></svg>',
   stop: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.75 3.75h8.5v8.5h-8.5z" fill="currentColor"/></svg>',
   queue: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3.75h10M2 7.75h10M2 11.75h5.5M12 9v6M9 12h6" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
   force: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.25 1.25 3.5 9h4l-1.25 5.75L12.5 7h-4z" fill="currentColor"/></svg>',
+  fold: '<svg viewBox="0 0 10 6" aria-hidden="true"><path d="M1 1l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>',
 };
+
+// The looks of the session's figures, as Settings names them, and the
+// figures, in their order.
+const LOOKS = {
+  tray: { name: 'Tray', title: 'A tray under the prompt, each figure in a cell of its own' },
+  line: { name: 'Line', title: 'A quiet line under the prompt, with no frame' },
+  chip: { name: 'Chip', title: 'A button in the prompt\'s row; its card has them all' },
+  off: { name: 'Off', title: 'None: the inspector\'s Tokens has them all' },
+};
+const FIGURES = ['cache', 'context', 'speed', 'turns'];
+// What the chip says by its first figure shown: the context left first.
+const FACE = { context: '', cache: 'cache', speed: 'tok/s', turns: 'turns' };
+const FACE_ORDER = ['context', 'cache', 'speed', 'turns'];
 
 export default function activate(cockpit) {
   const { h, svg, fmt, prefs } = cockpit;
@@ -40,7 +58,14 @@ export default function activate(cockpit) {
   const resumeRun = h('button', { class: 'act strong', id: 'resume-run', type: 'button', onclick: onResume }, 'Continue');
   const resumeDismiss = h('button', {
     class: 'icon small', id: 'resume-dismiss', type: 'button', 'aria-label': 'Dismiss', title: 'Dismiss',
-    onclick: () => { view().resumeDismissed = true; cockpit.render(); },
+    onclick: () => {
+      const v = view();
+      // The offer to restart goes with its run; the offer to continue stays
+      // dismissed until the next run ends.
+      if (resume.dataset.kind === 'outdated') { if (v.run) v.run.outdatedDismissed = true; }
+      else v.resumeDismissed = true;
+      cockpit.render();
+    },
   }, '×');
   const resume = h('div', { class: 'resume', id: 'resume', hidden: true }, h('span', { class: 'resume-mark', 'aria-hidden': 'true' }), resumeText, resumeEdit, resumeRun, resumeDismiss);
 
@@ -80,12 +105,63 @@ export default function activate(cockpit) {
   const form = h('form', { class: 'composer ticks', id: 'composer', autocomplete: 'off' },
     above, input, h('div', { class: 'composer-row' }, row, h('div', { class: 'composer-send' }, force, run)));
 
+  // By the prompt, the session's figures at a glance (the inspector's Tokens
+  // has them all): the share of the input the cache served, the context
+  // left, how fast the model writes and its turns. The shares have a meter.
+  // A long name has a short one for a narrow tray. Where they go is the
+  // settings' (the figures' look, below): a tray under the prompt, a line
+  // there, or the card of a chip in its row.
+  const figure = (key, name, metered, short = '') => {
+    const value = h('b', { class: 'stat-v' });
+    const unit = h('span', { class: 'stat-u' });
+    const meter = metered ? h('span', { class: 'stat-meter', 'aria-hidden': 'true' }, h('i')) : null;
+    const label = short
+      ? h('span', { class: 'stat-k' }, h('span', { class: 'stat-long', text: name }), h('span', { class: 'stat-short', text: short }))
+      : h('span', { class: 'stat-k', text: name });
+    const node = h('span', { class: 'stat', data: { stat: key } }, label, meter, value, unit);
+    return { name, node, value, unit, meter, spec: null };
+  };
+  const figures = {
+    cache: figure('cache', 'Cache', true),
+    context: figure('context', 'Context', true, 'Ctx'),
+    speed: figure('tps', 'TPS', false),
+    turns: figure('turns', 'Turns', false),
+  };
+  // The tray, or the line, in a fold that holds it under the prompt when it
+  // is compact; then an arrow, which slides out from under the prompt's foot
+  // as the pointer comes to the prompt, brings it out and folds it again.
+  const stats = h('div', { class: 'stats', id: 'stats', role: 'group', 'aria-label': 'Session figures' });
+  const tab = h('button', {
+    class: 'stats-tab', id: 'stats-tab', type: 'button', 'aria-label': 'Session figures', 'aria-controls': 'stats', 'aria-expanded': 'false', hidden: true,
+    onclick: () => pin(!look.open),
+  }, svg(ICONS.fold));
+  const tray = h('div', { class: 'stats-dock', id: 'stats-dock', hidden: true }, h('div', { class: 'stats-fold' }, stats), tab);
+  // The chip: the first figure shown — the context left, on a dial, unless
+  // it is not shown — and over it a card of them all.
+  const dial = h('span', { class: 'stats-dial', 'aria-hidden': 'true' }, h('i'));
+  const faceValue = h('b', { class: 'stats-face-v' });
+  const faceUnit = h('span', { class: 'stats-face-u' });
+  const face = h('button', {
+    class: 'stats-face', id: 'stats-face', type: 'button', 'aria-label': 'Session figures', 'aria-controls': 'stats-card', 'aria-expanded': 'false',
+    onclick: () => openCard(chip.dataset.open !== 'true'),
+  }, dial, faceValue, faceUnit);
+  const cardGrid = h('div', { class: 'stats-grid' });
+  const cardNote = h('p', { class: 'stats-note' });
+  const card = h('div', { class: 'stats-card', id: 'stats-card', role: 'group', 'aria-label': 'Session figures' }, cardGrid, cardNote);
+  const chip = h('div', { class: 'stats-chip', id: 'stats-chip', hidden: true, data: { open: 'false' } }, face, card);
+  // The figures' look (the settings', kept in this browser), and the
+  // settings' sections drawn, which follow it.
+  let look = kept();
+  const synced = new Set();
+
   cockpit.ui.mount('dock', { id: 'resume', order: 10, node: resume });
   cockpit.ui.mount('dock', { id: 'activity', order: 20, node: activity });
   cockpit.ui.mount('dock', { id: 'compacting', order: 25, node: compacting });
   cockpit.ui.mount('dock', { id: 'composer', order: 40, node: form });
+  cockpit.ui.mount('dock', { id: 'stats', order: 50, node: tray });
   cockpit.ui.slot('composer.above', above);
   cockpit.ui.slot('composer.row', row);
+  cockpit.ui.mount('composer.row', { id: 'figures', order: 30, node: chip });
 
   // A touch screen: a phone, or a tablet without a mouse. Its keyboard has
   // no Shift+Enter, nor keys to hint at.
@@ -238,6 +314,265 @@ export default function activate(cockpit) {
     summaryBody.dataset.over = text && summaryText.offsetHeight > summaryBody.clientHeight ? 'true' : 'false';
   }
 
+  // ---------------------------------------------------------------- the figures
+
+  // The conversation is compacted before its window is full: unless
+  // KOU_CONVEYOR_AUTO_COMPACT says otherwise, 33k short of it (a quarter of
+  // a small one), and at 200k at most (agentrunner, compactionLimits). The
+  // context left is what is left until then.
+  const compactsAt = (size) => Math.min(size - Math.min(33_000, size / 4), 200_000);
+  // Tokens per second: output tokens over the time their turns took, as the
+  // inspector's Tokens counts them.
+  const perSecond = (tokens, ms) => (tokens > 0 && ms > 0 ? (tokens * 1000) / ms : NaN);
+  const rate = (n) => (n >= 100 ? String(Math.round(n)) : n.toFixed(1));
+
+  // The changes below touch only what differs: the figures are drawn on
+  // every render, once a second while the agent works. A share is a
+  // property, which composer.css draws, in whole cells or not.
+  const fill = (el, name, share) => {
+    const value = Math.max(0, Math.min(1, share ?? 0)).toFixed(3);
+    if (el.style.getPropertyValue(name) !== value) el.style.setProperty(name, value);
+  };
+  const toned = (el, tone) => {
+    if ((el.dataset.tone || '') === tone) return;
+    if (tone) el.dataset.tone = tone;
+    else delete el.dataset.tone;
+  };
+  const say = (el, value) => { if (el.textContent !== value) el.textContent = value; };
+
+  // put draws a figure. A share fills its meter; with none, the meter goes.
+  function put(f, { value, unit = '', share = null, tone = '', title }) {
+    f.spec = { value, unit, share, tone, title };
+    say(f.value, value);
+    say(f.unit, unit);
+    if (f.node.title !== title) f.node.title = title;
+    toned(f.node, tone);
+    if (!f.meter) return;
+    f.meter.hidden = share == null;
+    fill(f.meter, '--fill', share);
+  }
+
+  function drawStats(v) {
+    const usage = v?.usage;
+    const chipped = look.style === 'chip';
+    const shown = look.style !== 'off' && look.hide.length < FIGURES.length
+      && !!(usage?.turns || usage?.input) && !v.loading && !v.gone;
+    tray.hidden = !shown || chipped;
+    chip.hidden = !shown || !chipped;
+    if (chip.hidden) openCard(false);
+    if (!shown) return;
+
+    const hit = usage.input > 0 ? usage.cached / usage.input : NaN;
+    put(figures.cache, Number.isFinite(hit)
+      ? { value: `${Math.round(hit * 100)}%`, share: hit, title: `Cache hits: ${fmt.tokens(usage.cached)} of the ${fmt.tokens(usage.input)} input tokens came from the cache` }
+      : { value: '—', title: 'Cache hits: the share of the input tokens the cache served' });
+
+    // The window is that of the model the next prompt runs with, when the
+    // list of models knows it; else the figure is what the context holds.
+    const models = service('models');
+    const model = models?.next?.(v) || models?.default?.() || '';
+    const known = models?.find?.(model);
+    const size = known?.context || 0;
+    const used = usage.context || 0;
+    // The chip's card says under its figures whose window it is.
+    let note;
+    if (size > 0) {
+      const at = compactsAt(size);
+      const left = Math.max(0, at - used);
+      const label = models.contextLabel?.(size) || fmt.tokens(size);
+      put(figures.context, {
+        value: fmt.tokens(left), unit: 'left', share: left / at,
+        tone: left <= at * 0.1 ? 'err' : left <= at * 0.25 ? 'warn' : '',
+        title: `Context left before the conversation is compacted: the latest request held ${fmt.tokens(used)} of about ${fmt.tokens(at)}, in the ${label} window of ${known.name || model}`,
+      });
+      note = `${known.name || model} · ${label} window · compacted at about ${fmt.tokens(at)}`;
+    } else {
+      put(figures.context, {
+        value: fmt.tokens(used), unit: 'used',
+        title: `Context: the latest request held ${fmt.tokens(used)} tokens; the window of ${known?.name || model || 'the model'} is not known here`,
+      });
+      note = `${known?.name || model || 'The model'}: its window is not known here`;
+    }
+
+    // The latest turn's speed, or the session's while none is timed.
+    const last = perSecond(usage.last_output, usage.last_ms);
+    const average = perSecond(usage.timed_output, usage.timed_ms);
+    const speed = Number.isFinite(last) ? last : average;
+    put(figures.speed, {
+      value: Number.isFinite(speed) ? rate(speed) : '—',
+      title: !Number.isFinite(last) ? 'Output tokens per second, once a turn reports its output tokens'
+        : `Output tokens per second: the latest turn wrote ${fmt.tokens(usage.last_output)} tokens in ${fmt.duration(usage.last_ms)}`
+          + (Number.isFinite(average) && usage.timed_ms !== usage.last_ms ? `; ${rate(average)} on average over the session` : ''),
+    });
+
+    put(figures.turns, { value: usage.turns ? String(usage.turns) : '—', title: 'Turns: the requests to the model in this session' });
+
+    // Folded, the arrow under the prompt takes the colour of a context
+    // running out.
+    toned(tray, look.hide.includes('context') ? '' : figures.context.spec.tone);
+    if (chipped) drawFace(note);
+  }
+
+  // drawFace draws the chip: the first figure shown, the context left
+  // unless it is not, on a dial when it is a share.
+  function drawFace(note) {
+    const key = FACE_ORDER.find((k) => !look.hide.includes(k)) || 'context';
+    const spec = figures[key].spec || { value: '—', unit: '', share: null, tone: '' };
+    const unit = FACE[key] || spec.unit;
+    say(faceValue, spec.value);
+    say(faceUnit, unit);
+    dial.hidden = spec.share == null;
+    fill(dial, '--stats-dial', spec.share);
+    toned(face, spec.tone);
+    const label = `Session figures: ${spec.value} ${unit}`.trim();
+    if (face.getAttribute('aria-label') !== label) face.setAttribute('aria-label', label);
+    say(cardNote, look.hide.includes('context') ? '' : note);
+  }
+
+  // ---------------------------------------------------------------- the figures' look
+
+  // kept reads the look this browser keeps: by default the tray, not
+  // folded — once it is, its arrow comes out at the pointer — with every
+  // figure.
+  function kept() {
+    const style = prefs.get('figures.style', 'tray');
+    const hide = prefs.get('figures.hide', []);
+    return {
+      style: typeof style === 'string' && Object.hasOwn(LOOKS, style) ? style : 'tray',
+      compact: prefs.get('figures.compact', false) === true,
+      hover: prefs.get('figures.hover', true) !== false,
+      open: prefs.get('figures.open', false) === true,
+      hide: Array.isArray(hide) ? FIGURES.filter((k) => hide.includes(k)) : [],
+    };
+  }
+
+  // choose changes the look and keeps it, but what is as by default.
+  function choose(change) {
+    look = { ...look, ...change };
+    prefs.set('figures.style', look.style === 'tray' ? null : look.style);
+    prefs.set('figures.compact', look.compact ? true : null);
+    prefs.set('figures.hover', look.hover ? null : false);
+    prefs.set('figures.open', look.open ? true : null);
+    prefs.set('figures.hide', look.hide.length ? look.hide : null);
+    applyLook();
+  }
+
+  // applyLook puts the figures shown where the look has them — the tray or
+  // the line, or the chip's card — in their order, and the others out of
+  // the page, so that only the figures shown have rules between them.
+  function applyLook() {
+    const chipped = look.style === 'chip';
+    const home = chipped ? cardGrid : stats;
+    const nodes = FIGURES.filter((k) => !look.hide.includes(k)).map((k) => figures[k].node);
+    if (!(home.childNodes.length === nodes.length && nodes.every((node, i) => home.childNodes[i] === node))) home.replaceChildren(...nodes);
+    for (const k of look.hide) figures[k].node.remove();
+    (chipped ? stats : cardGrid).replaceChildren();
+    tray.dataset.style = look.style === 'line' ? 'line' : 'tray';
+    tray.dataset.compact = String(look.compact);
+    tray.dataset.hover = String(look.hover);
+    tray.dataset.open = String(look.compact && look.open);
+    tab.hidden = !look.compact;
+    tab.setAttribute('aria-expanded', String(look.open));
+    tab.title = look.open ? 'Fold the figures under the prompt' : 'Show the session\'s figures';
+    if (!chipped) openCard(false);
+    for (const section of synced) {
+      if (!section.node.isConnected) synced.delete(section);
+      else cockpit.safely(() => section.sync());
+    }
+    cockpit.render();
+  }
+
+  // pin brings the folded figures out and keeps them out, or folds them
+  // again.
+  function pin(open) {
+    choose({ open });
+  }
+
+  // openCard opens the chip's card, or closes it: closed under the pointer,
+  // it stays closed until the pointer leaves.
+  function openCard(open) {
+    open = !!open;
+    if ((chip.dataset.open === 'true') === open) return;
+    chip.dataset.open = String(open);
+    face.setAttribute('aria-expanded', String(open));
+    if (open) place();
+    else if (chip.matches(':hover')) chip.dataset.hush = '';
+  }
+  // place keeps the card over the composer: it opens to the right of the
+  // chip's edge, unless that is out of the composer.
+  function place() {
+    const box = form.getBoundingClientRect();
+    const from = chip.getBoundingClientRect().left;
+    const dx = Math.max(Math.min(0, box.right - 8 - (from + card.offsetWidth)), box.left + 8 - from);
+    card.style.setProperty('--dx', `${Math.round(dx)}px`);
+  }
+  cockpit.listen(chip, 'pointerenter', () => place());
+  cockpit.listen(chip, 'pointerleave', () => { delete chip.dataset.hush; });
+  cockpit.on('layout:resize', () => { if (chip.dataset.open === 'true') place(); });
+  // A press elsewhere closes the card; so does Escape, as other popovers.
+  cockpit.listen(document, 'pointerdown', (event) => {
+    if (chip.dataset.open === 'true' && !chip.contains(event.target)) openCard(false);
+  }, true);
+  cockpit.contribute('overlay', { id: 'stats-card', order: 90, isOpen: () => chip.dataset.open === 'true', close: () => openCard(false) });
+  // Another tab chose another look: so does this one.
+  cockpit.listen(window, 'storage', (event) => {
+    if (event.key !== null && !String(event.key).startsWith('kou-conveyor.figures.')) return;
+    look = kept();
+    applyLook();
+  });
+
+  // ---------------------------------------------------------------- settings
+
+  let drawings = 0;
+  cockpit.contribute('settings.section', {
+    id: 'figures', title: 'Session figures', order: 12,
+    render() {
+      const group = `figures-${++drawings}`;
+      const looks = h('div', { class: 'look', role: 'radiogroup', 'aria-label': 'Look' },
+        Object.entries(LOOKS).map(([key, l]) => h('label', { title: l.title },
+          h('input', { type: 'radio', name: `${group}-look`, value: key, onchange: () => choose({ style: key }) }),
+          h('span', null, h('i', { class: 'stats-mark', data: { look: key } }), l.name))));
+      const foldBox = h('input', { type: 'checkbox', onchange: (event) => choose({ compact: event.currentTarget.checked, open: false }) });
+      const hoverBox = h('input', { type: 'checkbox', onchange: (event) => choose({ hover: event.currentTarget.checked }) });
+      const foldRow = h('label', { class: 'set-toggle' }, foldBox, 'Fold them under the prompt');
+      const hoverRow = h('label', { class: 'set-toggle' }, hoverBox, 'Show the arrow only while the pointer is on the prompt');
+      const which = h('div', { class: 'look', role: 'group', 'aria-label': 'Figures shown' },
+        FIGURES.map((key) => h('label', null,
+          h('input', {
+            type: 'checkbox', value: key,
+            onchange: (event) => choose({ hide: FIGURES.filter((k) => (k === key ? !event.currentTarget.checked : look.hide.includes(k))) }),
+          }),
+          h('span', null, figures[key].name))));
+      const node = h('div', null,
+        h('div', { class: 'set-row' }, h('span', { class: 'label', text: 'Look' }), looks,
+          h('p', { class: 'set-note', text: 'The cache\'s hits, the context left before the conversation is compacted, the tokens per second of the latest turn and the turns, by the prompt: in a tray under it, as they were first; on a quiet line there; in a chip in its row, whose card has them all; or nowhere — the inspector\'s Tokens has them all.' })),
+        h('div', { class: 'set-row' }, foldRow, hoverRow,
+          h('p', { class: 'set-note', text: 'Folded, the tray or the line hides under the prompt. As the pointer comes to the prompt, an arrow slides out from under it: a click on it brings the figures out, another folds them again, and out, they have the arrow under them the same way. Without the second switch, or on a touch screen, the arrow stays out.' })),
+        h('div', { class: 'set-row' }, h('span', { class: 'label', text: 'Figures' }), which,
+          h('p', { class: 'set-note', text: 'One at least. All of this is kept in this browser.' })));
+      function sync() {
+        for (const input of looks.querySelectorAll('input')) input.checked = input.value === look.style;
+        const folds = look.style === 'tray' || look.style === 'line';
+        foldBox.checked = look.compact;
+        hoverBox.checked = look.hover;
+        foldBox.disabled = !folds;
+        hoverBox.disabled = !folds || !look.compact;
+        foldRow.dataset.off = String(foldBox.disabled);
+        hoverRow.dataset.off = String(hoverBox.disabled);
+        const left = FIGURES.length - look.hide.length;
+        for (const input of which.querySelectorAll('input')) {
+          input.checked = !look.hide.includes(input.value);
+          // The last figure shown stays: Off hides them all.
+          input.disabled = look.style === 'off' || (input.checked && left <= 1);
+          input.parentElement.dataset.off = String(look.style === 'off');
+        }
+      }
+      sync();
+      synced.add({ node, sync });
+      return node;
+    },
+  });
+
   // ---------------------------------------------------------------- the banner
 
   function onResume() {
@@ -252,6 +587,9 @@ export default function activate(cockpit) {
         if (text.trim()) set(text);
         return;
       }
+      case 'outdated':
+        session.restart?.();
+        return;
       default:
         session.submit(session.CONTINUE);
     }
@@ -259,21 +597,32 @@ export default function activate(cockpit) {
 
   function render() {
     const v = view();
-    if (!v) return;
+    if (!v) {
+      tray.hidden = true;
+      chip.hidden = true;
+      return;
+    }
     const w = session.currentWorkspace();
     const missing = !!w?.missing;
+    // A run whose runner was built anew since it started goes on with the
+    // build it started with: a restart goes on from where it got to with the
+    // new one (session.restart).
+    const outdated = !!v.run?.outdated && v.run.phase !== 'stopping' && !v.run.outdatedDismissed && !v.run.compact && !!session.restart;
     const banner = missing ? 'missing' : v.gone ? 'gone'
-      : v.interrupted && !v.run && !v.external && !v.loading && !v.resumeDismissed && !v.edit ? 'resume' : '';
+      : v.interrupted && !v.run && !v.external && !v.loading && !v.resumeDismissed && !v.edit ? 'resume'
+      : outdated ? 'outdated' : '';
     resume.hidden = !banner;
     resume.dataset.kind = banner;
     resumeText.textContent = {
       missing: `The folder ${w?.display || ''} no longer exists. Runs are off until it is back.`,
       gone: 'This session was deleted in another window. Its prompt can go to a new session.',
       resume: 'The last run did not finish. Continue it, or edit its prompt.',
+      outdated: 'The runner was built anew since this run started, and the run goes on with the old build. Restart it to go on from here with the new one.',
     }[banner] || '';
-    resumeRun.textContent = { missing: 'Remove from list', gone: 'New session' }[banner] || 'Continue';
+    resumeRun.textContent = { missing: 'Remove from list', gone: 'New session', outdated: 'Restart' }[banner] || 'Continue';
+    resumeRun.title = banner === 'outdated' ? 'Stop the run and start it again at once, with the new runner, from where it got to' : '';
     resumeEdit.hidden = banner !== 'resume' || !session.lastPrompt(v) || !cockpit.has('edit');
-    resumeDismiss.hidden = banner !== 'resume';
+    resumeDismiss.hidden = banner !== 'resume' && banner !== 'outdated';
 
     const busy = !!v.run;
     const typed = !!input.value.trim();
@@ -315,6 +664,7 @@ export default function activate(cockpit) {
     activityClock.textContent = v.run ? fmt.timer(Date.now() - v.run.started) : '';
     drawSummary(busy ? v.compaction : null);
     form.dataset.busy = busy ? 'true' : 'false';
+    drawStats(v);
   }
   cockpit.on('render', render);
 
@@ -360,5 +710,5 @@ export default function activate(cockpit) {
   }
   cockpit.onDispose(() => { hot.text = input.value; });
   cockpit.emit('composer:ready', input, form);
-  cockpit.render();
+  applyLook();
 }

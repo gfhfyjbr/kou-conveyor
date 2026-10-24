@@ -8,6 +8,8 @@ struct RelayScreen: View {
     @State private var scanning = false
     @State private var unpairing = false
     @State private var checking = false
+    /// The checks asked for, done: each answers with a tap of the hand.
+    @State private var checks = 0
     @AppStorage(BackgroundSettings.keepAliveKey) private var keepAlive = true
     @AppStorage(BackgroundSettings.notifyKey) private var notifyTurnEnd = true
     @AppStorage(StreamSettings.motionKey) private var streamMotion = true
@@ -29,6 +31,7 @@ struct RelayScreen: View {
                 pairingSection
             }
             .groupedBackground()
+            .listSectionSpacing(22)
             .navigationTitle("Relay")
             .navigationSubtitle(model.relay?.address ?? "")
             .refreshable { await model.refresh() }
@@ -38,6 +41,13 @@ struct RelayScreen: View {
                         .symbolEffect(.rotate, isActive: checking)
                         .disabled(checking)
                 }
+            }
+            // A check the user asked for answers in the hand too.
+            .sensoryFeedback(trigger: checks) { _, _ in
+                TunnelState(model.link) == .up ? .success : .warning
+            }
+            .sensoryFeedback(.selection, trigger: model.workspace?.id) { old, new in
+                old != nil && new != nil
             }
             .sheet(isPresented: $scanning) {
                 ScannerSheet { link in
@@ -50,101 +60,154 @@ struct RelayScreen: View {
 
     // MARK: Sections
 
+    /// The tunnel at large: its orbit, how it is, the cockpit it reaches and
+    /// the readings that matter — as the cockpit's own tunnel dialog.
     private var header: some View {
         let state = TunnelState(model.link)
         return Section {
-            VStack(spacing: 12) {
-                PlanetMark(lineWidth: 1.2)
-                    .foregroundStyle(state.color)
-                    .frame(width: 56, height: 56)
-                    .padding(16)
-                    .background(state.color.opacity(0.12), in: .circle)
-                TunnelChip(state: state)
-                Text(headline(state))
-                    .font(.headline)
-                Text(explanation)
+            VStack(spacing: 0) {
+                Orbit(color: state.color, live: state == .up, size: 150)
+                    .padding(.bottom, 10)
+                HStack(spacing: 4) {
+                    LiveDot(color: state.color, size: 6, live: state == .up || state == .checking)
+                    Eyebrow(state == .up ? "Connected to" : "Tunnel", color: state.color)
+                }
+                Text(verbatim: headline(state))
+                    .font(.title2.weight(.heavy).width(.expanded))
+                    .foregroundStyle(Color.kouFg)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .padding(.top, 4)
+                Text(verbatim: explanation)
                     .font(.footnote)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg3)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.top, 8)
+                    .padding(.horizontal, 16)
+                readings
+                    .padding(.top, 20)
             }
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
+            .padding(.bottom, 4)
             .animation(.smooth, value: model.link)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
         }
+    }
+
+    /// What the link is made of, at a glance: how it is secured, how long
+    /// the cockpit has been on it, and how much runs through it.
+    private var readings: some View {
+        ReadingStrip {
+            Reading(label: "Link") {
+                Text(verbatim: crypto.word)
+                    .foregroundStyle(crypto.tone)
+            }
+            Reading(label: "Uptime") {
+                if model.health?.agent == true, let since = model.health?.agentSince {
+                    TimelineView(.everyMinute) { _ in
+                        Text(verbatim: since.kouAge == "now" ? "<1m" : since.kouAge)
+                            .foregroundStyle(Color.kouFg)
+                    }
+                } else {
+                    Text(verbatim: model.health?.agent == true ? "on" : model.health == nil ? "—" : "off")
+                        .foregroundStyle(model.health?.agent == true ? Color.kouFg : Color.kouFg3)
+                }
+            }
+            Reading(label: "Running") {
+                Text(verbatim: "\(running)")
+                    .monospacedDigit()
+                    .foregroundStyle(running > 0 ? Color.kouAccent : Color.kouFg3)
+                    .contentTransition(.numericText())
+                    .animation(.snappy, value: running)
+            }
+        }
+        .padding(.horizontal, 2)
     }
 
     private func relaySection(_ relay: RelayConfig) -> some View {
         Section {
-            LabeledContent("Address", value: relay.address)
-            LabeledContent("Encryption", value: encryption(of: relay))
+            value("Address", relay.address)
+            LabeledContent("Encryption") {
+                Text(verbatim: encryption(of: relay))
+                    .foregroundStyle(Color.kouFg2)
+            }
             if let fingerprint = relay.fingerprint, let short = relay.shortFingerprint {
-                LabeledContent("Certificate") {
-                    Text(short)
-                        .font(.system(.body, design: .monospaced))
-                }
-                .contextMenu {
-                    Button("Copy fingerprint", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = fingerprint
+                value("Certificate", short)
+                    .contextMenu {
+                        Button("Copy fingerprint", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = fingerprint
+                        }
                     }
-                }
             }
             if let version = model.health?.version, !version.isEmpty {
                 // A build's version is long: one line, its ends kept, and
                 // whole when copied.
-                LabeledContent("Version") {
-                    Text(version)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .contextMenu {
-                    Button("Copy version", systemImage: "doc.on.doc") {
-                        UIPasteboard.general.string = version
+                value("Version", version)
+                    .contextMenu {
+                        Button("Copy version", systemImage: "doc.on.doc") {
+                            UIPasteboard.general.string = version
+                        }
                     }
-                }
             }
         } header: {
-            Text("Relay")
+            Eyebrow("Relay")
         } footer: {
             if relay.fingerprint != nil {
-                Text("The app trusts only the certificate with this fingerprint: the one the pairing code carried.")
+                FormNote("The app trusts only the certificate with this fingerprint: the one the pairing code carried.")
             } else if !relay.isEncrypted {
-                Text("Plain http: use it only on a network you trust, such as a tailnet.")
+                FormNote("Plain http: use it only on a network you trust, such as a tailnet.")
             }
         }
+        .kouRow()
     }
 
     private var cockpitSection: some View {
         Section {
             LabeledContent("Cockpit") {
-                if model.health?.agent == true {
-                    if let since = model.health?.agentSince {
-                        Text("connected for \(Text(since, style: .relative))")
-                    } else {
-                        Text("connected")
+                HStack(spacing: 2) {
+                    LiveDot(color: model.health?.agent == true ? .kouOK : .kouFg4, size: 6, live: false)
+                    Group {
+                        if model.health?.agent == true {
+                            if let since = model.health?.agentSince {
+                                Text("connected for \(Text(since, style: .relative))")
+                            } else {
+                                Text("connected")
+                            }
+                        } else if model.health != nil {
+                            Text("not connected")
+                        } else {
+                            Text("unknown")
+                        }
                     }
-                } else if model.health != nil {
-                    Text("not connected")
-                } else {
-                    Text("unknown")
+                    .foregroundStyle(Color.kouFg2)
+                    .lineLimit(1)
                 }
             }
             if let tunnel = model.tunnel {
-                LabeledContent("Tunnel", value: describe(tunnel))
+                LabeledContent("Tunnel") {
+                    Tag(describe(tunnel), tone: tunnel.state == "up" ? .kouOK : tunnel.state == "off" ? .kouFg3 : .kouWarn)
+                }
                 if let host = tunnel.host, !host.isEmpty {
-                    LabeledContent("Host", value: host)
+                    value("Host", host)
                 }
                 if let error = tunnel.error, !error.isEmpty {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(.red)
+                    Label {
+                        Text(verbatim: error)
+                            .font(.system(.footnote, design: .monospaced))
+                            .foregroundStyle(Color.kouErr)
+                    } icon: {
+                        RowIcon("exclamationmark.triangle.fill", tone: .kouErr)
+                    }
                 }
             }
         } header: {
-            Text("Cockpit")
+            Eyebrow("Cockpit")
         } footer: {
-            Text("The cockpit dials out to the relay, so its computer needs no open port. /tunnel in the cockpit starts and stops the tunnel.")
+            FormNote("The cockpit dials out to the relay, so its computer needs no open port. /tunnel in the cockpit starts and stops the tunnel.")
         }
+        .kouRow()
     }
 
     private var workspaceSection: some View {
@@ -158,10 +221,11 @@ struct RelayScreen: View {
                 .tint(.primary)
             }
         } header: {
-            Text("Workspace")
+            Eyebrow("Workspace")
         } footer: {
-            Text("Sessions and canvases are this workspace's.")
+            FormNote("Sessions and canvases are this workspace's.")
         }
+        .kouRow()
     }
 
     private var appearanceSection: some View {
@@ -169,49 +233,99 @@ struct RelayScreen: View {
             NavigationLink {
                 AppearanceScreen()
             } label: {
-                LabeledContent {
-                    Text(Look.shared.summary)
-                        .lineLimit(1)
-                } label: {
-                    Label("Appearance", systemImage: "paintpalette")
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Appearance")
+                            .foregroundStyle(Color.kouFg)
+                        Text(verbatim: Look.shared.summary)
+                            .font(.kouMeta)
+                            .foregroundStyle(Color.kouFg3)
+                            .lineLimit(1)
+                    }
+                } icon: {
+                    LookMark()
                 }
             }
+        } header: {
+            Eyebrow("This iPhone")
         } footer: {
-            Text("The accent, the shade of the greys and the corners: the cockpits' choices, for this iPhone.")
+            FormNote("The accent, the shade of the greys and the corners: the cockpits' choices, for this iPhone.")
         }
+        .kouRow()
     }
 
     private var transcriptSection: some View {
         Section {
-            Toggle("Animate text as it streams", isOn: $streamMotion)
+            Toggle(isOn: $streamMotion) {
+                Label {
+                    Text("Animate text as it streams")
+                } icon: {
+                    RowIcon("character.cursor.ibeam")
+                }
+            }
         } header: {
-            Text("Transcript")
+            Eyebrow("Transcript")
         } footer: {
-            Text("The agent's answer and thinking show as they are written: new words fade in and a caret ends them. Off, the text just appears. The system's Reduce Motion turns the animation off too.")
+            FormNote("The agent's answer and thinking show as they are written: new words fade in and a caret ends them. Off, the text just appears. The system's Reduce Motion turns the animation off too.")
         }
+        .kouRow()
     }
 
     private var backgroundSection: some View {
         Section {
-            Toggle("Keep runs connected in the background", isOn: $keepAlive)
-            Toggle("Notify when a turn ends", isOn: $notifyTurnEnd)
+            Toggle(isOn: $keepAlive) {
+                Label {
+                    Text("Keep runs connected in the background")
+                } icon: {
+                    RowIcon("antenna.radiowaves.left.and.right")
+                }
+            }
+            Toggle(isOn: $notifyTurnEnd) {
+                Label {
+                    Text("Notify when a turn ends")
+                } icon: {
+                    RowIcon("bell.badge")
+                }
+            }
         } header: {
-            Text("Notifications & background")
+            Eyebrow("Notifications & background")
         } footer: {
-            Text("While a run is going, the app holds the connection for up to 20 minutes after you leave it, so it need not reconnect — iOS may end this sooner. The turn-end notice is the app's own.")
+            FormNote("While a run is going, the app holds the connection for up to 20 minutes after you leave it, so it need not reconnect — iOS may end this sooner. The turn-end notice is the app's own.")
         }
+        .kouRow()
     }
 
     private var pairingSection: some View {
         Section {
-            Button("Pair with another relay", systemImage: "qrcode.viewfinder") {
+            Button {
                 scanning = true
+            } label: {
+                Label {
+                    Text("Pair with another relay")
+                        .foregroundStyle(Color.kouFg)
+                } icon: {
+                    RowIcon("qrcode.viewfinder", tone: .kouAccent)
+                }
             }
-            Button("Paste a pairing link", systemImage: "doc.on.clipboard") {
+            Button {
                 paste()
+            } label: {
+                Label {
+                    Text("Paste a pairing link")
+                        .foregroundStyle(Color.kouFg)
+                } icon: {
+                    RowIcon("doc.on.clipboard")
+                }
             }
-            Button("Unpair", systemImage: "xmark.circle", role: .destructive) {
+            Button(role: .destructive) {
                 unpairing = true
+            } label: {
+                Label {
+                    Text("Unpair")
+                        .foregroundStyle(Color.kouErr)
+                } icon: {
+                    RowIcon("xmark", tone: .kouErr)
+                }
             }
             .confirmationDialog("Unpair from \(model.relay?.address ?? "the relay")?",
                                 isPresented: $unpairing, titleVisibility: .visible) {
@@ -220,20 +334,27 @@ struct RelayScreen: View {
                 Text("The app forgets the relay and its token. To come back, scan the pairing code again.")
             }
         } header: {
-            Text("Pairing")
+            Eyebrow("Pairing")
+        }
+        .kouRow()
+    }
+
+    /// A row of a value the machine wrote — an address, a fingerprint, a
+    /// version: in mono, its ends kept when it is too long.
+    private func value(_ label: LocalizedStringKey, _ value: String) -> some View {
+        LabeledContent(label) {
+            Text(verbatim: value)
+                .font(.system(.subheadline, design: .monospaced))
+                .foregroundStyle(Color.kouFg2)
+                .lineLimit(1)
+                .truncationMode(.middle)
         }
     }
 
     // MARK: Words
 
     private func headline(_ state: TunnelState) -> String {
-        switch state {
-        case .up:
-            if let workspace = model.workspace { return "Connected to \(workspace.name)" }
-            return state.label
-        default:
-            return state.label
-        }
+        state == .up ? model.workspace?.name ?? "the cockpit" : state.label
     }
 
     private var explanation: String {
@@ -247,6 +368,18 @@ struct RelayScreen: View {
         case .checking:
             "Asking the relay…"
         }
+    }
+
+    /// How the link is secured, as the strip reads it.
+    private var crypto: (word: String, tone: Color) {
+        guard let relay = model.relay else { return ("—", .kouFg3) }
+        if !relay.isEncrypted { return ("HTTP", .kouWarn) }
+        return relay.fingerprint == nil ? ("TLS", .kouFg) : ("TLS·PIN", .kouOK)
+    }
+
+    /// The sessions running in the cockpit's workspaces.
+    private var running: Int {
+        model.workspaces.reduce(0) { $0 + ($1.running ?? 0) }
     }
 
     private func encryption(of relay: RelayConfig) -> String {
@@ -272,6 +405,7 @@ struct RelayScreen: View {
         Task {
             await model.refresh()
             checking = false
+            checks += 1
         }
     }
 
@@ -285,35 +419,66 @@ struct RelayScreen: View {
     }
 }
 
-/// A workspace of the cockpit, ticked when it is the one shown.
+/// A workspace of the cockpit: its monogram, ringed when it is the one
+/// shown, and what runs in it.
 private struct WorkspaceRow: View {
     let workspace: Workspace
     let selected: Bool
 
     var body: some View {
         HStack(spacing: 12) {
+            Monogram(name: workspace.name, size: 30, current: selected)
+                .padding(selected ? 0 : 3)
             VStack(alignment: .leading, spacing: 2) {
-                Text(workspace.name)
+                Text(verbatim: workspace.name)
+                    .font(.body.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(Color.kouFg)
                     .lineLimit(1)
-                Text(workspace.display ?? workspace.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(verbatim: workspace.display ?? workspace.path)
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg3)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer(minLength: 8)
             if let running = workspace.running, running > 0 {
-                Label("\(running) running", systemImage: "bolt.fill")
-                    .font(.caption)
-                    .foregroundStyle(Color.kouAccent)
-                    .labelStyle(.titleAndIcon)
+                HStack(spacing: 2) {
+                    LiveDot(size: 6)
+                    Text(verbatim: "\(running)")
+                        .font(.kouMeta.weight(.semibold))
+                        .foregroundStyle(Color.kouAccent)
+                }
+                .accessibilityLabel("\(running) running")
             }
             Image(systemName: "checkmark")
-                .fontWeight(.semibold)
+                .font(.footnote.weight(.bold))
                 .foregroundStyle(Color.kouAccent)
                 .opacity(selected ? 1 : 0)
         }
         .contentShape(.rect)
+        .accessibilityElement(children: .combine)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// LookMark is the look in a row's mark: the accent on the shade's ground,
+/// in the corners chosen.
+struct LookMark: View {
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: .corner(7), style: .continuous)
+        ZStack {
+            shape.fill(Color.kouSurface)
+            Circle()
+                .fill(Color.kouAccent)
+                .frame(width: 11, height: 11)
+                .offset(x: 4, y: 4)
+            RoundedRectangle(cornerRadius: .corner(2.5), style: .continuous)
+                .fill(Color.kouFg3)
+                .frame(width: 11, height: 3)
+                .offset(x: -3, y: -5)
+        }
+        .frame(width: 28, height: 28)
+        .overlay(shape.strokeBorder(Color.kouLine2.opacity(0.7), lineWidth: 1))
+        .accessibilityHidden(true)
     }
 }

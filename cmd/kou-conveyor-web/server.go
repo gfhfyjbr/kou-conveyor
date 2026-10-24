@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -10,6 +9,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -71,6 +71,9 @@ type server struct {
 	rebuild  *rebuilder
 	instance string
 	started  time.Time // when this run of the server started
+	// adopted is how many runs the server took up as it started, which went
+	// on while no server was there (detached.go).
+	adopted int
 
 	// terminals are the shells of the sidebar's terminal tabs
 	// (terminals.go); explorer what its Files tab shows (explorer.go).
@@ -138,6 +141,13 @@ func newServer(ctx context.Context, o options, addr net.Addr) *server {
 		go ws.warm(ctx)
 	}
 	s.startGateway(ctx)
+	// What the server before this one left goes on here: what waited in its
+	// queues, and the runs whose runners went on without it (detached.go).
+	// Their runners may run apart from it whether or not this one starts
+	// its own so.
+	s.loadQueues()
+	s.adopted = s.adopt()
+	go s.resumeQueues()
 	return s
 }
 
@@ -256,6 +266,7 @@ func (s *server) handler() http.Handler {
 	// socket opened to it says so; it has nothing to say itself.
 	mux.HandleFunc("GET "+eventSocketProbe, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
 	mux.HandleFunc("POST /api/runs/{id}/cancel", s.handleCancel)
+	mux.HandleFunc("POST /api/runs/{id}/restart", s.handleRestart)
 	mux.HandleFunc("GET /api/terminals/{id}", s.handleTerminal)
 	mux.HandleFunc("DELETE /api/terminals/{id}", s.handleKillTerminal)
 	mux.HandleFunc("POST /api/terminals/{id}/keep", s.handleKeepTerminal)
@@ -462,6 +473,10 @@ type runSummary struct {
 	// one by one.
 	Activity string `json:"activity,omitempty"`
 	Events   int    `json:"events,omitempty"`
+	// Outdated: the run's runner goes on as it was built when the run
+	// started, and the server has a newer one, which a restart takes up
+	// (handleRestart).
+	Outdated bool `json:"outdated,omitzero"`
 }
 
 func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
@@ -497,6 +512,11 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	queue := s.queueSnapshot(activeKey(ws, id))
 	s.mu.Unlock()
+	if summary != nil {
+		// The runner's build is read without the lock: the first time after
+		// a rebuild, the whole executable.
+		summary.Outdated = current.outdated()
+	}
 	switch {
 	case errors.Is(err, fs.ErrNotExist) && reserved != nil:
 		tr = cockpit.NewTranscript()
@@ -541,15 +561,30 @@ func (s *server) handleSession(w http.ResponseWriter, r *http.Request) {
 // writeLargeJSON answers with what can be megabytes, a session's
 // transcript: compressed for a client that takes gzip, as the phone over
 // the relay's link does, and not at all to one that has it already
-// (If-None-Match), the phone checking an idle session again.
+// (If-None-Match), the phone checking an idle session again. The JSON is
+// compressed as it is made, and kept in pieces until it goes: made whole
+// first, a session's 50 MB of it, with the copies a buffer leaves as it
+// grows, would raise the server's memory by twice that, to a mark the
+// system keeps.
 func writeLargeJSON(w http.ResponseWriter, r *http.Request, v any) {
-	var buf bytes.Buffer
-	if err := json.MarshalWrite(&buf, v, json.Deterministic(true)); err != nil {
+	compress := acceptsGzip(r.Header.Get("Accept-Encoding"))
+	digest, size := sha256.New(), new(countingWriter)
+	var made chunks
+	to := io.Writer(&made)
+	var zw *gzip.Writer
+	if compress {
+		zw, _ = gzip.NewWriterLevel(&made, gzip.BestSpeed)
+		to = zw
+	}
+	err := json.MarshalWrite(io.MultiWriter(digest, size, to), v, json.Deterministic(true))
+	if err == nil && zw != nil {
+		err = zw.Close()
+	}
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	sum := sha256.Sum256(buf.Bytes())
-	tag := `"` + hex.EncodeToString(sum[:12]) + `"`
+	tag := `"` + hex.EncodeToString(digest.Sum(nil)[:12]) + `"`
 	h := w.Header()
 	h.Set("Content-Type", "application/json; charset=utf-8")
 	h.Set("Cache-Control", "no-store")
@@ -559,18 +594,65 @@ func writeLargeJSON(w http.ResponseWriter, r *http.Request, v any) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
-	if buf.Len() < 4<<10 || !acceptsGzip(r.Header.Get("Accept-Encoding")) {
-		w.WriteHeader(http.StatusOK)
-		w.Write(buf.Bytes())
-		return
+	body := io.Reader(&made)
+	switch {
+	case compress && size.n < 4<<10:
+		// Too little to be worth compressing: it goes as it was made.
+		if body, err = gzip.NewReader(&made); err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	case compress:
+		h.Set("Content-Encoding", "gzip")
 	}
-	h.Set("Content-Encoding", "gzip")
 	w.WriteHeader(http.StatusOK)
-	zw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
-	zw.Write(buf.Bytes())
-	if err := zw.Close(); err != nil {
-		log.Printf("compress response: %v", err)
+	if _, err := io.Copy(w, body); err != nil {
+		log.Printf("send response: %v", err)
 	}
+}
+
+// countingWriter counts the bytes written to it.
+type countingWriter struct{ n int64 }
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	c.n += int64(len(p))
+	return len(p), nil
+}
+
+// chunkSize is the size of the pieces chunks keeps.
+const chunkSize = 64 << 10
+
+// chunks keeps what is written to it in pieces, which, unlike a buffer that
+// grows, are never copied, and lets each go once it has been read.
+type chunks struct{ pieces [][]byte }
+
+func (c *chunks) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		last := len(c.pieces) - 1
+		if last < 0 || len(c.pieces[last]) == cap(c.pieces[last]) {
+			c.pieces = append(c.pieces, make([]byte, 0, chunkSize))
+			last++
+		}
+		room := cap(c.pieces[last]) - len(c.pieces[last])
+		taken := min(room, len(p))
+		c.pieces[last] = append(c.pieces[last], p[:taken]...)
+		p = p[taken:]
+	}
+	return n, nil
+}
+
+func (c *chunks) Read(p []byte) (int, error) {
+	for len(c.pieces) > 0 && len(c.pieces[0]) == 0 {
+		c.pieces[0] = nil // read: the collector may have it
+		c.pieces = c.pieces[1:]
+	}
+	if len(c.pieces) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, c.pieces[0])
+	c.pieces[0] = c.pieces[0][n:]
+	return n, nil
 }
 
 // acceptsGzip says whether an Accept-Encoding takes gzip.

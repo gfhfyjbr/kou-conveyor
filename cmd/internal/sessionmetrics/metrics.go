@@ -27,6 +27,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/session"
 	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore"
+	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore/localfile"
 )
 
 const (
@@ -365,14 +366,18 @@ func (m *meter) line(line []byte) {
 	case "item":
 		var record struct {
 			Item       sessionstore.Item
-			Operations []operation.Operation
+			Operations []localfile.ItemOperation
 		}
 		if err := json.Unmarshal(envelope.Data, &record); err != nil {
 			m.unreadable(fmt.Errorf("decode an item record: %w", err))
 			return
 		}
 		for _, value := range record.Operations {
-			m.operation(value)
+			// One a status repeats by its ID alone, as the file already has
+			// it, was met in the record that has it whole.
+			if !value.Saved {
+				m.operation(value.Operation)
+			}
 		}
 		m.item(record.Item)
 	default:

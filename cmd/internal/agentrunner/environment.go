@@ -12,6 +12,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // The environment block. The model works better when it knows where it
@@ -92,7 +93,7 @@ func profileGuidance(profile tool.Profile) string {
 func osName() string {
 	switch runtime.GOOS {
 	case "darwin":
-		if out, err := exec.Command("sw_vers", "-productVersion").Output(); err == nil {
+		if out, err := spawn.Command("sw_vers", "-productVersion").Output(); err == nil {
 			return "macOS " + strings.TrimSpace(string(out))
 		}
 		return "macOS"

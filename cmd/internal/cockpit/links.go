@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -18,6 +17,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // File links. A prompt links a file or a folder by a $ reference in its
@@ -599,7 +600,7 @@ func listEntries(ctx context.Context, workspace string, skip func(string) bool) 
 // gitFiles lists the files of a work tree of git that are tracked or not
 // ignored.
 func gitFiles(ctx context.Context, workspace string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", workspace, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	cmd := spawn.CommandContext(ctx, "git", "-C", workspace, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err

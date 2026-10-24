@@ -158,6 +158,11 @@ final class SessionModel {
         }
     }
     private(set) var started: Date?
+    /// What streamed of the summary of the compaction the run makes, while
+    /// it compacts the context; nil else. The summary stands in for the
+    /// conversation, and the compaction's notice holds it once it is done:
+    /// it streams over the composer, not into the transcript.
+    private(set) var compaction: Compaction?
     /// Run by another process (the terminal cockpit): followed, not driven.
     private(set) var external = false
     private(set) var interrupted = false
@@ -176,6 +181,21 @@ final class SessionModel {
         let text: String
         let isError: Bool
     }
+
+    /// Compaction is what streamed of a compaction's summary: its pieces in
+    /// the order they came, each the thinking before the summary or its text.
+    struct Compaction: Equatable {
+        struct Piece: Equatable {
+            let id: String
+            var thinking: Bool
+            var text: String
+        }
+
+        var pieces: [Piece] = []
+    }
+
+    /// The activity of a run while it compacts the context.
+    static let compactingActivity = "Compacting context"
 
     private var following: Task<Void, Never>?
 
@@ -337,7 +357,10 @@ final class SessionModel {
         runID = run.id
         started = run.startedAt ?? Date()
         phase = run.stopping == true ? .stopping : .running
-        activity = run.activity ?? (run.compact == true ? "Compacting context" : (run.stopping == true ? "Stopping" : "Working"))
+        activity = run.activity ?? (run.compact == true ? Self.compactingActivity : (run.stopping == true ? "Stopping" : "Working"))
+        // A run followed anew streams again from its first event: the
+        // compaction going on comes again with it.
+        compaction = activity == Self.compactingActivity ? Compaction() : nil
         let runID = run.id
         let backlog = run.events ?? 0
         following = Task { [weak self] in
@@ -351,6 +374,7 @@ final class SessionModel {
         reconnecting = false
         // A run followed anew streams again from its first event.
         dropPreviews()
+        if compaction != nil { compaction = nil }
     }
 
     /// stream follows a run's events from the first. Those it published
@@ -417,6 +441,7 @@ final class SessionModel {
         self.runID = nil
         phase = .idle
         reconnecting = false
+        if compaction != nil { compaction = nil }
         Task { await load() }
     }
 
@@ -442,7 +467,10 @@ final class SessionModel {
         case "queue":
             queue = event.queue ?? queue
         case "status":
-            if let activity = event.activity, !activity.isEmpty { self.activity = activity }
+            if let activity = event.activity, !activity.isEmpty {
+                compacting(activity)
+                self.activity = activity
+            }
             if let usage = event.usage { self.usage = usage }
             if event.stopping == true { phase = .stopping }
         case "done":
@@ -461,6 +489,7 @@ final class SessionModel {
         // What streamed and was not recorded is not part of the session: the
         // run was stopped as the agent wrote it.
         dropPreviews()
+        if compaction != nil { compaction = nil }
         if let queue = event.queue { self.queue = queue }
         if let usage = event.usage { self.usage = usage }
         let kind = event.stopped == true ? "stopped" : (event.error?.isEmpty == false ? "failed" : "done")
@@ -519,6 +548,7 @@ final class SessionModel {
     }
 
     private func upsert(_ entry: Entry) {
+        if compaction != nil { compacted(entry) }
         var entry = entry
         if entry.kind == Entry.tool, entry.tool?.isFinished == true, outputs[entry.id] != nil {
             outputs[entry.id] = nil
@@ -557,8 +587,13 @@ final class SessionModel {
     /// entry that shows the answer, or the thinking, as it comes. The entry
     /// it is recorded as takes its place once the model is done.
     private func streamed(_ delta: StreamDelta) {
-        // A compaction's summary is no preview: its notice holds it.
-        guard delta.compaction != true, !settledPreviews.contains(delta.id) else { return }
+        // A compaction's summary is no preview: it streams over the
+        // composer, and its notice holds it once it is done.
+        if delta.compaction == true {
+            summarized(delta)
+            return
+        }
+        guard !settledPreviews.contains(delta.id) else { return }
         if let at = index[delta.id], entries.indices.contains(at) {
             guard entries[at].streaming == true else { return }
             entries[at].text = (entries[at].text ?? "") + delta.text
@@ -568,6 +603,46 @@ final class SessionModel {
         let kind = delta.kind == Entry.reasoning ? Entry.reasoning : Entry.assistant
         index[delta.id] = entries.count
         entries.append(Entry(id: delta.id, kind: kind, at: delta.at ?? Date(), text: delta.text, streaming: true))
+    }
+
+    // MARK: Compaction
+
+    /// compacting follows the run's activity, as the cockpit does: the run
+    /// that starts compacting the context opens its compaction, and closes it
+    /// as it goes on to something else — but for a request to the model that
+    /// is tried again, which goes on with the same compaction.
+    private func compacting(_ activity: String) {
+        guard activity != self.activity else { return }
+        if activity == Self.compactingActivity {
+            if compaction == nil { compaction = Compaction() }
+        } else if !activity.hasPrefix("Model request failed"), compaction != nil {
+            compaction = nil
+        }
+    }
+
+    /// compacted follows the compaction into what the run records: a piece
+    /// that came to nothing (its response started over) goes, and the
+    /// compaction's notice ends it.
+    private func compacted(_ entry: Entry) {
+        if entry.id.hasPrefix("compaction:") {
+            compaction = nil
+        } else if entry.gone == true, let at = compaction?.pieces.firstIndex(where: { $0.id == entry.id }) {
+            compaction?.pieces.remove(at: at)
+        }
+    }
+
+    /// summarized adds a piece of a compaction's summary to what streamed
+    /// of it.
+    private func summarized(_ delta: StreamDelta) {
+        guard !delta.id.isEmpty, !delta.text.isEmpty else { return }
+        let thinking = delta.kind == Entry.reasoning
+        if compaction == nil { compaction = Compaction() }
+        if let at = compaction?.pieces.firstIndex(where: { $0.id == delta.id }) {
+            compaction?.pieces[at].text += delta.text
+            if compaction?.pieces[at].thinking != thinking { compaction?.pieces[at].thinking = thinking }
+        } else {
+            compaction?.pieces.append(Compaction.Piece(id: delta.id, thinking: thinking, text: delta.text))
+        }
     }
 
     /// wrote adds what a running command printed to what is shown of it.

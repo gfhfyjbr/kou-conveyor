@@ -25,6 +25,16 @@
 .model-pick:hover .chev, .model-pick[aria-expanded="true"] .chev { border-top-color: var(--fg-2); }
 .model-pick[data-warn="true"] b { color: var(--warn); }
 
+/* The model that titles new sessions, in the settings: an act, framed as
+   a control, with the triangle above beside its name, on its line. */
+.title-pick { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; border-color: var(--line-2); }
+.title-pick b { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.title-pick .chev { width: 0; height: 0; margin-left: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid var(--fg-4); }
+.title-pick .chev::before { content: none; }
+.title-pick:hover .chev, .title-pick[aria-expanded="true"] .chev { border-top-color: var(--fg-2); }
+/* A long name ends in an ellipsis rather than widening the settings. */
+.set-inline:has(> .title-pick) { min-width: 0; }
+
 .model-picker {
   position: fixed;
   z-index: 45;

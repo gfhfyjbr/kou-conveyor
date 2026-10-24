@@ -5,12 +5,13 @@ package terminal
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // foreground is the process group in the foreground of the terminal: the
@@ -29,7 +30,7 @@ func processDir(pid int) (string, error) {
 	case "linux":
 		return os.Readlink("/proc/" + strconv.Itoa(pid) + "/cwd")
 	case "darwin", "freebsd":
-		out, err := exec.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
+		out, err := spawn.Command("lsof", "-a", "-p", strconv.Itoa(pid), "-d", "cwd", "-Fn").Output()
 		if err != nil {
 			return "", err
 		}

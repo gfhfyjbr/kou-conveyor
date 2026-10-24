@@ -165,10 +165,10 @@ struct CanvasScreen: View {
     @ViewBuilder
     private var content: some View {
         if model.deleted {
-            ContentUnavailableView("Canvas deleted", systemImage: "trash", description: Text("It is no longer in the cockpit."))
+            KouEmpty(symbol: "trash", title: "Canvas deleted", message: "It is no longer in the cockpit.")
         } else if model.doc == nil {
             if let error = model.error {
-                ContentUnavailableView("Canvas unavailable", systemImage: "exclamationmark.triangle", description: Text(error))
+                KouEmpty(symbol: "exclamationmark.triangle", title: "Canvas unavailable", message: error, tone: .kouErr)
             } else {
                 LoadingSpinner(title: "Opening the canvas…")
             }
@@ -189,18 +189,10 @@ struct CanvasScreen: View {
     @ViewBuilder
     private var modePicker: some View {
         if model.doc != nil, !model.deleted {
-            Picker("View", selection: $mode) {
-                ForEach(Mode.allCases) { mode in
-                    Text(mode == .messages && model.needsYou > 0 ? "\(mode.rawValue) \(model.needsYou)" : mode.rawValue)
-                        .tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(6)
-            .glassEffect(.regular, in: .cornerCapsule)
-            .frame(maxWidth: 440)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            CanvasModeBar(mode: $mode, needsYou: model.needsYou)
+                .frame(maxWidth: 440)
+                .padding(.horizontal, 12)
+                .padding(.bottom, 8)
         }
     }
 
@@ -285,6 +277,8 @@ struct CanvasScreen: View {
         } label: {
             Label("More", systemImage: "ellipsis")
         }
+        // The accent is the add's, the canvas's first action.
+        .tint(Color.kouFg)
         .disabled(model.doc == nil || model.deleted)
     }
 
@@ -467,17 +461,75 @@ struct NodeChat: View {
             if awaiting > 0 {
                 NodeChatBanner(symbol: "hand.raised.fill",
                                text: awaiting == 1 ? "A message to it waits for your approval." : "\(awaiting) messages to it wait for your approval.",
-                               tint: .yellow, action: "Review") { inspecting = true }
+                               tint: .kouWarn, action: "Review") { inspecting = true }
             } else if model.status[node.id]?.state == "error", let detail = model.status[node.id]?.detail, !detail.isEmpty {
-                NodeChatBanner(symbol: "exclamationmark.triangle.fill", text: detail, tint: .red)
+                NodeChatBanner(symbol: "exclamationmark.triangle.fill", text: detail, tint: .kouErr)
             }
         } else if model.doc != nil, !model.deleted {
-            NodeChatBanner(symbol: "square.dashed", text: "It is no longer on the canvas: its session goes on here.", tint: .secondary)
+            NodeChatBanner(symbol: "square.dashed", text: "It is no longer on the canvas: its session goes on here.", tint: .kouFg3)
         }
     }
 }
 
-/// NodeChatBanner is a word over a node's chat: what waits for the user.
+/// CanvasModeBar is the canvas's views, as the cockpit's switch draws them:
+/// mono capitals on a capsule of glass, the chosen one lit — and the count
+/// of what needs the user beside the messages, in the warning's.
+struct CanvasModeBar: View {
+    @Binding var mode: CanvasScreen.Mode
+    var needsYou = 0
+    @Namespace private var pill
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(CanvasScreen.Mode.allCases) { option in
+                segment(option)
+            }
+        }
+        .padding(4)
+        .glassEffect(.regular, in: .cornerCapsule)
+        .sensoryFeedback(.selection, trigger: mode)
+    }
+
+    private func segment(_ option: CanvasScreen.Mode) -> some View {
+        let chosen = mode == option
+        let counted = option == .messages && needsYou > 0
+        return Button {
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.3)) { mode = option }
+        } label: {
+            HStack(spacing: 5) {
+                Text(verbatim: option.rawValue.uppercased())
+                if counted {
+                    Text(verbatim: "\(needsYou)")
+                        .foregroundStyle(Color.kouWarn)
+                }
+            }
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .tracking(1)
+            .foregroundStyle(chosen ? Color.kouAccent : Color.kouFg3)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity)
+            .frame(height: 38)
+            .background {
+                if chosen {
+                    CornerCapsule()
+                        .fill(Color.kouAccentSoft)
+                        .overlay(CornerCapsule().stroke(Color.kouAccent.opacity(0.35), lineWidth: 1))
+                        .matchedGeometryEffect(id: "chosen", in: pill)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(option.rawValue)
+        .accessibilityValue(counted ? (needsYou == 1 ? "1 needs you" : "\(needsYou) need you") : "")
+        .accessibilityAddTraits(chosen ? .isSelected : [])
+    }
+}
+
+/// NodeChatBanner is a word over a node's chat: what waits for the user,
+/// on glass faintly of its tone.
 struct NodeChatBanner: View {
     let symbol: String
     let text: String
@@ -488,19 +540,22 @@ struct NodeChatBanner: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
+                .font(.subheadline.weight(.semibold))
                 .foregroundStyle(tint)
             Text(text)
                 .font(.subheadline)
+                .foregroundStyle(Color.kouFg)
                 .lineLimit(2)
             Spacer(minLength: 4)
             if let action {
                 Button(action, action: perform)
                     .font(.subheadline.weight(.semibold))
+                    .tint(tint)
             }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: .corner(18)))
+        .glassEffect(.regular.tint(tint.opacity(0.1)), in: .rect(cornerRadius: .corner(18)))
         .padding(.horizontal, 12)
     }
 }
@@ -535,25 +590,30 @@ struct CanvasNoticeBar: View {
     var close: () -> Void
 
     var body: some View {
+        let tone = notice.isError ? Color.kouErr : Color.kouOK
         HStack(spacing: 10) {
             Image(systemName: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                .foregroundStyle(notice.isError ? Color.red : Color.kouAccent)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tone)
             Text(notice.text)
                 .font(.subheadline)
+                .foregroundStyle(Color.kouFg)
                 .lineLimit(4)
             Spacer(minLength: 4)
             if notice.undo != nil {
                 Button("Undo", action: undo)
                     .font(.subheadline.weight(.semibold))
+                    .tint(Color.kouAccent)
             }
             Button("Dismiss", systemImage: "xmark", action: close)
                 .labelStyle(.iconOnly)
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.kouFg3)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
-        .glassEffect(.regular, in: .rect(cornerRadius: .corner(18)))
+        .glassEffect(.regular.tint(tone.opacity(notice.isError ? 0.12 : 0.06)), in: .rect(cornerRadius: .corner(18)))
+        .sensoryFeedback(notice.isError ? .error : .success, trigger: notice.id)
         .padding(.horizontal, 12)
         .transition(.move(edge: .top).combined(with: .opacity))
     }

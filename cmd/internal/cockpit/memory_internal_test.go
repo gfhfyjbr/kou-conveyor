@@ -88,7 +88,13 @@ func (l *memoryLog) say() {
 // write is a turn in which the model writes its notes.
 func (l *memoryLog) write(notes string) {
 	l.t.Helper()
-	arguments, err := json.Marshal(map[string]string{"file_path": l.notes, "content": notes})
+	l.writeFile(l.notes, notes)
+}
+
+// writeFile is a turn in which the model writes a file.
+func (l *memoryLog) writeFile(path, content string) {
+	l.t.Helper()
+	arguments, err := json.Marshal(map[string]string{"file_path": path, "content": content})
 	l.must(err)
 	l.respond(session.TurnRegular, nil, llm.Item{Type: llm.ItemToolCall, Data: llm.ToolCall{
 		CallID: fmt.Sprintf("call-%d", l.turns+1), Name: "Write", Arguments: string(arguments),
@@ -160,6 +166,13 @@ func TestRewindRestoresTheMemoryTheLogTellsOf(t *testing.T) {
 			first:  func(l *memoryLog) { l.write("first notes") },
 			edited: func(l *memoryLog) { l.say(); l.compact("first notes, and more") },
 			notes:  "first notes, and more\n", want: "first notes, and more\n",
+		},
+		"as they are when what is cut off wrote another session's": {
+			first: func(l *memoryLog) { l.write("first notes") },
+			edited: func(l *memoryLog) {
+				l.writeFile(filepath.Join(filepath.Dir(l.notes), "another"+notesSuffix), "another session's notes")
+			},
+			notes: "first notes\n", want: "first notes\n",
 		},
 		// What shows only the beginning and end of notes too long to show
 		// whole tells nothing.

@@ -1,6 +1,7 @@
 package cockpit
 
 import (
+	"cmp"
 	"context"
 	"encoding/json/v2"
 	"errors"
@@ -24,9 +25,13 @@ import (
 // user's choosing, its effort, and a pin, with the pinned session's place
 // among the pinned ones. It lives beside the session store, which never reads it.
 type Meta struct {
-	Title    string `json:"title,omitzero"`
-	Pinned   bool   `json:"pinned,omitzero"`
-	PinOrder int    `json:"pin_order,omitzero"`
+	Title string `json:"title,omitzero"`
+	// AutoTitle is the title a model made of the session's first prompt
+	// (GenerateTitle): the session is shown under it while the user has
+	// given it none of their own.
+	AutoTitle string `json:"auto_title,omitzero"`
+	Pinned    bool   `json:"pinned,omitzero"`
+	PinOrder  int    `json:"pin_order,omitzero"`
 	// Effort belongs to this session, never to the next one.
 	Effort string `json:"effort,omitzero"`
 	// Canvas and Node name the canvas, and the node on it, whose agent the
@@ -83,10 +88,28 @@ func LoadMeta(dir, id string) Meta {
 		_ = json.Unmarshal(data, &m)
 	}
 	m.Title = Headline(Clean(m.Title), 120)
+	m.AutoTitle = Headline(Clean(m.AutoTitle), 120)
 	if !ValidThinkingLevel(m.Effort) {
 		m.Effort = ""
 	}
 	return m
+}
+
+// ShownTitle is the title a session is shown under, if it has one: the
+// user's, else the one made of its first prompt; "" leaves the first prompt
+// itself.
+func (m Meta) ShownTitle() string { return cmp.Or(m.Title, m.AutoTitle) }
+
+// SetAutoTitle keeps the title a model made of a session's first prompt; ""
+// drops it. Like the effort, it may come before the runner has created the
+// session file.
+func SetAutoTitle(dir, id, title string) error {
+	if !ValidSessionID(id) {
+		return fmt.Errorf("invalid session ID %q", id)
+	}
+	m := LoadMeta(dir, id)
+	m.AutoTitle = Headline(Clean(title), 120)
+	return saveMeta(dir, id, m)
 }
 
 // SetSessionEffort keeps the effort with this session. It also works before
@@ -352,7 +375,7 @@ scan:
 	if _, err := store.Fork(ctx, session.ID(branch.SessionID), session.ID(id), before); err != nil {
 		return Branch{}, fmt.Errorf("branch session: %w", err)
 	}
-	title := LoadMeta(dir, id).Title
+	title := LoadMeta(dir, id).ShownTitle()
 	if title == "" {
 		title = sessionTitle(SessionPath(dir, id), nil)
 	}

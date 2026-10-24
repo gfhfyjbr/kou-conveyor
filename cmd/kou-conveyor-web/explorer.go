@@ -9,7 +9,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"slices"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // The workspace's files, for the Files tab of the sidebar: its folders one
@@ -125,7 +125,7 @@ func (s *server) changes(ctx context.Context, ws *workspace) *gitStatus {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "git", "-C", ws.Path, "status", "--porcelain=v1", "-z",
+	out, err := spawn.CommandContext(ctx, "git", "-C", ws.Path, "status", "--porcelain=v1", "-z",
 		"--untracked-files=all", "--ignore-submodules=dirty").Output()
 	status.at = time.Now()
 	status.files, status.dirs = map[string]string{}, map[string]bool{}

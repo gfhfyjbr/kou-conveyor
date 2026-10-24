@@ -63,7 +63,8 @@ func TestCanvasChatStylesAreScoped(t *testing.T) {
 		default:
 			t.Errorf("a rule of the canvas for what is not its own: %q", s)
 		}
-		// The feed's own row of thinking (.cv-e-thought) is the canvas's.
+		// A class of the canvas's own that names thinking (cv-…-thought)
+		// would be the canvas's.
 		if regexp.MustCompile(`(?i)(^|[^-\w])(\.|\[[^\]]*)(thought|reasoning|think)`).MatchString(s) {
 			t.Errorf("the canvas styles the thinking of a transcript: %q", s)
 		}

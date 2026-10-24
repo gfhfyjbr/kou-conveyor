@@ -8,13 +8,14 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"os/user"
 	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // Shells start as login shells, as a terminal application starts them,
@@ -94,7 +95,7 @@ func accountShell() string {
 		return ""
 	}
 	if runtime.GOOS == "darwin" {
-		out, err := exec.Command("/usr/bin/dscl", ".", "-read", "/Users/"+current.Username, "UserShell").Output()
+		out, err := spawn.Command("/usr/bin/dscl", ".", "-read", "/Users/"+current.Username, "UserShell").Output()
 		if err != nil {
 			return ""
 		}

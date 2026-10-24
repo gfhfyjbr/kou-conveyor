@@ -19,21 +19,47 @@ func (item Item) MarshalJSON() ([]byte, error) {
 }
 
 func (item *Item) UnmarshalJSON(encoded []byte) error {
+	return item.unmarshal(encoded)
+}
+
+// UnmarshalJSONFrom decodes an item as UnmarshalJSON does, but with the
+// unmarshalers the decoder was given (json.WithUnmarshalers), for what the
+// item holds as well: a store that maps its files into memory decodes raw
+// JSON values with them as the parts of the mapping they are.
+func (item *Item) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
+	encoded, err := decoder.ReadValue()
+	if err != nil {
+		return err
+	}
+	return item.unmarshal(encoded, unmarshalers(decoder)...)
+}
+
+func (item *Item) unmarshal(encoded []byte, options ...json.Options) error {
 	var decoded struct {
 		itemJSON
 		Data jsontext.Value
 	}
-	if err := json.Unmarshal(encoded, &decoded); err != nil {
+	if err := json.Unmarshal(encoded, &decoded, options...); err != nil {
 		return err
 	}
 
-	data, err := decodeItemData(decoded.Kind, decoded.Data)
+	data, err := decodeItemData(decoded.Kind, decoded.Data, options...)
 	if err != nil {
 		return err
 	}
 	decoded.itemJSON.Data = data
 	*item = Item(decoded.itemJSON)
 	return nil
+}
+
+// unmarshalers is the option of the unmarshalers a decoder was given, if it
+// was given any.
+func unmarshalers(decoder *jsontext.Decoder) []json.Options {
+	value, ok := json.GetOption(decoder.Options(), json.WithUnmarshalers)
+	if !ok || value == nil {
+		return nil
+	}
+	return []json.Options{json.WithUnmarshalers(value)}
 }
 
 func (item Item) validateData() error {
@@ -68,20 +94,20 @@ func (item Item) validateData() error {
 	return nil
 }
 
-func decodeItemData(kind ItemKind, encoded jsontext.Value) (any, error) {
+func decodeItemData(kind ItemKind, encoded jsontext.Value, options ...json.Options) (any, error) {
 	if encoded.Kind() == jsontext.KindNull {
 		return nil, fmt.Errorf("%s data must not be null", kind)
 	}
 	switch kind {
 	case ItemFork:
 		var value Fork
-		if err := json.Unmarshal(encoded, &value); err != nil {
+		if err := json.Unmarshal(encoded, &value, options...); err != nil {
 			return nil, fmt.Errorf("decode fork data: %w", err)
 		}
 		return value, nil
 	case ItemInput:
 		var value inbox.Input
-		if err := json.Unmarshal(encoded, &value); err != nil {
+		if err := json.Unmarshal(encoded, &value, options...); err != nil {
 			return nil, fmt.Errorf("decode input data: %w", err)
 		}
 		if err := value.Validate(); err != nil {
@@ -90,19 +116,19 @@ func decodeItemData(kind ItemKind, encoded jsontext.Value) (any, error) {
 		return value, nil
 	case ItemTurn:
 		var value session.Turn
-		if err := json.Unmarshal(encoded, &value); err != nil {
+		if err := json.Unmarshal(encoded, &value, options...); err != nil {
 			return nil, fmt.Errorf("decode turn data: %w", err)
 		}
 		return value, nil
 	case ItemModelResponse:
 		var value ModelResponse
-		if err := json.Unmarshal(encoded, &value); err != nil {
+		if err := json.Unmarshal(encoded, &value, options...); err != nil {
 			return nil, fmt.Errorf("decode model response data: %w", err)
 		}
 		return value, nil
 	case ItemToolCallStatus:
 		var value ToolCallStatus
-		if err := json.Unmarshal(encoded, &value); err != nil {
+		if err := json.Unmarshal(encoded, &value, options...); err != nil {
 			return nil, fmt.Errorf("decode tool-call status data: %w", err)
 		}
 		return value, nil

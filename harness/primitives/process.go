@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 const (
@@ -416,7 +418,7 @@ func runProcess(
 	outputCloseErr := parentPipes.closeOutput()
 
 	if canceled {
-		_, waitCompletionErr := processResult(command, waitErr)
+		_, waitCompletionErr := processResult(command.Cmd, waitErr)
 		shutdownErr := errors.Join(
 			childPipeCloseErr,
 			captureSyncErr,
@@ -438,7 +440,7 @@ func runProcess(
 		return
 	}
 
-	exitResult, exitErr := processResult(command, waitErr)
+	exitResult, exitErr := processResult(command.Cmd, waitErr)
 	terminalErr := errors.Join(
 		childPipeCloseErr,
 		captureSyncErr,
@@ -523,7 +525,7 @@ type processParentPipes struct {
 	stderrCapture *os.File
 }
 
-func prepareProcess(request ProcessStartRequest) (*exec.Cmd, processPipes, error) {
+func prepareProcess(request ProcessStartRequest) (*spawn.Cmd, processPipes, error) {
 	var pipes processPipes
 	var stdoutCaptureInfo os.FileInfo
 	var stderrCaptureInfo os.FileInfo
@@ -603,7 +605,7 @@ func prepareProcess(request ProcessStartRequest) (*exec.Cmd, processPipes, error
 		}
 	}
 
-	command := exec.Command(request.Path, request.Arguments...)
+	command := spawn.Command(request.Path, request.Arguments...)
 	command.Dir = request.Directory
 	command.Env = request.Environment
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

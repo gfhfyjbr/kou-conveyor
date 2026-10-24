@@ -8,7 +8,8 @@
 // other. It provides the models service: next(v), default(), catalog(),
 // load({ fresh }), set(v, id), command(arg), toggle(), openPicker(options),
 // closePicker(), find(id), provider(id), title(id, extra),
-// contextLabel(tokens), info().
+// contextLabel(tokens), info(). Its section of the settings chooses the
+// model that titles new sessions after their first prompt, if any does.
 import { closeModelPicker, contextLabel, findModel, modelPickerOpen, modelTitle, openModelPicker, providerOf } from './picker.js';
 
 const STALE = 60_000;
@@ -236,6 +237,91 @@ export default function activate(cockpit) {
       })),
     ],
   });
+
+  // ---------------------------------------------------------------- session titles
+
+  // A model titles each new session the server runs after its first prompt,
+  // while the prompt runs: the one chosen here, else the one the prompt runs
+  // with. The server keeps the choice with the preferences; a title the user
+  // gives a session wins over the model's.
+  let titles = null; // the settings section on screen: { node, draw }
+
+  cockpit.contribute('settings.section', {
+    id: 'titles', title: 'Session titles', order: 15,
+    render() {
+      let saved = null; // { auto_titles, title_model }, as the server keeps them
+      const box = h('input', { type: 'checkbox', disabled: true, onchange: (event) => {
+        const on = event.currentTarget.checked;
+        save({ auto_titles: on }, on ? 'New sessions are titled after their first prompt' : 'New sessions keep their first prompt as their title');
+      } });
+      const chosen = h('b', { text: '…' });
+      const pick = h('button', {
+        class: 'act title-pick', type: 'button', disabled: true, 'aria-haspopup': 'dialog', 'aria-expanded': 'false', onclick: () => open(),
+      }, chosen, h('span', { class: 'chev', 'aria-hidden': 'true' }));
+      const reset = h('button', {
+        class: 'act', type: 'button', hidden: true,
+        onclick: () => save({ title_model: '' }, 'New sessions are titled by the model their first prompt runs with'),
+      }, 'Use the prompt’s model');
+      const note = h('p', { class: 'set-note' });
+      const node = h('div', null,
+        h('div', { class: 'set-row' }, h('label', { class: 'set-toggle' }, box, 'Title new sessions after their first prompt')),
+        h('div', { class: 'set-row' }, h('span', { class: 'label', text: 'Title model' }), h('div', { class: 'set-inline' }, pick, reset), note));
+
+      function draw() {
+        if (!saved) return;
+        const id = saved.title_model || '';
+        const on = saved.auto_titles !== false;
+        const m = id ? findModel(catalog(), id) : null;
+        box.checked = on;
+        box.disabled = false;
+        pick.disabled = reset.disabled = !on;
+        reset.hidden = !id;
+        chosen.textContent = id ? m?.name || id : 'The prompt’s model';
+        pick.title = id ? modelTitle(catalog(), id, 'Click for another, of any provider') : 'Each session is titled by the model its first prompt runs with; click for another';
+        note.textContent = !on ? 'New sessions keep their first prompt as their title.'
+          : `${id ? m?.name || id : 'The model the first prompt runs with'} makes a short title of a new session's first prompt while it runs. A title you give a session stays.`;
+      }
+      titles = { node, draw };
+
+      async function save(body, done) {
+        try {
+          saved = await cockpit.api('/api/preferences', { method: 'PUT', body });
+          cockpit.toast(done, 'info', 'titles');
+        } catch (error) {
+          cockpit.toast(`Session titles are not saved: ${error.message}`, 'error', 'titles');
+        }
+        draw();
+      }
+
+      function open() {
+        const stale = ui.ws !== state().ws || Date.now() - ui.at > STALE / 2;
+        picker = openModelPicker({
+          anchor: pick, title: 'Title model', note: 'titles new sessions after their first prompt',
+          catalog: catalog(), loading: stale || !!loading, current: saved?.title_model || '',
+          onPick: (id) => {
+            const m = findModel(catalog(), id);
+            save({ title_model: id }, `New sessions are titled by ${m?.name || id}`);
+          },
+          onRefresh: () => load({ fresh: true }),
+          onConnection: () => service('connection')?.open?.(),
+          onClose: () => {
+            picker = null;
+            pick.setAttribute('aria-expanded', 'false');
+          },
+        });
+        pick.setAttribute('aria-expanded', 'true');
+        if (stale && !loading) load();
+      }
+
+      cockpit.api('/api/preferences').then((answer) => {
+        saved = answer;
+        draw();
+      }, (error) => { note.textContent = `Session titles are unknown: ${error.message}`; });
+      return node;
+    },
+  });
+  // The model's name comes with the list.
+  cockpit.on('models', () => { if (titles?.node.isConnected) titles.draw(); });
 
   // The list follows the workspace in view, and is looked at again when the
   // page comes back.

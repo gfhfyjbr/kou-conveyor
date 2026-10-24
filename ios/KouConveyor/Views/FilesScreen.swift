@@ -53,53 +53,69 @@ struct DirectoryScreen: View {
     var body: some View {
         List {
             if query.isEmpty {
-                ForEach(listing?.entries ?? []) { entry in
-                    entryRow(entry)
+                // As the cockpit's tree: the folders first, then the files.
+                let entries = listing?.entries ?? []
+                let folders = entries.filter(\.isDirectory)
+                let files = entries.filter { !$0.isDirectory }
+                if !folders.isEmpty {
+                    Section {
+                        ForEach(folders) { entryRow($0) }
+                    } header: {
+                        SectionLabel("Folders", count: folders.count)
+                            .kouHeader()
+                    }
+                }
+                if !files.isEmpty {
+                    Section {
+                        ForEach(files) { entryRow($0) }
+                    } header: {
+                        SectionLabel("Files", count: files.count)
+                            .kouHeader(top: folders.isEmpty ? 14 : 22)
+                    }
                 }
                 if listing?.truncated == true {
                     Text("The folder has more entries than are shown.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg4)
+                        .listRowBackground(Color.kouGround)
+                        .listRowSeparator(.hidden)
                 }
-            } else {
-                ForEach(matches ?? []) { match in
-                    let target = match.path.hasSuffix("/") ? String(match.path.dropLast()) : match.path
-                    NavigationLink(value: FileRoute(workspace: workspace, path: target, directory: match.directory == true)) {
-                        HStack(spacing: 10) {
-                            Image(systemName: match.directory == true ? "folder.fill" : FileIcon.symbol(target))
-                                .foregroundStyle(match.directory == true ? Color.kouAccent : Color.secondary)
-                                .frame(width: 24)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text((target as NSString).lastPathComponent)
-                                    .lineLimit(1)
-                                let parent = (target as NSString).deletingLastPathComponent
-                                if !parent.isEmpty {
-                                    Text(parent)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.head)
-                                }
-                            }
+            } else if let matches, !matches.isEmpty {
+                Section {
+                    ForEach(matches) { match in
+                        let target = match.path.hasSuffix("/") ? String(match.path.dropLast()) : match.path
+                        NavigationLink(value: FileRoute(workspace: workspace, path: target, directory: match.directory == true)) {
+                            FileRow(name: (target as NSString).lastPathComponent,
+                                    directory: match.directory == true,
+                                    parent: (target as NSString).deletingLastPathComponent)
                         }
+                        .fileRow()
                     }
+                } header: {
+                    SectionLabel("Found", count: matches.count)
+                        .kouHeader()
                 }
             }
         }
-        .groupedBackground()
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color.kouGround)
         .overlay {
             if query.isEmpty {
                 if listing == nil {
                     if let error {
-                        ContentUnavailableView("Folder unavailable", systemImage: "folder.badge.questionmark", description: Text(error))
+                        KouEmpty(symbol: "folder.badge.questionmark", title: "Folder unavailable",
+                                 message: error, tone: .kouErr)
                     } else {
                         LoadingSpinner()
                     }
                 } else if listing?.entries?.isEmpty ?? true {
-                    ContentUnavailableView("Empty folder", systemImage: "folder")
+                    KouEmpty(symbol: "folder", title: "Empty folder",
+                             message: "Nothing in it yet, or only what git ignores and the cockpit hides.")
                 }
             } else if matches?.isEmpty == true {
-                ContentUnavailableView.search(text: query)
+                KouEmpty(symbol: "magnifyingglass", title: "Nothing found",
+                         message: "No file or folder of the workspace matches “\(query)”.")
             }
         }
         .searchable(text: $query, prompt: "Find a file")
@@ -109,7 +125,7 @@ struct DirectoryScreen: View {
         .task { await load() }
         .refreshable { await load() }
         .navigationTitle(title ?? (path as NSString).lastPathComponent)
-        .navigationSubtitle(path.isEmpty ? (app.workspace?.display ?? app.workspace?.path ?? "") : path)
+        .navigationSubtitle(subtitle)
         .toolbar {
             if path.isEmpty {
                 ToolbarItem(placement: .topBarLeading) {
@@ -122,47 +138,37 @@ struct DirectoryScreen: View {
                     } label: {
                         Label("More", systemImage: "ellipsis")
                     }
+                    .tint(Color.kouFg)
                 }
             }
         }
     }
 
+    /// Where the folder is: the workspace's folder at the top, and below it
+    /// the folders it is in — the title says its own name.
+    private var subtitle: String {
+        if path.isEmpty { return app.workspace?.display ?? app.workspace?.path ?? "" }
+        let parent = (path as NSString).deletingLastPathComponent
+        let root = app.workspace?.name ?? ""
+        return parent.isEmpty ? root : root.isEmpty ? parent : root + "/" + parent
+    }
+
     @ViewBuilder
     private func entryRow(_ entry: TreeEntry) -> some View {
         let target = path.isEmpty ? entry.name : path + "/" + entry.name
-        let label = HStack(spacing: 10) {
-            Image(systemName: entry.isDirectory ? "folder.fill" : FileIcon.symbol(entry.name))
-                .foregroundStyle(entry.isDirectory ? Color.kouAccent : Color.secondary)
-                .frame(width: 24)
-            Text(entry.name)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            if entry.link == true {
-                Image(systemName: "arrow.turn.up.right")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 6)
-            if let git = entry.git, !git.isEmpty {
-                GitBadge(state: git)
-            } else if entry.changed == true {
-                Circle()
-                    .fill(.orange)
-                    .frame(width: 6, height: 6)
-            }
-            if !entry.isDirectory, let size = entry.size {
-                Text(Format.bytes(size))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .opacity(entry.ignored == true ? 0.55 : 1)
+        let label = FileRow(name: entry.name, directory: entry.isDirectory, link: entry.link == true,
+                            git: entry.git, changed: entry.changed == true,
+                            size: entry.isDirectory ? nil : entry.size)
+            .opacity(entry.ignored == true ? 0.5 : 1)
         if entry.broken == true {
-            label.opacity(0.5)
+            label
+                .opacity(0.5)
+                .fileRow()
         } else {
             NavigationLink(value: FileRoute(workspace: workspace, path: target, directory: entry.isDirectory)) {
                 label
             }
+            .fileRow()
         }
     }
 
@@ -197,29 +203,163 @@ struct DirectoryScreen: View {
     }
 }
 
-/// GitBadge is a file's state in git: M, A, D, R, ?…
+/// GitBadge is a file's state in git — M, A, D, R, ? — as the cockpit's
+/// tree marks it: the bare letter, in the colour of what happened.
 struct GitBadge: View {
     let state: String
 
     var body: some View {
-        Text(state)
-            .font(.caption2.weight(.bold).monospaced())
-            .foregroundStyle(color)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(color.opacity(0.15), in: .cornerCapsule)
-            .accessibilityLabel("Git: \(state)")
+        Text(verbatim: state)
+            .font(.system(size: 11, weight: .heavy, design: .monospaced))
+            .foregroundStyle(Self.color(state))
+            .frame(minWidth: 14)
+            .accessibilityLabel("Git: \(Self.word(state))")
     }
 
-    private var color: Color {
-        switch state.first {
-        case "M": .orange
-        case "A": .green
-        case "D": .red
-        case "R", "C": .blue
-        case "?", "U": .teal
-        default: .secondary
+    /// The colour of a state, for the mark and the name both.
+    static func color(_ state: String?) -> Color {
+        switch state?.first {
+        case "M", "T": .kouWarn
+        case "A", "?": .kouOK
+        case "D", "U": .kouErr
+        case "R", "C": .kouAccent
+        default: .kouFg4
         }
+    }
+
+    private static func word(_ state: String) -> String {
+        switch state.first {
+        case "M": "modified"
+        case "A": "added"
+        case "D": "deleted"
+        case "R": "renamed"
+        case "C": "copied"
+        case "U": "conflict"
+        case "?": "untracked"
+        case "T": "type changed"
+        default: state
+        }
+    }
+}
+
+/// FileRow is a folder or a file as the tree lists it: its kind's mark, its
+/// name in mono — coloured as git sees it —, and what git and its size say.
+struct FileRow: View {
+    let name: String
+    let directory: Bool
+    var link = false
+    var git: String?
+    /// Something in the folder changed.
+    var changed = false
+    var size: Int64?
+    /// The folder it is in, for a search's results.
+    var parent: String?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: directory ? "folder.fill" : FileIcon.symbol(name))
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(directory ? Color.kouFg3 : FileKind.color(name))
+                .frame(width: 24)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(verbatim: name)
+                        .font(.system(.subheadline, design: .monospaced, weight: directory ? .semibold : .regular))
+                        .foregroundStyle(nameColor)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if link {
+                        Image(systemName: "arrow.turn.up.right")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(Color.kouFg4)
+                            .accessibilityLabel("Link")
+                    }
+                }
+                if let parent, !parent.isEmpty {
+                    Text(verbatim: parent)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg4)
+                        .lineLimit(1)
+                        .truncationMode(.head)
+                }
+            }
+            Spacer(minLength: 8)
+            if let git, !git.isEmpty {
+                GitBadge(state: git)
+            } else if changed {
+                Text(verbatim: "•")
+                    .font(.system(size: 15, weight: .heavy, design: .monospaced))
+                    .foregroundStyle(Color.kouWarn)
+                    .accessibilityLabel("Changed inside")
+            }
+            if let size {
+                Text(verbatim: Format.bytes(size))
+                    .font(.kouMeta)
+                    .monospacedDigit()
+                    .foregroundStyle(Color.kouFg4)
+            }
+            if directory {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.kouFg4)
+            }
+        }
+        .contentShape(.rect)
+    }
+
+    /// As the cockpit: a modified file's name in the warning's colour, an
+    /// added one's in the good one's, a deleted one's in red.
+    private var nameColor: Color {
+        guard let git, !git.isEmpty, git.first != "R", git.first != "C" else {
+            return directory ? .kouFg : .kouFg2
+        }
+        return GitBadge.color(git)
+    }
+}
+
+extension View {
+    /// fileRow is a row of a folder's list: on the ground, between
+    /// hairlines, without the link's chevron — a folder draws its own.
+    func fileRow() -> some View {
+        navigationLinkIndicatorVisibility(.hidden)
+            .listRowBackground(Color.kouGround)
+            .listRowSeparatorTint(Color.kouLine)
+            .listRowInsets(EdgeInsets(top: 11, leading: 16, bottom: 11, trailing: 18))
+            .alignmentGuide(.listRowSeparatorLeading) { _ in 36 }
+    }
+}
+
+/// FileKind is the colour of a kind of file, as the cockpit's tree marks
+/// it: Go teal, JavaScript yellow, data green…
+enum FileKind {
+    private static let kinds: [(extensions: [String], color: Color)] = [
+        (["go", "mod", "sum"], tone("#5fb3c4", "#2f8496")),
+        (["js", "mjs", "cjs", "jsx"], tone("#e0c057", "#a07f12")),
+        (["ts", "tsx", "mts"], tone("#5b8fd6", "#2f66b3")),
+        (["css", "scss", "less"], tone("#b07fd8", "#8549b5")),
+        (["html", "htm", "svg", "xml"], tone("#e0784f", "#c0532a")),
+        (["md", "mdx", "txt", "rst"], .kouFg3),
+        (["json", "yaml", "yml", "toml", "ini", "env", "conf"], tone("#8fb573", "#5b8a3f")),
+        (["sh", "bash", "zsh", "fish"], tone("#9ccf83", "#4f8f35")),
+        (["py", "rb", "php", "pl", "lua"], tone("#6f9ad6", "#3f6fb5")),
+        (["rs", "c", "h", "cc", "cpp", "hpp", "zig", "swift", "kt", "java", "cs"], tone("#d68a5b", "#b0612f")),
+        (["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"], tone("#d28bc4", "#b0559e")),
+        (["lock"], .kouFg4),
+    ]
+
+    static func color(_ name: String) -> Color {
+        let lower = name.lowercased()
+        if lower == "makefile" || lower == "dockerfile" {
+            return kinds[7].color
+        }
+        // A dot file, as .env, is its own extension, as in the cockpit.
+        guard let dot = lower.lastIndex(of: ".") else { return .kouFg3 }
+        let ext = String(lower[lower.index(after: dot)...])
+        return kinds.first { $0.extensions.contains(ext) }?.color ?? .kouFg3
+    }
+
+    private static func tone(_ dark: String, _ light: String) -> Color {
+        Color(uiColor: Look.dynamic(light: light, dark: dark))
     }
 }
 
@@ -249,16 +389,17 @@ struct FileScreen: View {
                     .padding()
                 }
             } else if let file, file.tooLarge == true {
-                ContentUnavailableView("Too large to show", systemImage: "doc.badge.ellipsis",
-                                       description: Text("\(Format.bytes(file.size)): open it on the computer the cockpit runs on."))
+                KouEmpty(symbol: "doc.badge.ellipsis", title: "Too large to show",
+                         message: "\(Format.bytes(file.size)): open it on the computer the cockpit runs on.",
+                         tone: .kouWarn)
             } else if let file, file.binary == true {
-                ContentUnavailableView("Binary file", systemImage: "doc.badge.gearshape",
-                                       description: Text("\(Format.bytes(file.size)) of data that is not text."))
+                KouEmpty(symbol: "doc.badge.gearshape", title: "Binary file",
+                         message: "\(Format.bytes(file.size)) of data that is not text.")
             } else if let text {
                 CodeText(text: text)
                     .ignoresSafeArea(edges: .bottom)
             } else if file == nil, let error {
-                ContentUnavailableView("File unavailable", systemImage: "doc.questionmark", description: Text(error))
+                KouEmpty(symbol: "doc.questionmark", title: "File unavailable", message: error, tone: .kouErr)
             } else {
                 // One spinner while the file comes and while it is
                 // highlighted: two, the one shown went as the file came,
@@ -266,6 +407,8 @@ struct FileScreen: View {
                 LoadingSpinner()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.kouGround)
         .navigationTitle(name)
         .navigationBarTitleDisplayMode(.inline)
         .navigationSubtitle(subtitle)
@@ -280,6 +423,7 @@ struct FileScreen: View {
                 } label: {
                     Label("More", systemImage: "ellipsis")
                 }
+                .tint(Color.kouFg)
             }
         }
         .sheet(isPresented: $zoomed) {

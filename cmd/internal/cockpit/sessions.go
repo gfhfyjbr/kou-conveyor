@@ -21,9 +21,12 @@ const sessionSuffix = ".session.jsonl"
 
 // SessionInfo describes a persisted session.
 type SessionInfo struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// AutoTitled says that the title is the one a model made of the first
+	// prompt (Meta.AutoTitle), which comes after the prompt does.
+	AutoTitled bool      `json:"auto_titled,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
 	// PromptedAt is when the user last wrote to the session — a prompt, a
 	// message forced in — which is what orders the list: the agent at work
 	// does not move a session. A session without any has its UpdatedAt.
@@ -81,7 +84,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 			continue
 		}
 		meta := metas[id]
-		title := meta.Title
+		title := meta.ShownTitle()
 		if title == "" {
 			title = sessionTitle(filepath.Join(dir, entry.Name()), info)
 		}
@@ -92,6 +95,7 @@ func ListSessions(dir string) ([]SessionInfo, error) {
 		sessions = append(sessions, SessionInfo{
 			ID:         id,
 			Title:      title,
+			AutoTitled: meta.Title == "" && meta.AutoTitle != "",
 			UpdatedAt:  info.ModTime().UTC(),
 			PromptedAt: prompted,
 			Size:       info.Size(),
@@ -191,20 +195,20 @@ func lastPrompt(path string, info fs.FileInfo) time.Time {
 	return scan.last
 }
 
-// SessionTitle is the title a session is shown under: the user's, or its
-// first prompt.
+// SessionTitle is the title a session is shown under: the user's, else the
+// one a model made of its first prompt, else that prompt.
 func SessionTitle(dir, id string, t *Transcript) string {
-	if title := LoadMeta(dir, id).Title; title != "" {
+	if title := LoadMeta(dir, id).ShownTitle(); title != "" {
 		return title
 	}
 	return t.Title()
 }
 
 // ListedTitle is the title the session list shows a session under, read
-// as the list does: the user's, or the first prompt at the head of its
-// file.
+// as the list does: the user's, else the one a model made of its first
+// prompt, else the first prompt at the head of its file.
 func ListedTitle(dir, id string) string {
-	if title := LoadMeta(dir, id).Title; title != "" {
+	if title := LoadMeta(dir, id).ShownTitle(); title != "" {
 		return title
 	}
 	return sessionTitle(SessionPath(dir, id), nil)
@@ -231,6 +235,26 @@ func LoadSession(dir, id string) (*Transcript, error) {
 		return nil, err
 	}
 	return t, nil
+}
+
+// LoadSessionPrefix reads the first size bytes of a persisted session into a
+// transcript, as LoadSession reads all of it: the session as it was when a
+// run that goes on started (DetachedRun.SessionSize), which the run's output
+// carries on from. The file is read each time, apart from what LoadSession
+// keeps.
+func LoadSessionPrefix(dir, id string, size int64) (*Transcript, error) {
+	if !ValidSessionID(id) {
+		return nil, fmt.Errorf("invalid session ID %q", id)
+	}
+	file, err := os.Open(SessionPath(dir, id))
+	if errors.Is(err, fs.ErrNotExist) && size <= 0 {
+		return NewTranscript(), nil // the run began the session
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	return readTranscript(io.LimitReader(file, max(size, 0)))
 }
 
 // Reading a whole session file takes a second once it runs to a hundred
@@ -323,12 +347,15 @@ func (s *loadedSession) read(path string) (*Transcript, error) {
 	if _, err := file.Seek(start, io.SeekStart); err != nil {
 		return nil, err
 	}
-	read, err := eachRecord(file, func(line []byte) {
-		s.offset += int64(len(line)) + 1
-		s.tail = keepTail(s.tail, line)
-		if _, err := s.t.Apply(line); err != nil {
-			s.skipped++
-		}
+	var read int64
+	s.t.fold(func() {
+		read, err = eachRecord(file, func(line []byte) {
+			s.offset += int64(len(line)) + 1
+			s.tail = keepTail(s.tail, line)
+			if _, err := s.t.Apply(line); err != nil {
+				s.skipped++
+			}
+		})
 	})
 	if err != nil {
 		return nil, err
@@ -361,23 +388,26 @@ func keepTail(tail, line []byte) []byte {
 	return append(append(tail, line...), '\n')
 }
 
-// readTranscript folds the contents of a session file into a transcript.
-func readTranscript(data []byte) *Transcript {
+// readTranscript folds the whole records of a session file, as log reads
+// them, into a transcript.
+func readTranscript(log io.Reader) (*Transcript, error) {
 	t := NewTranscript()
-	t.Size = int64(len(data))
-	if end := bytes.LastIndexByte(data, '\n'); end >= 0 {
-		data = data[:end]
-	} else {
-		data = nil
-	}
 	skipped := 0
-	for line := range bytes.SplitSeq(data, []byte{'\n'}) {
-		if _, err := t.Apply(line); err != nil {
-			skipped++
-		}
+	var read int64
+	var err error
+	t.fold(func() {
+		read, err = eachRecord(log, func(line []byte) {
+			if _, err := t.Apply(line); err != nil {
+				skipped++
+			}
+		})
+	})
+	if err != nil {
+		return nil, err
 	}
+	t.Size = read
 	t.settle(skipped)
-	return t
+	return t, nil
 }
 
 // settle ends the reading of a session file: records that could not be read

@@ -1,9 +1,11 @@
 package sessionstore
 
 import (
+	"bytes"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -74,6 +76,56 @@ func TestItemJSONPreservesNilResponseOutput(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip = %#v, want %#v", got, want)
+	}
+}
+
+// An item decoded with unmarshalers (json.WithUnmarshalers) decodes what it
+// holds with them too, down to the raw values of a model's response, as a
+// session store that maps its files decodes them as the parts of the
+// mapping they are; it decodes to the same item.
+func TestItemJSONDecodesDataWithTheUnmarshalersItIsGiven(t *testing.T) {
+	want := Item{Sequence: 1, Kind: ItemModelResponse, Data: ModelResponse{
+		TurnID: "turn-1",
+		Response: llm.Response{
+			Output: []llm.Item{{Type: llm.ItemReasoning, Data: llm.Reasoning{Raw: jsontext.Value(`{"encrypted":"opaque"}`)}}},
+			Usage:  llm.Usage{InputTokens: 1, Raw: jsontext.Value(`{"input_tokens":1}`)},
+		},
+	}}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A member of the data a later version may write, which the item's
+	// data is decoded without, as the other options the item is decoded
+	// with are not its data's.
+	encoded = bytes.Replace(encoded, []byte(`"Data":{`), []byte(`"Data":{"Later":1,`), 1)
+	var seen []string
+	unmarshalers := json.WithUnmarshalers(json.UnmarshalFromFunc(
+		func(decoder *jsontext.Decoder, value *jsontext.Value) error {
+			raw, err := decoder.ReadValue()
+			if err != nil {
+				return err
+			}
+			seen = append(seen, string(raw))
+			*value = bytes.Clone(raw)
+			return nil
+		},
+	))
+	var got Item
+	if err := json.Unmarshal(encoded, &got, unmarshalers, json.RejectUnknownMembers(true)); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("decoded with unmarshalers = %#v, want %#v", got, want)
+	}
+	for _, raw := range []string{`{"encrypted":"opaque"}`, `{"input_tokens":1}`} {
+		if !slices.Contains(seen, raw) {
+			t.Fatalf("the unmarshaler decoded %q, not %s", seen, raw)
+		}
+	}
+	var direct Item
+	if err := direct.UnmarshalJSON(encoded); err != nil || !reflect.DeepEqual(direct, want) {
+		t.Fatalf("UnmarshalJSON = %#v, %v; want %#v", direct, err, want)
 	}
 }
 

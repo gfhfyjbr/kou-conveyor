@@ -411,7 +411,7 @@ export default function activate(cockpit) {
     m.load();
     // How many kou agents show their chats depends on how the page's
     // streams go (lod.js): the board waits until that is known, or its
-    // agents would show their feeds first.
+    // agents would open more chats than the page can hold, then close them.
     await Promise.all([kindsReady, settled()]);
     if (ticket !== ui.ticket || ui.model !== m) return;
     mount(m);
@@ -1431,7 +1431,7 @@ export default function activate(cockpit) {
   const liveBadge = h('button', {
     class: 'cv-live-badge', type: 'button', hidden: true, 'aria-haspopup': 'menu', 'aria-expanded': 'false',
     onclick: (event) => service('menu')?.toggle?.(event.currentTarget, () => liveItems(), COMPACT),
-  }, h('i', { 'aria-hidden': 'true' }), liveText);
+  }, h('i', { 'aria-hidden': 'true' }), svg(CANVAS_ICON), liveText);
   let liveNow = { live: 0, canvases: [] };
 
   async function pollLive() {
@@ -1450,7 +1450,7 @@ export default function activate(cockpit) {
     if (!n) return;
     const busy = (liveNow.canvases || []).reduce((sum, c) => sum + (c.busy || 0), 0);
     const waiting = (liveNow.canvases || []).reduce((sum, c) => sum + (c.waiting || 0), 0);
-    liveText.textContent = `◧ ${n}`;
+    liveText.textContent = String(n);
     liveBadge.dataset.busy = busy ? 'true' : '';
     liveBadge.title = `${n} canvas${n === 1 ? '' : 'es'} live${busy ? ` · ${busy} busy` : ''}${waiting ? ` · ${waiting} waiting` : ''}: their sources run`;
     liveBadge.setAttribute('aria-label', liveBadge.title);

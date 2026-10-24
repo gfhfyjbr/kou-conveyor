@@ -296,6 +296,8 @@ func listed(listing map[string]any, name string) map[string]any {
 func TestPluginEventsFollowChanges(t *testing.T) {
 	h := newHarness(t)
 	h.server.watch.interval = 20 * time.Millisecond
+	// Where the system tells of changes to files (macOS), it alone tells of these.
+	h.server.watch.safety = time.Minute
 	stream := h.pluginEvents("/api/plugins/events")
 	if first := stream.next("plugins"); listed(first, "layout") == nil || listed(first, "hello") != nil {
 		t.Fatalf("first listing = %v", first)
@@ -343,6 +345,37 @@ func TestPluginEventsFollowChanges(t *testing.T) {
 	stream.until(func(listing map[string]any) bool { return listed(listing, "palette") == nil })
 }
 
+// A plugin linked into the plugins' directory is followed where it is: the
+// system tells of changes to files where they are, not where links to them
+// are.
+func TestPluginEventsFollowALinkedPlugin(t *testing.T) {
+	h := newHarness(t)
+	h.server.watch.interval = 20 * time.Millisecond
+	// Where the system tells of changes to files (macOS), it alone tells of these.
+	h.server.watch.safety = time.Minute
+	elsewhere := filepath.Join(t.TempDir(), "hello")
+	writeFiles(t, elsewhere, map[string]string{
+		"plugin.json":  `{"name": "hello", "web": {"script": "web/hello.js"}}`,
+		"web/hello.js": "export default () => {};",
+	})
+	if err := os.MkdirAll(h.userPlugins(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, filepath.Join(h.userPlugins(), "hello")); err != nil {
+		t.Fatal(err)
+	}
+	stream := h.pluginEvents("/api/plugins/events")
+	hello := listed(stream.until(func(listing map[string]any) bool { return listed(listing, "hello") != nil }), "hello")
+	// The system may tell of the files written before the page came a while
+	// after; once it has, only the change below has the watch look.
+	time.Sleep(300 * time.Millisecond)
+	writeFiles(t, elsewhere, map[string]string{"web/hello.js": "export default () => { /* v2 */ };"})
+	stream.until(func(listing map[string]any) bool {
+		current := listed(listing, "hello")
+		return current != nil && current["code_version"] != hello["code_version"]
+	})
+}
+
 // A server that serves its assets from a checkout follows them: its own
 // plugins are live, and a change of the page itself has pages load again.
 func TestLiveAssetsAreFollowed(t *testing.T) {
@@ -359,6 +392,8 @@ func TestLiveAssetsAreFollowed(t *testing.T) {
 	}
 	h := newHarnessWith(t, func(o *options) { o.assets = live })
 	h.server.watch.interval = 20 * time.Millisecond
+	// Where the system tells of changes to files (macOS), it alone tells of these.
+	h.server.watch.safety = time.Minute
 	if status, _, body := h.get("/"); status != http.StatusOK || !strings.Contains(body, "live") {
 		t.Fatalf("page: %d %q", status, body)
 	}

@@ -45,9 +45,9 @@ enum TunnelState {
     var color: Color {
         switch self {
         case .up: .kouAccent
-        case .cockpitOffline: .yellow
-        case .down: .red
-        case .checking: .secondary
+        case .cockpitOffline: .kouWarn
+        case .down: .kouErr
+        case .checking: .kouFg3
         }
     }
 
@@ -98,51 +98,68 @@ struct TunnelChip: View {
     }
 }
 
-/// TunnelAccessory floats above the tab bar while the cockpit is shown:
-/// the tunnel's chip, the relay, and how the cockpit behind it is.
-struct TunnelAccessory: View {
+/// LinkStrip runs over every screen of the cockpit while the tunnel is
+/// down: what is wrong, a retry, and the relay's screen a tap away. Up, the
+/// tunnel takes no room at all.
+struct LinkStrip: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
+    let state: TunnelState
+    @State private var retrying = false
 
     var body: some View {
-        let state = TunnelState(model.link)
-        Button {
-            model.tab = .relay
-        } label: {
-            HStack(spacing: 10) {
-                TunnelChip(state: state)
-                if placement != .inline {
-                    VStack(alignment: .leading, spacing: 0) {
-                        Text(model.relay?.address ?? "")
-                            .font(.footnote.weight(.medium))
-                            .lineLimit(1)
-                        Text(detail(state))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+        HStack(spacing: 10) {
+            Button {
+                model.tab = .relay
+            } label: {
+                HStack(spacing: 8) {
+                    TunnelChip(state: state, showsWord: false)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Eyebrow(state.label, color: state.color)
+                        if let address = model.relay?.address {
+                            Text(verbatim: address)
+                                .font(.kouMeta)
+                                .foregroundStyle(Color.kouFg3)
+                                .lineLimit(1)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            Button {
+                retrying = true
+                Task {
+                    await model.refresh()
+                    retrying = false
+                }
+            } label: {
+                Group {
+                    if retrying {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text("Retry")
                     }
                 }
-                Spacer(minLength: 0)
-                if placement != .inline, model.relay?.isEncrypted == true {
-                    Image(systemName: "lock.fill")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                .font(.footnote.weight(.semibold))
+                .frame(minWidth: 44)
             }
-            .padding(.horizontal, 14)
-            .contentShape(.rect)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.cornerCapsule)
+            .tint(state.color)
+            .controlSize(.small)
         }
-        .buttonStyle(.plain)
-    }
-
-    private func detail(_ state: TunnelState) -> String {
-        switch state {
-        case .up:
-            if let workspace = model.workspace { return "\(state.label) · \(workspace.name)" }
-            return state.label
-        default:
-            return state.label
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background {
+            ZStack(alignment: .bottom) {
+                Color.kouGround
+                state.color.opacity(0.1)
+                Hairline(color: state.color.opacity(0.45))
+            }
+            .ignoresSafeArea(edges: .top)
         }
+        .accessibilityElement(children: .contain)
     }
 }
 

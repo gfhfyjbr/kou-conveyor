@@ -144,6 +144,9 @@
 
 /* ---------------------------------------------------------------- corners */
 
+/* Square unless the appearance rounds it (theme.css: --radius…): a file's
+   kind is a dot as the corners round. */
+.fx-dot { border-radius: min(var(--radius-sm), 3px); }
 /* Round, the current file and the chosen result are rounded blocks, with
    no bar along their edge; their text stays where it was. */
 :root[data-corners="round"] .fx-row { margin: 0 4px; padding: 0 6px 0 calc(8px + var(--depth, 0) * 14px); border-left: 0; border-radius: var(--radius-sm); }

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/base64"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"errors"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
+	"github.com/gfhfyjbr/kou-conveyor/harness/sessionstore/localfile"
 )
 
 // Pictures the agent looked at. A ViewImage call reads an image for the
@@ -119,14 +121,19 @@ func ToolImage(dir, id, callID string) (Image, error) {
 	}
 	var decoded struct {
 		Data struct {
-			Operations []operation.Operation
+			Operations []localfile.ItemOperation
 			Operation  *operation.Operation
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(line, &decoded); err != nil {
 		return Image{}, fmt.Errorf("read the picture of call %s: %w", callID, err)
 	}
-	operations := decoded.Data.Operations
+	var operations []operation.Operation
+	for _, value := range decoded.Data.Operations {
+		if !value.Saved {
+			operations = append(operations, value.Operation)
+		}
+	}
 	if decoded.Data.Operation != nil {
 		operations = append(operations, *decoded.Data.Operation)
 	}
@@ -213,12 +220,6 @@ func (x *viewedIndex) find(file *os.File, info fs.FileInfo, callID string) (view
 // note takes in a record of a ViewImage operation: a status of its call,
 // which names the call, or a checkpoint of the operation.
 func (x *viewedIndex) note(line []byte, offset int64) {
-	// The operations' states, pictures and all, are left undecoded.
-	type head struct {
-		ID     operation.ID
-		Type   operation.Type
-		Status operation.Status
-	}
 	var record struct {
 		Type string `json:"type"`
 		Data struct {
@@ -226,20 +227,20 @@ func (x *viewedIndex) note(line []byte, offset int64) {
 				Kind string
 				Data struct{ CallID string }
 			}
-			Operations []head
-			Operation  *head
+			Operations []operationHead
+			Operation  *operationHead
 		} `json:"data"`
 	}
 	if json.Unmarshal(line, &record) != nil {
 		return
 	}
-	var operations []head
+	var operations []operationHead
 	call := ""
 	switch {
 	case record.Type == "item" && record.Data.Item.Kind == "tool_call_status" && record.Data.Item.Data.CallID != "":
 		call, operations = record.Data.Item.Data.CallID, record.Data.Operations
 	case record.Type == "operation" && record.Data.Operation != nil:
-		operations = []head{*record.Data.Operation}
+		operations = []operationHead{*record.Data.Operation}
 	}
 	for _, value := range operations {
 		if value.Type != operation.TypeViewImage {
@@ -253,4 +254,23 @@ func (x *viewedIndex) note(line []byte, offset int64) {
 			x.found[owner] = viewedRecord{offset: offset, length: len(line), operation: value.ID}
 		}
 	}
+}
+
+// operationHead is what note reads of an operation: its state, the picture
+// and all, is left undecoded. One a status repeats by its ID alone, as the
+// file already has it (localfile.ItemOperation), reads as no operation: note
+// met it in the record that has it whole.
+type operationHead struct {
+	ID     operation.ID
+	Type   operation.Type
+	Status operation.Status
+}
+
+func (head *operationHead) UnmarshalJSONFrom(decoder *jsontext.Decoder) error {
+	*head = operationHead{}
+	if decoder.PeekKind() == '"' {
+		return decoder.SkipValue()
+	}
+	type fields operationHead
+	return json.UnmarshalDecode(decoder, (*fields)(head))
 }

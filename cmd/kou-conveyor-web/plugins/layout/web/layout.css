@@ -158,15 +158,17 @@
 .rail-label span + span { color: var(--fg-4); letter-spacing: 0; }
 
 /* The foot is a row: its parts, the buttons to the right. A part may put
-   a line of its own under the row, the whole width (the connection's
-   summary: connection.css). */
+   a line of its own under the row, the whole width, and the room under it
+   (the connection's summary: connection.css); a part that fits into the
+   row when the foot is wide asks its width (@container rail-foot). */
 .rail-foot {
+  container: rail-foot / inline-size;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 0 6px;
   flex: none;
-  padding: 6px 8px 10px 16px;
+  padding: 6px 8px 6px 16px;
   border-top: 1px solid var(--line);
 }
 
@@ -399,11 +401,17 @@
 :root[data-corners="round"]:not([data-rail-compact]) .rail-head:has(+ .rail-tabs[hidden]) { border-bottom: 1px solid var(--line); border-radius: var(--radius-lg); }
 :root[data-corners="round"]:not([data-rail-compact]) .rail-tabs { border-top: 0; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 :root[data-corners="round"]:not([data-rail-compact]) .rail-view { margin: 8px 0; border-radius: var(--radius-lg); overflow: hidden; }
-:root[data-corners="round"]:not([data-rail-compact]) .rail-foot { padding-left: 14px; border-radius: var(--radius-lg); }
-/* In their blocks, the tools and the sessions keep close to the edges, the
-   label over the sessions level with their numbers (session-list.css). */
+:root[data-corners="round"]:not([data-rail-compact]) .rail-foot { border-radius: var(--radius-lg); }
+/* Round, the foot's buttons end where the rows over them do
+   (session-list.css). */
+:root[data-corners="round"] .rail-foot { padding-right: 6px; }
+/* In their blocks, the tools and the sessions keep close to the edges; the
+   Sessions view parts its block in two, the tools' and the rows', with no
+   label over the rows (session-list.css). In a compact rail the label
+   stays, level with the rows' numbers and the tools' text: as far in as
+   the tools, and 14px more. */
 :root[data-corners="round"]:not([data-rail-compact]) .rail-tools { gap: 6px; padding: 6px; }
-:root[data-corners="round"]:not([data-rail-compact]) .rail-view[data-view="sessions"] > .rail-tools + .rail-label { padding: 12px 14px 6px; }
+:root[data-corners="round"][data-rail-compact] .rail-view[data-view="sessions"] > .rail-tools + .rail-label { padding-left: 26px; padding-right: 26px; }
 
 /* So do the stage's bar, level with the rail's head, and the open panel:
    the ground shows round them, to the right of the stage too. The panel's

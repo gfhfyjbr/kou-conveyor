@@ -24,8 +24,8 @@ type branchedMsg struct {
 
 // sessionTitle is the title the open session is shown under.
 func (m *uiModel) sessionTitle() string {
-	if m.meta.Title != "" {
-		return m.meta.Title
+	if title := m.meta.ShownTitle(); title != "" {
+		return title
 	}
 	return m.tr.Title()
 }

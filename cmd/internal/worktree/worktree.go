@@ -15,10 +15,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // Directory is where a workspace keeps its worktrees.
@@ -397,7 +398,7 @@ func Remove(ctx context.Context, workspace, path string) error {
 
 func gitIn(ctx context.Context, dir string) func(arguments ...string) (string, error) {
 	return func(arguments ...string) (string, error) {
-		command := exec.CommandContext(ctx, "git", arguments...)
+		command := spawn.CommandContext(ctx, "git", arguments...)
 		command.Dir = dir
 		out, err := command.CombinedOutput()
 		if err != nil {

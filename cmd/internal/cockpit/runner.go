@@ -20,6 +20,7 @@ import (
 
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
+	"github.com/gfhfyjbr/kou-conveyor/internal/spawn"
 )
 
 // ThinkingLevels are the reasoning efforts the runner accepts, lowest first.
@@ -105,7 +106,7 @@ func buildRunner(root, target string) error {
 		return fmt.Errorf("build the runner: %w", err)
 	}
 	fmt.Fprintf(os.Stderr, "building kou-conveyor-runner from %s…\n", root)
-	cmd := exec.Command(goTool, "build", "-o", target, "./cmd/kou-conveyor-runner")
+	cmd := spawn.Command(goTool, "build", "-o", target, "./cmd/kou-conveyor-runner")
 	cmd.Dir = root
 	cmd.Stdout, cmd.Stderr = os.Stderr, os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -145,7 +146,7 @@ func checkRunner(runner, provider string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		var stderr bytes.Buffer
-		cmd := exec.CommandContext(ctx, runner, "-providers")
+		cmd := spawn.CommandContext(ctx, runner, "-providers")
 		cmd.Stderr = &stderr
 		out, err := cmd.Output()
 		switch {
@@ -216,6 +217,11 @@ type Request struct {
 	// model's text as it streams and the output of commands as they run,
 	// which Transcript.Live folds. A runner built before cannot.
 	Stream bool
+	// Detached, a directory of the run's own, runs the runner apart from the
+	// front-end (detached.go): it goes on when the front-end exits, and a
+	// front-end takes it up again with Adopt. A runner built before, and a
+	// platform without flock, run attached, as without it.
+	Detached string
 }
 
 // Line is one line of runner output.
@@ -243,6 +249,9 @@ type Job struct {
 	// runner takes them.
 	workspace string
 	links     bool
+	// detached is the run's directory and process when the runner runs
+	// apart from the front-end (detached.go); nil when it is attached.
+	detached *detached
 }
 
 // ErrCannotSteer reports a runner that takes no messages while it runs: one
@@ -389,6 +398,10 @@ type runnerFeatures struct {
 	// commands as they run (-stream). One built before writes only what
 	// the session records.
 	stream bool
+	// detach: it runs apart from the front-end (-detached), its stdin a
+	// file and the session's lock its own, and says last how it ended.
+	// One built before runs attached.
+	detach bool
 }
 
 var runnerSteering = struct {
@@ -412,7 +425,7 @@ func featuresOf(runner string) runnerFeatures {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var usage bytes.Buffer
-	cmd := exec.CommandContext(ctx, runner, "-h")
+	cmd := spawn.CommandContext(ctx, runner, "-h")
 	cmd.Stdout, cmd.Stderr = &usage, &usage
 	if err := cmd.Run(); err != nil && ctx.Err() != nil {
 		return runnerFeatures{} // cannot tell; try again next time
@@ -422,6 +435,7 @@ func featuresOf(runner string) runnerFeatures {
 		links:  bytes.Contains(usage.Bytes(), []byte("files: array of {path")),
 		stop:   bytes.Contains(usage.Bytes(), []byte(`{"stop": {"reason"`)),
 		stream: bytes.Contains(usage.Bytes(), []byte(`{"type": "delta"`)),
+		detach: bytes.Contains(usage.Bytes(), []byte(`{"type": "exit"`)),
 	}
 	runnerSteering.Lock()
 	runnerSteering.byBinary[key] = features
@@ -569,10 +583,11 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	if err := checkRunner(o.Runner, provider); err != nil {
 		return nil, err
 	}
-	unlock, err := LockSession(o.SessionDir, r.SessionID)
+	lock, err := lockSessionFile(o.SessionDir, r.SessionID)
 	if err != nil {
 		return nil, err
 	}
+	unlock := func() { lock.Close() }
 	// Checked under the lock, which deleting holds too.
 	if _, err := os.Stat(SessionPath(o.SessionDir, r.SessionID)); (r.Resume || r.Rewind != "" || r.Compact) && errors.Is(err, fs.ErrNotExist) {
 		unlock()
@@ -591,8 +606,6 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		_ = snapshotMemory(o.SessionDir, r.SessionID, r.MessageID)
 	}
 
-	runContext, cancelCause := context.WithCancelCause(ctx)
-	cancel := func() { cancelCause(nil) }
 	args := []string{"-workspace", o.Workspace, "-session-directory", o.SessionDir, "-tool-heartbeat-interval", o.Heartbeat.String()}
 	if o.LogDir != "" {
 		args = append(args, "-log-directory", o.LogDir)
@@ -605,7 +618,20 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	if r.Stream && features.stream {
 		args = append(args, "-stream")
 	}
-	cmd := exec.CommandContext(runContext, o.Runner, args...)
+	if r.Detached != "" && canDetach && features.detach {
+		job, err := startDetached(ctx, o, r, detachedStart{
+			request: request, args: append(args, "-detached"), env: env, lock: lock,
+			steers: steers, stops: steers && features.stop, links: features.links,
+		})
+		if err != nil {
+			unlock()
+			return nil, err
+		}
+		return job, nil
+	}
+	runContext, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(nil) }
+	cmd := spawn.CommandContext(runContext, o.Runner, args...)
 	cmd.Dir = o.Workspace
 	cmd.Env = env
 	var stdin io.WriteCloser
@@ -619,7 +645,7 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	} else {
 		cmd.Stdin = bytes.NewReader(request)
 	}
-	configureProcess(cmd)
+	configureProcess(cmd.Cmd)
 	cmd.WaitDelay = stopTimeout
 
 	job := &Job{

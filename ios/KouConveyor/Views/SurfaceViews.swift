@@ -32,7 +32,7 @@ struct SurfaceBlock: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.fill.quaternary, in: .rect(cornerRadius: .corner(14)))
+        .kouPanel(radius: 14)
         .task(id: "\(call.path)|\(shown || head)") {
             if (shown || head) && !call.deleted { await book.load(call.path) }
         }
@@ -65,15 +65,16 @@ struct SurfaceBlock: View {
             HStack(spacing: 8) {
                 Image(systemName: call.deleted ? "rectangle.slash" : "rectangle.3.group")
                     .font(.subheadline)
-                    .foregroundStyle(live ? AnyShapeStyle(Color.kouAccent) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(live ? Color.kouAccent : Color.kouFg3)
                     .frame(width: 18)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Color.kouFg)
                         .lineLimit(1)
                     Text(subtitle(load: load, live: live, shown: shown))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg3)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -83,7 +84,7 @@ struct SurfaceBlock: View {
                 if !call.deleted {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kouFg4)
                         .rotationEffect(.degrees(shown ? 90 : 0))
                 }
             }
@@ -162,17 +163,9 @@ struct SurfaceBlock: View {
     private func chip(load: SurfaceLoad?, live: Bool) -> some View {
         let failed: Bool = if case .failed? = load { true } else { false }
         let word = call.deleted ? "Removed" : failed ? "Unreadable" : live ? "Live" : "Snapshot"
-        HStack(spacing: 4) {
-            if live, !failed {
-                Circle()
-                    .fill(.green)
-                    .frame(width: 6, height: 6)
-            }
-            Text(word)
-        }
-        .font(.system(.caption2, design: .monospaced, weight: .bold))
-        .textCase(.uppercase)
-        .foregroundStyle(failed ? AnyShapeStyle(.red) : AnyShapeStyle(.secondary))
+        // The cockpit's card head: a square in the state's colour, the
+        // word in mono capitals.
+        StateMark(word: word, tone: failed ? .kouErr : live ? .kouOK : .kouFg3)
     }
 
     @ViewBuilder
@@ -194,11 +187,11 @@ struct SurfaceBlock: View {
             VStack(alignment: .leading, spacing: 6) {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.kouWarn)
                 if !call.text.isEmpty {
                     Text(call.text)
                         .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                         .lineLimit(40)
                 }
             }
@@ -208,7 +201,7 @@ struct SurfaceBlock: View {
                     .controlSize(.small)
                 Text("Reading the surface…")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg3)
             }
         }
     }
@@ -226,13 +219,13 @@ struct SurfaceBlock: View {
             }
             ForEach(Array(warnings.prefix(3).enumerated()), id: \.offset) { _, warning in
                 Text("⚠ " + warning)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Color.kouWarn)
                     .lineLimit(2)
             }
             Text("\(call.surface) v\(call.version)")
         }
         .font(.system(.caption2, design: .monospaced))
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(Color.kouFg4)
     }
 
     private static func sourceLine(_ spec: SurfaceSourceSpec, value: SurfaceValue?, info: SurfaceObject?) -> String {
@@ -492,10 +485,10 @@ struct SurfaceTabs: View {
                             ForEach(labels.indices, id: \.self) { i in
                                 Button(labels[i]) { at = i }
                                     .font(.footnote.weight(i == current ? .semibold : .regular))
-                                    .foregroundStyle(i == current ? AnyShapeStyle(Color.kouAccent) : AnyShapeStyle(.secondary))
+                                    .foregroundStyle(i == current ? Color.kouAccent : Color.kouFg2)
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 5)
-                                    .background(i == current ? AnyShapeStyle(Color.kouAccent.opacity(0.15)) : AnyShapeStyle(.fill.tertiary),
+                                    .background(i == current ? Color.kouAccentSoft : Color.kouChip,
                                                 in: .cornerCapsule)
                                     .buttonStyle(.plain)
                             }
@@ -525,7 +518,7 @@ struct SurfaceDisclosure: View {
                 HStack(spacing: 6) {
                     Image(systemName: "chevron.right")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kouFg3)
                         .rotationEffect(.degrees(isOpen ? 90 : 0))
                     Text(env.label(c))
                         .font(.subheadline.weight(.medium))
@@ -606,8 +599,8 @@ struct SurfaceTextView: View {
         Group {
             switch c.string("style") {
             case "heading": Text(text).font(.headline)
-            case "caption": Text(text).font(.caption).foregroundStyle(.secondary)
-            case "mono": Text(text).font(.system(.footnote, design: .monospaced))
+            case "caption": Text(text).font(.caption).foregroundStyle(Color.kouFg3)
+            case "mono": Text(text).font(.system(.footnote, design: .monospaced)).foregroundStyle(Color.kouFg2)
             default: Text(text).font(.subheadline)
             }
         }
@@ -621,26 +614,25 @@ struct SurfaceMetricView: View {
 
     var body: some View {
         let m = SurfaceText.metric(env.doc, c)
-        VStack(alignment: .leading, spacing: 2) {
-            Text(env.label(c))
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
+        // The cockpit's metric: its name in mono capitals, the number in
+        // mono, the change under it in its tone.
+        VStack(alignment: .leading, spacing: 4) {
+            Eyebrow(env.label(c))
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(m.text)
-                    .font(.title3.weight(.semibold))
+                    .font(.system(.title3, design: .monospaced, weight: .semibold))
                     .monospacedDigit()
-                    .foregroundStyle(m.missing ? .tertiary : .primary)
+                    .foregroundStyle(m.missing ? Color.kouFg4 : Color.kouFg)
                 if !m.unit.isEmpty {
                     Text(m.unit)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg3)
                 }
             }
             .lineLimit(1)
             .minimumScaleFactor(0.7)
             Text(m.change?.text ?? " ")
-                .font(.caption2.weight(.medium))
+                .font(.system(.caption2, design: .monospaced, weight: .medium))
                 .monospacedDigit()
                 .foregroundStyle(Self.color(m.tone))
         }
@@ -649,9 +641,9 @@ struct SurfaceMetricView: View {
 
     static func color(_ tone: SurfaceMetric.Tone) -> Color {
         switch tone {
-        case .good: .green
-        case .bad: .red
-        case .flat: .secondary
+        case .good: .kouOK
+        case .bad: .kouErr
+        case .flat: .kouFg3
         }
     }
 }
@@ -660,22 +652,19 @@ struct SurfaceBadge: View {
     let text: String
     let tone: String?
 
+    /// genui's info: its second series' blue, a little toward the text.
+    private static let info = Color(uiColor: Look.dynamic(light: "#5b72cb", dark: "#8aa1f9"))
+
     var body: some View {
+        // As the cockpit's badge: mono capitals in a box of the tone's.
         let color: Color = switch tone {
-        case "ok": .green
-        case "warn": .orange
-        case "err": .red
-        case "info": .blue
-        default: .secondary
+        case "ok": .kouOK
+        case "warn": .kouWarn
+        case "err": .kouErr
+        case "info": Self.info
+        default: .kouFg2
         }
-        Text(text)
-            .font(.caption2.weight(.bold))
-            .textCase(.uppercase)
-            .lineLimit(1)
-            .foregroundStyle(color)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(color.opacity(0.14), in: .cornerCapsule)
+        Tag(text, tone: color)
     }
 }
 
@@ -687,19 +676,23 @@ struct SurfaceProgress: View {
         let value = env.resolve(c["value"]).flatMap(SurfaceText.asNumber)
         let top = env.resolve(c["max"] ?? .number(1)).flatMap(SurfaceText.asNumber).flatMap { $0 == 0 ? nil : $0 } ?? 1
         let share = value.map { max(0, min(1, $0 / top)) } ?? 0
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
                 Text(env.label(c))
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg2)
+                    .lineLimit(1)
                 Spacer()
                 Text(value == nil ? "—" : "\(Int((share * 100).rounded()))%")
-                    .font(.caption)
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
                     .monospacedDigit()
+                    .foregroundStyle(value == nil ? Color.kouFg4 : Color.kouFg)
             }
-            ProgressView(value: share)
-                .tint(Color.kouAccent)
+            // The cockpit's bar: the accent on a track, square-ended.
+            Meter(value: share)
+                .frame(height: 6)
         }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -709,7 +702,7 @@ struct SurfaceNone: View {
     var body: some View {
         Text(text)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(Color.kouFg3)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
@@ -728,7 +721,7 @@ struct SurfaceUnknown: View {
                 if let note {
                     Text(note)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.kouFg3)
                 }
             }
         }
@@ -774,22 +767,25 @@ struct SurfaceTable: View {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                     GridRow {
                         ForEach(columns.indices, id: \.self) { i in
+                            // The cockpit's head: mono capitals.
                             Text(columns[i].label)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                                .font(.kouEyebrow)
+                                .tracking(0.8)
+                                .textCase(.uppercase)
+                                .foregroundStyle(Color.kouFg3)
                                 .lineLimit(1)
                                 .gridColumnAlignment(SurfaceKinds.align(columns[i].align))
                         }
                     }
-                    Divider()
+                    Hairline()
                     ForEach(shown.indices, id: \.self) { r in
                         GridRow {
                             ForEach(columns.indices, id: \.self) { i in
                                 let value = cell(shown[r], columns[i], i)
                                 Text(Self.text(value))
-                                    .font(.caption)
+                                    .font(.kouMeta)
                                     .monospacedDigit()
-                                    .foregroundStyle(value == nil || value == .null ? .tertiary : .primary)
+                                    .foregroundStyle(value == nil || value == .null ? Color.kouFg4 : Color.kouFg)
                                     .lineLimit(1)
                                     .frame(maxWidth: 260, alignment: Alignment(horizontal: SurfaceKinds.align(columns[i].align), vertical: .center))
                             }
@@ -800,8 +796,8 @@ struct SurfaceTable: View {
             }
             if more > 0 {
                 Text("\(SurfaceText.num(Double(more))) more \(more == 1 ? "row" : "rows") \(reverse ? "before" : "after") these")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg3)
             }
         }
     }
@@ -848,9 +844,11 @@ struct SurfaceList: View {
             let more = items.count - min(items.count, limit)
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(Array(ordered.prefix(limit).enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("•")
-                            .foregroundStyle(.tertiary)
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        // U+FE0E: the square as text, as the cockpit's marker.
+                        Text("▪\u{FE0E}")
+                            .font(.footnote)
+                            .foregroundStyle(Color.kouFg4)
                         Text(template != nil && item.object != nil ? SurfaceText.fillItem(item, template ?? "") : SurfaceText.shown(item))
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -858,8 +856,8 @@ struct SurfaceList: View {
                 }
                 if more > 0 {
                     Text("\(SurfaceText.num(Double(more))) more")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .font(.kouMeta)
+                        .foregroundStyle(Color.kouFg3)
                 }
             }
         } else {
@@ -980,12 +978,14 @@ struct SurfaceChart: View {
             if !data.alt.isEmpty {
                 Text(data.alt)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.kouFg2)
             }
+            // The cockpit's legend: mono, the values bright.
             SurfaceFlow(spacing: 10, lineSpacing: 4) {
                 if let at {
                     Text(data.xs[at])
-                        .font(.caption2.weight(.semibold))
+                        .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                        .foregroundStyle(Color.kouFg)
                 }
                 ForEach(data.fields.indices, id: \.self) { j in
                     let shown = Self.legendValue(data.series[j], at)
@@ -994,11 +994,13 @@ struct SurfaceChart: View {
                             .fill(colors[j % colors.count])
                             .frame(width: 8, height: 8)
                         Text(data.fields[j])
+                            .foregroundStyle(Color.kouFg3)
                         Text(data.value(shown))
                             .fontWeight(.semibold)
                             .monospacedDigit()
+                            .foregroundStyle(Color.kouFg)
                     }
-                    .font(.caption2)
+                    .font(.system(.caption2, design: .monospaced))
                 }
             }
         }
@@ -1047,7 +1049,7 @@ struct SurfaceChart: View {
                 }
                 if let picked {
                     RuleMark(x: .value("x", picked))
-                        .foregroundStyle(.secondary.opacity(0.5))
+                        .foregroundStyle(Color.kouFg4)
                 }
             }
             .chartForegroundStyleScale(domain: data.fields, range: colors)
@@ -1090,8 +1092,8 @@ struct SurfaceImage: View {
                 .accessibilityLabel(alt)
             if !alt.isEmpty {
                 Text(alt)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.kouMeta)
+                    .foregroundStyle(Color.kouFg3)
             }
         }
     }
@@ -1111,18 +1113,19 @@ struct SurfaceFileBox<Content: View>: View {
             HStack(spacing: 8) {
                 Text(name)
                     .font(.system(.caption, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(Color.kouFg2)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let detail {
                     Text(detail)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kouFg3)
                         .lineLimit(1)
                 }
                 if let stat {
                     HStack(spacing: 4) {
-                        Text("+\(stat.added)").foregroundStyle(.green)
-                        Text("−\(stat.removed)").foregroundStyle(.red)
+                        Text("+\(stat.added)").foregroundStyle(Color.kouOK)
+                        Text("−\(stat.removed)").foregroundStyle(Color.kouErr)
                     }
                 }
                 Spacer(minLength: 0)
@@ -1141,7 +1144,7 @@ struct SurfaceFileBox<Content: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.kouSurface)
         .clipShape(.rect(cornerRadius: .corner(12)))
-        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(.separator, lineWidth: 0.5))
+        .overlay(RoundedRectangle(cornerRadius: .corner(12)).strokeBorder(Color.kouLine, lineWidth: 1))
     }
 }
 
@@ -1207,7 +1210,7 @@ struct SurfaceCode: View {
                     ForEach(shown.indices, id: \.self) { i in
                         HStack(alignment: .firstTextBaseline, spacing: 10) {
                             Text(String(first + i))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color.kouFg4)
                                 .frame(width: CGFloat(digits) * 8, alignment: .trailing)
                             Text(shown[i])
                         }
@@ -1275,7 +1278,7 @@ struct SurfaceDiff: View {
                 if kept.bool("cut") == true {
                     Text("The diff was cut at 64 KB.")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Color.kouFg3)
                         .padding(10)
                 }
             }
@@ -1356,17 +1359,28 @@ struct SurfaceDiff: View {
         return HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(line.old.map(String.init) ?? "")
                 .frame(width: width, alignment: .trailing)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.kouFg4)
             Text(line.new.map(String.init) ?? "")
                 .frame(width: width, alignment: .trailing)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(Color.kouFg4)
+            // The cockpit's diff: what stayed dimmer than what changed.
             Text(line.kind == .hunk ? line.text : sign + " " + line.text)
-                .foregroundStyle(line.kind == .hunk ? AnyShapeStyle(.secondary) : AnyShapeStyle(.primary))
+                .foregroundStyle(line.kind == .hunk ? Color.kouFg3 : line.kind == .kept ? Color.kouFg2 : Color.kouFg)
                 .padding(.trailing, 10)
         }
         .padding(.vertical, 1)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(line.kind == .added ? Color.green.opacity(0.13) : line.kind == .removed ? Color.red.opacity(0.13) : .clear)
+        .background(Self.ground(line.kind))
+    }
+
+    /// A line's band, in the colours of the cockpit's diffs.
+    private static func ground(_ kind: Line.Kind) -> Color {
+        switch kind {
+        case .added: Color(uiColor: CodeInk.added)
+        case .removed: Color(uiColor: CodeInk.removed)
+        case .hunk: Color(uiColor: CodeInk.hunk)
+        case .kept: .clear
+        }
     }
 }
 
@@ -1422,7 +1436,7 @@ struct SurfaceButton: View {
         case "danger":
             button
                 .buttonStyle(.bordered)
-                .tint(.red)
+                .tint(Color.kouErr)
         default:
             button
                 .buttonStyle(.bordered)
@@ -1463,11 +1477,10 @@ struct SurfaceField<Control: View>: View {
     @ViewBuilder let control: Control
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             if !label.isEmpty {
-                Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                // The cockpit's field label: mono capitals.
+                Eyebrow(label)
             }
             control
         }
@@ -1495,7 +1508,9 @@ struct SurfaceTextField: View {
                 .font(.subheadline)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
-                .background(.fill.tertiary, in: .rect(cornerRadius: .corner(8)))
+                // The cockpit's input: the screen's ground, cut into the card.
+                .background(Color.kouGround, in: .rect(cornerRadius: .corner(8)))
+                .overlay(RoundedRectangle(cornerRadius: .corner(8)).strokeBorder(Color.kouLine2, lineWidth: 1))
                 .disabled(!env.live || pointer == nil)
         }
     }
@@ -1572,14 +1587,13 @@ struct SurfaceSlider: View {
         let step = c["step"].flatMap(SurfaceText.asNumber).flatMap { $0 > 0 ? $0 : nil } ?? 1
         let value = env.resolve(c["value"]).flatMap(SurfaceText.asNumber)
         VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(env.label(c))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            HStack(alignment: .firstTextBaseline) {
+                Eyebrow(env.label(c))
                 Spacer()
                 Text(value.map { SurfaceText.num($0) } ?? "—")
-                    .font(.caption)
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
                     .monospacedDigit()
+                    .foregroundStyle(value == nil ? Color.kouFg4 : Color.kouFg)
             }
             if high > low {
                 Slider(value: Binding(get: { min(max(value ?? low, low), high) }, set: { new in

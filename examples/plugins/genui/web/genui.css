@@ -685,6 +685,9 @@ textarea.gu-input { display: block; height: auto; min-height: 76px; padding: 8px
 .gu-icon, .gu-open, .gu-badge { border-radius: var(--radius-sm); }
 .gu-status::before, .gu-bar { border-radius: min(var(--radius-sm), 3px); }
 .gu-swatch { border-radius: min(var(--radius-sm), 2px); }
+/* The card's node stays a diamond as the timeline's nodes become dots
+   (timeline.css): its corners bend a little. */
+.entry.gu-entry::before { border-radius: min(var(--radius-sm), 1.5px); }
 /* The switch becomes a pill as the corners round, its knob with it. */
 .gu-switch { border-radius: min(var(--radius), 8px); }
 .gu-switch::before { border-radius: max(0px, calc(min(var(--radius), 8px) - 3px)); }

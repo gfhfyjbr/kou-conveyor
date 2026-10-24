@@ -24,6 +24,8 @@ const OPENABLE = /^#\/w\/[A-Za-z0-9-]{1,80}(?:\/[sc]\/[A-Za-z0-9-]{1,128})?$/;
 // What the page in the frame keeps in the tab's preferences that is the
 // page around it's too: what it changes, it gives back as it goes.
 const SHARED = ['panel', 'widths', 'changes', 'inspector'];
+// How many of its transcript's last entries a chat reads at first.
+const TAIL = 200;
 
 export const chatHash = (ws, sid) => `#/w/${ws}/s/${sid}`;
 
@@ -65,9 +67,10 @@ export function embedded(loc = location, win = window) {
 }
 
 // framesAllowed says whether the server lets the chat be framed: a build
-// from before it did answers framing with 'none', and the node keeps its
-// feed. A yes holds for the page; a no, until askFramesAgain — the server
-// came back, maybe as a build that lets it.
+// from before it did answers framing with 'none', and the node says so,
+// with the session to open in the page. A yes holds for the page; a no,
+// until askFramesAgain — the server came back, maybe as a build that lets
+// it.
 let allowed = null;
 let answer = null; // what the server said, once it did
 export function framesAllowed() {
@@ -175,6 +178,11 @@ export function activateEmbed(cockpit, { ws, sid }) {
     }, 0);
     return true;
   });
+  // It reads the end of its transcript, TAIL entries, and what is before
+  // them as it is asked to (the timeline's Show more): a board holds a
+  // dozen chats, and a session of thousands of entries, read whole, is tens
+  // of megabytes in each.
+  cockpit.hooks.tap('session.tail', ({ id, ws: w } = {}) => (id === sid && w === ws ? TAIL : undefined));
   // Its title is the session list's — the node's, which the canvas gave the
   // session — once the list has it: a session the chat made has none of its
   // own before then but its first prompt, which starts with the brief.
@@ -250,6 +258,11 @@ export function activateEmbed(cockpit, { ws, sid }) {
     if (ratio > 0) post('zoom', { deltaY: -Math.log(ratio) / 0.006, x: event.clientX, y: event.clientY });
   });
   cockpit.listen(window, 'gestureend', (event) => event.preventDefault());
+
+  // Booted, the page lets the page around it open the next chat that waits
+  // (nodes/agent.js BOOTING): reading its session is the server's work.
+  if (root.dataset.kernel === 'ready') post('booted');
+  else cockpit.on('ready', () => post('booted'));
 
   // A session opened before this plugin came (a reload of it) is ready now.
   const v = session.view?.();

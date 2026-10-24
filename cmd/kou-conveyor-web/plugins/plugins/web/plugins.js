@@ -259,9 +259,23 @@ export default function activate(cockpit) {
   hot.build ??= null;
   const BUILD_WORDS = {
     building: ['The Go code changed: building the server anew…', 'info'],
-    waiting: ['Built. The server takes the new build up once the agents at work finish.', 'info'],
+    waiting: ['Built. The server takes the new build up once the agents attached to it finish.', 'info'],
     restarting: ['Restarting the server with the new build…', 'info'],
   };
+  // goingOn says what becomes of the agents at work as the server takes a
+  // new build up: their runners run apart from it and go on, some with the
+  // runner they started with, which a restart of their run takes the new
+  // one up for.
+  function goingOn(status) {
+    const going = status.going || 0;
+    const outdated = status.outdated || 0;
+    if (!going) return '';
+    const runs = going === 1 ? '1 agent run goes on' : `${going} agent runs go on`;
+    if (!outdated) return ` ${runs}.`;
+    if (going === 1) return ` ${runs} with the runner it started with: restart it from its session to take the new one up.`;
+    if (outdated === going) return ` ${runs} with the runner they started with: restart them from their sessions to take the new one up.`;
+    return ` ${runs}, ${outdated} of them with the runner they started with: restart those from their sessions to take the new one up.`;
+  }
   cockpit.on('server', (status) => {
     hot.build = status;
     if (status.state === 'failed') {
@@ -270,12 +284,18 @@ export default function activate(cockpit) {
       const first = lines.find((line) => /\.go:\d+/.test(line)) || lines.find((line) => !line.startsWith('#')) || status.message;
       toast(`The build failed: ${first}`, 'error', 'server');
     }
-    else if (BUILD_WORDS[status.state]) toast(BUILD_WORDS[status.state][0], BUILD_WORDS[status.state][1], 'server');
+    else if (BUILD_WORDS[status.state]) {
+      const [words, kind] = BUILD_WORDS[status.state];
+      toast(status.state === 'restarting' ? words + goingOn(status) : words, kind, 'server');
+    }
     cockpit.render();
   });
   cockpit.on('server-restarted', () => {
+    // What went on as it restarted is said again: the toast that said it
+    // gives way to this one at once.
+    const going = hot.build?.state === 'restarting' ? goingOn(hot.build) : '';
     hot.build = null;
-    toast('The server runs the new build', 'info', 'server');
+    toast(going ? `The server runs the new build.${going}` : 'The server runs the new build', 'info', 'server');
     cockpit.render();
   });
   if (cockpit.hot.reloaded) announce(cockpit.plugin.name, 'code');

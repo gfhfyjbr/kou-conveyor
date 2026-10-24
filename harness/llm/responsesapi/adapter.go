@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"uuid"
 
@@ -77,6 +78,9 @@ type adapter struct {
 	cacheKeyPlacement CacheKeyPlacement
 	maxAttempts       int
 	extensions        map[string]jsontext.Value
+	// textOnly holds the IDs of the models that rejected a request for its
+	// images: later requests to them leave the images out (images.go).
+	textOnly sync.Map // model ID → struct{}
 }
 
 var _ llm.Adapter = (*adapter)(nil)
@@ -141,7 +145,32 @@ func contextOverflow(message string, err error) *llm.ContextOverflowError {
 	return overflow
 }
 
+// respond answers the request. When the model rejects it for the images it
+// carries, it is sent once more without them, with a warning, and the later
+// requests to that model leave images out from the start (images.go).
 func (adapter *adapter) respond(ctx context.Context, request llm.Request, options llm.RequestOptions) (llm.Response, error) {
+	if _, textOnly := adapter.textOnly.Load(request.Model.ID); textOnly {
+		request = withoutImages(request)
+	}
+	response, err := adapter.respondOnce(ctx, request, options)
+	// The rejection comes as an error, or as a response that failed.
+	rejection, rejected := errors.AsType[*APIError](err)
+	if failure := response.Failure; err == nil && failure != nil {
+		rejection, rejected = &APIError{StatusCode: http.StatusOK, Code: failure.Code, Message: failure.Message}, true
+	}
+	if !rejected || !imagesRejected(rejection) || !hasImages(request) {
+		return response, err
+	}
+	adapter.textOnly.Store(request.Model.ID, struct{}{})
+	llm.ReportWarning(ctx, fmt.Sprintf("the model %s does not accept images; they are left out of its requests from now on (%s)",
+		request.Model.ID, rejection.Message))
+	// What the rejected request streamed is not the response.
+	llm.ReportStream(ctx, llm.StreamEvent{Reset: true})
+	return adapter.respondOnce(ctx, withoutImages(request), options)
+}
+
+// respondOnce sends the request as it is and decodes the answer.
+func (adapter *adapter) respondOnce(ctx context.Context, request llm.Request, options llm.RequestOptions) (llm.Response, error) {
 	key := ""
 	if options.CacheKey != "" {
 		key = fmt.Sprintf("%x", sha256.Sum256([]byte(options.CacheKey)))

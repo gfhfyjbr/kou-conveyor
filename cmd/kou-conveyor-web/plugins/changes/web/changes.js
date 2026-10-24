@@ -81,7 +81,9 @@ export default function activate(cockpit) {
       const entry = v.entries.get(v.order[i]);
       if (entry?.kind === 'user' && !entry.forced) return entry;
     }
-    return prompt;
+    // Before the entries the view read (a chat on a canvas reads its end),
+    // its prompts are still known.
+    return v.earlierPrompts?.findLast((entry) => !entry.forced) || prompt;
   }
 
   // sync shows the changes of the prompt whose run is in view.

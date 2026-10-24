@@ -46,6 +46,10 @@ const NoLinks = "COCKPITTEST_NO_LINKS"
 // line that stops them and says why: it is only interrupted.
 const NoStop = "COCKPITTEST_NO_STOP"
 
+// NoDetach, set to 1, makes the fake runner one built before runners ran
+// apart from their front-ends (-detached).
+const NoDetach = "COCKPITTEST_NO_DETACH"
+
 // Main turns the test binary into a fake runner when a test launched it
 // through Runner. Call it first in TestMain.
 func Main() {
@@ -91,6 +95,9 @@ func Main() {
 // instructions; with "wait" in them it blocks until interrupted, and with
 // "nothing" the summary is empty. With -stream its answer streams first, a
 // word at a time, paced with "slow" in the instructions.
+//
+// With -detached, stdin is a file read past its end as it grows, as the
+// runner reads it, and the last line written is {"type":"exit","code":N}.
 func Runner(t testing.TB) string {
 	t.Helper()
 	t.Setenv(enable, "1")
@@ -101,7 +108,7 @@ func Runner(t testing.TB) string {
 	return exe
 }
 
-func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	flags := flag.NewFlagSet("fake-runner", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	sessions := flags.String("session-directory", "", "")
@@ -114,6 +121,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if os.Getenv(NoSteer) != "1" {
 		steer = flags.Bool("steer", false, "keep reading stdin for messages")
 	}
+	detached := new(bool)
+	if os.Getenv(NoDetach) != "1" {
+		detached = flags.Bool("detached", false, "run apart from the front-end")
+	}
 	// The usage says what the runner takes, as the runner's does.
 	flags.Usage = func() {
 		flags.PrintDefaults()
@@ -123,9 +134,22 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		if os.Getenv(NoSteer) != "1" && os.Getenv(NoStop) != "1" {
 			fmt.Fprintln(stderr, `  stop: {"stop": {"reason": string}} stops the run, which records why`)
 		}
+		if os.Getenv(NoDetach) != "1" {
+			fmt.Fprintln(stderr, `  detached: the last line written is {"type": "exit", "code": integer}`)
+		}
 	}
 	if err := flags.Parse(args); err != nil {
 		return 2
+	}
+	if *detached {
+		following := make(chan struct{})
+		defer func() {
+			close(following)
+			fmt.Fprintf(stdout, "{\"type\":\"exit\",\"code\":%d}\n", code)
+		}()
+		if *steer {
+			stdin = &followReader{r: stdin, done: following}
+		}
 	}
 	if *providers {
 		fmt.Fprintln(stdout, "ollama\nopenai\nanthropic\nopenai-codex\nopenrouter\nfireworks")
@@ -623,6 +647,33 @@ func promptPayload(text string, images []requestImage, files []contextbuilder.Li
 		panic(err)
 	}
 	return payload
+}
+
+// followReader reads a file that grows, past its end, until done is closed:
+// a detached runner's stdin.
+type followReader struct {
+	r    io.Reader
+	done <-chan struct{}
+}
+
+func (f *followReader) Read(p []byte) (int, error) {
+	if len(p) == 0 {
+		return 0, nil
+	}
+	for {
+		n, err := f.r.Read(p)
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		if n > 0 || err != nil {
+			return n, err
+		}
+		select {
+		case <-f.done:
+			return 0, io.EOF
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // receiveStop reads stdin up to a stop line and reports its reason.

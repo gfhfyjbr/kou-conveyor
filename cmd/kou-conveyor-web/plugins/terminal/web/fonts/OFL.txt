@@ -1,8 +1,32 @@
-Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+The fonts below are licensed under the SIL Open Font License, Version 1.1,
+which is copied after their copyright notices. It is also available, with
+a FAQ, at https://openfontlicense.org.
 
-This Font Software is licensed under the SIL Open Font License, Version 1.1.
-This license is copied below, and is also available with a FAQ at:
-https://scripts.sil.org/OFL
+JetBrains Mono NL 2.304: JetBrainsMonoNL-Regular.ttf, JetBrainsMonoNL-Italic.ttf,
+JetBrainsMonoNL-Bold.ttf and JetBrainsMonoNL-BoldItalic.ttf
+Copyright 2020 The JetBrains Mono Project Authors (https://github.com/JetBrains/JetBrainsMono)
+Copyright 2020 The JetBrains Mono NL Project Authors (https://github.com/JetBrains/JetBrainsMonoNL)
+
+Noto Sans Math 2.001: NotoSansMath-Regular.ttf
+Copyright 2018 Google LLC. All Rights Reserved.
+
+Noto Sans Symbols 2.001: NotoSansSymbols-Regular.ttf
+Copyright 2016 Google LLC. All Rights Reserved.
+
+Noto Sans Symbols2 2.003: NotoSansSymbols2-Regular.ttf
+Copyright 2017 Google Inc. All Rights Reserved.
+
+The Noto fonts: Copyright 2018 The Noto Project Authors (github.com/googlei18n/noto-fonts)
+
+The other two fonts here are under other licenses. SymbolsNerdFontMono-Regular.ttf
+is Symbols Nerd Font Mono from Nerd Fonts 3.4.0, under the MIT License in
+LICENSE-SymbolsNerdFont.txt; the icons it gathers keep the licenses of the
+icon sets they come from, listed at
+https://github.com/ryanoasis/nerd-fonts/blob/master/license-audit.md.
+KouAppleLogo.ttf is a subset of it holding one icon, Font Awesome's apple
+(U+F179, mapped to U+F8FF as well), by Fonticons, Inc. (https://fontawesome.com),
+under the Creative Commons Attribution 4.0 International license
+(https://creativecommons.org/licenses/by/4.0/).
 
 
 -----------------------------------------------------------

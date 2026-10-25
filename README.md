@@ -25,7 +25,7 @@ the project adds is a hot-reloaded plugin — the browser cockpit *is* plugins.
 | [Install](#install) | [Images](#images) · [Files](#files) | [Extending the harness](#extending-the-harness) |
 | [Three cockpits](#three-cockpits) · [Appearance](#appearance) | [Queue](#queue) · [Changes](#changes) | [Plugins](#plugins) · [Skills](#skills) |
 | [Web UI](#web-ui) · [Terminal UI](#terminal-ui) | [Compaction](#compaction) · [Canvas](#canvas) | [Connection settings](#connection-settings) |
-| [iPhone app](#the-iphone-app) · [Voice](#voice) | [Accounts](#accounts) · [Usage](#usage) | [Contributing](#contributing) · [License](#license) |
+| [iPhone app](#the-iphone-app) · [Voice](#voice) | [Accounts](#accounts) · [Usage](#usage) | [Contributing](#contributing) · [Credits](#credits) · [License](#license) |
 
 ## Highlights
 
@@ -948,12 +948,35 @@ See [`ios/README.md`](ios/README.md) to build it and pair it with a cockpit.
 
 ## Contributing
 
-This repository shares selected components from a larger internal codebase, and
-more will follow as they prove out. Questions, feature requests and bug reports
-are welcome as [GitHub issues](https://github.com/gfhfyjbr/kou-conveyor/issues);
-pull requests cannot be reviewed or merged right now. See
+kou-conveyor is a personal project, built for daily use first and shared as
+is: fork it and change whatever you like. Questions, bug reports and ideas are
+welcome as [GitHub issues](https://github.com/gfhfyjbr/kou-conveyor/issues),
+and pull requests too, reviewed as time allows; much of what you might want to
+change fits in a [plugin](#plugins), without touching the core. See
 [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Credits
+
+kou-conveyor started as a fork of
+[unreal-agent](https://github.com/unreallabsai/unreal-agent) by Unreal Labs,
+and part of its core — the coordinator loop, the session store, the process
+primitives — still comes from there. It also builds on:
+
+- [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), which the
+  [accounts gateway](#accounts) runs inside the cockpit;
+- [restty](https://github.com/wiedymi/restty), on Ghostty's libghostty-vt,
+  which draws the terminals;
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), whose
+  plugin system the cockpit's follows;
+- JetBrains Mono and Noto, under the SIL Open Font License, and Symbols Nerd
+  Font, under MIT with its icons under their own licenses: the terminal's
+  fonts.
+
+Each release carries `THIRD_PARTY_NOTICES.txt`, the licenses of everything its
+programs build in; `make notices` writes the same for a checkout, to
+`bin/THIRD_PARTY_NOTICES.txt`.
 
 ## License
 
-[MIT](LICENSE) © Unreal Labs.
+[MIT](LICENSE) © gfhfyjbr. The parts that come from unreal-agent are © Unreal
+Labs, under the same license.

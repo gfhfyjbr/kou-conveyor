@@ -41,14 +41,16 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist
+          TARGETS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64" \
+            scripts/third-party-notices.sh ./cmd/kou-conveyor-runner > "$RUNNER_TEMP/THIRD_PARTY_NOTICES.txt"
           for target_os in linux darwin; do
             for target_arch in amd64 arm64; do
               archive="kou-conveyor-runner_${RELEASE_TAG#v}_${target_os}_${target_arch}"
               mkdir -p "dist/$archive"
               GOOS="$target_os" GOARCH="$target_arch" go build -mod=readonly -trimpath \
                 -o "dist/$archive/kou-conveyor-runner" ./cmd/kou-conveyor-runner
-              cp LICENSE "dist/$archive/"
-              tar -czf "dist/$archive.tar.gz" -C "dist/$archive" kou-conveyor-runner LICENSE
+              cp LICENSE "$RUNNER_TEMP/THIRD_PARTY_NOTICES.txt" "dist/$archive/"
+              tar -czf "dist/$archive.tar.gz" -C "dist/$archive" kou-conveyor-runner LICENSE THIRD_PARTY_NOTICES.txt
             done
           done
           (cd dist && sha256sum ./*.tar.gz > SHA256SUMS)

@@ -1,4 +1,4 @@
-.PHONY: build build-runner build-tui build-web test check
+.PHONY: build build-runner build-tui build-web test check notices
 
 build: build-tui build-web
 
@@ -25,3 +25,11 @@ build-tui: build-runner
 build-web: build-runner
 	go build -trimpath -ldflags "-X 'main.builtFrom=$(CURDIR)'" -o bin/kou-conveyor-web ./cmd/kou-conveyor-web
 	go build -trimpath -o bin/kou-conveyor-canvas ./cmd/kou-conveyor-canvas
+
+# The licenses of the third-party code the binaries are built from, which go
+# wherever the binaries are passed on to: Go's, the modules', and those of the
+# fonts and the script the browser cockpit embeds.
+notices:
+	@mkdir -p bin
+	scripts/third-party-notices.sh ./cmd/kou-conveyor-runner ./cmd/kou-conveyor-tui ./cmd/kou-conveyor-web ./cmd/kou-conveyor-canvas > bin/THIRD_PARTY_NOTICES.txt.new
+	mv bin/THIRD_PARTY_NOTICES.txt.new bin/THIRD_PARTY_NOTICES.txt

@@ -8,3 +8,5 @@
 !internal/
 !internal/**
 !LICENSE
+!scripts/third-party-notices.sh
+!third_party/openai-openapi/LICENSE

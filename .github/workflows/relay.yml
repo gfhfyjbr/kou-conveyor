@@ -2,8 +2,10 @@ name: Relay
 
 # Builds kou-conveyor-relay whenever what it is built from changes — its own
 # packages, the modules they use, the Go release — and publishes the builds
-# to the relay-latest prerelease, with manifest.json naming them. The relays
-# read the manifest and update themselves (cmd/kou-conveyor-relay/update.go).
+# to the relay-latest prerelease, with manifest.json naming them and
+# THIRD_PARTY_NOTICES.txt holding the licenses of what they are built from.
+# The relays read the manifest and update themselves
+# (cmd/kou-conveyor-relay/update.go).
 
 on:
   push:
@@ -13,6 +15,7 @@ on:
       - go.mod
       - go.sum
       - .github/workflows/relay.yml
+      - scripts/third-party-notices.sh
   workflow_dispatch:
     inputs:
       force:
@@ -58,6 +61,7 @@ jobs:
           # shellcheck disable=SC2016 # go list's templates, not the shell's
           {
             echo "recipe $(sha256sum .github/workflows/relay.yml | cut -d' ' -f1)"
+            echo "notices $(sha256sum scripts/third-party-notices.sh | cut -d' ' -f1)"
             go env GOVERSION
             for target in $TARGETS; do
               echo "target $target"
@@ -110,6 +114,7 @@ jobs:
               '.[$target] = {url: $url, sha256: $sum, size: $size}' "$RUNNER_TEMP/assets.json" > "$RUNNER_TEMP/assets.next"
             mv "$RUNNER_TEMP/assets.next" "$RUNNER_TEMP/assets.json"
           done
+          scripts/third-party-notices.sh ./cmd/kou-conveyor-relay > dist/THIRD_PARTY_NOTICES.txt
 
           # The build must say the version the manifest gives it, and serve.
           relay="dist/kou-conveyor-relay_${version}_linux_amd64"
@@ -143,19 +148,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          notes="kou-conveyor-relay $VERSION, built from $GITHUB_SHA. The relays read manifest.json here and update themselves; this prerelease always holds the newest build only."
+          notes="kou-conveyor-relay $VERSION, built from $GITHUB_SHA. The relays read manifest.json here and update themselves; this prerelease always holds the newest build only. THIRD_PARTY_NOTICES.txt holds the licenses of the third-party code the builds are made from."
           if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false \
               --target "$GITHUB_SHA" --title "kou-conveyor-relay (latest)" --notes "$notes"
           fi
-          # The builds first, then the manifest that names them; then the
-          # builds no manifest names any more go.
-          gh release upload "$RELEASE_TAG" dist/kou-conveyor-relay_* --repo "$GITHUB_REPOSITORY" --clobber
+          # The builds and their notices first, then the manifest that names
+          # the builds; then the builds no manifest names any more go.
+          gh release upload "$RELEASE_TAG" dist/kou-conveyor-relay_* dist/THIRD_PARTY_NOTICES.txt --repo "$GITHUB_REPOSITORY" --clobber
           gh release upload "$RELEASE_TAG" dist/manifest.json --repo "$GITHUB_REPOSITORY" --clobber
           gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' |
             while read -r asset; do
               case "$asset" in
-                manifest.json | "kou-conveyor-relay_${VERSION}_"*) ;;
+                manifest.json | THIRD_PARTY_NOTICES.txt | "kou-conveyor-relay_${VERSION}_"*) ;;
                 *) gh release delete-asset "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY" --yes ;;
               esac
             done

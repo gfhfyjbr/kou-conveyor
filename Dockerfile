@@ -6,6 +6,9 @@ COPY cmd/ cmd/
 COPY harness/ harness/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -o /out/kou-conveyor-runner ./cmd/kou-conveyor-runner
+COPY scripts/third-party-notices.sh scripts/
+COPY third_party/openai-openapi/LICENSE third_party/openai-openapi/
+RUN TARGETS="linux/amd64 linux/arm64" scripts/third-party-notices.sh ./cmd/kou-conveyor-runner > /out/THIRD_PARTY_NOTICES.txt
 
 # Debian 13.7 (trixie), image build 2026-09-18.
 FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
@@ -15,6 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends bash ca-certifi
     && chown 10001:10001 /workspace /home/agent
 COPY --from=build /out/kou-conveyor-runner /usr/local/bin/kou-conveyor-runner
 COPY LICENSE /usr/share/doc/kou-conveyor/LICENSE
+COPY --from=build /out/THIRD_PARTY_NOTICES.txt /usr/share/doc/kou-conveyor/THIRD_PARTY_NOTICES.txt
 ENV HOME=/home/agent SHELL=/bin/bash
 USER 10001:10001
 WORKDIR /workspace

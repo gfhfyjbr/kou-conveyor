@@ -127,8 +127,8 @@ func TestBuilderCompactsConversation(t *testing.T) {
 	if messageText(input[2]) != "second task" || messageText(input[3]) != "third task" {
 		t.Fatalf("pending prompts = %q, %q", messageText(input[2]), messageText(input[3]))
 	}
-	if got := messageText(input[4]); got != "Result of the tool call call-late (ViewImage {\"path\":\"shot.png\"}), made before the conversation was compacted:\n"+
-		"[An image was attached here. It cannot be shown without its call; view it again if it is still needed.]" {
+	if got := messageText(input[4]); got != "Result of the tool call call-late (ViewImage {\"path\":\"shot.png\"}), made before the compaction:\n"+
+		"[An image was attached here; without its call it cannot be shown. If you still need it, view it again.]" {
 		t.Fatalf("detached result = %q", got)
 	}
 	if built.Compactable || len(built.Report.Changes) != 1 || built.Report.Changes[0].Kind != ChangeCompacted {
@@ -143,7 +143,7 @@ func TestBuilderCompactsConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	last := built.Request.Input[len(built.Request.Input)-1]
-	if last.Type != llm.ItemMessage || messageText(last) != "Result of the tool call call-running (Bash { \"command\": \"make test\" }), made before the conversation was compacted:\nok" {
+	if last.Type != llm.ItemMessage || messageText(last) != "Result of the tool call call-running (Bash { \"command\": \"make test\" }), made before the compaction:\nok" {
 		t.Fatalf("late result = %#v", last)
 	}
 	for _, item := range built.Request.Input {
@@ -167,7 +167,7 @@ func TestBuilderDescribesRunningResultAfterCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := messageText(built.Request.Input[len(built.Request.Input)-1]); got != `The tool call call-1 (Bash {"command":"sleep 60"}), made before the conversation was compacted, is still running; its result arrives in a later turn.` {
+	if got := messageText(built.Request.Input[len(built.Request.Input)-1]); got != `The tool call call-1 (Bash {"command":"sleep 60"}), made before the compaction, is still running; its result comes in a later turn.` {
 		t.Fatalf("running placeholder = %q", got)
 	}
 }
@@ -346,15 +346,19 @@ func TestSummaryKeepsTheSummaryBlock(t *testing.T) {
 		response llm.Response
 		want     string
 	}{
-		"analysis and summary":    {message("<analysis>\nthinking it over\n</analysis>\n\n<summary>\n1. Primary request: ship it\n</summary>"), "1. Primary request: ship it"},
-		"summary only":            {message("<summary>The gist.</summary>"), "The gist."},
-		"no blocks":               {message("  Plain summary.  "), "Plain summary."},
-		"analysis only":           {message("<analysis>notes</analysis>\nWhat is left."), "What is left."},
-		"split across messages":   {message("<analysis>notes</analysis>", "<summary>\nFrom the second part.\n</summary>"), "From the second part."},
-		"nothing":                 {message("<analysis>only notes</analysis>"), ""},
-		"cut off in the summary":  {message("<analysis>notes</analysis>\n<summary>\n1. Primary request: ship it\n2. Key"), "1. Primary request: ship it\n2. Key"},
-		"cut off in the analysis": {message("Here it is.\n<analysis>\nFirst the user asked"), ""},
-		"unclosed analysis":       {message("<analysis>notes\n<summary>The gist.</summary>"), "The gist."},
+		"review and summary":     {message("<review>\nthinking it over\n</review>\n\n<summary>\n## Goal\nship it\n</summary>"), "## Goal\nship it"},
+		"summary only":           {message("<summary>The gist.</summary>"), "The gist."},
+		"no blocks":              {message("  Plain summary.  "), "Plain summary."},
+		"review only":            {message("<review>notes</review>\nWhat is left."), "What is left."},
+		"split across messages":  {message("<review>notes</review>", "<summary>\nFrom the second part.\n</summary>"), "From the second part."},
+		"nothing":                {message("<review>only notes</review>"), ""},
+		"cut off in the summary": {message("<review>notes</review>\n<summary>\n## Goal\nship it\n## The"), "## Goal\nship it\n## The"},
+		"cut off in the review":  {message("Here it is.\n<review>\nFirst the user asked"), ""},
+		"unclosed review":        {message("<review>notes\n<summary>The gist.</summary>"), "The gist."},
+		// Sessions compacted before the pass was named <review> have it as
+		// <analysis>.
+		"earlier analysis":         {message("<analysis>\nthinking it over\n</analysis>\n\n<summary>\nThe gist.\n</summary>"), "The gist."},
+		"earlier analysis cut off": {message("Here it is.\n<analysis>\nFirst the user asked"), ""},
 	} {
 		if got := Summary(test.response); got != test.want {
 			t.Errorf("%s: summary = %q, want %q", name, got, test.want)
@@ -370,7 +374,7 @@ func TestCompactedMessagePointsToTheTranscript(t *testing.T) {
 		current.Commit()
 		current.AddModelResponse(answer("done"))
 		current.Commit()
-		if _, ok := current.Compact(answer("<analysis>notes</analysis><summary>The work so far.</summary>"), nil); !ok {
+		if _, ok := current.Compact(answer("<review>notes</review><summary>The work so far.</summary>"), nil); !ok {
 			t.Fatal("did not compact")
 		}
 		built, err := current.Build()

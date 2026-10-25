@@ -289,9 +289,9 @@ export default function activate(cockpit) {
 
   // drawSummary shows what streamed of a compaction's summary (the session's
   // view.compaction): the end of its latest piece — the thinking before it,
-  // or its text — without the tags around the analysis and the summary nor
+  // or its text — without the tags around the review and the summary nor
   // blank lines, which its few lines have no room for, with the part it is
-  // in.
+  // in. A runner from before the review was named streams it as <analysis>.
   function drawSummary(compaction) {
     compacting.hidden = !compaction;
     const piece = compaction ? [...compaction.pieces.values()].at(-1) || null : null;
@@ -299,9 +299,9 @@ export default function activate(cockpit) {
     summaryDrawn = piece;
     const raw = piece?.text || '';
     const thinking = piece?.kind === 'reasoning';
-    summaryPart.textContent = thinking ? 'thinking' : raw.includes('<summary>') ? 'summary' : raw.includes('<analysis>') ? 'analysis' : '';
+    summaryPart.textContent = thinking ? 'thinking' : raw.includes('<summary>') ? 'summary' : /<(?:review|analysis)>/.test(raw) ? 'review' : '';
     const text = raw
-      .replace(/<\/?(?:analysis|summary)>/g, '')
+      .replace(/<\/?(?:review|analysis|summary)>/g, '')
       .replace(/<\/?[a-z]*$/, '') // a tag still coming
       .replace(/\n\s*\n/g, '\n')
       .trimStart()

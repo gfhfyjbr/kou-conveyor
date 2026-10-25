@@ -446,9 +446,9 @@ func compact(dir, id, instructions, model string, stream bool, stdout, stderr io
 		<-interrupted
 		return 130
 	}
-	// The model thinks the conversation through before the summary, which
-	// is all the runner keeps.
-	answer := "<analysis>\nThe user asked questions.\n</analysis>"
+	// The model reviews the conversation before the summary, which is all
+	// the runner keeps.
+	answer := "<review>\nThe user asked questions.\n</review>"
 	if !strings.Contains(instructions, "nothing") {
 		summary := "Summary of the session"
 		if instructions != "" {

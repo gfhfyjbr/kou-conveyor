@@ -226,8 +226,9 @@ private struct PulseMark: View {
 
 /// Summary is what a compaction's tray shows of what streamed of it, as the
 /// cockpit's: the end of its latest piece — the thinking before the summary,
-/// or its text — without the tags round the analysis and the summary, nor
+/// or its text — without the tags round the review and the summary, nor
 /// blank lines, which its few lines have no room for; and the part it is in.
+/// A runner from before the review was named streams it as <analysis>.
 struct Summary: Equatable {
     let text: String
     let part: String?
@@ -240,7 +241,7 @@ struct Summary: Equatable {
         let piece = compaction.pieces.last
         let raw = piece?.text ?? ""
         thinking = piece?.thinking == true
-        part = thinking ? "thinking" : raw.contains("<summary>") ? "summary" : raw.contains("<analysis>") ? "analysis" : nil
+        part = thinking ? "thinking" : raw.contains("<summary>") ? "summary" : raw.contains("<review>") || raw.contains("<analysis>") ? "review" : nil
         text = Self.shown(raw)
     }
 
@@ -248,7 +249,7 @@ struct Summary: Equatable {
     static func shown(_ raw: String) -> String {
         // Of its end only: what goes of it is less than it keeps over.
         var text = String(raw.suffix(keep * 2))
-        for tag in ["<analysis>", "</analysis>", "<summary>", "</summary>"] where text.contains(tag) {
+        for tag in ["<review>", "</review>", "<analysis>", "</analysis>", "<summary>", "</summary>"] where text.contains(tag) {
             text = text.replacingOccurrences(of: tag, with: "")
         }
         // A tag still coming.

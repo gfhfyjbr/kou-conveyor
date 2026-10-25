@@ -28,7 +28,7 @@ var compactionPrompt = strings.TrimSpace(compactionFile)
 
 // compactionReminder closes the compaction prompt, after the user's focus:
 // the model reads the end of a long request most closely.
-const compactionReminder = "Reminder: respond with text only, an <analysis> block followed by a <summary> block. Do not call any tools."
+const compactionReminder = "Reminder: text only, a <review> block and then the <summary> block, and no tool calls."
 
 //go:embed prompts/compacted.md
 var compactedFile string
@@ -37,7 +37,7 @@ var compactedPreface = strings.TrimSpace(compactedFile)
 
 // compactedResume ends the message that stands in for a compacted
 // conversation.
-const compactedResume = "Continue from where the summary leaves off without asking the user any further questions. Resume directly: do not acknowledge the summary, do not recap it, and do not preface your reply with something like \"I'll continue\"; pick up the last task as if the break had not happened. Messages that follow this one take precedence."
+const compactedResume = "Pick the work up where the summary ends, without stopping to ask the user anything. Go straight to the task: no word about the summary, no retelling of it, no opening line about resuming; to the user, the work simply goes on. Messages after this one take precedence over it."
 
 const (
 	// keptInputsBudget bounds the characters of the user's earlier messages
@@ -182,12 +182,16 @@ func (current *builder) Compact(response llm.Response, kept *Compacted) (Compact
 }
 
 var (
-	analysisBlock = regexp.MustCompile(`(?s)<analysis>.*?</analysis>`)
-	summaryBlock  = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
+	// reviewBlock is the pass over the conversation that a compaction answer
+	// makes before its summary. Sessions compacted before the pass was named
+	// <review> have it as <analysis>.
+	reviewBlock  = regexp.MustCompile(`(?s)<(?:review|analysis)>.*?</(?:review|analysis)>`)
+	reviewOpen   = regexp.MustCompile(`<(?:review|analysis)>`)
+	summaryBlock = regexp.MustCompile(`(?s)<summary>(.*?)</summary>`)
 )
 
 // Summary is the summary a compaction response wrote: its <summary> block,
-// without the <analysis> that came before, or the whole answer from a model
+// without the <review> that came before, or the whole answer from a model
 // that did not use the blocks. A summary cut off by the output limit is kept
 // as far as it goes; an answer cut off before its summary began has none,
 // and neither has an empty one.
@@ -202,14 +206,14 @@ func Summary(response llm.Response) string {
 			parts = append(parts, text)
 		}
 	}
-	text := analysisBlock.ReplaceAllString(strings.Join(parts, "\n\n"), "")
+	text := reviewBlock.ReplaceAllString(strings.Join(parts, "\n\n"), "")
 	if match := summaryBlock.FindStringSubmatch(text); match != nil {
 		return strings.TrimSpace(match[1])
 	}
 	if _, rest, open := strings.Cut(text, "<summary>"); open {
 		return strings.TrimSpace(rest)
 	}
-	if strings.Contains(text, "<analysis>") {
+	if reviewOpen.MatchString(text) {
 		return ""
 	}
 	return strings.TrimSpace(text)
@@ -335,13 +339,13 @@ func (current *builder) detachResults(input []llm.Item, always bool) []llm.Item 
 func detachedResult(call llm.ToolCall, result llm.ToolResult) llm.Item {
 	subject := describeCall(call)
 	if isRunning(result.Output) {
-		return userMessage(fmt.Sprintf("The tool call %s, made before the conversation was compacted, is still running; its result arrives in a later turn.", subject))
+		return userMessage(fmt.Sprintf("The tool call %s, made before the compaction, is still running; its result comes in a later turn.", subject))
 	}
 	var text strings.Builder
-	fmt.Fprintf(&text, "Result of the tool call %s, made before the conversation was compacted:", subject)
+	fmt.Fprintf(&text, "Result of the tool call %s, made before the compaction:", subject)
 	for _, part := range result.Output {
 		if part.Kind == llm.ToolResultImage {
-			text.WriteString("\n[An image was attached here. It cannot be shown without its call; view it again if it is still needed.]")
+			text.WriteString("\n[An image was attached here; without its call it cannot be shown. If you still need it, view it again.]")
 			continue
 		}
 		text.WriteString("\n" + part.Value)

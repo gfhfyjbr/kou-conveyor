@@ -73,7 +73,7 @@ func TestCompactionStreamsItsSummaryAsItIsWritten(t *testing.T) {
 			gone = gone || noticed && e.Entry.ID == preview
 		}
 	}
-	want := "<analysis>\nThe user asked questions.\n</analysis>\n\n<summary>\nSummary of the session, focused on slow notes\n</summary>"
+	want := "<review>\nThe user asked questions.\n</review>\n\n<summary>\nSummary of the session, focused on slow notes\n</summary>"
 	if text != want || !noticed || !gone {
 		t.Fatalf("streamed %q, noticed %v, gone %v; events %#v", text, noticed, gone, got.events)
 	}

@@ -134,7 +134,7 @@ func compactionPromptOf(request llm.Request) string {
 		return ""
 	}
 	message, _ := request.Input[len(request.Input)-1].Data.(llm.Message)
-	if !strings.HasPrefix(message.Text, "CRITICAL: respond with text only, and do not call any tools.") {
+	if !strings.HasPrefix(message.Text, "Answer this turn in plain text and make no tool calls") {
 		return ""
 	}
 	return message.Text
@@ -259,7 +259,7 @@ func TestRunnerCompactsARequestTheWindowCannotHold(t *testing.T) {
 	run.answer = func(request llm.Request) llm.Response {
 		text := "Answer."
 		if compactionPromptOf(request) != "" {
-			text = "<analysis>scratch work</analysis>\n<summary>Summary so far.</summary>"
+			text = "<review>scratch work</review>\n<summary>Summary so far.</summary>"
 		}
 		return llm.Response{
 			Stop:   llm.StopComplete,

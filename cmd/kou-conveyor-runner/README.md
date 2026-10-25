@@ -148,15 +148,15 @@ Before a turn whose request would come within 33,000 tokens of the model's
 context window, or past 200,000 tokens, the runner compacts the
 conversation: the model writes a summary of it in a turn of the `compaction`
 type, the summary replaces the conversation, and the turn that was due
-continues from it. The model is asked to think the conversation through in
-an `<analysis>` block first and then write a `<summary>` in nine sections
-(the requests and intent, key concepts, files and code, errors and fixes,
-hypotheses and evidence, all the user's messages, pending tasks, current
-work, and the next step, with quotes); only the summary is kept. The
-hypotheses — each with the evidence for and against it and its status — the
-negative results and what was deferred carry over from one summary to the
-next word for word until they are closed, so a long investigation does not
-try again what failed. Unanswered prompts stay as they were after the
+continues from it. The model is asked to go over the conversation in a
+`<review>` block first and then write a `<summary>` under seven headings
+(the goal, all the user's messages, the knowledge to keep — concepts, files
+and code —, problems and fixes, hypotheses with dead ends and deferred work,
+where things stand, and the next move, with quotes); only the summary is
+kept. The hypotheses — each with the evidence for and against it and its
+status — the dead ends and what was deferred carry over from one summary to
+the next word for word until they are closed, so a long investigation does
+not try again what failed. Unanswered prompts stay as they were after the
 summary, the user's earlier prompts are kept word for word as far as 40,000
 characters allow, and tool calls still running are listed; a result that
 arrives after its call was summarized reaches the model as a message. The

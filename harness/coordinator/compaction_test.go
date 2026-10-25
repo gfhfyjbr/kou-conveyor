@@ -122,7 +122,7 @@ func TestCoordinatorAutoCompactsBetweenToolCallsAndContinues(t *testing.T) {
 		}
 		input = run.calls[3].request.Input
 		last := messageText(input[len(input)-1])
-		if isCompactionRequest(run.calls[3].request) || !strings.HasPrefix(last, `Result of the tool call slow (Bash {"command":"make slow"}), made before the conversation was compacted:`) {
+		if isCompactionRequest(run.calls[3].request) || !strings.HasPrefix(last, `Result of the tool call slow (Bash {"command":"make slow"}), made before the compaction:`) {
 			t.Fatalf("result of the compacted call = %q", last)
 		}
 		run.input(t, stopInput(t, "stop", inbox.StopWhenIdle))
@@ -429,7 +429,7 @@ func compactInput(t *testing.T, id inbox.ID, focus string) inbox.Input {
 }
 
 func isCompactionRequest(request llm.Request) bool {
-	return len(request.Input) != 0 && strings.HasPrefix(messageText(request.Input[len(request.Input)-1]), "CRITICAL: respond with text only, and do not call any tools.")
+	return len(request.Input) != 0 && strings.HasPrefix(messageText(request.Input[len(request.Input)-1]), "Answer this turn in plain text and make no tool calls")
 }
 
 func containsMessage(request llm.Request, text string) bool {

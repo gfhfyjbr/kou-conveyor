@@ -286,12 +286,12 @@ func (current *builder) memoryText(notes *string) string {
 		text.WriteString("</files>")
 	}
 	var pointers []string
-	details := "If you need details from before the compaction, such as exact code, error messages, command output or what you wrote, "
+	details := "For anything exact the summary does not hold — code, an error message, a command's output, your own wording — "
 	switch {
 	case current.offers(tool.TranscriptSearchName):
-		pointers = append(pointers, details+"search the session's transcript with "+tool.TranscriptSearchName+": it finds them in the whole conversation, compacted parts included.")
+		pointers = append(pointers, details+"search the session's transcript with "+tool.TranscriptSearchName+": it covers the whole conversation, compacted parts included.")
 	case current.offers(tool.CodeName):
-		pointers = append(pointers, details+"search the session's transcript with transcriptSearch() in "+tool.CodeName+": it finds them in the whole conversation, compacted parts included.")
+		pointers = append(pointers, details+"search the session's transcript with transcriptSearch() in "+tool.CodeName+": it covers the whole conversation, compacted parts included.")
 	case current.transcript != "":
 		pointers = append(pointers, details+"search the session's transcript at "+current.transcript+" with rg; it is JSON Lines, one session record per line, too large to read whole.")
 	}

@@ -767,7 +767,7 @@ extension ButtonStyle where Self == KouButtonStyle {
                 .kouPanel()
                 .runLight(true, in: RoundedRectangle(cornerRadius: .corner(14), style: .continuous))
             HStack {
-                Monogram(name: "unreal-agent")
+                Monogram(name: "kou-conveyor")
                 Monogram(name: "website", current: true)
                 Monogram(name: "api")
                 Monogram(name: "dotfiles")

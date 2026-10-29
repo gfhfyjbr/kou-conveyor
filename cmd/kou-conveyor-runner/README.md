@@ -127,11 +127,16 @@ that. Transient API errors, overloads and stalled streams are retried; a rate
 limit that lifts only after more than a minute is left to the harness, which
 waits for it (see [Long runs](#long-runs)).
 
-The context keeps the thinking of the latest two turns: the API clears older
-thinking before the model reads the request (context editing's
-`clear_thinking`), so a long session does not carry, and pay for, reasoning
-long done with. `KOU_CONVEYOR_THINKING_TURNS` sets how many turns keep
-theirs, and `0` keeps all of it, as an endpoint without context editing does.
+The context keeps the thinking of the latest two turns, so a long session
+does not carry, and pay for, reasoning long done with. Older thinking goes
+when the oldest tool results are pruned, in the same batch, and the request
+asks the API to keep all the thinking it is sent (context editing's
+`clear_thinking` with `keep: "all"`, as Claude Code sends it): were the API
+to clear it turn by turn, the cached prompt would change, and be written to
+the cache again, at every turn. With automatic compaction off nothing is
+pruned, and the API clears older thinking before each request instead.
+`KOU_CONVEYOR_THINKING_TURNS` sets how many turns keep theirs, and `0` keeps
+all of it.
 
 On Anthropic's API, Claude Opus 5 and Fable requests opt into server-side
 refusal fallbacks: if a safety classifier declines a request, Anthropic
@@ -145,23 +150,23 @@ model get a plain request without thinking or cache controls.
 ### Compaction
 
 Before a turn whose request would come within 33,000 tokens of the model's
-context window, or past 200,000 tokens, the runner compacts the
-conversation: the model writes a summary of it in a turn of the `compaction`
-type, the summary replaces the conversation, and the turn that was due
-continues from it. The model is asked to go over the conversation in a
-`<review>` block first and then write a `<summary>` under seven headings
-(the goal, all the user's messages, the knowledge to keep — concepts, files
-and code —, problems and fixes, hypotheses with dead ends and deferred work,
-where things stand, and the next move, with quotes); only the summary is
-kept. The hypotheses — each with the evidence for and against it and its
-status — the dead ends and what was deferred carry over from one summary to
-the next word for word until they are closed, so a long investigation does
-not try again what failed. Unanswered prompts stay as they were after the
-summary, the user's earlier prompts are kept word for word as far as 40,000
-characters allow, and tool calls still running are listed; a result that
-arrives after its call was summarized reaches the model as a message. The
-session file records the compaction, so a resumed or branched session starts
-from the summary.
+context window, or past 200,000 tokens (390,000 for a Claude model), the
+runner compacts the conversation: the model writes a summary of it in a turn
+of the `compaction` type, the summary replaces the conversation, and the turn
+that was due continues from it. The model is asked to go over the
+conversation in a `<review>` block first and then write a `<summary>` under
+seven headings (the goal, all the user's messages, the knowledge to keep —
+concepts, files and code —, problems and fixes, hypotheses with dead ends
+and deferred work, where things stand, and the next move, with quotes); only
+the summary is kept. The hypotheses — each with the evidence for and against
+it and its status — the dead ends and what was deferred carry over from one
+summary to the next word for word until they are closed, so a long
+investigation does not try again what failed. Unanswered prompts stay as
+they were after the summary, the user's earlier prompts are kept word for
+word as far as 40,000 characters allow, and tool calls still running are
+listed; a result that arrives after its call was summarized reaches the
+model as a message. The session file records the compaction, so a resumed or
+branched session starts from the summary.
 
 Each summary summarizes the one before it, so what one compaction leaves
 out no later one gets back. After the summary, the message therefore shows:
@@ -193,7 +198,12 @@ a number of tokens (`150000`, `150k`), a share of the window (`80%`), or
 `off`. By default it is 33,000 tokens short of the window (167k of 200k), or
 a quarter short of a window under 132,000 tokens (96k of 128k), and 200,000
 tokens at most (200k of 1M): past that a model reasons worse and every turn
-costs more, long before the window is full. The window counts the request's
+costs more, long before the window is full. For a Claude model it is
+390,000 at most: a prune or a compaction writes the conversation to the
+prompt cache anew, and a Claude subscription's limits count those writes but
+hardly the reads, so a conversation let grow longer between them costs less
+there; `KOU_CONVEYOR_AUTO_COMPACT=200k` brings back the lower ceiling, as
+for API billing, where the reads are paid. The window counts the request's
 input; the size is the provider's count for the latest turn plus an estimate
 of what came after it, images by their pixels, as providers bill them.
 

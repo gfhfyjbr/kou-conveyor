@@ -59,6 +59,25 @@ func (s *server) handlePrices(w http.ResponseWriter, r *http.Request, gateway *a
 	writeJSON(w, http.StatusOK, gateway.Prices(r.Context()))
 }
 
+// maxPricedModels bounds the models one request prices.
+const maxPricedModels = 64
+
+// handleModelPrices prices the models of ?model=, one or more, whichever
+// they are: what a session's tokens come to, model by model, which the
+// inspector shows. {unit, models: [{id, price}]}.
+func (s *server) handleModelPrices(w http.ResponseWriter, r *http.Request, gateway *accounts.Host) {
+	ids := r.URL.Query()["model"]
+	if len(ids) > maxPricedModels {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d models", maxPricedModels))
+		return
+	}
+	models := make([]accounts.PricedModel, 0, len(ids))
+	for _, id := range ids {
+		models = append(models, accounts.PricedModel{ID: id, Price: gateway.Price(id)})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"unit": gateway.Unit(), "models": models})
+}
+
 // handleSetPrice sets the price of a model, or of the models a pattern
 // matches: {match, input, output, cache_read, cache_write} in US dollars
 // per million tokens.

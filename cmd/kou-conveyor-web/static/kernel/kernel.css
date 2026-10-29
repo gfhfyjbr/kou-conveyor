@@ -73,6 +73,9 @@ html, body { height: 100%; margin: 0; }
   cursor: pointer;
 }
 .kernel-failed-close:hover { color: var(--fg, #ecebe6); }
+/* Safe mode: the same bar, in the colour of a warning while no plugin fails. */
+.kernel-failed.safe { border-left-color: var(--warn, #efb443); }
+.kernel-failed > p.kernel-safe b { color: var(--warn, #efb443); }
 @media (max-width: 820px) {
   .kernel-failed { left: 8px; right: 8px; bottom: auto; top: calc(var(--bar, 52px) + 8px); max-width: none; }
 }

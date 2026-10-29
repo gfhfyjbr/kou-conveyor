@@ -143,7 +143,10 @@ func FuzzRunLogMatchesExecution(f *testing.F) {
 						wantErr = outputFailure
 					}
 				}
-				if !errors.Is(err, wantErr) {
+				// Its context canceled, the runner is interrupted and stops as
+				// asked, unless the model call ends canceled before the
+				// interrupt is seen: either is an interrupted run.
+				if !errors.Is(err, wantErr) && !(wantErr == context.Canceled && errors.Is(err, errStopped)) {
 					t.Fatalf("run %d: error = %v, want %v", run, err, wantErr)
 				}
 				if !client.closed {

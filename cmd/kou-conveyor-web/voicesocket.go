@@ -41,7 +41,8 @@ const maxVoiceQueue = voiceRate * 2 * 60
 type voiceTake struct {
 	conn *websocket.Conn
 	p    *voiceProvider
-	from string // where the provider's key came from
+	from string        // where the provider's key came from
+	wait time.Duration // the provider's Wait as the take began
 
 	mu        sync.Mutex // orders the writes, and guards what follows
 	queue     [][]byte   // audio for the provider
@@ -89,6 +90,7 @@ func (s *server) handleVoiceSocket(w http.ResponseWriter, r *http.Request) {
 		t.drain()
 		return
 	}
+	t.wait = p.Wait
 
 	hints := settings.Languages
 	if len(hints) == 0 {
@@ -226,7 +228,7 @@ func (t *voiceTake) pump(ctx context.Context, open func() (voiceUpstream, error)
 				broke(err)
 				return
 			}
-			late := time.AfterFunc(t.p.Wait, t.late)
+			late := time.AfterFunc(t.wait, t.late)
 			defer late.Stop()
 		}
 	}

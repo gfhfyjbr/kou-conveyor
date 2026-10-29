@@ -318,9 +318,11 @@ export default function activate(cockpit) {
 
   // The conversation is compacted before its window is full: unless
   // KOU_CONVEYOR_AUTO_COMPACT says otherwise, 33k short of it (a quarter of
-  // a small one), and at 200k at most (agentrunner, compactionLimits). The
-  // context left is what is left until then.
-  const compactsAt = (size) => Math.min(size - Math.min(33_000, size / 4), 200_000);
+  // a small one), and at 200k at most, 390k for a Claude model on the
+  // Messages API, whose IDs carry no vendor (agentrunner, compactionLimits).
+  // The context left is what is left until then.
+  const compactsAt = (size, model) =>
+    Math.min(size - Math.min(33_000, size / 4), /^claude-/i.test(model) ? 390_000 : 200_000);
   // Tokens per second: output tokens over the time their turns took, as the
   // inspector's Tokens counts them.
   const perSecond = (tokens, ms) => (tokens > 0 && ms > 0 ? (tokens * 1000) / ms : NaN);
@@ -377,7 +379,7 @@ export default function activate(cockpit) {
     // The chip's card says under its figures whose window it is.
     let note;
     if (size > 0) {
-      const at = compactsAt(size);
+      const at = compactsAt(size, model);
       const left = Math.max(0, at - used);
       const label = models.contextLabel?.(size) || fmt.tokens(size);
       put(figures.context, {

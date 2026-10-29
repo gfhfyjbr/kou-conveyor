@@ -176,7 +176,7 @@ func (current *builder) Compact(response llm.Response, kept *Compacted) (Compact
 	prefix = append(prefix, current.committedPrefix[0], userMessage(made.Message))
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
-	current.pruned, current.imagesLeftOut = 0, 0
+	current.pruned, current.thinkingLeftOut, current.imagesLeftOut = 0, 0, 0
 	current.usage, current.usageMark = 0, 0
 	return made, true
 }
@@ -371,10 +371,14 @@ func userMessage(text string) llm.Item {
 
 // estimate approximates the input tokens of the next request: the provider's
 // count for the latest request and its response, plus what came after it.
-// Without a count, everything is estimated from its size.
+// Without a count, everything is estimated from its size; so it is at least
+// for a restored conversation whose builder leaves older thinking out
+// (Resumed). Other providers do not count the reasoning they are sent back,
+// which its size would overstate.
 func (current *builder) estimate() int64 {
+	counted := current.usage > 0
 	tokens, from := current.usage, min(current.usageMark, len(current.committedPrefix))
-	if tokens <= 0 {
+	if !counted {
 		tokens, from = current.toolTokens, 0
 	}
 	for _, item := range current.committedPrefix[from:] {
@@ -382,6 +386,13 @@ func (current *builder) estimate() int64 {
 	}
 	for _, item := range current.stagedSuffix {
 		tokens += estimateItem(item)
+	}
+	if counted && current.resumed && current.pruning.ThinkingTurns > 0 {
+		size := current.toolTokens
+		for _, item := range current.committedPrefix[:from] {
+			size += estimateItem(item)
+		}
+		tokens = max(tokens, size+tokens-current.usage)
 	}
 	return tokens
 }

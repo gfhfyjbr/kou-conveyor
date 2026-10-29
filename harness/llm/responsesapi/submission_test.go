@@ -25,7 +25,10 @@ func TestSubmittedPrefixAndLateResultOrderOnWire(t *testing.T) {
 		{
 			name:   "reasoning and tool call",
 			output: `[` + reasoning + `,{"id":"item-C","type":"function_call","call_id":"C","name":"test","arguments":"{}","status":"completed"}]`,
-			want:   `[` + reasoning + `,{"id":"item-C","type":"function_call","call_id":"C","name":"test","arguments":"{}"}]`,
+			// No result answers C, which has not run: it goes as having
+			// none, since providers reject a call without an output.
+			want: `[` + reasoning + `,{"id":"item-C","type":"function_call","call_id":"C","name":"test","arguments":"{}"},` +
+				`{"type":"function_call_output","call_id":"C","output":[{"type":"input_text","text":"No result was recorded for this tool call."}]}]`,
 		},
 		{name: "empty output", output: `[]`, want: `[]`},
 	} {
@@ -77,7 +80,10 @@ func TestSubmittedPrefixAndLateResultOrderOnWire(t *testing.T) {
 			if err := json.Unmarshal([]byte(test.want), &wantResponse); err != nil {
 				t.Fatal(err)
 			}
-			wantTail := append(wantResponse, map[string]any{"type": "function_call_output", "call_id": "A", "output": []any{map[string]any{"type": "input_text", "text": "done A"}}})
+			// A was answered by its placeholder, so its result goes as the
+			// user's message: a second output for a call is rejected by some
+			// providers.
+			wantTail := append(wantResponse, map[string]any{"role": "user", "content": "Result of tool call A (test {}):\ndone A"})
 			tail := make([]map[string]any, len(next.Input)-len(sent.Input))
 			for i, item := range next.Input[len(sent.Input):] {
 				if err := json.Unmarshal(item, &tail[i]); err != nil {

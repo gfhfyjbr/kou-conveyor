@@ -588,24 +588,24 @@ take, and earlier prompts then show no changes.
 
 A long session outgrows the model's context window. Before a turn whose
 request would come within 33,000 tokens of the window (a quarter of a window
-under 132,000 tokens), or past 200,000 tokens, the runner **compacts** the
-conversation: the model summarizes it in a turn of its own (the user's
-requests, what was done and found, the files and code involved, the errors
-and their fixes, the hypotheses with the evidence for and against them, the
-current state and the next step), the summary replaces everything before it,
-and the turn that was due goes on from the summary, so a task in progress
-continues on its own. Prompts the model has not answered yet follow the
-summary word for word, as do the user's earlier prompts as far as they fit;
-tool calls still running are listed, and their results arrive as messages.
-After the summary, the message shows the notes the model keeps for itself in
-a file no compaction changes, the files the conversation read and changed,
-and where to find what the summary left out: `TranscriptSearch`, which
-searches the whole conversation, and a file with the summary of every
-compaction. When the session's [changes](#changes) are recorded, the model
-also learns the snapshot of the workspace the compaction came at. The
-compaction is part of the session, so resuming, branching and editing
-prompts after it all start from the summary, and both cockpits show it as a
-notice that opens the summary.
+under 132,000 tokens), or past 200,000 tokens (390,000 for a Claude model),
+the runner **compacts** the conversation: the model summarizes it in a turn
+of its own (the user's requests, what was done and found, the files and code
+involved, the errors and their fixes, the hypotheses with the evidence for
+and against them, the current state and the next step), the summary replaces
+everything before it, and the turn that was due goes on from the summary, so
+a task in progress continues on its own. Prompts the model has not answered
+yet follow the summary word for word, as do the user's earlier prompts as
+far as they fit; tool calls still running are listed, and their results
+arrive as messages. After the summary, the message shows the notes the model
+keeps for itself in a file no compaction changes, the files the conversation
+read and changed, and where to find what the summary left out:
+`TranscriptSearch`, which searches the whole conversation, and a file with
+the summary of every compaction. When the session's [changes](#changes) are
+recorded, the model also learns the snapshot of the workspace the compaction
+came at. The compaction is part of the session, so resuming, branching and
+editing prompts after it all start from the summary, and both cockpits show
+it as a notice that opens the summary.
 
 Automatic compaction backs off where it cannot help: after three compactions
 in a row without a summary, and when the context fills up again within three
@@ -702,7 +702,7 @@ cockpit never drives an older runner by accident.
 
 The web UI streams the transcript as a timeline of prompts, answers, thinking
 and collapsible tool calls, with a command palette (`⌘K`), slash commands in
-the composer, keyboard shortcuts (`?`), an inspector for tokens, tools and runner diagnostics, each prompt's
+the composer, keyboard shortcuts (`?`), an inspector for tokens and what they cost at API prices model by model, tools and runner diagnostics, each prompt's
 [changes](#changes) as diffs (`D`), the [model](#models) of each prompt
 (`M`), the session's effort, which new sessions of both cockpits start with
 once chosen, and light/dark themes. The composer's row ends in buttons with an icon: run, stop while the
@@ -862,7 +862,11 @@ price says so, and its tokens are left out of the cost until it has one.
 Amounts show in US dollars, or in credits of your own worth a set amount
 each (**Amounts in**). The Accounts tab shows the last day's cost in the
 gateway's strip, and beside each account and endpoint what its requests of
-the span would have cost.
+the span would have cost. The inspector's **Cost** shows what the session in
+view has spent so far, at the same prices: a session may change models from
+one prompt to the next, so the runner records the model of every turn and
+each model's tokens count at its own price, cache reads and writes at
+theirs — the total, and each model's under it.
 
 ### Updates
 

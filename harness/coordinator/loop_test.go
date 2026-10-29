@@ -93,6 +93,57 @@ func TestCoordinatorRestoresSession(t *testing.T) {
 	}
 }
 
+// The provider's count of a recorded response covered the conversation as
+// the run before pruned it; restored, the results are whole again, and the
+// first request must not take them all because of that old count. The
+// builder leaves older thinking out, as it does for a Claude model.
+func TestCoordinatorPrunesRestoredSessionBySize(t *testing.T) {
+	turn := session.Turn{ID: "turn-1", Type: session.TurnRegular}
+	next := session.Turn{ID: "turn-2", PreviousTurnID: turn.ID, Type: session.TurnRegular}
+	call := llm.ToolCall{CallID: "call-1", Name: "read", Arguments: `{}`}
+	store := &fakeStore{
+		resume: sessionstore.ResumeState{Snapshot: sessionstore.Snapshot{Session: session.Session{ID: "session-1"}}},
+		items: []sessionstore.Item{
+			storedItem(1, sessionstore.ItemInput, externalEvent(t, 1, "input-1", "hello")),
+			storedItem(2, sessionstore.ItemTurn, turn),
+			storedItem(3, sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: turn.ID, Response: llm.Response{
+				ID:     "response-1",
+				Output: []llm.Item{{Type: llm.ItemToolCall, Data: call}},
+				Usage:  llm.Usage{InputTokens: 1_000},
+			}}),
+			storedItem(4, sessionstore.ItemToolCallStatus, sessionstore.ToolCallStatus{
+				TurnID: turn.ID, CallID: call.CallID, Status: tool.CallStatus{Error: strings.Repeat("x", 200_000)},
+			}),
+			storedItem(5, sessionstore.ItemTurn, next),
+			// What the provider counted when the result had been pruned.
+			storedItem(6, sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: next.ID, Response: llm.Response{
+				ID:     "response-2",
+				Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "done"}}},
+				Usage:  llm.Usage{InputTokens: 2_000, OutputTokens: 10},
+			}}),
+		},
+	}
+	builder := contextbuilder.NewBuilder()
+	builder.SetPruning(contextbuilder.PruneOptions{Budget: 20_000, ThinkingTurns: 2})
+	current := newTestCoordinator(store, newTestInbox(t), newFakeOperationManager(), builder, tool.NewRegistry(tool.StaticTranslators{}))
+
+	if err := current.restore(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	built, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if built.EstimatedTokens > 20_000 {
+		t.Fatalf("estimated tokens = %d, want the restored result pruned below the budget", built.EstimatedTokens)
+	}
+	for _, item := range built.Request.Input {
+		if result, ok := item.Data.(llm.ToolResult); ok && (len(result.Output) != 1 || !strings.Contains(result.Output[0].Value, "pruned from the context")) {
+			t.Fatalf("restored result = %.80q, want it pruned", result.Output)
+		}
+	}
+}
+
 func TestCoordinatorAppliesTurnTypes(t *testing.T) {
 	current := newStopTestRun(t, 0).current
 	for _, turnType := range []session.TurnType{session.TurnRegular, session.TurnCompaction, session.TurnRegular, session.TurnCompaction} {

@@ -83,12 +83,20 @@ func TestTerminalRunsAShellOverAWebSocket(t *testing.T) {
 	}
 	conn.WriteMessage(websocket.BinaryMessage, []byte("printf '\\033]2;my%s\\007' title; echo out-$((20+2))\n"))
 	_, messages = readUntil(t, conn, "out-22")
+	// The title comes in a message after the output it was said in, which
+	// may have held out-22 too.
 	titled := false
-	for _, m := range messages {
-		titled = titled || m["type"] == "meta" && m["title"] == "mytitle"
-	}
-	if !titled {
-		t.Fatalf("no title in %v", messages)
+	for deadline := time.Now().Add(15 * time.Second); ; {
+		for _, m := range messages {
+			titled = titled || m["type"] == "meta" && m["title"] == "mytitle"
+		}
+		if titled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no title in %v", messages)
+		}
+		_, messages = readUntil(t, conn, "meta")
 	}
 	conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":120,"rows":33}`))
 	time.Sleep(400 * time.Millisecond)

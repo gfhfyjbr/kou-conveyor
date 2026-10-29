@@ -19,6 +19,12 @@ import (
 // prefix the provider caches changes once a batch rather than a little
 // every turn. The latest turns are never pruned: what the model just asked
 // for stays in view.
+//
+// A Claude model keeps the thinking of every turn in its context and reads
+// it again on every request. A batch takes the thinking of all but the
+// latest turns with it (PruneOptions.ThinkingTurns): left out at once, it
+// changes the cached prefix where the batch changes it anyway, rather than
+// at every turn, as the API's own clearing of older turns would.
 
 // PruneOptions say when and how the conversation is pruned.
 type PruneOptions struct {
@@ -35,6 +41,10 @@ type PruneOptions struct {
 	// agent's transcript, a search — which a call fetches again. Nil prunes
 	// every result by its age alone.
 	First func(tool string) bool
+	// ThinkingTurns is how many of the latest turns with thinking keep it
+	// when a batch is pruned; the thinking of older turns goes first, and
+	// counts toward the batch. Zero keeps all thinking.
+	ThinkingTurns int
 }
 
 // prunedNote marks a pruned result.
@@ -72,13 +82,14 @@ func (current *builder) SetPruning(options PruneOptions) {
 
 // prune cuts the oldest tool results of the committed conversation down
 // once the whole conversation is estimated at more than the budget: the
-// model's own text and reasoning grow it too, and only the results can be
-// cut. From the oldest on, results are cut until the estimate is a quarter
-// of the budget lower, leaving the latest results alone. A batch that would
-// save less than an eighth of the budget waits until there is more to cut:
-// otherwise every turn would cut the one result that left the latest ones,
-// and the prefix the provider caches would change every turn. It reports
-// how many results it pruned.
+// model's own text and reasoning grow it too, and only the results, and the
+// thinking of older turns, can be cut. The old thinking goes first, then
+// results from the oldest on, until the estimate is a quarter of the budget
+// lower, leaving the latest results alone. A batch that would save less
+// than an eighth of the budget waits until there is more to cut: otherwise
+// every turn would cut the one result that left the latest ones, and the
+// prefix the provider caches would change every turn. It reports how many
+// results it pruned.
 func (current *builder) prune() int {
 	options := current.pruning
 	if options.Budget <= 0 {
@@ -87,6 +98,19 @@ func (current *builder) prune() int {
 	estimated := current.estimate()
 	if estimated <= options.Budget {
 		return 0
+	}
+	// saved is what the batch takes off the estimate; counted is the part
+	// of it that the provider's count of the latest request holds.
+	var saved, counted int64
+	save := func(index int, saving int64) {
+		saved += saving
+		if index < current.usageMark {
+			counted += saving
+		}
+	}
+	thinking := current.oldThinking(options.ThinkingTurns)
+	for _, index := range thinking {
+		save(index, estimateItem(current.committedPrefix[index]))
 	}
 	var results []int
 	for index, item := range current.committedPrefix {
@@ -110,7 +134,6 @@ func (current *builder) prune() int {
 	}
 	target := options.Budget - options.Budget/4
 	cut := make(map[int]llm.Item)
-	var saved int64
 	for _, index := range results {
 		if estimated-saved <= target {
 			break
@@ -119,7 +142,7 @@ func (current *builder) prune() int {
 		pruned := pruneItem(item, options.Bytes)
 		if saving := estimateItem(item) - estimateItem(pruned); saving > 0 {
 			cut[index] = pruned
-			saved += saving
+			save(index, saving)
 		}
 	}
 	if saved < options.Budget/8 {
@@ -128,10 +151,111 @@ func (current *builder) prune() int {
 	for index, item := range cut {
 		current.committedPrefix[index] = item
 	}
-	// The provider's count of the request no longer holds.
-	current.usage, current.usageMark = 0, 0
+	current.leaveOut(thinking)
+	current.uncount(counted)
 	current.pruned += len(cut)
+	current.thinkingLeftOut += len(thinking)
 	return len(cut)
+}
+
+// uncount takes what was cut from the items the provider counted for the
+// latest request off that count. Forgetting the count instead would make
+// the next estimate add up every item again, the thinking the provider no
+// longer read included, and set a compaction off long before it is due.
+func (current *builder) uncount(saved int64) {
+	if current.usage > 0 {
+		current.usage = max(current.usage-saved, 0)
+	}
+}
+
+// leaveOut removes the items at indices, which are in order, from the
+// committed conversation; the provider's count still covers the items it
+// covered.
+func (current *builder) leaveOut(indices []int) {
+	if len(indices) == 0 {
+		return
+	}
+	kept := make([]llm.Item, 0, len(current.committedPrefix)-len(indices))
+	mark := current.usageMark
+	for index, item := range current.committedPrefix {
+		if len(indices) != 0 && indices[0] == index {
+			indices = indices[1:]
+			if index < current.usageMark {
+				mark--
+			}
+			continue
+		}
+		kept = append(kept, item)
+	}
+	current.committedPrefix, current.usageMark = kept, mark
+}
+
+// oldThinking lists, in order, the reasoning items of the committed
+// conversation from before its latest turns with reasoning, turns of them;
+// none for zero.
+func (current *builder) oldThinking(turns int) []int {
+	if turns <= 0 {
+		return nil
+	}
+	items := current.committedPrefix
+	starts := turnStarts(items)
+	seen, thinking := 0, false
+	for index := len(items) - 1; index > 0; index-- {
+		switch {
+		case items[index].Type == llm.ItemReasoning:
+			thinking = true
+		case starts[index] && thinking:
+			seen, thinking = seen+1, false
+			if seen < turns {
+				continue
+			}
+			var old []int
+			for before, item := range items[:index] {
+				if item.Type == llm.ItemReasoning {
+					old = append(old, before)
+				}
+			}
+			return old
+		}
+	}
+	return nil
+}
+
+// turnStarts marks the items where a turn begins, as sessionmetrics counts
+// the API's turns: where something other than the results of the calls the
+// model just made comes in — a message, or a result that arrives after the
+// response that waited for it, which the Messages API shows as the user's
+// text. The results of the calls just made carry the turn on.
+func turnStarts(items []llm.Item) []bool {
+	starts := make([]bool, len(items))
+	calls := make(map[string]bool)
+	responding := false
+	respond := func() {
+		if !responding {
+			clear(calls)
+		}
+		responding = true
+	}
+	for index, item := range items {
+		switch data := item.Data.(type) {
+		case llm.ToolCall:
+			respond()
+			calls[data.CallID] = true
+		case llm.Reasoning:
+			respond()
+		case llm.Message:
+			if data.Role == llm.RoleAssistant {
+				respond()
+				continue
+			}
+			starts[index] = index > 0 && (strings.TrimSpace(data.Text) != "" || len(data.Images) != 0)
+			responding = false
+		case llm.ToolResult:
+			starts[index] = !calls[data.CallID]
+			responding = false
+		}
+	}
+	return starts
 }
 
 // pruneItem cuts a result to its note: its images go, its texts are cut to

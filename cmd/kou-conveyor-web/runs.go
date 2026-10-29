@@ -635,7 +635,7 @@ func (s *server) pump(current *run, tr *cockpit.Transcript) {
 				s.delivered(current, tr)
 			}
 		}
-		if tr.Activity != activity || tr.Usage != usage {
+		if tr.Activity != activity || !tr.Usage.Equal(usage) {
 			if tr.Activity != activity {
 				s.canvas.RunActivity(current.ws.ID, current.sessionID, tr.Activity)
 			}

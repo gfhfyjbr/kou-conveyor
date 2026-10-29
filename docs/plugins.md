@@ -78,7 +78,8 @@ plugin's name under `disabled` in `plugins.json`, or
 turn off too, but for those the Plugins panel itself needs (`layout`,
 `session`, `ui`, `inspector`, `plugins`, `theme`), which only `plugins.json`
 turns off. A page no plugin builds says so and offers them back, and
-`/?safe` opens the cockpit with its built-in plugins only.
+`/?safe` opens the cockpit with its built-in plugins only; a bar says so,
+with **Leave safe mode** to open the same page with every plugin again.
 
 `kou-conveyor-runner -list-plugins -workspace .` prints what a run would find,
 one JSON object per plugin, with the reason for each that does not run, and
@@ -515,9 +516,9 @@ put its own before or after it by `order`.
 | `bar.crumbs` | layout | the workspace and title (`crumbs`); a new session's Chat · Canvas switch (`session-mode`, 5) and, for the agent of a canvas node, the way back to its canvas (`canvas-crumb`, 6) |
 | `bar.end` | layout | `link-state` 10, `stream-state` 20, `run-state` 30, `session-actions` 40, `palette-open` 50, `changes-toggle` 60, `inspector-toggle` 70 |
 | `stage.main` | layout | the transcript (`timeline`) |
-| `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40; the jump to the latest (`jump`) |
+| `dock`, `dock.float` | layout | `resume` 10, `activity` 20, `queue` 30, `composer` 40 and the session's figures under it (`stats`, 50); the jump to the latest (`jump`) |
 | `stage.overlay`, `overlays` | layout | the image shown large; dialogs, menus, toasts |
-| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), what a `$` completes to (`file-suggestions` 12), the images (`attachments` 20) and the files the text links (`links` 22); the model (`model` 10) and the effort (`effort` 20) |
+| `composer.above`, `composer.row` | composer | the command suggestions (`commands` 10), what a `$` completes to (`file-suggestions` 12), the images (`attachments` 20) and the files the text links (`links` 22); the model (`model` 10), the effort (`effort` 20) and the session's figures, when Settings has them in a chip (`figures` 30) |
 | `sessions.tools` | session-list | `ws-switch` 10, `new-session` 20, `session-filter` 30 |
 
 ### Contribution points
@@ -544,7 +545,7 @@ plugins read these:
 | `palette.provider` | `{ id, order, items(view) }`: palette items that change | palette |
 | `session.menu` | `{ items(ws, id, view) }`: more items for a session's menu | session |
 | `overlay` | `{ id, order, modal, isOpen(), close() }`: Esc closes the first open one; while a modal one is open, keys that are not global do nothing | ui |
-| `help.keys` | `{ keys: ['⌘', 'K'], text, order }`: a line of the keyboard sheet | help |
+| `help.keys` | `{ keys: ['⌘', 'K'], text, order, group }`: a line of the keyboard sheet, in the section `group` names — without one, by `order`: below 100 Prompt, below 200 Sessions, below 300 View, then More (the terminal's and the canvas's lines have sections of their own) | help |
 | `session-list.rows` | `{ id, order, rows(ws) }`: rows of the session list, among the sessions not pinned by when they changed; `rows` returns `{ id, glyph, title, meta, at, href, current, running, open(), menu() }` — `menu` returns menu items (the canvases are such rows) | session-list |
 | `canvas.node` | `{ kind, preset, order, create(node, ctx) }`: what a canvas node shows (see [Canvas](#canvas)); a `preset` (`"id"` or `"plugin/id"`) is matched before a `kind` | canvas |
 | `canvas.add` | `{ id, group, title, icon, order, shown(canvas), create(at) }`: an item of a canvas's + Add menu; `at` is the point of the board it was asked at | canvas |
@@ -596,6 +597,7 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | `composer:input`, `composer:focus`, `composer:blur`, `composer:ready` | the composer |
 | `timeline:flush`, `timeline:scroll`, `layout:view`, `layout:panel`, `layout:resize`, `models`, `theme` | the timeline; the layout (`layout:resize` is the stage's new width, as the window, the rail or a panel changes it); the models, the theme |
 | `preferences` | what new sessions start with, `{ effort, last_model, … }` as saved, and when it was asked for (`Date.now()`), from the effort plugin, as either cockpit chooses |
+| `accounts:prices` | none: the user changed a price or the unit amounts show in, from the accounts plugin (`GET /api/usage/price?model=…` prices a session's models, which the inspector's Cost shows) |
 | `service`, `point:<name>`, `store:<key>`, `slots` | a service came or went; a contribution point changed; a stored key; a slot |
 | `plugin-reloaded`, `plugin-restyled`, `plugin-error`, `online`, `ready` | the kernel |
 
@@ -607,6 +609,7 @@ replaces it (for as long as it runs). The built-in plugins provide:
 | `composer.key` | `(event)`, first to return true takes a key pressed in the composer |
 | `run.request` | `(body, view)`, async: every prompt's request passes through, and may be changed on its way |
 | `session.missing` | `({ id, ws })`, first to return true has a session the server does not know opened as a new one under its ID, with no error: the chat of a canvas's agent before its first run |
+| `session.tail` | `({ id, ws })`, first to return a number n has the session opened with only its last n entries, the earlier ones read on demand (`session.showEarlier(view, { all })`, the timeline's Show more): the chat of a canvas's agent |
 
 ### Changing the interface
 

@@ -33,6 +33,13 @@
 .kv.state-stopping .v { color: var(--warn); }
 .meter-bar { height: 3px; margin: 2px 0 6px; background: var(--bg-4); }
 .meter-bar i { display: block; height: 100%; background: var(--accent); transition: width 0.3s; }
+/* Cost: the session's total, then each model's, whose ID gives way to its
+   amount. */
+.kv.cost-total .v { font-weight: 700; }
+.kv.cost-model { padding-left: 10px; }
+.kv.cost-model .k { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv.cost-model .v { flex: none; max-width: none; color: var(--fg-2); }
+.kv.cost-unpriced .v { color: var(--warn); }
 .tally { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--line); }
 .tally > div { padding: 8px 8px 7px; display: grid; gap: 4px; }
 .tally > div + div { border-left: 1px solid var(--line); }

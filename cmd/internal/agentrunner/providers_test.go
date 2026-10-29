@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/anthropic"
 )
 
 func TestRunnerProviderRetries(t *testing.T) {
@@ -73,15 +75,26 @@ func TestRunnerProviderDefaultModels(t *testing.T) {
 	}
 }
 
-// TestRunnerAnthropicThinkingTurns checks that KOU_CONVEYOR_THINKING_TURNS
-// reaches the Messages API's clear_thinking edit: 2 turns by default, none
-// with 0, and a value that is not a whole number stops the run.
+// TestRunnerAnthropicThinkingTurns checks where KOU_CONVEYOR_THINKING_TURNS
+// goes. With pruning on, as by default, the runner leaves the thinking of
+// older turns out with a batch of pruned results, and the request asks the
+// API to keep all it is sent; with automatic compaction off nothing is
+// pruned, and the request's clear_thinking edit keeps the latest turns' (2
+// by default, all with 0). A value that is not a whole number stops the run.
 func TestRunnerAnthropicThinkingTurns(t *testing.T) {
+	const all = `{"edits":[{"keep":"all","type":"clear_thinking_20251015"}]}`
+	latest := func(turns int) string {
+		return `{"edits":[{"keep":{"type":"thinking_turns","value":` + strconv.Itoa(turns) + `},"type":"clear_thinking_20251015"}]}`
+	}
 	for _, test := range []struct {
-		value string
-		want  int // turns kept; 0 for no edit, -1 for a refused value
-	}{{"", 2}, {"3", 3}, {"0", 0}, {"-1", -1}, {"two", -1}} {
-		t.Run("turns="+test.value, func(t *testing.T) {
+		value, autoCompact string
+		want               string // the request's context_management; "" refuses the value
+	}{
+		{"", "", all}, {"3", "", all}, {"0", "", all},
+		{"", "off", latest(2)}, {"3", "off", latest(3)}, {"0", "off", all},
+		{"-1", "", ""}, {"two", "off", ""},
+	} {
+		t.Run("turns="+test.value+",compact="+test.autoCompact, func(t *testing.T) {
 			t.Parallel()
 			bodies := make(chan []byte, 4)
 			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -99,13 +112,14 @@ func TestRunnerAnthropicThinkingTurns(t *testing.T) {
 					"KOU_CONVEYOR_LLM_BASE_URL": server.URL,
 					"KOU_CONVEYOR_LLM_API_KEY":  "test-key",
 					thinkingTurnsEnvironment:    test.value,
+					autoCompactEnvironment:      test.autoCompact,
 				}[name]
 			}, func() []string { return nil }, strings.NewReader(`{"prompt":"hello","model":"claude-opus-5","max_attempts":1}`),
 				io.Discard, &stderr, Config{Name: "kou-conveyor-runner", ParseRequest: parseTestRequest, Providers: DefaultProviders()})
 			if code == 0 {
 				t.Fatal("the run succeeded against a server that refuses it")
 			}
-			if test.want < 0 {
+			if test.want == "" {
 				if len(bodies) != 0 || !strings.Contains(stderr.String(), thinkingTurnsEnvironment) {
 					t.Fatalf("%q was accepted: %d requests, stderr %q", test.value, len(bodies), stderr.String())
 				}
@@ -115,26 +129,50 @@ func TestRunnerAnthropicThinkingTurns(t *testing.T) {
 				t.Fatalf("no request; stderr %q", stderr.String())
 			}
 			data := <-bodies
-			var body struct {
-				ContextManagement *struct {
-					Edits []struct {
-						Type string `json:"type"`
-						Keep struct {
-							Value int `json:"value"`
-						} `json:"keep"`
-					} `json:"edits"`
-				} `json:"context_management"`
-			}
+			var body map[string]any
 			if err := json.Unmarshal(data, &body); err != nil {
 				t.Fatal(err)
 			}
-			switch edits := body.ContextManagement; {
-			case test.want == 0 && edits != nil:
-				t.Fatalf("0 keeps all thinking, but the request clears it: %s", data)
-			case test.want > 0 && (edits == nil || len(edits.Edits) != 1 || edits.Edits[0].Type != "clear_thinking_20251015" || edits.Edits[0].Keep.Value != test.want):
-				t.Fatalf("the request does not keep the thinking of %d turns: %s", test.want, data)
+			edits, err := json.Marshal(body["context_management"], json.Deterministic(true))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(edits) != test.want {
+				t.Fatalf("context_management = %s, want %s", edits, test.want)
 			}
 		})
+	}
+}
+
+// TestThinkingPruning checks that the runner leaves the thinking of older
+// turns out itself only for a provider that keeps it and only with pruning
+// on, and that the client then keeps all of it while reading the rest of
+// the environment as it is.
+func TestThinkingPruning(t *testing.T) {
+	keeps := Provider{Name: "anthropic", KeepsThinking: true}
+	for _, test := range []struct {
+		provider    Provider
+		value       string
+		autoCompact int64
+		turns       int    // kept when a batch is pruned
+		client      string // the client's KOU_CONVEYOR_THINKING_TURNS
+	}{
+		{keeps, "", 160_000, anthropic.DefaultThinkingTurns, "0"},
+		{keeps, "3", 160_000, 3, "0"},
+		{keeps, "0", 160_000, 0, "0"},
+		{keeps, "3", 0, 0, "3"},
+		{Provider{Name: "openai"}, "3", 160_000, 0, "3"},
+	} {
+		getenv := func(name string) string {
+			return map[string]string{thinkingTurnsEnvironment: test.value, llmMaxTokensEnvironment: "4096"}[name]
+		}
+		turns, environment, err := thinkingPruning(getenv, test.provider, test.autoCompact)
+		if err != nil || turns != test.turns || environment(thinkingTurnsEnvironment) != test.client || environment(llmMaxTokensEnvironment) != "4096" {
+			t.Errorf("%s, %q, %d: turns %d, client %q, err %v", test.provider.Name, test.value, test.autoCompact, turns, environment(thinkingTurnsEnvironment), err)
+		}
+	}
+	if _, _, err := thinkingPruning(func(string) string { return "two" }, keeps, 160_000); err == nil {
+		t.Error("a value that is not a whole number was accepted")
 	}
 }
 

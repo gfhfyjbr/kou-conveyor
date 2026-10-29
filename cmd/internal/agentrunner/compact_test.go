@@ -23,6 +23,14 @@ func TestCompactionLimits(t *testing.T) {
 		}
 		return 0
 	}}
+	claude, err := selectProvider(DefaultProviders(), "anthropic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	openrouter, err := selectProvider(DefaultProviders(), "openrouter")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, model, window, setting string
 		provider                     Provider
@@ -37,6 +45,14 @@ func TestCompactionLimits(t *testing.T) {
 		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 200_000},
 		{name: "window under the ceiling", model: "known", provider: knows, window: "220k", wantWindow: 220_000, want: 187_000},
 		{name: "small window", model: "known", provider: knows, window: "32k", wantWindow: 32_000, want: 24_000},
+		// On the Messages API a Claude model's ceiling is higher
+		// (claudeCompactCeiling); through OpenRouter it is not.
+		{name: "claude", model: "claude-opus-5-5", provider: claude, wantWindow: 1_000_000, want: 390_000},
+		{name: "claude with a small window", model: "claude-sonnet-4-6", provider: claude, wantWindow: 200_000, want: 167_000},
+		{name: "claude, window from the environment", model: "claude-opus-5-5", provider: claude, window: "300k", wantWindow: 300_000, want: 267_000},
+		{name: "claude, tokens", model: "claude-opus-5-5", provider: claude, setting: "150k", wantWindow: 1_000_000, want: 150_000},
+		{name: "not claude on the messages api", model: "kimi-k3", provider: claude, window: "1m", wantWindow: 1_000_000, want: 200_000},
+		{name: "claude through openrouter", model: "anthropic/claude-opus-4.8", provider: openrouter, wantWindow: 1_000_000, want: 200_000},
 		{name: "share of the window", model: "known", provider: knows, setting: "50%", wantWindow: 400_000, want: 200_000},
 		{name: "fractional share", model: "known", provider: knows, setting: " 62.5 % ", wantWindow: 400_000, want: 250_000},
 		{name: "tokens", model: "known", provider: knows, setting: "150000", wantWindow: 400_000, want: 150_000},

@@ -72,6 +72,9 @@ func TestPasteIsBracketedWhenAskedAndKeysFollowDECCKM(t *testing.T) {
 		t.Fatal("the observer heard nothing")
 	}
 	s.Keys("C-c")
+	// Typed before the shell is back at its prompt, the line could go to cat
+	// as it dies, or be flushed with the interrupt.
+	collect(t, c, "$ ", 10*time.Second)
 	if err := s.Write([]byte("exit 4\n")); err != nil {
 		t.Fatal(err)
 	}

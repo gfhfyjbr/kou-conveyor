@@ -67,7 +67,10 @@ func TestHighlightFindsScriptsByTheirFirstLine(t *testing.T) {
 }
 
 func TestCacheFinishesInTheBackground(t *testing.T) {
-	text := strings.Repeat("func f() { return 1 + 2 } // x\n", 20000)
+	// Long enough to be cut short at the first look at the deadline (a
+	// thousand tokens in), no longer: under the race detector chroma takes
+	// about a millisecond a line, and CI's machines are slower still.
+	text := strings.Repeat("func f() { return 1 + 2 } // x\n", 2000)
 	c := NewCache(10_000_000)
 	first := c.Get("k", "big.go", text, time.Nanosecond)
 	if first.Complete {
@@ -120,7 +123,9 @@ func TestAppendLengthensARunOfTheSameClass(t *testing.T) {
 // left, with the runs Highlight gives it — in a file of another name too,
 // that the same lexer reads. A text cut short is not kept.
 func TestRememberedHighlightsATextWholeOnce(t *testing.T) {
-	text := strings.Repeat("func f() { return 1 + 2 } // remembered\n", 20000)
+	// Cut short past the deadline, and highlighted whole three times: as
+	// short as that allows (see TestCacheFinishesInTheBackground).
+	text := strings.Repeat("func f() { return 1 + 2 } // remembered\n", 2000)
 	past := time.Unix(1, 0)
 	if r := Highlight("big.go", text, past); r.Complete {
 		t.Fatal("highlighted whole past the deadline")

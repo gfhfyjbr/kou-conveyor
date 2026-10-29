@@ -3,7 +3,7 @@
 // of its own (layout.panel "inspector"). Every section is a contribution
 // to "inspector.section" — { id, title, order, shown(view), render(view) →
 // node, nodes or text, fold, open, meta(view) } — its own (Run, Tokens,
-// Tools, Session, Runner log) as much as a plugin's
+// Cost, Tools, Session, Runner log) as much as a plugin's
 // (cockpit.inspector.register). A section with the id of another takes its
 // place. A node a section renders again stays where it is, so a select the
 // section keeps does not close the menu it has open.
@@ -451,6 +451,175 @@ export default function activate(cockpit) {
         speed,
         row('tokens.turns', 'Turns', usage.turns ? String(usage.turns) : '—'),
         tokenActions);
+    },
+  });
+
+  // What the session's tokens come to in money, at API prices: each
+  // model's at its own — a session may change models from one prompt to
+  // the next — as the accounts gateway prices its requests' (GET
+  // /api/usage/price), in the user's unit, dollars or credits of their own.
+  // Prices read stay, model by model, for the sessions viewed again; the
+  // models of the session in view are read again a minute on, or as soon
+  // as the Accounts view changes a price or the unit.
+  const pricing = { key: null, at: 0, ticket: 0, unit: null, prices: new Map(), error: '' };
+  const PRICES_KEPT = 60000; // how long prices read are taken as they are
+  function priceModels(ids) {
+    const key = ids.join('\n');
+    if (key === pricing.key && Date.now() - pricing.at < PRICES_KEPT) return;
+    pricing.key = key;
+    pricing.at = Date.now();
+    const ticket = ++pricing.ticket;
+    cockpit.api(`/api/usage/price?${new URLSearchParams(ids.slice(0, 64).map((id) => ['model', id]))}`).then((answer) => {
+      if (ticket !== pricing.ticket) return;
+      pricing.unit = answer?.unit || null;
+      for (const m of answer?.models || []) pricing.prices.set(m.id, m.price);
+      pricing.error = '';
+      cockpit.render();
+    }, (error) => {
+      if (ticket !== pricing.ticket) return;
+      pricing.error = error.message;
+      cockpit.render();
+    });
+  }
+  // Prices or the unit changed in the Accounts view.
+  cockpit.on('accounts:prices', () => {
+    pricing.at = 0;
+    cockpit.render();
+  });
+
+  // money reads an amount of dollars in the user's unit, as the Accounts
+  // view does: "$1,234.56", "$0.042", "<$0.001", "12,346 credits".
+  const numberFormats = new Map();
+  const number = (value, digits, most = digits) => {
+    const key = `${digits}:${most}`;
+    if (!numberFormats.has(key)) numberFormats.set(key, new Intl.NumberFormat('en-US', { minimumFractionDigits: digits, maximumFractionDigits: most }));
+    return numberFormats.get(key).format(value);
+  };
+  function money(usd, unit) {
+    if (!Number.isFinite(usd)) return '—';
+    const dollars = !unit || unit.name === 'USD' || !(unit.usd > 0);
+    const v = dollars ? usd : usd / unit.usd;
+    const abs = Math.abs(v);
+    const sign = v < 0 ? '−' : '';
+    if (dollars) {
+      if (abs > 0 && abs < 0.001) return `${sign}<$0.001`;
+      return `${sign}$${abs === 0 ? '0' : number(abs, abs < 0.1 ? 3 : abs < 10000 ? 2 : 0)}`;
+    }
+    const text = abs === 0 ? '0' : abs < 1 ? String(+abs.toPrecision(2)) : number(abs, 0, abs < 100 ? 1 : 0);
+    return `${sign}${text} ${unit.name}`;
+  }
+
+  // costOf is what a model's tokens come to at its price, in dollars, kind
+  // by kind: the input's cache reads and writes at their own rates, the
+  // rest at the input's; the output with the reasoning it holds.
+  function costOf(m, price) {
+    const read = m.cached || 0;
+    const written = m.cache_write || 0;
+    const fresh = Math.max(0, (m.input || 0) - read - written);
+    return {
+      input: (fresh * (price.input || 0)) / 1e6,
+      cache_read: (read * (price.cache_read || 0)) / 1e6,
+      cache_write: (written * (price.cache_write || 0)) / 1e6,
+      output: ((m.output || 0) * (price.output || 0)) / 1e6,
+      // What caching saved: the cache reads at the input's price, less
+      // what they and the writes' premium cost.
+      saved: (read * ((price.input || 0) - (price.cache_read || 0)) - written * ((price.cache_write || 0) - (price.input || 0))) / 1e6,
+    };
+  }
+  const PRICE_SOURCE = { custom: 'your price', list: 'list price', openrouter: 'OpenRouter\'s price' };
+  // tokensOf says what a model's tokens were, kind by kind.
+  function tokensOf(m) {
+    const caches = [m.cached && `${fmt.tokens(m.cached)} read from the cache`, m.cache_write && `${fmt.tokens(m.cache_write)} written to it`].filter(Boolean);
+    return `${fmt.tokens(m.input || 0)} input${caches.length ? ` (${caches.join(', ')})` : ''} · ${fmt.tokens(m.output || 0)} output${m.reasoning ? ` (${fmt.tokens(m.reasoning)} reasoning)` : ''}`;
+  }
+
+  // The Cost section's rows keep their elements too; a row's tip, the
+  // whole of it, says what its amount is of.
+  const costRows = new Map(); // key → its kv row
+  function costRow(key, label, value, tip, cls) {
+    let el = costRows.get(key);
+    if (!el) {
+      costRows.set(key, (el = kv(label, '', cls)));
+      el.querySelector('.v').removeAttribute('title');
+    }
+    const name = `kv ${cls}`;
+    if (el.className !== name) el.className = name;
+    setText(el.querySelector('.v'), value);
+    if (el.title !== tip) el.title = tip;
+    return el;
+  }
+  const costNote = h('p', { class: 'none' });
+  const pricesButton = h('button', {
+    class: 'act', type: 'button',
+    title: 'Price the models the cockpit knows no price of, in Accounts → Usage',
+    onclick: () => service('accounts')?.showUsage?.(),
+  }, 'Set prices…');
+  const costActions = h('div', { class: 'ins-actions' }, pricesButton);
+  const COST_TIP = 'What the session\'s tokens come to at API prices — the providers\' list prices, or yours — each model\'s at its own';
+  cockpit.contribute('inspector.section', {
+    id: 'cost', title: 'Cost', order: 25,
+    shown: (summary) => summary?.usage?.turns > 0,
+    render: (summary, v) => {
+      const usage = v.usage || {};
+      // The tokens of each model that answered, in the order they first
+      // did; a server that does not count them apart has them all of no
+      // model known.
+      const models = usage.models || [{ ...usage, model: '' }];
+      const off = session.state.config?.accounts?.state === 'off';
+      const ids = [...new Set(models.map((m) => m.model).filter(Boolean))].sort();
+      if (!off && ids.length) priceModels(ids);
+      const unit = pricing.unit;
+      const sum = { input: 0, cache_read: 0, cache_write: 0, output: 0, saved: 0 };
+      const unpriced = []; // the models of no price
+      let priced = 0;
+      let waiting = false; // for prices not read yet
+      let unknown = false; // turns that recorded no model
+      let estimated = false;
+      const rows = models.map((m) => {
+        const label = m.model || 'model not recorded';
+        const about = `${label} · ${m.turns} turn${m.turns === 1 ? '' : 's'}\n${tokensOf(m)}`;
+        const key = `cost.model.${m.model}`;
+        if (!m.model) {
+          unknown = true;
+          return costRow(key, label, '—', `${about}\nThese turns recorded no model to price their tokens at`, 'cost-model');
+        }
+        const price = pricing.prices.get(m.model);
+        if (!price) {
+          waiting = true;
+          return costRow(key, label, off || pricing.error ? '—' : '…', about, 'cost-model');
+        }
+        if (price.source === 'none') {
+          unpriced.push(m.model);
+          return costRow(key, label, 'no price', `${about}\nThe cockpit knows no price of this model: set one to count its tokens`, 'cost-model cost-unpriced');
+        }
+        priced++;
+        const cost = costOf(m, price);
+        for (const kind of Object.keys(sum)) sum[kind] += cost[kind];
+        const guess = price.source === 'estimate';
+        estimated ||= guess;
+        const rates = `${money(price.input, unit)} input · ${money(price.cache_read, unit)} cache read · ${money(price.cache_write, unit)} cache write · ${money(price.output, unit)} output, per million tokens`;
+        const source = guess ? `estimated from ${price.like || 'a model of its family'}` : PRICE_SOURCE[price.source] || price.source;
+        // ≈ marks an estimate, as the Accounts view does.
+        return costRow(key, label, `${guess ? '≈ ' : ''}${money(cost.input + cost.cache_read + cost.cache_write + cost.output, unit)}`,
+          `${about}\n${rates}: ${source}${price.rule ? ` (${price.rule})` : ''}`, 'cost-model');
+      });
+      // A total that leaves tokens out is at least what it says.
+      const partial = waiting || unknown || unpriced.length > 0;
+      const value = !priced ? (off || pricing.error || !waiting ? '—' : '…')
+        : `${partial ? '≥ ' : estimated ? '≈ ' : ''}${money(sum.input + sum.cache_read + sum.cache_write + sum.output, unit)}`;
+      const tip = !priced ? COST_TIP
+        : `${COST_TIP}: input ${money(sum.input, unit)} · cache reads ${money(sum.cache_read, unit)} · cache writes ${money(sum.cache_write, unit)} · output ${money(sum.output, unit)}`
+          + `${sum.saved > 0 ? `\nCaching saved ${money(sum.saved, unit)}` : ''}${partial ? '\nWithout the tokens of the models it has no price of' : ''}`;
+      let note = '';
+      if (off) note = 'Prices come from the accounts gateway, which is off';
+      else if (pricing.error && waiting) note = `No prices: ${pricing.error}`;
+      else if (unpriced.length) note = `No price of ${unpriced.join(', ')}: ${unpriced.length > 1 ? 'their' : 'its'} tokens are not counted`;
+      setText(costNote, note);
+      return kvs(
+        costRow('cost.total', 'Total', value, tip, 'cost-total'),
+        ...rows,
+        note ? costNote : null,
+        unpriced.length && !off && cockpit.has('accounts') ? costActions : null);
     },
   });
 

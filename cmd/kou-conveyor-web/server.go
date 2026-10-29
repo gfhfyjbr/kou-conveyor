@@ -199,6 +199,7 @@ func (s *server) handler() http.Handler {
 	// (usage.go).
 	mux.HandleFunc("GET /api/usage", s.withGateway(s.handleUsage))
 	mux.HandleFunc("GET /api/usage/prices", s.withGateway(s.handlePrices))
+	mux.HandleFunc("GET /api/usage/price", s.withGateway(s.handleModelPrices))
 	mux.HandleFunc("POST /api/usage/prices", s.withGateway(s.handleSetPrice))
 	mux.HandleFunc("DELETE /api/usage/prices", s.withGateway(s.handleRemovePrice))
 	mux.HandleFunc("PUT /api/usage/unit", s.withGateway(s.handleSetUnit))

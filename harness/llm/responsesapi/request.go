@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm"
 	"github.com/gfhfyjbr/kou-conveyor/internal/openaiapi"
@@ -85,11 +86,88 @@ func extendRequestBody(body []byte, extensions map[string]jsontext.Value) ([]byt
 	return extended, nil
 }
 
+// requestInput maps harness items to the request's input items.
+//
+// The harness records tool results as they arrive: a long-running call first
+// reports a placeholder, and its result comes later, after the model has
+// moved on. A call takes one output: providers that serve the API over
+// chat-style messages reject a second one, as Kimi does ("tool call id Bash:11
+// is not found"). A result for a call that was answered before therefore goes
+// as the user's message, as the Messages API adapter sends it. It depends only
+// on the items before it, so earlier items encode identically on every
+// request, which the prompt cache requires.
+//
+// A call takes an output as well: a call that no output answers is rejected,
+// as Kimi rejects it ("tool_call_ids did not have response messages"). The
+// harness gives every call it runs an output, a placeholder at first, so a call
+// that no result in the input answers has lost its result, as the calls a fork
+// inherits have, and no later request brings it back. It is answered as having
+// none, as the Messages API adapter answers it, where its output would have
+// gone: after the outputs that follow its calls. An input whose calls all have
+// results goes as it is.
 func requestInput(items []llm.Item) (openaiapi.InputParam, error) {
 	converted := make(openaiapi.InputParam1, 0, len(items))
+	calls := make(map[string]llm.ToolCall)
+	answered := make(map[string]bool)
+	recorded := make(map[string]bool)
+	for _, item := range items {
+		if result, ok := item.Data.(llm.ToolResult); ok && item.Type == llm.ItemToolResult {
+			recorded[result.CallID] = true
+		}
+	}
+	// unrecorded are the calls gone out that no result answers. They are
+	// answered once the outputs that follow the calls end, at an item that is
+	// no output: anything but a call, or a call after outputs.
+	var unrecorded []string
+	answering := false
+	answerUnrecorded := func() error {
+		for _, callID := range unrecorded {
+			if answered[callID] {
+				continue
+			}
+			answered[callID] = true
+			input, err := requestInputItem(llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{
+				CallID: callID,
+				Output: []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: unrecordedResult}},
+			}})
+			if err != nil {
+				return fmt.Errorf("answer tool call %q: %w", callID, err)
+			}
+			converted = append(converted, input)
+		}
+		unrecorded = unrecorded[:0]
+		return nil
+	}
 	for index, item := range items {
 		if foreignReasoning(item) {
 			continue
+		}
+		call, isCall := item.Data.(llm.ToolCall)
+		isCall = isCall && item.Type == llm.ItemToolCall
+		result, isResult := item.Data.(llm.ToolResult)
+		isResult = isResult && item.Type == llm.ItemToolResult
+		output := isResult && !answered[result.CallID]
+		if !output && (!isCall || answering) {
+			if err := answerUnrecorded(); err != nil {
+				return openaiapi.InputParam{}, err
+			}
+		}
+		answering = output
+		if isCall {
+			calls[call.CallID] = call
+			if !recorded[call.CallID] {
+				unrecorded = append(unrecorded, call.CallID)
+			}
+		}
+		if isResult {
+			if answered[result.CallID] {
+				late, err := lateResult(calls, result)
+				if err != nil {
+					return openaiapi.InputParam{}, fmt.Errorf("input item %d: %w", index, err)
+				}
+				item = late
+			}
+			answered[result.CallID] = true
 		}
 		input, err := requestInputItem(item)
 		if err != nil {
@@ -97,12 +175,55 @@ func requestInput(items []llm.Item) (openaiapi.InputParam, error) {
 		}
 		converted = append(converted, input)
 	}
+	if err := answerUnrecorded(); err != nil {
+		return openaiapi.InputParam{}, err
+	}
 
 	var input openaiapi.InputParam
 	if err := input.FromInputParam1(converted); err != nil {
 		return openaiapi.InputParam{}, fmt.Errorf("encode input: %w", err)
 	}
 	return input, nil
+}
+
+// unrecordedResult answers a call that no result in the input answers, as the
+// Messages API adapter answers it.
+const unrecordedResult = "No result was recorded for this tool call."
+
+// lateResult is the result of a call that was answered before, as the user's
+// message. It names the call: the model reads it long after it made the call,
+// by which time an ID alone says nothing of what the call was. Its parts keep
+// their order: each image follows, as its label, the text that came before it.
+func lateResult(calls map[string]llm.ToolCall, result llm.ToolResult) (llm.Item, error) {
+	described := result.CallID
+	if call, ok := calls[result.CallID]; ok {
+		described = describeCall(call)
+	}
+	message := llm.Message{Role: llm.RoleUser}
+	texts := []string{fmt.Sprintf("Result of tool call %s:", described)}
+	for _, part := range result.Output {
+		switch part.Kind {
+		case llm.ToolResultText:
+			texts = append(texts, part.Value)
+		case llm.ToolResultImage:
+			message.Images = append(message.Images, llm.Image{Label: strings.Join(texts, "\n"), URL: part.Value})
+			texts = nil
+		default:
+			return llm.Item{}, fmt.Errorf("unsupported tool result kind %q", part.Kind)
+		}
+	}
+	message.Text = strings.Join(texts, "\n")
+	return llm.Item{Type: llm.ItemMessage, Data: message}, nil
+}
+
+// describeCall names a call by its ID, its tool and its arguments on one
+// line, as the harness's summaries do.
+func describeCall(call llm.ToolCall) string {
+	arguments := strings.Join(strings.Fields(call.Arguments), " ")
+	if runes := []rune(arguments); len(runes) > 300 {
+		arguments = string(runes[:299]) + "…"
+	}
+	return fmt.Sprintf("%s (%s %s)", call.CallID, call.Name, arguments)
 }
 
 func requestInputItem(source llm.Item) (openaiapi.InputItem, error) {

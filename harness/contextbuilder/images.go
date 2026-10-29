@@ -84,6 +84,7 @@ func (current *builder) boundImages() int {
 		return 0
 	}
 	left := 0
+	var counted int64
 	for index, item := range current.committedPrefix {
 		if count <= maxImages*3/4 && size <= maxImageBytes*3/4 {
 			break
@@ -92,15 +93,18 @@ func (current *builder) boundImages() int {
 		if len(urls) == 0 {
 			continue
 		}
-		current.committedPrefix[index] = withoutImages(item)
+		without := withoutImages(item)
+		if index < current.usageMark {
+			counted += estimateItem(item) - estimateItem(without)
+		}
+		current.committedPrefix[index] = without
 		for _, url := range urls {
 			count--
 			size -= len(url)
 		}
 		left += len(urls)
 	}
-	// The provider's count of the request no longer holds.
-	current.usage, current.usageMark = 0, 0
+	current.uncount(counted)
 	current.imagesLeftOut += left
 	return left
 }

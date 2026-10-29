@@ -3,6 +3,8 @@ package cockpit
 import (
 	"encoding/json/v2"
 	"errors"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,10 +118,12 @@ func TestTranscriptFoldsLiveRun(t *testing.T) {
 		t.Fatalf("kinds = %s", got)
 	}
 	// The turn began at 2s and its first response came at 3s; the second
-	// is no answer of a turn begun since.
+	// is no answer of a turn begun since. The turn names no model, as
+	// runners did not before it was kept.
 	want := Usage{Input: 250, Cached: 60, Output: 12, Reasoning: 3, Context: 150, Turns: 2,
-		TimedOutput: 7, TimedMillis: 1000, LastOutput: 7, LastMillis: 1000}
-	if tr.Usage != want {
+		TimedOutput: 7, TimedMillis: 1000, LastOutput: 7, LastMillis: 1000,
+		Models: []ModelUsage{{Input: 250, Cached: 60, Output: 12, Reasoning: 3, Turns: 2}}}
+	if !tr.Usage.Equal(want) {
 		t.Fatalf("usage = %#v, want %#v", tr.Usage, want)
 	}
 	if tr.Title() != "run the tests" {
@@ -173,6 +177,68 @@ func TestTranscriptTimesTurns(t *testing.T) {
 		response(9*time.Second, "turn-5", 40), response(10*time.Second, "turn-5", 40))
 	if got := speed(); got != [4]int64{190, 4500, 40, 2000} {
 		t.Fatalf("after the turns not timed: %v", got)
+	}
+}
+
+// A session's tokens are counted model by model, as each model's have its
+// prices: a response's are those of the model its turn went to.
+func TestTranscriptCountsTokensByModel(t *testing.T) {
+	tr := NewTranscript()
+	sequence := 0
+	item := func(kind sessionstore.ItemKind, data any) []byte {
+		sequence++
+		return liveLine(t, sequence, kind, data)
+	}
+	turn := func(id session.TurnID, model string) []byte {
+		return item(sessionstore.ItemTurn, session.Turn{ID: id, Type: session.TurnRegular, Model: model})
+	}
+	response := func(id session.TurnID, usage llm.Usage) []byte {
+		return item(sessionstore.ItemModelResponse, sessionstore.ModelResponse{TurnID: id, Response: llm.Response{
+			Output: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleAssistant, Text: "ok"}}},
+			Usage:  usage,
+		}})
+	}
+	apply(t, tr,
+		turn("turn-1", "claude-opus-4-5"),
+		response("turn-1", llm.Usage{InputTokens: 1000, CachedInputTokens: 600, CacheWriteInputTokens: 300, OutputTokens: 50, ReasoningTokens: 20}),
+		turn("turn-2", "gpt-5.1"),
+		response("turn-2", llm.Usage{InputTokens: 400, CachedInputTokens: 100, OutputTokens: 30}))
+	before := tr.Usage
+	apply(t, tr, turn("turn-3", "claude-opus-4-5"),
+		response("turn-3", llm.Usage{InputTokens: 1200, CachedInputTokens: 900, CacheWriteInputTokens: 200, OutputTokens: 10}))
+
+	want := []ModelUsage{
+		{Model: "claude-opus-4-5", Input: 2200, Cached: 1500, CacheWrite: 500, Output: 60, Reasoning: 20, Turns: 2},
+		{Model: "gpt-5.1", Input: 400, Cached: 100, Output: 30, Turns: 1},
+	}
+	if u := tr.Usage; !slices.Equal(u.Models, want) || u.Input != 2600 || u.Cached != 1600 || u.CacheWrite != 500 || u.Output != 90 || u.Turns != 3 {
+		t.Fatalf("usage = %+v", u)
+	}
+	// A copy taken before keeps what it counted then: a run tells the
+	// usage it sent last from the next by it.
+	if before.Models[0].Input != 1000 || before.Turns != 2 || before.Equal(tr.Usage) {
+		t.Fatalf("the copy taken before = %+v", before)
+	}
+}
+
+// Equal tells usages apart by any of their counts.
+func TestUsageEqual(t *testing.T) {
+	base := Usage{Models: []ModelUsage{{Model: "m", Input: 1}}}
+	fields := reflect.TypeFor[Usage]()
+	for i := range fields.NumField() {
+		other := base
+		other.Models = slices.Clone(base.Models)
+		switch field := reflect.ValueOf(&other).Elem().Field(i); field.Kind() {
+		case reflect.Int, reflect.Int64:
+			field.SetInt(field.Int() + 1)
+		case reflect.Slice:
+			other.Models[0].Input++
+		default:
+			t.Fatalf("no test changes %s", fields.Field(i).Name)
+		}
+		if base.Equal(other) || !other.Equal(other) {
+			t.Errorf("Equal does not compare %s", fields.Field(i).Name)
+		}
 	}
 }
 

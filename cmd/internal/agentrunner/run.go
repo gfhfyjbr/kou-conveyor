@@ -77,6 +77,14 @@ const (
 	// tokens a model reasons worse and every turn costs more, long before
 	// the window is full. What a compaction loses, the model's notes keep.
 	autoCompactCeiling = 200_000
+	// claudeCompactCeiling replaces it for Claude models on the Messages API
+	// (claudeCeiling), as a Claude subscription reaches them through a
+	// gateway. A prune or a compaction writes the conversation to the prompt
+	// cache anew, and a subscription's limits count those writes but hardly
+	// the reads, so a conversation let grow longer between them costs less.
+	// Pruned at 255–285k and compacted at about 300k, the cache served
+	// 96–98% of Claude's input; under the 200k ceiling, 87–90%.
+	claudeCompactCeiling = 390_000
 	// pruneShare is the share of the compaction threshold the conversation
 	// may take before the oldest tool results are pruned; pruneKeep is how
 	// many of the latest results are never pruned, and pruneBytes what a
@@ -107,6 +115,14 @@ type Provider struct {
 	// ContextWindow returns how many tokens a request to a model can hold, or
 	// 0 when the provider does not know the model. Nil knows no model.
 	ContextWindow func(model string) int64
+	// KeepsThinking tells a provider whose API keeps the thinking of every
+	// turn a request carries unless the request clears it, as the Messages
+	// API does (KOU_CONVEYOR_THINKING_TURNS, thinkingPruning).
+	KeepsThinking bool
+	// CompactCeiling returns the most a conversation with a model grows
+	// before it is compacted automatically, unless configured, in place of
+	// autoCompactCeiling; 0 or nil leaves that (compactCeiling).
+	CompactCeiling func(model string) int64
 }
 
 type Request struct {
@@ -515,6 +531,10 @@ func Run(
 	if err != nil {
 		return err
 	}
+	thinkingTurns, clientEnvironment, err := thinkingPruning(getenv, selected, autoCompact)
+	if err != nil {
+		return err
+	}
 	bounds, err := readRunBounds(getenv)
 	if err != nil {
 		return err
@@ -533,7 +553,7 @@ func Run(
 			)
 		}
 	}
-	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, getenv)
+	client, err := selected.NewClient(apiKey, configuredBaseURL, maxAttempts, clientEnvironment)
 	if err != nil {
 		return fmt.Errorf("create %s client: %w", selected.Name, err)
 	}
@@ -790,11 +810,13 @@ func Run(
 	}))
 	builder.SetMemory(memory.builder())
 	// Between compactions, the oldest tool results are pruned to notes —
-	// first those of the plugins' tools that a call fetches again.
+	// first those of the plugins' tools that a call fetches again — and the
+	// thinking of older turns goes with them.
 	if autoCompact > 0 {
 		builder.SetPruning(contextbuilder.PruneOptions{
 			Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes,
-			First: func(name string) bool { return live != nil && live.refetches(name) },
+			First:         func(name string) bool { return live != nil && live.refetches(name) },
+			ThinkingTurns: thinkingTurns,
 		})
 	}
 	// The plugins and the skill directories give the run tools,
@@ -1321,7 +1343,7 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 	setting := strings.ToLower(strings.TrimSpace(getenv(autoCompactEnvironment)))
 	switch setting {
 	case "":
-		return window, min(window-min(autoCompactReserve, window/4), autoCompactCeiling), nil
+		return window, min(window-min(autoCompactReserve, window/4), compactCeiling(provider, model)), nil
 	case "off", "false", "no", "0":
 		return window, 0, nil
 	}

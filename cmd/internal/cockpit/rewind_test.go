@@ -61,7 +61,7 @@ func TestRewindSessionBeforeAPrompt(t *testing.T) {
 	}
 	resumable(t, dir, "rewound")
 	after, _ := cockpit.LoadSession(dir, "rewound")
-	if len(before.Entries) != 2 || len(after.Entries) != 2 || before.Size != after.Size || before.Usage != after.Usage {
+	if len(before.Entries) != 2 || len(after.Entries) != 2 || before.Size != after.Size || !before.Usage.Equal(after.Usage) {
 		t.Fatalf("LoadSessionBefore = %+v, the rewound session = %+v", before, after)
 	}
 	if _, err := os.Stat(output); !errors.Is(err, os.ErrNotExist) {

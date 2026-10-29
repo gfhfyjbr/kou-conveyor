@@ -123,10 +123,17 @@ func ReadDetachedRun(dir string) (DetachedRun, error) {
 	return info, nil
 }
 
+// runnerBuilds are the builds of the runners read, by path, with the file
+// each was read from.
 var runnerBuilds = struct {
 	sync.Mutex
-	byFile map[string]string
-}{byFile: map[string]string{}}
+	byPath map[string]runnerBuild
+}{byPath: map[string]runnerBuild{}}
+
+type runnerBuild struct {
+	file  fs.FileInfo
+	build string
+}
 
 // RunnerBuild identifies the build of the runner at path: a digest of the
 // executable, which a rebuild that leaves the runner as it was does not
@@ -136,12 +143,14 @@ func RunnerBuild(path string) string {
 	if err != nil {
 		return ""
 	}
-	key := fmt.Sprintf("%s\x00%d\x00%d", path, info.Size(), info.ModTime().UnixNano())
 	runnerBuilds.Lock()
-	build, known := runnerBuilds.byFile[key]
+	known, ok := runnerBuilds.byPath[path]
 	runnerBuilds.Unlock()
-	if known {
-		return build
+	// The file read before, unchanged: an executable put in its place is
+	// another file, even when its size and time are the same — the time
+	// goes by ticks of the clock.
+	if ok && os.SameFile(known.file, info) && known.file.Size() == info.Size() && known.file.ModTime().Equal(info.ModTime()) {
+		return known.build
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -152,9 +161,9 @@ func RunnerBuild(path string) string {
 	if _, err := io.Copy(digest, file); err != nil {
 		return ""
 	}
-	build = hex.EncodeToString(digest.Sum(nil))[:16]
+	build := hex.EncodeToString(digest.Sum(nil))[:16]
 	runnerBuilds.Lock()
-	runnerBuilds.byFile[key] = build
+	runnerBuilds.byPath[path] = runnerBuild{file: info, build: build}
 	runnerBuilds.Unlock()
 	return build
 }

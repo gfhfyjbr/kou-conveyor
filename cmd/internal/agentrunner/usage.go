@@ -52,9 +52,13 @@ Environment:
   KOU_CONVEYOR_AUTO_COMPACT: when to compact the conversation automatically
     before a turn: off, a number of tokens (150000 or 150k), or a share of the
     context window such as 80% (default: 33000 tokens short of the window, or
-    three quarters of a window smaller than 132000, and 200000 at most).
+    three quarters of a window smaller than 132000, and 200000 at most,
+    390000 for a Claude model).
   KOU_CONVEYOR_THINKING_TURNS: on the Messages API, how many of the latest
     turns keep their thinking in the context (default 2; 0 keeps it all).
+    With automatic compaction on, older thinking goes when the oldest tool
+    results are pruned, and the API keeps all it is sent; with it off, the
+    API clears older thinking before every request.
   KOU_CONVEYOR_MAX_TURNS, KOU_CONVEYOR_MAX_COMPACTIONS: the most model turns
     and compactions a run makes (default 0, no limit).
   KOU_CONVEYOR_MAX_DURATION: the longest a run works, such as 8h (default 0,

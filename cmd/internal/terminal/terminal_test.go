@@ -198,6 +198,11 @@ func TestShellRunsResizesAndEnds(t *testing.T) {
 	time.Sleep(2 * resizeCheck)
 	s.Write([]byte("stty size\n"))
 	collect(t, c, "31 101", 10*time.Second)
+	// stty has printed the size; it may not have ended yet.
+	ended := time.Now().Add(5 * time.Second)
+	for s.Info().Running != "" && time.Now().Before(ended) {
+		time.Sleep(20 * time.Millisecond)
+	}
 	want, _ := filepath.EvalSymlinks(dir)
 	if got, _ := filepath.EvalSymlinks(s.Dir()); got != want {
 		t.Fatalf("dir = %q, want %q", got, want)

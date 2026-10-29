@@ -346,6 +346,12 @@ func TestAccountsGateway(t *testing.T) {
 		if rules, _ := prices["rules"].([]any); res.StatusCode != http.StatusOK || len(rules) != 1 {
 			t.Fatalf("set a price = %d %v", res.StatusCode, prices)
 		}
+		// The models of a session are priced, whichever they are.
+		_, priced := h.do("GET", "/api/usage/price?model=cached-model&model=other-model", "")
+		if models, _ := priced["models"].([]any); len(models) != 2 || priced["unit"] == nil ||
+			models[0].(map[string]any)["price"].(map[string]any)["input"] != 2.0 || models[1].(map[string]any)["id"] != "other-model" {
+			t.Errorf("the prices of a session's models = %v", priced)
+		}
 		_, usage = h.do("GET", "/api/usage?range=7d&model=cached-model", "")
 		totals, _ = usage["totals"].(map[string]any)
 		cost, _ := totals["cost"].(map[string]any)

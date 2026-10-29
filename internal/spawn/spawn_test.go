@@ -24,6 +24,12 @@ import (
 func TestMain(m *testing.M) {
 	name := os.Getenv("KOU_SPAWN_HELPER")
 	if name == "" {
+		// Descriptors the tests were started with beyond 0, 1 and 2, which a
+		// CI runner leaves open, are not theirs: os/exec's fork would pass
+		// them on to every command, where the tests count descriptors.
+		for fd := 3; fd < 1024; fd++ {
+			syscall.CloseOnExec(fd)
+		}
 		os.Exit(m.Run())
 	}
 	helper, ok := helpers[name]

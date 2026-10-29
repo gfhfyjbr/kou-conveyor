@@ -64,8 +64,11 @@ type Config struct {
 	// thinking of every turn otherwise, where it fills the context window
 	// and is read again on every request; the API clears it from older
 	// turns before the model reads them (context editing), and the history
-	// the harness keeps is unchanged. Nil is DefaultThinkingTurns; 0 keeps
-	// all thinking.
+	// the harness keeps is unchanged. Each turn that clears thinking costs
+	// the prompt cache from there on. Nil is DefaultThinkingTurns; 0 keeps
+	// all thinking, as the requests then ask of every model: a caller that
+	// keeps the context small itself, leaving the thinking of older turns
+	// out once in a while, loses the cache only then.
 	ThinkingTurns *int
 }
 

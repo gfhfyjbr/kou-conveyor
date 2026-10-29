@@ -73,6 +73,14 @@ type Builder interface {
 	// are cut down to notes, to keep the context small between
 	// compactions (PruneOptions).
 	SetPruning(PruneOptions)
+	// Resumed says that the conversation was restored from a session's
+	// record. What the provider counted for the latest recorded response
+	// was the conversation as the run that sent it pruned it; restored,
+	// its results are whole again and, for a builder that leaves the
+	// thinking of older turns out, all of its thinking is back. Until the
+	// next response such a builder estimates the conversation at no less
+	// than its size.
+	Resumed()
 	// Compact replaces the conversation a compaction turn summarized with the
 	// summary its response holds. Messages the model has not answered yet and
 	// everything that arrived during the compaction stay as they are. It

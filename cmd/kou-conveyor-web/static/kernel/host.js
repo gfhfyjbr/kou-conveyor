@@ -1119,7 +1119,13 @@ function checkBuilt() {
 // soon gone. The bar goes when they work again. Closed, it stays closed for
 // the plugins it named: another one failing brings it back, and so does one
 // of them failing anew after it worked.
+//
+// In safe mode the bar is up while no plugin fails too, and leads back out of
+// it: ?safe stays in the address from one session to the next, and the parts
+// of the page the plugins left off would draw look broken, with nothing to
+// say why. Closed, it says so again once the page loads anew.
 const dismissed = new Set(); // failing plugins the bar was closed for
+let safeClosed = false; // whether the bar was closed in safe mode
 
 function showFailed() {
   const list = [...host.loaded.values()].filter((i) => i.broken || i.error || i.stale).map((i) => ({
@@ -1130,27 +1136,47 @@ function showFailed() {
   })).sort((a, b) => a.name.localeCompare(b.name));
   const failing = new Set(list.map((f) => f.name));
   for (const name of dismissed) if (!failing.has(name)) dismissed.delete(name);
+  const shown = list.every((f) => dismissed.has(f.name)) ? [] : list;
   let bar = document.getElementById('kernel-failed');
   // While nothing could build the page, the rescue panel says it all.
-  if (list.every((f) => dismissed.has(f.name)) || !host.booted || document.querySelector('.kernel-rescue')) {
+  if ((!shown.length && (!host.safe || safeClosed)) || !host.booted || document.querySelector('.kernel-rescue')) {
     bar?.remove();
     return;
   }
-  const key = JSON.stringify(list);
+  const key = JSON.stringify(shown);
   if (bar?.dataset.key === key) return;
   bar ??= document.body.appendChild(h('div', { id: 'kernel-failed', class: 'kernel-failed', role: 'status' }));
   bar.dataset.key = key;
-  bar.replaceChildren(
-    h('p', null, h('b', { text: list.length === 1 ? 'A plugin failed' : `${list.length} plugins failed` })),
-    h('ul', null, list.map((f) => h('li', { title: `${f.name} ${f.why}` }, h('b', { text: f.name }), ` ${f.why}`))),
-    host.safe ? null : h('p', null, h('a', { href: '?safe#/', text: 'Open with the built-in plugins only' })),
+  bar.classList.toggle('safe', !shown.length);
+  // replaceChildren, unlike h, would put a null in as the text "null".
+  bar.replaceChildren(...[
+    shown.length ? h('p', null, h('b', { text: shown.length === 1 ? 'A plugin failed' : `${shown.length} plugins failed` })) : null,
+    shown.length ? h('ul', null, shown.map((f) => h('li', { title: `${f.name} ${f.why}` }, h('b', { text: f.name }), ` ${f.why}`))) : null,
+    host.safe
+      ? h('p', { class: 'kernel-safe' }, h('b', { text: 'Safe mode' }), ': only the built-in plugins run. ',
+        h('a', { href: unsafe(), text: 'Leave safe mode', onclick: retarget, onauxclick: retarget, oncontextmenu: retarget }))
+      : h('p', null, h('a', { href: '?safe#/', text: 'Open with the built-in plugins only' })),
     h('button', {
       type: 'button', class: 'kernel-failed-close', title: 'Dismiss', 'aria-label': 'Dismiss', text: '×',
       onclick: () => {
         for (const f of list) dismissed.add(f.name);
-        bar.remove();
+        safeClosed = true;
+        showFailed();
       },
-    }));
+    }),
+  ].filter(Boolean));
+}
+
+// unsafe is the page's address as it is, without ?safe. retarget points a
+// link to it as the link is followed: the page moves on under the bar.
+function unsafe() {
+  const url = new URL(location.href);
+  url.searchParams.delete('safe');
+  return url.href;
+}
+
+function retarget(event) {
+  event.currentTarget.href = unsafe();
 }
 
 async function boot() {

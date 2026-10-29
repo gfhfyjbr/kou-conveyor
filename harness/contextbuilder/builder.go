@@ -41,8 +41,12 @@ type builder struct {
 	compacted int
 	// usage is what the provider reported for the latest request and its
 	// response; usageMark is len(committedPrefix) right after that response.
+	// resumed is set when the conversation was restored from a session's
+	// record, until the next response: the latest count is of the
+	// conversation as the run that sent it pruned it (Resumed).
 	usage      int64
 	usageMark  int
+	resumed    bool
 	toolTokens int64
 	// transcript is the file that keeps the whole conversation; memory
 	// is what a compaction keeps besides the summary, and touched the
@@ -55,11 +59,13 @@ type builder struct {
 	// before any.
 	shownNotes *string
 	// pruning says when the oldest tool results are cut down; pruned
-	// counts those cut so far, and imagesLeftOut the images left out
+	// counts those cut so far, thinkingLeftOut the thinking of older turns
+	// that went with them, and imagesLeftOut the images left out
 	// (images.go).
-	pruning       PruneOptions
-	pruned        int
-	imagesLeftOut int
+	pruning         PruneOptions
+	pruned          int
+	thinkingLeftOut int
+	imagesLeftOut   int
 }
 
 var _ Builder = (*builder)(nil)
@@ -170,10 +176,16 @@ func (current *builder) AddModelResponse(response llm.Response) {
 		current.answered = append(current.answered, input.answered)
 	}
 	current.unanswered = nil
-	current.usage, current.usageMark = 0, 0
+	current.usage, current.usageMark, current.resumed = 0, 0, false
 	if reported := response.Usage.InputTokens + response.Usage.OutputTokens; reported > 0 {
 		current.usage, current.usageMark = reported, len(current.committedPrefix)
 	}
+}
+
+// Resumed marks the conversation as restored, until the next response
+// (estimate).
+func (current *builder) Resumed() {
+	current.resumed = true
 }
 
 func (current *builder) AddReasoning(reasoning llm.Reasoning) {
@@ -264,6 +276,13 @@ func (current *builder) Build() (Result, error) {
 			Kind:   ChangeTruncated,
 			Source: "tool results",
 			Reason: fmt.Sprintf("%d older tool results were pruned to save context", current.pruned),
+		})
+	}
+	if current.thinkingLeftOut > 0 {
+		result.Report.Changes = append(result.Report.Changes, Change{
+			Kind:   ChangeOmitted,
+			Source: "thinking",
+			Reason: fmt.Sprintf("%d thinking blocks of older turns were left out to save context", current.thinkingLeftOut),
 		})
 	}
 	if current.imagesLeftOut > 0 {

@@ -567,7 +567,7 @@ func TestMidOutputFallbackKeepsOnlyText(t *testing.T) {
 		block(4, `{"type":"text","text":"Part two."}`), stop(4),
 		block(5, `{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}`), stop(5),
 	}, finish("tool_use"))...))
-	config := Config{ServerFallbacks: new(true), ThinkingTurns: new(0)}
+	config := Config{ServerFallbacks: new(true)}
 	response, err := newTestClient(t, s, config).Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -587,7 +587,7 @@ func TestMidOutputFallbackKeepsOnlyText(t *testing.T) {
 		t.Fatalf("output = %q", kinds)
 	}
 	sent := s.request(0)
-	if sent.header.Get("Anthropic-Beta") != "server-side-fallback-2026-07-01" || encode(t, sent.body["fallbacks"]) != `"default"` {
+	if !slices.Contains(sent.header.Values("Anthropic-Beta"), "server-side-fallback-2026-07-01") || encode(t, sent.body["fallbacks"]) != `"default"` {
 		t.Fatalf("fallbacks not requested: %v %v", sent.header, sent.body["fallbacks"])
 	}
 }
@@ -598,14 +598,14 @@ func TestRejectedFallbacksAreNotRequestedAgain(t *testing.T) {
 		textResponse("One."),
 		textResponse("Two."),
 	)
-	client := newTestClient(t, s, Config{ServerFallbacks: new(true), ThinkingTurns: new(0)})
+	client := newTestClient(t, s, Config{ServerFallbacks: new(true)})
 	for range 2 {
 		if _, err := client.Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for index := 1; index < 3; index++ {
-		if sent := s.request(index); sent.header.Get("Anthropic-Beta") != "" || sent.body["fallbacks"] != nil {
+		if sent := s.request(index); slices.Contains(sent.header.Values("Anthropic-Beta"), "server-side-fallback-2026-07-01") || sent.body["fallbacks"] != nil {
 			t.Fatalf("request %d still asks for fallbacks", index)
 		}
 	}
@@ -621,7 +621,9 @@ func TestContextEditingKeepsTheLatestThinking(t *testing.T) {
 	}{
 		{"default", "claude-opus-5", llm.ReasoningEffortHigh, nil, `{"edits":[{"keep":{"type":"thinking_turns","value":2},"type":"clear_thinking_20251015"}]}`},
 		{"configured", "claude-opus-4-1", llm.ReasoningEffortHigh, new(5), `{"edits":[{"keep":{"type":"thinking_turns","value":5},"type":"clear_thinking_20251015"}]}`},
-		{"all thinking kept", "claude-opus-5", llm.ReasoningEffortHigh, new(0), ""},
+		// Asked for, whatever the model's default: the prompt cache then
+		// holds across turns, and the wire matches Claude Code's.
+		{"all thinking kept", "claude-opus-5", llm.ReasoningEffortHigh, new(0), `{"edits":[{"keep":"all","type":"clear_thinking_20251015"}]}`},
 		// The API rejects the edit in a request that does not think.
 		{"no thinking", "claude-haiku-4-5", "", nil, ""},
 		{"not Claude", "glm-4.6", llm.ReasoningEffortHigh, nil, ""},

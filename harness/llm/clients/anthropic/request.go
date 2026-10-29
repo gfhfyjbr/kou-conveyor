@@ -150,15 +150,20 @@ func (client *Client) params(request llm.Request, keepThinking bool, room int64)
 		}
 	}
 	thinking := params.Thinking.OfAdaptive != nil || params.Thinking.OfEnabled != nil
-	if thinking && client.thinkingTurns > 0 && !client.noContextManagement.Load() {
+	if thinking && !client.noContextManagement.Load() {
 		// The API clears the thinking of older turns before the model reads
-		// them; it rejects the edit in a request that does not think.
-		// CLIProxyAPI, which adds an edit keeping all thinking to requests
-		// without one, leaves this one as it is.
+		// them, or keeps all of it, whatever the model's default; it rejects
+		// the edit in a request that does not think. Kept, the prompt cache
+		// holds across turns; cleared, it is lost where the thinking went
+		// every time a turn leaves those kept. CLIProxyAPI, which adds an
+		// edit keeping all thinking to requests without one, leaves this one
+		// as it is; Claude Code sends the same edit to keep it all.
+		keep := sdk.BetaClearThinking20251015EditKeepUnionParam{OfAll: constant.ValueOf[constant.All]()}
+		if client.thinkingTurns > 0 {
+			keep = sdk.BetaClearThinking20251015EditKeepUnionParam{OfThinkingTurns: &sdk.BetaThinkingTurnsParam{Value: client.thinkingTurns}}
+		}
 		params.ContextManagement.Edits = []sdk.BetaContextManagementConfigEditUnionParam{{
-			OfClearThinking20251015: &sdk.BetaClearThinking20251015EditParam{Keep: sdk.BetaClearThinking20251015EditKeepUnionParam{
-				OfThinkingTurns: &sdk.BetaThinkingTurnsParam{Value: client.thinkingTurns},
-			}},
+			OfClearThinking20251015: &sdk.BetaClearThinking20251015EditParam{Keep: keep},
 		}}
 		params.Betas = append(params.Betas, sdk.AnthropicBetaContextManagement2025_06_27)
 	}

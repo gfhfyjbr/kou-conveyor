@@ -170,12 +170,15 @@ func (tool *Tool) Terminal() bool {
 
 // Usage accumulates model token usage.
 type Usage struct {
-	Input     int64 `json:"input"`
-	Cached    int64 `json:"cached"`
-	Output    int64 `json:"output"`
-	Reasoning int64 `json:"reasoning"`
-	Context   int64 `json:"context"` // input tokens of the latest model request
-	Turns     int   `json:"turns"`
+	// Input counts every input token, those read from the provider's cache
+	// (Cached) and those written to it (CacheWrite) too.
+	Input      int64 `json:"input"`
+	Cached     int64 `json:"cached"`
+	CacheWrite int64 `json:"cache_write"`
+	Output     int64 `json:"output"` // the reasoning tokens too
+	Reasoning  int64 `json:"reasoning"`
+	Context    int64 `json:"context"` // input tokens of the latest model request
+	Turns      int   `json:"turns"`
 	// How fast the model writes: the output tokens of the turns whose time
 	// is known, and that time in milliseconds, from when each turn began —
 	// its request sent — to when its response was recorded, the wait for
@@ -185,6 +188,52 @@ type Usage struct {
 	TimedMillis int64 `json:"timed_ms"`
 	LastOutput  int64 `json:"last_output"`
 	LastMillis  int64 `json:"last_ms"`
+	// Models are the tokens of each model that answered, in the order they
+	// first did: a session may change models from one prompt to the next,
+	// and each model's tokens have its prices. Turns recorded without their
+	// model are those of the model "". The list is replaced as responses
+	// come, never changed in place, so a copy of a Usage keeps its own.
+	Models []ModelUsage `json:"models,omitzero"`
+}
+
+// ModelUsage is what one model's responses used in a session: the tokens
+// of each kind, as Usage counts them, and the turns it answered.
+type ModelUsage struct {
+	Model      string `json:"model"`
+	Input      int64  `json:"input"`
+	Cached     int64  `json:"cached"`
+	CacheWrite int64  `json:"cache_write"`
+	Output     int64  `json:"output"`
+	Reasoning  int64  `json:"reasoning"`
+	Turns      int    `json:"turns"`
+}
+
+// Equal reports whether u counts what o does.
+func (u Usage) Equal(o Usage) bool {
+	return u.Input == o.Input && u.Cached == o.Cached && u.CacheWrite == o.CacheWrite &&
+		u.Output == o.Output && u.Reasoning == o.Reasoning && u.Context == o.Context && u.Turns == o.Turns &&
+		u.TimedOutput == o.TimedOutput && u.TimedMillis == o.TimedMillis &&
+		u.LastOutput == o.LastOutput && u.LastMillis == o.LastMillis &&
+		slices.Equal(u.Models, o.Models)
+}
+
+// add counts a response of model's: in a list of models of its own, which
+// a copy of u taken before does not share.
+func (u *Usage) add(model string, usage llm.Usage) {
+	models := slices.Clone(u.Models)
+	i := slices.IndexFunc(models, func(m ModelUsage) bool { return m.Model == model })
+	if i < 0 {
+		i = len(models)
+		models = append(models, ModelUsage{Model: model})
+	}
+	m := &models[i]
+	m.Input += usage.InputTokens
+	m.Cached += usage.CachedInputTokens
+	m.CacheWrite += usage.CacheWriteInputTokens
+	m.Output += usage.OutputTokens
+	m.Reasoning += usage.ReasoningTokens
+	m.Turns++
+	u.Models = models
 }
 
 // Transcript folds runner events into entries. It is not safe for concurrent
@@ -225,6 +274,9 @@ type Transcript struct {
 	// when it was: the time between is how long its model took (Usage).
 	turn  session.TurnID
 	began time.Time
+	// turnModel is the model the latest turn's request went to, whose
+	// tokens its response's are (Usage.Models).
+	turnModel string
 	// folding is set while records are folded in bulk (fold): the tools
 	// they change are drawn once they are all in, and undrawn counts them.
 	folding bool
@@ -292,6 +344,7 @@ func (t *Transcript) Clone() *Transcript {
 	c.Entries, c.awaiting = list(t.Entries), list(t.awaiting)
 	c.index, c.active = byID(t.index), byID(t.active)
 	c.operations, c.compaction = maps.Clone(t.operations), maps.Clone(t.compaction)
+	c.Usage.Models = slices.Clone(t.Usage.Models)
 	if t.previews != nil {
 		c.previews = make(map[session.TurnID][]*preview, len(t.previews))
 		for turn, previews := range t.previews {
@@ -555,7 +608,7 @@ func (t *Transcript) applyItem(item sessionstore.Item) []*Entry {
 	case session.Turn:
 		t.retrying = ""
 		// The runner records a turn as it sends the model its request.
-		t.turn, t.began = data.ID, at
+		t.turn, t.began, t.turnModel = data.ID, at, data.Model
 		if data.Type == session.TurnCompaction {
 			t.compaction[data.ID] = true
 			t.Activity = "Compacting context"
@@ -594,10 +647,14 @@ func (t *Transcript) applyResponse(sequence uint64, at time.Time, data sessionst
 	t.retrying = ""
 	t.Usage.Input += response.Usage.InputTokens
 	t.Usage.Cached += response.Usage.CachedInputTokens
+	t.Usage.CacheWrite += response.Usage.CacheWriteInputTokens
 	t.Usage.Output += response.Usage.OutputTokens
 	t.Usage.Reasoning += response.Usage.ReasoningTokens
 	t.Usage.Context = response.Usage.InputTokens
 	t.Usage.Turns++
+	// A response answers the latest turn: a turn starts once the one
+	// before has its response, or will have none.
+	t.Usage.add(t.turnModel, response.Usage)
 	// The response of the latest turn says how fast its model wrote: the
 	// output tokens it reports over the time from the request. A response
 	// without them, as some providers send, says nothing of it.

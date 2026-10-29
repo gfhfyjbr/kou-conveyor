@@ -187,8 +187,12 @@ export default function activate(cockpit) {
       price.hidden = false;
     },
     closeDialog: () => { price.hidden = true; },
-    // Prices or the unit changed: the accounts' costs follow.
-    onPrices: () => panel.refresh({ quiet: true }),
+    // Prices or the unit changed: the accounts' costs follow, and what
+    // listens for accounts:prices (the inspector's Cost).
+    onPrices: () => {
+      panel.refresh({ quiet: true });
+      cockpit.emit('accounts:prices');
+    },
   });
   cockpit.onDispose(() => usage.destroy());
 

@@ -1371,6 +1371,7 @@ func (current *coordinator) restore(ctx context.Context) error {
 	if err := current.loadHistory(ctx); err != nil {
 		return err
 	}
+	current.dependencies.ContextBuilder.Resumed()
 	for _, value := range current.dependencies.Restored.Operations {
 		current.addOperationToLocalState(value)
 		if isVerification(value) && !operationIsTerminal(value.Status) {

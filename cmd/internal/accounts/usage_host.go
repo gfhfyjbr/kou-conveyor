@@ -181,6 +181,10 @@ func mediaModel(id string) bool {
 	return false
 }
 
+// Price is the price a model's tokens are counted at, whether or not the
+// gateway serves it or requests used it: a session's model may be any.
+func (h *Host) Price(model string) ModelPrice { return h.prices.Resolve(model) }
+
 // SetPrice adds a price rule of the user's, or replaces the one of the
 // same pattern.
 func (h *Host) SetPrice(rule PriceRule) (PriceRule, error) { return h.prices.Set(rule) }

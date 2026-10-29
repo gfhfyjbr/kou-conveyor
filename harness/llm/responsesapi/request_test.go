@@ -162,6 +162,211 @@ func TestRequestBodyEncodesToolResultOutputs(t *testing.T) {
 	}
 }
 
+func textOutput(value string) llm.ToolResultOutput {
+	return llm.ToolResultOutput{Kind: llm.ToolResultText, Value: value}
+}
+
+func toolResult(callID string, output ...llm.ToolResultOutput) llm.Item {
+	return llm.Item{Type: llm.ItemToolResult, Data: llm.ToolResult{CallID: callID, Output: output}}
+}
+
+// A long-running call first reports a placeholder and its result arrives
+// after the model made another call: Kimi rejects a second output for the
+// call ("tool call id Bash:11 is not found"), so the result goes as the
+// user's message where it arrived, naming the call.
+func TestRequestBodySendsALateResultAsTheUsersMessage(t *testing.T) {
+	const placeholder = "Tool call is still running. Its result arrives in a later turn."
+	body, err := requestBody(llm.Request{
+		Model: llm.Model{ID: "gpt-test"},
+		Input: []llm.Item{
+			{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "Bash", Arguments: "{\"command\":\n  \"make\"}"}},
+			toolResult("call-1", textOutput(placeholder)),
+			{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-2", Name: "Read", Arguments: `{"path":"go.mod"}`}},
+			toolResult("call-1", textOutput("build finished")),
+			toolResult("call-2", textOutput("module example")),
+		},
+	}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Input []struct {
+			Type    string         `json:"type"`
+			Role    string         `json:"role"`
+			Content jsontext.Value `json:"content"`
+			CallID  string         `json:"call_id"`
+			Output  []struct {
+				Text string `json:"text"`
+			} `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, item := range request.Input {
+		switch {
+		case item.Type == "function_call":
+			got = append(got, "call "+item.CallID)
+		case item.Type == "function_call_output":
+			var texts []string
+			for _, part := range item.Output {
+				texts = append(texts, part.Text)
+			}
+			got = append(got, "output "+item.CallID+": "+strings.Join(texts, ""))
+		case item.Role != "":
+			var text string
+			if err := json.Unmarshal(item.Content, &text); err != nil {
+				t.Fatalf("content = %s, want the text alone: %v", item.Content, err)
+			}
+			got = append(got, item.Role+": "+text)
+		default:
+			t.Fatalf("unexpected input item in %s", body)
+		}
+	}
+	want := []string{
+		"call call-1",
+		"output call-1: " + placeholder,
+		"call call-2",
+		"user: Result of tool call call-1 (Bash {\"command\": \"make\"}):\nbuild finished",
+		"output call-2: module example",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("input = %q, want %q", got, want)
+	}
+}
+
+// inputLines renders a request body's input one line per item: a call, an
+// output with its text, or a message with its role.
+func inputLines(t *testing.T, body []byte) []string {
+	t.Helper()
+	var request struct {
+		Input []struct {
+			Type    string         `json:"type"`
+			Role    string         `json:"role"`
+			Content jsontext.Value `json:"content"`
+			CallID  string         `json:"call_id"`
+			Output  []struct {
+				Text string `json:"text"`
+			} `json:"output"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	var lines []string
+	for _, item := range request.Input {
+		switch {
+		case item.Type == "function_call":
+			lines = append(lines, "call "+item.CallID)
+		case item.Type == "function_call_output":
+			var texts []string
+			for _, part := range item.Output {
+				texts = append(texts, part.Text)
+			}
+			lines = append(lines, "output "+item.CallID+": "+strings.Join(texts, ""))
+		case item.Role != "":
+			var text string
+			if err := json.Unmarshal(item.Content, &text); err != nil {
+				t.Fatalf("content = %s, want the text alone: %v", item.Content, err)
+			}
+			lines = append(lines, item.Role+": "+text)
+		default:
+			t.Fatalf("unexpected input item in %s", body)
+		}
+	}
+	return lines
+}
+
+// A fork keeps the calls made before it but not their results, and Kimi
+// rejects a call that no output follows ("tool_call_ids did not have response
+// messages"): each such call is answered after the calls and results around
+// it, where its result would have been.
+func TestRequestBodyAnswersCallsWithoutResults(t *testing.T) {
+	const missing = "No result was recorded for this tool call."
+	message := func(role llm.Role, text string) llm.Item {
+		return llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: role, Text: text}}
+	}
+	call := func(id string) llm.Item {
+		return llm.Item{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: id, Name: "Bash", Arguments: `{}`}}
+	}
+	body, err := requestBody(llm.Request{
+		Model: llm.Model{ID: "kimi-test"},
+		Input: []llm.Item{
+			message(llm.RoleUser, "look at the repo"),
+			message(llm.RoleAssistant, "Let me look."),
+			call("Bash:0"),
+			call("Bash:1"),
+			message(llm.RoleAssistant, "Now the files."),
+			call("Read:2"),
+			call("Read:3"),
+			toolResult("Read:2", textOutput("package main")),
+			call("Bash:4"),
+			message(llm.RoleUser, "commit it"),
+			call("Bash:5"),
+		},
+	}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"user: look at the repo",
+		"assistant: Let me look.",
+		"call Bash:0",
+		"call Bash:1",
+		"output Bash:0: " + missing,
+		"output Bash:1: " + missing,
+		"assistant: Now the files.",
+		"call Read:2",
+		"call Read:3",
+		"output Read:2: package main",
+		"output Read:3: " + missing,
+		"call Bash:4",
+		"output Bash:4: " + missing,
+		"user: commit it",
+		"call Bash:5",
+		"output Bash:5: " + missing,
+	}
+	if got := inputLines(t, body); !reflect.DeepEqual(got, want) {
+		t.Fatalf("input = %q, want %q", got, want)
+	}
+}
+
+func TestRequestBodyKeepsTheOrderOfALateResultsImages(t *testing.T) {
+	body, err := requestBody(llm.Request{
+		Model: llm.Model{ID: "gpt-test"},
+		Input: []llm.Item{
+			{Type: llm.ItemToolCall, Data: llm.ToolCall{CallID: "call-1", Name: "Screenshot", Arguments: `{}`}},
+			toolResult("call-1", textOutput("Tool call is still running.")),
+			toolResult("call-1",
+				textOutput("captured"),
+				llm.ToolResultOutput{Kind: llm.ToolResultImage, Value: "data:image/png;base64,aGVsbG8="},
+				textOutput("2 windows"),
+			),
+		},
+	}, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var request struct {
+		Input []struct {
+			Role    string           `json:"role"`
+			Content []map[string]any `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]any{
+		{"type": "input_text", "text": "Result of tool call call-1 (Screenshot {}):\ncaptured"},
+		{"type": "input_image", "image_url": "data:image/png;base64,aGVsbG8=", "detail": "auto"},
+		{"type": "input_text", "text": "2 windows"},
+	}
+	if len(request.Input) != 3 || request.Input[2].Role != "user" || !reflect.DeepEqual(request.Input[2].Content, want) {
+		t.Fatalf("input = %s", body)
+	}
+}
+
 func TestRequestBodyRejectsInvalidItemPayloads(t *testing.T) {
 	tests := []struct {
 		name string

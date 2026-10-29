@@ -214,6 +214,7 @@ off.
 | `layout:view`, `layout:panel`, `layout:resize`, `sidebar:tab` | the layout: the view, the open panel, the stage's new width, the sidebar's tab |
 | `models`, `theme`, `appearance` | the models; the theme; the appearance as it changes, `{ accent, shade, radius, compact }` |
 | `preferences` | what new sessions start with, `{ effort, last_model, … }` as saved, and when it was asked for, from the effort plugin |
+| `accounts:prices` | none: the user changed a price or the unit amounts show in (`GET /api/usage/price?model=…` prices a session's models), from the accounts plugin |
 | `service`, `point:<name>`, `store:<key>`, `slots` | a service came or went; a contribution point changed; a stored key; a slot |
 | `plugin-reloaded`, `plugin-restyled`, `plugin-error`, `online`, `ready` | the kernel |
 

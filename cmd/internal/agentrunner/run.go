@@ -53,6 +53,7 @@ const (
 	thinkingTurnsEnvironment  = "KOU_CONVEYOR_THINKING_TURNS"
 	contextWindowEnvironment  = runconfig.ContextWindowEnvironment
 	autoCompactEnvironment    = "KOU_CONVEYOR_AUTO_COMPACT"
+	maskResultsEnvironment    = "KOU_CONVEYOR_MASK_RESULTS"
 	// recoveryEnvironment set to off leaves the model's answers as they
 	// come: no request to go on after the output limit, none to answer
 	// again after a refusal, no request sent again after a failure.
@@ -535,6 +536,10 @@ func Run(
 	if err != nil {
 		return err
 	}
+	maskResults, err := readMaskResults(getenv)
+	if err != nil {
+		return err
+	}
 	bounds, err := readRunBounds(getenv)
 	if err != nil {
 		return err
@@ -804,6 +809,15 @@ func Run(
 	systemPrompt = strings.TrimSpace(systemPrompt) + "\n\n" + environmentBlock(workspace, shell, profile, box.Description(), time.Now())
 	// A compaction points the model to the whole conversation, shows the
 	// notes it keeps and lists the files it touched (longrun.go).
+	// Observation masking (arXiv:2508.21433): all but the latest tool
+	// results are replaced with notes, whatever the conversation's size,
+	// so it grows slowly enough that pruning and compaction — the
+	// summarization the paper defers to the longest trajectories — come
+	// late or never. With automatic compaction off, masking manages the
+	// context on its own.
+	if maskResults > 0 {
+		builder.SetMasking(contextbuilder.MaskOptions{Results: maskResults})
+	}
 	builder.SetTranscript(transcriptPath)
 	memory := newSessionMemory(storeDirectory, sessionID, slices.ContainsFunc(names, func(name string) bool {
 		return name == tool.EditName || name == tool.WriteName || name == tool.ApplyPatchName
@@ -1356,6 +1370,21 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 		return window, tokens, nil
 	}
 	return 0, 0, fmt.Errorf("%s must be off, a number of tokens such as 150000 or 150k, or a share of the context window such as 80%%", autoCompactEnvironment)
+}
+
+// readMaskResults reads KOU_CONVEYOR_MASK_RESULTS: how many of the latest
+// tool results stay whole while the older ones are masked to notes
+// (arXiv:2508.21433); unset or 0 masks nothing.
+func readMaskResults(getenv func(string) string) (int, error) {
+	value := strings.TrimSpace(getenv(maskResultsEnvironment))
+	if value == "" {
+		return 0, nil
+	}
+	results, err := strconv.Atoi(value)
+	if err != nil || results < 0 {
+		return 0, fmt.Errorf("%s must be a whole number of results, or 0 to mask nothing", maskResultsEnvironment)
+	}
+	return results, nil
 }
 
 // parseTokens reads a positive token count, optionally in thousands (k) or

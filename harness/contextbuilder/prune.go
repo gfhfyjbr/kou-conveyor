@@ -118,7 +118,7 @@ func (current *builder) prune() int {
 			continue
 		}
 		result := item.Data.(llm.ToolResult)
-		if isPruned(result.Output) || isRunning(result.Output) {
+		if isPruned(result.Output) || isMasked(result.Output) || isRunning(result.Output) {
 			continue
 		}
 		results = append(results, index)

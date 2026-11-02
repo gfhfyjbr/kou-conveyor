@@ -176,7 +176,7 @@ func (current *builder) Compact(response llm.Response, kept *Compacted) (Compact
 	prefix = append(prefix, current.committedPrefix[0], userMessage(made.Message))
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
 	current.compactable = false
-	current.pruned, current.thinkingLeftOut, current.imagesLeftOut = 0, 0, 0
+	current.pruned, current.masked, current.thinkingLeftOut, current.imagesLeftOut = 0, 0, 0, 0
 	current.usage, current.usageMark = 0, 0
 	return made, true
 }

@@ -73,6 +73,13 @@ type Builder interface {
 	// are cut down to notes, to keep the context small between
 	// compactions (PruneOptions).
 	SetPruning(PruneOptions)
+	// SetMasking says how many of the latest tool results stay whole; the
+	// older ones are replaced with a note (MaskOptions). A rolling window
+	// rather than a budget as pruning is, it keeps a long conversation
+	// small without a summarization pass, and defers the compactions it
+	// does not replace, as "The Complexity Trap" (arXiv:2508.21433)
+	// describes.
+	SetMasking(MaskOptions)
 	// Resumed says that the conversation was restored from a session's
 	// record. What the provider counted for the latest recorded response
 	// was the conversation as the run that sent it pruned it; restored,

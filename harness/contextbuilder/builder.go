@@ -61,11 +61,14 @@ type builder struct {
 	// pruning says when the oldest tool results are cut down; pruned
 	// counts those cut so far, thinkingLeftOut the thinking of older turns
 	// that went with them, and imagesLeftOut the images left out
-	// (images.go).
+	// (images.go). masking says how many of the latest results stay whole;
+	// masked counts those replaced with notes so far.
 	pruning         PruneOptions
 	pruned          int
 	thinkingLeftOut int
 	imagesLeftOut   int
+	masking         MaskOptions
+	masked          int
 }
 
 var _ Builder = (*builder)(nil)
@@ -253,6 +256,7 @@ func (current *builder) Commit() {
 
 func (current *builder) Build() (Result, error) {
 	current.boundImages()
+	current.mask()
 	current.prune()
 	request := current.request
 	input := make([]llm.Item, 0, len(current.committedPrefix)+len(current.stagedSuffix))
@@ -269,6 +273,13 @@ func (current *builder) Build() (Result, error) {
 			Kind:   ChangeCompacted,
 			Source: "conversation",
 			Reason: fmt.Sprintf("a summary replaced %d earlier items", current.compacted),
+		})
+	}
+	if current.masked > 0 {
+		result.Report.Changes = append(result.Report.Changes, Change{
+			Kind:   ChangeOmitted,
+			Source: "tool results",
+			Reason: fmt.Sprintf("%d tool results beyond the latest %d were masked to save context", current.masked, current.masking.Results),
 		})
 	}
 	if current.pruned > 0 {

@@ -1,8 +1,8 @@
 // accounts: the Accounts view (layout.view "accounts", #/accounts): the
 // gateway's connection, accounts and endpoints (gateway.js) and the models'
-// context windows (contexts.js) in the stage, its filters in the rail, the
-// count on its tab, and its dialogs to sign in, to add an endpoint and to
-// set a context window. Its second tab, Usage (usage.js, #/accounts/usage,
+// context windows and prompt-cache TTLs (contexts.js) in the stage, its filters
+// in the rail, the count on its tab, and its dialogs to sign in, to add an
+// endpoint and to set a model's settings. Its second tab, Usage (usage.js, #/accounts/usage,
 // U), is what the gateway's requests used and what that comes to as API
 // credits, with the prices tokens count at. Once the page opens, it offers
 // a newer CLIProxyAPI than the server's, if one is out (update.js). It
@@ -145,7 +145,7 @@ export default function activate(cockpit) {
 
   // ---------------------------------------------------------------- the view
 
-  // The context window each model's runs take, listed after the endpoints.
+  // The context window and cache TTL each model's runs take, after the endpoints.
   const contexts = createContexts({
     api: cockpit.api, toast: (text, kind, key) => cockpit.toast(text, kind, key), $,
     openDialog: () => {
@@ -401,6 +401,7 @@ export default function activate(cockpit) {
         : { group: 'Accounts', icon: '$', label: 'Usage & API cost', hint: 'U', detail: 'Tokens by model and account, as API credits', order: 199, run: () => showUsage() },
       { group: 'Accounts', icon: '$', label: 'Set a model\'s price…', detail: 'What a million tokens of it cost as API credits', order: 205, run: () => { showUsage(); usage.openPrice(); } },
       { group: 'Accounts', icon: '⇔', label: 'Set a model\'s context window…', detail: 'Typed, or as OpenRouter lists it', order: 205, run: () => { show('accounts'); contexts.openWindow(); } },
+      { group: 'Accounts', icon: '◷', label: 'Set a model\'s prompt-cache TTL…', detail: 'Provider default, five minutes or one hour', order: 205, run: () => { show('accounts'); contexts.openCache(); } },
       { group: 'Accounts', icon: '+', label: 'Add account…', hint: '+', order: 201, run: () => addAccount() },
       ...panel.providers().map((p) => ({ group: 'Accounts', icon: '+', label: `Add account: ${p.name}`, detail: p.detail, order: 202, run: () => addAccount(p.id) })),
       { group: 'Accounts', icon: '↑', label: 'Import credential files…', order: 203, run: () => { show(); panel.pickFiles(); } },

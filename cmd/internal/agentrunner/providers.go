@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/anthropic"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/fireworks"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/ollama"
@@ -58,7 +59,8 @@ func DefaultProviders() []Provider {
 					return nil, err
 				}
 				return anthropic.NewClient(anthropic.Config{
-					APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, MaxTokens: maxTokens, ThinkingTurns: thinkingTurns,
+					APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, MaxTokens: maxTokens,
+					CacheTTL: getenv(runconfig.CacheTTLEnvironment), ThinkingTurns: thinkingTurns,
 				})
 			},
 		},
@@ -81,8 +83,10 @@ func DefaultProviders() []Provider {
 			BaseURL:           "https://openrouter.ai/api/v1",
 			APIKeyEnvironment: "OPENROUTER_API_KEY",
 			ContextWindow:     gatewayContextWindow,
-			NewClient: func(apiKey, baseURL string, maxAttempts int, _ func(string) string) (Client, error) {
-				return openrouter.NewClient(openrouter.Config{APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts})
+			NewClient: func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
+				return openrouter.NewClient(openrouter.Config{
+					APIKey: apiKey, BaseURL: baseURL, MaxAttempts: &maxAttempts, CacheTTL: getenv(runconfig.CacheTTLEnvironment),
+				})
 			},
 		},
 		{

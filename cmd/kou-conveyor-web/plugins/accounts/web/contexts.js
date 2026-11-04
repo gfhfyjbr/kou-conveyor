@@ -1,13 +1,13 @@
-// Context windows (Models, on the Accounts tab, after the endpoints): the
-// window each model's runs take. A run compacts its conversation before it
-// outgrows the model's context window: the one the runner knows for the
-// models of the providers it knows, else 128k tokens. Here the user sets a
-// model's window, typed or as OpenRouter lists it (Get from OpenRouter), and
-// the model's runs take it (/api/context-windows).
+// Model settings (Models, on the Accounts tab, after the endpoints): the
+// context window and prompt-cache TTL each model's runs take. A run compacts
+// its conversation before it outgrows the context window: the one the runner
+// knows for the models of the providers it knows, else 128k tokens. Here the
+// user sets a model's window, typed or as OpenRouter lists it, and its explicit
+// cache TTL (/api/context-windows, /api/cache-ttls).
 import { h, sync } from './gateway.js';
 
 // SHOWN is how many models the list shows before "more", beside those a
-// window is set for.
+// window or TTL is set for.
 const SHOWN = 12;
 
 // parseTokens reads a number of tokens as typed: 200000, 200 000, 200,000,
@@ -85,13 +85,13 @@ export function createContexts(ctx) {
       box.replaceChildren();
       return;
     }
-    // The models a window is set for first, then those the gateway serves.
-    models.sort((a, b) => (b.window ? 1 : 0) - (a.window ? 1 : 0) || (b.served ? 1 : 0) - (a.served ? 1 : 0) || a.id.localeCompare(b.id));
-    const limit = Math.max(SHOWN, models.filter((m) => m.window).length);
+    // The models a setting is saved for first, then those the gateway serves.
+    models.sort((a, b) => (b.window || b.ttl ? 1 : 0) - (a.window || a.ttl ? 1 : 0) || (b.served ? 1 : 0) - (a.served ? 1 : 0) || a.id.localeCompare(b.id));
+    const limit = Math.max(SHOWN, models.filter((m) => m.window || m.ttl).length);
     const shown = ui.more ? models : models.slice(0, limit);
     const head = h('div', { class: 'list-head', data: { row: 'head' } },
       h('span', { class: 'label', text: `Models · ${models.length}` }),
-      h('span', { class: 'list-range', text: 'The context window each model’s runs compact their conversation within' }),
+      h('span', { class: 'list-range', text: 'Each model’s context window and prompt-cache TTL' }),
       h('button', { class: 'act strong', type: 'button', title: 'Set the context window of a model', onclick: () => openWindow('') }, '+ Window'));
     const card = h('section', { class: 'u-card ctx-card', data: { row: 'windows' } },
       ui.data.error ? h('p', { class: 'settings-status', data: { kind: 'error' }, text: ui.data.error }) : null,
@@ -99,14 +99,19 @@ export function createContexts(ctx) {
         h('thead', null, h('tr', null,
           h('th', { text: 'Model' }),
           h('th', { class: 'num', text: 'Runs take', title: 'The window the model’s runs take: yours where you set one, else the runner’s own' }),
+          h('th', { class: 'num', text: 'Cache TTL', title: 'The prompt-cache TTL the model’s next runs ask for' }),
           h('th', { class: 'num', text: 'Gateway', title: 'The window the gateway’s model registry gives the model' }),
           h('th', { class: 'num', text: 'OpenRouter', title: 'The window OpenRouter lists for the model, as of its list fetched last' }),
           h('th'))),
         h('tbody', null, shown.map(row))),
       models.length > limit ? h('button', { class: 'lim-more u-more', type: 'button', onclick: () => { ui.more = !ui.more; render(); } },
         ui.more ? 'Fewer models' : `+ ${models.length - limit} more model${models.length - limit === 1 ? '' : 's'}`) : null,
-      h('p', { class: 'u-note u-fine', text: 'A run compacts its conversation before it outgrows the model’s context window: yours where you set one, else the one the runner knows for the model, else 128k. OpenRouter lists a model’s largest window; an account of a subscription may serve less of it than an API key does.' }));
+      h('p', { class: 'u-note u-fine', text: 'A run compacts its conversation before it outgrows the model’s context window: yours where you set one, else the one the runner knows for the model, else 128k. Cache TTL applies to providers with configurable prompt caching; Default leaves their own TTL unchanged. OpenRouter lists a model’s largest window; an account of a subscription may serve less of it than an API key does.' }));
     sync(box, [head, card]);
+  }
+
+  function cacheLabel(ttl) {
+    return ttl === '5m' ? '5 min' : ttl === '1h' ? '1 hour' : 'Default';
   }
 
   function row(m) {
@@ -122,6 +127,10 @@ export function createContexts(ctx) {
         m.name && m.name !== m.id ? h('small', { text: m.name }) : null,
         m.served ? null : h('small', { text: 'not served now' }))),
       h('td', { class: 'num ctx-runs' }, runs),
+      h('td', { class: 'num' }, h('button', {
+        class: 'act ctx-cache', type: 'button', text: cacheLabel(m.ttl),
+        title: `Set the prompt-cache TTL of ${m.id}`, onclick: () => openCache(m.id),
+      })),
       h('td', { class: 'num', text: windowLabel(m.gateway), title: m.gateway ? exact(m.gateway) : 'The gateway gives no window for it' }),
       h('td', {
         class: 'num', text: windowLabel(m.openrouter),
@@ -136,6 +145,7 @@ export function createContexts(ctx) {
   function openWindow(model = '') {
     const m = byId(model);
     ui.dialog = {
+      kind: 'context',
       model: m?.id || String(model || ''), tokens: m?.window ? String(m.window) : '',
       // fetched is the window OpenRouter lists for the model: as got, or as
       // the window set was taken from it.
@@ -146,6 +156,16 @@ export function createContexts(ctx) {
     renderDialog();
     if (!ui.data) refresh();
     setTimeout(() => $('context-dialog')?.querySelector(model ? '#context-tokens' : '#context-model')?.focus(), 0);
+  }
+
+  // openCache opens the prompt-cache TTL editor for a model.
+  function openCache(model = '') {
+    const m = byId(model);
+    ui.dialog = { kind: 'cache', model: m?.id || String(model || ''), ttl: m?.ttl || '', busy: false, error: '' };
+    ctx.openDialog();
+    renderCacheDialog();
+    if (!ui.data) refresh();
+    setTimeout(() => $('cache-ttl')?.focus(), 0);
   }
 
   function closeDialog() {
@@ -161,6 +181,7 @@ export function createContexts(ctx) {
     const body = $('context-body');
     const foot = $('context-foot');
     if (!d || !body) return;
+    if (d.kind === 'cache') return renderCacheDialog();
     title.textContent = d.model ? `Context window of ${d.model}` : 'A model’s context window';
     const enter = (event) => {
       if (event.key !== 'Enter') return;
@@ -196,10 +217,67 @@ export function createContexts(ctx) {
     renderStatus();
   }
 
+  function renderCacheDialog() {
+    const d = ui.dialog;
+    const body = $('context-body');
+    const foot = $('context-foot');
+    if (!d || d.kind !== 'cache' || !body) return;
+    $('context-title').textContent = d.model ? `Prompt cache of ${d.model}` : 'A model’s prompt cache';
+    const enter = (event) => {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      saveCache();
+    };
+    body.replaceChildren(
+      h('label', { class: 'field' },
+        h('span', { class: 'label', text: 'Model' }),
+        h('input', {
+          id: 'cache-model', type: 'text', spellcheck: 'false', autocomplete: 'off', value: d.model, list: 'cache-models',
+          oninput: (event) => { d.model = event.target.value.trim(); d.error = ''; renderCacheStatus(); },
+          onkeydown: enter,
+        }),
+        h('datalist', { id: 'cache-models' }, (ui.data?.models || []).map((m) => h('option', { value: m.id })))),
+      h('label', { class: 'field' },
+        h('span', { class: 'label', text: 'Prompt-cache TTL' }),
+        h('select', {
+          id: 'cache-ttl', onchange: (event) => { d.ttl = event.target.value; d.error = ''; renderCacheStatus(); }, onkeydown: enter,
+        },
+        h('option', { value: '', selected: d.ttl === '' }, 'Default · provider decides'),
+        h('option', { value: '5m', selected: d.ttl === '5m' }, '5 minutes · explicit 5m'),
+        h('option', { value: '1h', selected: d.ttl === '1h' }, '1 hour · explicit 1h'))),
+      h('p', { class: 'u-hint', id: 'cache-hint' }),
+      h('p', { class: 'settings-status', id: 'cache-status', role: 'status' }));
+    foot.replaceChildren(
+      h('span', { class: 'settings-path', id: 'cache-foot-note' }),
+      h('button', { class: 'act', type: 'button', onclick: closeDialog }, 'Cancel'),
+      h('button', { class: 'primary', type: 'button', id: 'cache-save', onclick: saveCache }, d.busy ? 'Saving…' : 'Save'));
+    renderCacheStatus();
+  }
+
+  function renderCacheStatus() {
+    const d = ui.dialog;
+    if (!d || d.kind !== 'cache') return;
+    const m = byId(d.model);
+    const hint = $('cache-hint');
+    if (hint) {
+      const says = ['An explicit TTL is sent with prompt-cache breakpoints. Five minutes costs less to write; one hour keeps the cache warm through longer gaps.'];
+      if (!d.model) says.push('Name a model.');
+      else if (!m?.served) says.push('The gateway does not serve this model now; the setting waits for it.');
+      hint.textContent = says.join(' ');
+    }
+    const note = $('cache-foot-note');
+    if (note) note.textContent = !d.ttl ? 'provider default' : m?.ttl && m.ttl !== d.ttl ? `${d.ttl} · replaces ${m.ttl}` : d.ttl;
+    const status = $('cache-status');
+    if (status) status.textContent = d.error;
+    const save = $('cache-save');
+    if (save) save.disabled = d.busy || !d.model;
+  }
+
   // renderStatus updates what the dialog says as its fields change.
   function renderStatus() {
     const d = ui.dialog;
     if (!d) return;
+    if (d.kind === 'cache') return renderCacheStatus();
     const m = byId(d.model);
     const tokens = parseTokens(d.tokens);
     const off = ui.data?.openrouter && !ui.data.openrouter.enabled;
@@ -293,6 +371,36 @@ export function createContexts(ctx) {
     }
   }
 
+  async function saveCache() {
+    const d = ui.dialog;
+    if (!d || d.kind !== 'cache' || d.busy) return;
+    if (!d.model) {
+      d.error = 'Name a model.';
+      renderCacheStatus();
+      return;
+    }
+    const previous = byId(d.model)?.ttl || '';
+    d.busy = true;
+    renderCacheDialog();
+    try {
+      if (d.ttl || previous) {
+        ui.data = await api('/api/cache-ttls' + (d.ttl ? '' : `?${new URLSearchParams({ model: d.model })}`), {
+          method: d.ttl ? 'POST' : 'DELETE',
+          body: d.ttl ? { model: d.model, ttl: d.ttl } : undefined,
+        });
+      }
+      closeDialog();
+      toast(d.ttl ? `Prompt cache saved · ${d.model} · ${cacheLabel(d.ttl)}` : `Prompt cache of ${d.model} uses the provider’s default`);
+      render();
+      ctx.onChange?.();
+    } catch (error) {
+      if (ui.dialog !== d) return;
+      d.busy = false;
+      d.error = error.message;
+      renderCacheDialog();
+    }
+  }
+
   async function remove(model, fromDialog = false) {
     try {
       ui.data = await api(`/api/context-windows?${new URLSearchParams({ model })}`, { method: 'DELETE' });
@@ -311,7 +419,7 @@ export function createContexts(ctx) {
   }
 
   return {
-    open, close, destroy, refresh, openWindow, closeDialog,
+    open, close, destroy, refresh, openWindow, openCache, closeDialog,
     get dialogOpen() { return !!ui.dialog; },
   };
 }

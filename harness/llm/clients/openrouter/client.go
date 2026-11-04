@@ -14,7 +14,10 @@ type Config struct {
 	APIKey      string
 	BaseURL     string
 	MaxAttempts *int
-	Trace       func(Exchange)
+	// CacheTTL is 5m or 1h for explicit prompt-cache breakpoints. Empty keeps
+	// the one-hour default.
+	CacheTTL string
+	Trace    func(Exchange)
 }
 
 type Exchange = responsesapi.Exchange
@@ -34,6 +37,13 @@ func NewClient(config Config) (*Client, error) {
 	if baseURL == "" {
 		return nil, errors.New("OpenRouter base URL must be set")
 	}
+	cacheTTL := strings.ToLower(strings.TrimSpace(config.CacheTTL))
+	if cacheTTL == "" {
+		cacheTTL = "1h"
+	}
+	if cacheTTL != "5m" && cacheTTL != "1h" {
+		return nil, errors.New("cache TTL must be 5m or 1h")
+	}
 
 	remote := primitives.NewRemoteClient()
 	adapter, err := responsesapi.NewAdapter(remote, responsesapi.Config{
@@ -49,12 +59,11 @@ func NewClient(config Config) (*Client, error) {
 		// (Anthropic among them) when the request opts in; the top-level field places
 		// the breakpoint on the last cacheable block and moves it forward each turn.
 		// With the x-session-id header, every turn of a session lands on one warm upstream.
-		// The one-hour TTL survives the gaps an agent session produces (a long tool
-		// call, a many-minute reasoning turn, the tool heartbeat); it costs 2x instead
-		// of 1.25x on the small per-turn cache writes and saves a full-prefix rewrite
-		// per gap.
+		// The one-hour default survives the gaps an agent session produces (a long
+		// tool call, a many-minute reasoning turn, the tool heartbeat). Five minutes
+		// is available when cheaper writes matter more than keeping a cache warm.
 		Extensions: map[string]jsontext.Value{
-			"cache_control": jsontext.Value(`{"type":"ephemeral","ttl":"1h"}`),
+			"cache_control": jsontext.Value(`{"type":"ephemeral","ttl":"` + cacheTTL + `"}`),
 		},
 	})
 	if err != nil {

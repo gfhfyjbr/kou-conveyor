@@ -53,6 +53,7 @@ type Host struct {
 	prices     *PriceBook
 	market     *OpenRouter
 	contexts   *ContextBook
+	caches     *CacheBook
 	quotas     *quotas
 	configPath string
 	// callbacks has redirect sign-ins listen for the provider's redirect.
@@ -96,6 +97,7 @@ func New(opt Options) (*Host, error) {
 		history: NewHistory(filepath.Join(dir, "history.json")), quotas: newQuotas(),
 		ledger: NewLedger(filepath.Join(dir, "usage.json")), prices: prices, market: market,
 		contexts:   NewContextBook(filepath.Join(dir, "context-windows.json")),
+		caches:     NewCacheBook(filepath.Join(dir, "cache-ttls.json")),
 		configPath: filepath.Join(dir, "config.yaml"), callbacks: true, clients: newClientWatch(),
 		state: GatewayStarting, logins: map[string]time.Time{}, ready: make(chan struct{}), done: make(chan struct{}),
 	}, nil

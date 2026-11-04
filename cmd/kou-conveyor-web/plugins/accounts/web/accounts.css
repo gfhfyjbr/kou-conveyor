@@ -605,6 +605,7 @@
 .ctx-table small { font: 10.5px/1.3 var(--mono); color: var(--fg-4); }
 .ctx-runs b { font-weight: 600; color: var(--fg); }
 .ctx-runs .u-src { margin-left: 6px; }
+.ctx-cache { min-width: 56px; font-family: var(--mono); font-size: 11px; }
 .ctx-own { color: var(--fg-4); }
 .ctx-warn { color: var(--warn); }
 

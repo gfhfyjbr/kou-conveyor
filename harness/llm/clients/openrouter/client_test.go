@@ -88,3 +88,42 @@ func TestClientCallsResponsesAPI(t *testing.T) {
 		t.Fatalf("response = %#v", response)
 	}
 }
+
+func TestConfiguredCacheTTL(t *testing.T) {
+	for _, ttl := range []string{"5m", "1h"} {
+		t.Run(ttl, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var body struct {
+					CacheControl *struct {
+						Type string `json:"type"`
+						TTL  string `json:"ttl"`
+					} `json:"cache_control"`
+				}
+				if err := json.UnmarshalRead(request.Body, &body); err != nil {
+					t.Errorf("decode request: %v", err)
+				}
+				if body.CacheControl == nil || body.CacheControl.Type != "ephemeral" || body.CacheControl.TTL != ttl {
+					t.Errorf("cache_control = %#v, want ttl %q", body.CacheControl, ttl)
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = writer.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-1\",\"status\":\"completed\",\"output\":[],\"usage\":{}}}\n\n"))
+			}))
+			defer server.Close()
+			client, err := NewClient(Config{APIKey: "test-key", BaseURL: server.URL, CacheTTL: ttl})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Close()
+			request := llm.Request{
+				Model: llm.Model{ID: "openai/gpt-test"},
+				Input: []llm.Item{{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: "hello"}}},
+			}
+			if _, err := client.Respond(t.Context(), request, llm.RequestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	if _, err := NewClient(Config{APIKey: "test-key", BaseURL: "https://openrouter.ai/api/v1", CacheTTL: "30m"}); err == nil {
+		t.Fatal("an unsupported cache TTL was accepted")
+	}
+}

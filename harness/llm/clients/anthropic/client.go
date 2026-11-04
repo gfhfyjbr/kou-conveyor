@@ -54,6 +54,9 @@ type Config struct {
 	// MaxTokens caps each response, thinking included; 0 picks a default for
 	// the model.
 	MaxTokens int64
+	// CacheTTL explicitly marks prompt-cache breakpoints as 5m or 1h. Empty
+	// leaves the TTL out and lets the endpoint apply its default.
+	CacheTTL string
 	// HTTPClient replaces the default transport, e.g. in tests.
 	HTTPClient *http.Client
 	// ServerFallbacks lets the API re-run a refused request on Anthropic's
@@ -77,6 +80,7 @@ type Client struct {
 	official      bool
 	maxAttempts   int
 	maxTokens     int64
+	cacheTTL      string
 	fallbacks     bool
 	thinkingTurns int64
 	// noFallbacks remembers that the endpoint rejected refusal fallbacks,
@@ -108,6 +112,10 @@ func NewClient(config Config) (*Client, error) {
 	if config.MaxTokens < 0 {
 		return nil, errors.New("max tokens must not be negative")
 	}
+	cacheTTL := strings.ToLower(strings.TrimSpace(config.CacheTTL))
+	if cacheTTL != "" && cacheTTL != "5m" && cacheTTL != "1h" {
+		return nil, errors.New("cache TTL must be 5m or 1h")
+	}
 	thinkingTurns := DefaultThinkingTurns
 	if config.ThinkingTurns != nil {
 		thinkingTurns = *config.ThinkingTurns
@@ -137,6 +145,7 @@ func NewClient(config Config) (*Client, error) {
 		official:      official,
 		maxAttempts:   maxAttempts,
 		maxTokens:     config.MaxTokens,
+		cacheTTL:      cacheTTL,
 		fallbacks:     fallbacks,
 		thinkingTurns: int64(thinkingTurns),
 		idleTimeout:   streamIdleTimeout,

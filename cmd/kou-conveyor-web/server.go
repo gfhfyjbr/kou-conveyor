@@ -208,6 +208,8 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("POST /api/context-windows", s.withGateway(s.handleSetContextWindow))
 	mux.HandleFunc("DELETE /api/context-windows", s.withGateway(s.handleRemoveContextWindow))
 	mux.HandleFunc("GET /api/context-windows/openrouter", s.withGateway(s.handleOpenRouterWindow))
+	mux.HandleFunc("POST /api/cache-ttls", s.withGateway(s.handleSetCacheTTL))
+	mux.HandleFunc("DELETE /api/cache-ttls", s.withGateway(s.handleRemoveCacheTTL))
 	// The gateway's version, and taking its latest release up
 	// (gatewayupdate.go).
 	mux.HandleFunc("GET /api/gateway/update", s.handleGatewayVersion)

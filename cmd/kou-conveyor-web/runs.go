@@ -473,9 +473,9 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		Resume: req.Resume, Rewind: req.Rewind, Compact: req.Compact, Instructions: req.Instructions,
 		Images: req.Images,
 		// The agent of a canvas's node is given the canvas's variables; every
-		// agent, where the tunnel's configuration is (tunnel.go), and the
-		// context window set for its model on the Accounts page (contexts.go).
-		Env: append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), s.contextEnv(req.Model)...),
+		// agent, where the tunnel's configuration is (tunnel.go), and the model
+		// settings on the Accounts page (contexts.go, caches.go).
+		Env: append(append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), s.contextEnv(req.Model)...), s.cacheEnv(req.Model)...),
 		// Browsers show the model's text as it streams and the output of
 		// commands as they run (pump).
 		Stream:   true,

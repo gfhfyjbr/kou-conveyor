@@ -769,6 +769,34 @@ func TestConfiguredMaxTokensWin(t *testing.T) {
 	}
 }
 
+func TestConfiguredCacheTTL(t *testing.T) {
+	for _, test := range []struct{ configured, want string }{{"5m", "5m"}, {" 1H ", "1h"}} {
+		t.Run(test.want, func(t *testing.T) {
+			s := newServer(t, textResponse("ok"))
+			client := newTestClient(t, s, Config{CacheTTL: test.configured})
+			if _, err := client.Respond(t.Context(), conversationRequest("claude-opus-5"), llm.RequestOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			sent := s.request(0)
+			for field, want := range map[string]string{
+				"system":   `[{"cache_control":{"ttl":"` + test.want + `","type":"ephemeral"},"text":"You are careful.","type":"text"}]`,
+				"messages": `[{"content":[{"cache_control":{"ttl":"` + test.want + `","type":"ephemeral"},"text":"List the files.","type":"text"}],"role":"user"}]`,
+			} {
+				if got := encode(t, sent.body[field]); got != want {
+					t.Errorf("%s = %s, want %s", field, got, want)
+				}
+			}
+			beta := sent.header.Get("Anthropic-Beta")
+			if extended := strings.Contains(beta, "extended-cache-ttl-2025-04-11"); extended != (test.want == "1h") {
+				t.Errorf("Anthropic-Beta = %q, extended-cache marker = %v", beta, extended)
+			}
+		})
+	}
+	if _, err := NewClient(Config{APIKey: "k", CacheTTL: "30m"}); err == nil {
+		t.Fatal("an unsupported cache TTL was accepted")
+	}
+}
+
 func TestOfficialAPIStreamsToolInputEagerly(t *testing.T) {
 	tools, err := requestTools(conversationRequest("claude-opus-5").Tools, true)
 	if err != nil {

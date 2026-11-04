@@ -217,8 +217,8 @@ func (h *Host) SetContextWindow(w ContextWindow) (ContextWindow, error) { return
 // RemoveContextWindow drops the context window the user set for a model.
 func (h *Host) RemoveContextWindow(model string) error { return h.contexts.Remove(model) }
 
-// ContextModel is a model the editor of context windows lists: one the
-// gateway serves or the user set a window for.
+// ContextModel is a model the editor of model settings lists: one the gateway
+// serves or the user set a window or cache TTL for.
 type ContextModel struct {
 	ID   string `json:"id"`
 	Name string `json:"name,omitzero"`
@@ -229,6 +229,8 @@ type ContextModel struct {
 	// the model under, when the window was taken from its list.
 	Window int64  `json:"window,omitzero"`
 	From   string `json:"from,omitzero"`
+	// TTL is the prompt-cache TTL the user set; empty for the provider's default.
+	TTL string `json:"ttl,omitzero"`
 	// Gateway is the window the gateway's model registry gives the model.
 	Gateway int64 `json:"gateway,omitzero"`
 	// OpenRouter is the window OpenRouter's list, as kept, gives the model,
@@ -237,25 +239,28 @@ type ContextModel struct {
 	OpenRouterID string `json:"openrouter_id,omitzero"`
 }
 
-// ContextListing is what the editor of context windows shows.
+// ContextListing is what the editor of model settings shows.
 type ContextListing struct {
-	// Models are those the gateway serves, then those only a window is
+	// Models are those the gateway serves, then those only a window or TTL is
 	// kept for.
 	Models     []ContextModel   `json:"models"`
 	OpenRouter OpenRouterStatus `json:"openrouter"`
-	// Error says why the gateway's models, or the windows kept, could not
+	// Error says why the gateway's models, or the settings kept, could not
 	// be read.
 	Error string `json:"error,omitzero"`
 }
 
 // ContextWindows lists the models the gateway serves and those the user set
-// a window for, with the windows the user, the gateway and OpenRouter give
-// them.
+// a window or cache TTL for, with their model settings and the windows the
+// gateway and OpenRouter give them.
 func (h *Host) ContextWindows(ctx context.Context) ContextListing {
 	listing := ContextListing{Models: []ContextModel{}, OpenRouter: h.market.Status()}
 	var problems []string
 	if err := h.contexts.Err(); err != nil {
 		problems = append(problems, "the context windows kept could not be read: "+err.Error())
+	}
+	if err := h.caches.Err(); err != nil {
+		problems = append(problems, "the cache TTLs kept could not be read: "+err.Error())
 	}
 	served, err := h.Models(ctx)
 	if err != nil {
@@ -279,6 +284,9 @@ func (h *Host) ContextWindows(ctx context.Context) ContextListing {
 	for _, w := range h.contexts.Windows() {
 		c := entry(w.Model)
 		c.Window, c.From = w.Tokens, w.OpenRouter
+	}
+	for _, ttl := range h.caches.TTLs() {
+		entry(ttl.Model).TTL = ttl.TTL
 	}
 	for i := range listing.Models {
 		c := &listing.Models[i]

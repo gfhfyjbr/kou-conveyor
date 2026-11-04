@@ -25,6 +25,9 @@ const (
 	// ContextWindowEnvironment sets the model's context window, in tokens
 	// (200000, 200k, 1M), over the one the runner knows or assumes.
 	ContextWindowEnvironment = "KOU_CONVEYOR_CONTEXT_WINDOW"
+	// CacheTTLEnvironment sets the prompt-cache TTL, 5m or 1h, over the
+	// provider's own default. Providers without a configurable cache ignore it.
+	CacheTTLEnvironment = "KOU_CONVEYOR_CACHE_TTL"
 )
 
 // Sandbox modes: where a run works.

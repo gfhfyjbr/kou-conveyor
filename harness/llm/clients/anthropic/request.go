@@ -133,7 +133,7 @@ func (client *Client) params(request llm.Request, keepThinking bool, room int64)
 		// The system prompt (and the tools before it) is the stable prefix; the
 		// last block moves with the conversation so each turn caches for the next.
 		if len(params.System) != 0 {
-			params.System[len(params.System)-1].CacheControl = sdk.NewBetaCacheControlEphemeralParam()
+			params.System[len(params.System)-1].CacheControl = client.cacheControl()
 		}
 		// The previous request ended at the user turn before the latest answer;
 		// marking it too keeps that cache in reach however long this turn got.
@@ -144,9 +144,12 @@ func (client *Client) params(request llm.Request, keepThinking bool, room int64)
 				continue
 			}
 			if control := message.Content[len(message.Content)-1].GetCacheControl(); control != nil {
-				*control = sdk.NewBetaCacheControlEphemeralParam()
+				*control = client.cacheControl()
 			}
 			marked++
+		}
+		if client.cacheTTL == "1h" {
+			params.Betas = append(params.Betas, sdk.AnthropicBetaExtendedCacheTTL2025_04_11)
 		}
 	}
 	thinking := params.Thinking.OfAdaptive != nil || params.Thinking.OfEnabled != nil
@@ -172,6 +175,12 @@ func (client *Client) params(request llm.Request, keepThinking bool, room int64)
 		params.Betas = append(params.Betas, sdk.AnthropicBetaServerSideFallback2026_07_01)
 	}
 	return params, nil
+}
+
+func (client *Client) cacheControl() sdk.BetaCacheControlEphemeralParam {
+	control := sdk.NewBetaCacheControlEphemeralParam()
+	control.TTL = sdk.BetaCacheControlEphemeralTTL(client.cacheTTL)
+	return control
 }
 
 func (client *Client) maxOutputTokens(settings llm.Model, described model) int64 {

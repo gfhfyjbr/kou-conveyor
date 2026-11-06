@@ -37,22 +37,20 @@ func TestCompactionLimits(t *testing.T) {
 		wantWindow, want             int64
 		err                          bool
 	}{
-		// Automatic compaction comes no later than the ceiling, however
-		// large the window.
-		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 200_000},
+		// The default uses the model's window, leaving room for the summary
+		// and the next turn rather than applying a fixed token ceiling.
+		{name: "known model", model: "known", provider: knows, wantWindow: 400_000, want: 367_000},
 		{name: "unknown model", model: "other", provider: knows, wantWindow: 128_000, want: 96_000},
 		{name: "provider without models", model: "known", wantWindow: 128_000, want: 96_000},
-		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 200_000},
-		{name: "window under the ceiling", model: "known", provider: knows, window: "220k", wantWindow: 220_000, want: 187_000},
+		{name: "window from the environment", model: "known", provider: knows, window: "1m", wantWindow: 1_000_000, want: 967_000},
+		{name: "medium window", model: "known", provider: knows, window: "220k", wantWindow: 220_000, want: 187_000},
 		{name: "small window", model: "known", provider: knows, window: "32k", wantWindow: 32_000, want: 24_000},
-		// On the Messages API a Claude model's ceiling is higher
-		// (claudeCompactCeiling); through OpenRouter it is not.
-		{name: "claude", model: "claude-opus-5-5", provider: claude, wantWindow: 1_000_000, want: 390_000},
+		{name: "claude", model: "claude-opus-5-5", provider: claude, wantWindow: 1_000_000, want: 967_000},
 		{name: "claude with a small window", model: "claude-sonnet-4-6", provider: claude, wantWindow: 200_000, want: 167_000},
 		{name: "claude, window from the environment", model: "claude-opus-5-5", provider: claude, window: "300k", wantWindow: 300_000, want: 267_000},
 		{name: "claude, tokens", model: "claude-opus-5-5", provider: claude, setting: "150k", wantWindow: 1_000_000, want: 150_000},
-		{name: "not claude on the messages api", model: "kimi-k3", provider: claude, window: "1m", wantWindow: 1_000_000, want: 200_000},
-		{name: "claude through openrouter", model: "anthropic/claude-opus-4.8", provider: openrouter, wantWindow: 1_000_000, want: 200_000},
+		{name: "not claude on the messages api", model: "kimi-k3", provider: claude, window: "1m", wantWindow: 1_000_000, want: 967_000},
+		{name: "claude through openrouter", model: "anthropic/claude-opus-4.8", provider: openrouter, wantWindow: 1_000_000, want: 967_000},
 		{name: "share of the window", model: "known", provider: knows, setting: "50%", wantWindow: 400_000, want: 200_000},
 		{name: "fractional share", model: "known", provider: knows, setting: " 62.5 % ", wantWindow: 400_000, want: 250_000},
 		{name: "tokens", model: "known", provider: knows, setting: "150000", wantWindow: 400_000, want: 150_000},

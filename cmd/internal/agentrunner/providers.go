@@ -41,7 +41,6 @@ func DefaultProviders() []Provider {
 			APIKeyEnvironment: "ANTHROPIC_API_KEY",
 			ContextWindow:     anthropic.ContextWindow,
 			KeepsThinking:     true,
-			CompactCeiling:    claudeCeiling,
 			NewClient: func(apiKey, baseURL string, maxAttempts int, getenv func(string) string) (Client, error) {
 				var maxTokens int64
 				if value := strings.TrimSpace(getenv(llmMaxTokensEnvironment)); value != "" {
@@ -141,28 +140,6 @@ func thinkingPruning(getenv func(string) string, provider Provider, autoCompact 
 		}
 		return getenv(name)
 	}, nil
-}
-
-// compactCeiling is the most a conversation with the model grows before it
-// is compacted automatically, unless configured: the provider's
-// CompactCeiling, else autoCompactCeiling.
-func compactCeiling(provider Provider, model string) int64 {
-	if provider.CompactCeiling != nil {
-		if ceiling := provider.CompactCeiling(model); ceiling > 0 {
-			return ceiling
-		}
-	}
-	return autoCompactCeiling
-}
-
-// claudeCeiling is the anthropic provider's CompactCeiling:
-// claudeCompactCeiling for a Claude model. Through OpenRouter, which bills
-// the reads, Claude keeps autoCompactCeiling.
-func claudeCeiling(model string) int64 {
-	if anthropic.ContextWindow(model) > 0 {
-		return claudeCompactCeiling
-	}
-	return 0
 }
 
 // gatewayContextWindow knows the models a gateway names by vendor, such as

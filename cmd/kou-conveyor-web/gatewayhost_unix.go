@@ -310,7 +310,10 @@ func runGatewayHost(path string) int {
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"env": append(s.contextEnv(request.Model), s.cacheEnv(request.Model)...)})
+		writeJSON(w, http.StatusOK, gatewayRunEnvironment{
+			Env:          append(s.contextEnv(request.Model), s.cacheEnv(request.Model)...),
+			ServedWindow: host.ServedContextWindow(request.Model),
+		})
 	})
 	var publicationsMu sync.Mutex
 	publications := map[string]bool{}

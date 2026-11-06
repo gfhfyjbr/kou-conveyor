@@ -25,6 +25,9 @@ const (
 	// ContextWindowEnvironment sets the model's context window, in tokens
 	// (200000, 200k, 1M), over the one the runner knows or assumes.
 	ContextWindowEnvironment = "KOU_CONVEYOR_CONTEXT_WINDOW"
+	// ServedContextWindowEnvironment carries a launch-local capacity hint
+	// from the serving gateway, below an explicit ContextWindowEnvironment.
+	ServedContextWindowEnvironment = "KOU_CONVEYOR_SERVED_CONTEXT_WINDOW"
 	// AutoCompactEnvironment sets automatic context compaction: a used
 	// percentage of the window, a token count, or off; empty keeps the default.
 	AutoCompactEnvironment = "KOU_CONVEYOR_AUTO_COMPACT"

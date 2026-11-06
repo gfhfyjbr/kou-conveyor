@@ -116,6 +116,24 @@ func (h *Host) Models(ctx context.Context) ([]Model, error) {
 	return models, nil
 }
 
+// ServedContextWindow reads only the running gateway's registry capacity,
+// without fetching account attribution, saved overrides or OpenRouter advice.
+func (h *Host) ServedContextWindow(model string) int64 {
+	if _, err := h.running(); err != nil {
+		return 0
+	}
+	return servedContextWindow(cliproxy.GlobalModelRegistry(), h.clients.list(), model)
+}
+
+func servedContextWindow(reg registry, clients []string, model string) int64 {
+	for _, m := range servedModels(reg, clients) {
+		if m.ID == model && m.Context > 0 {
+			return m.Context
+		}
+	}
+	return 0
+}
+
 // servedModels gathers the models the clients serve, and the models the
 // registry has available, into one list.
 func servedModels(reg registry, clients []string) []Model {

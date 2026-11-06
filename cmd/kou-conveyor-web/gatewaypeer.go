@@ -161,16 +161,25 @@ func (s *server) gatewayStatus() accounts.Status {
 	return s.gateway.Status()
 }
 
-func (s *server) gatewayRunEnv(ctx context.Context, model string) ([]string, error) {
+type gatewayRunEnvironment struct {
+	Env          []string `json:"env"`
+	ServedWindow int64    `json:"served_window,omitzero"`
+}
+
+func (s *server) gatewayRunEnv(ctx context.Context, model string) ([]string, string, error) {
 	if s.gatewayPeer == nil {
-		return append(s.contextEnv(model), s.cacheEnv(model)...), nil
+		return append(s.contextEnv(model), s.cacheEnv(model)...), "", nil
 	}
-	var response struct {
-		Env []string `json:"env"`
-	}
+	var response gatewayRunEnvironment
 	err := s.gatewayPeer.request(ctx, "POST", "/internal/run-environment", map[string]string{"model": model}, &response)
 	if err == nil {
-		return response.Env, nil
+		settings, _ := s.settings()
+		owner := s.gatewayPeer.description.Gateway.Owner
+		if response.ServedWindow > 0 && owner != "" && s.throughGateway(settings) {
+			response.Env = append(response.Env, servedContextEnv(response.ServedWindow)...)
+			return response.Env, owner, nil
+		}
+		return response.Env, "", nil
 	}
 	// Model overrides are persisted atomically. Reading these books never
 	// writes them, and keeps unrelated direct providers independent of the
@@ -179,7 +188,7 @@ func (s *server) gatewayRunEnv(ctx context.Context, model string) ([]string, err
 	windows := accounts.NewContextBook(filepath.Join(dir, "context-windows.json"))
 	ttls := accounts.NewCacheBook(filepath.Join(dir, "cache-ttls.json"))
 	if readErr := errors.Join(windows.Err(), ttls.Err()); readErr != nil {
-		return nil, errors.Join(err, readErr)
+		return nil, "", errors.Join(err, readErr)
 	}
 	var env []string
 	if window := windows.Resolve(model); window > 0 {
@@ -188,7 +197,7 @@ func (s *server) gatewayRunEnv(ctx context.Context, model string) ([]string, err
 	if ttl := ttls.Resolve(model); ttl != "" {
 		env = append(env, runconfig.CacheTTLEnvironment+"="+ttl)
 	}
-	return env, nil
+	return env, "", nil
 }
 
 // These routes depend only on the accounts host. Connection settings and the

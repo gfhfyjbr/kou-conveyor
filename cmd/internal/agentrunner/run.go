@@ -1323,8 +1323,8 @@ func (observer *sessionObserver) Err() error {
 
 // compactionLimits resolves the model's context window and the request size,
 // in tokens, from which the conversation is compacted automatically; 0 turns
-// that off. The window comes from KOU_CONVEYOR_CONTEXT_WINDOW, the
-// provider's knowledge of the model or defaultContextWindow, and
+// that off. An explicit window wins over the serving gateway's capacity
+// hint, then the provider's knowledge of the model or defaultContextWindow.
 // KOU_CONVEYOR_AUTO_COMPACT sets the threshold: off, a number of tokens, or
 // a percentage of the window.
 func compactionLimits(getenv func(string) string, provider Provider, model string) (int64, int64, error) {
@@ -1335,8 +1335,13 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 			return 0, 0, fmt.Errorf("%s must be a positive number of tokens, such as 200000 or 200k", contextWindowEnvironment)
 		}
 		window = parsed
-	} else if provider.ContextWindow != nil {
-		window = provider.ContextWindow(model)
+	} else {
+		if hint, err := strconv.ParseInt(strings.TrimSpace(getenv(runconfig.ServedContextWindowEnvironment)), 10, 64); err == nil && hint > 0 {
+			window = hint
+		}
+		if window <= 0 && provider.ContextWindow != nil {
+			window = provider.ContextWindow(model)
+		}
 	}
 	if window <= 0 {
 		window = defaultContextWindow

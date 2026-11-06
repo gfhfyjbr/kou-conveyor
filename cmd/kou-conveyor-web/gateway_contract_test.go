@@ -228,7 +228,7 @@ func TestGatewayRunEnvironmentSurvivesHelperLossForUnrelatedProviders(t *testing
 	p.lease.Close()
 	waitGatewayGone(t, p)
 	s := &server{ctx: t.Context(), gatewayPeer: p}
-	env, err := s.gatewayRunEnv(t.Context(), "direct-model")
+	env, _, err := s.gatewayRunEnv(t.Context(), "direct-model")
 	if err != nil || !slices.Equal(env, []string{runconfig.ContextWindowEnvironment + "=64000", runconfig.CacheTTLEnvironment + "=1h"}) {
 		t.Fatalf("unrelated provider lost its persisted overrides: %v %v", env, err)
 	}

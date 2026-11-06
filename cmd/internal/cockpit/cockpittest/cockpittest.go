@@ -417,6 +417,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	if strings.Contains(script, "print-compaction") {
 		answer = "auto_compact=" + os.Getenv("KOU_CONVEYOR_AUTO_COMPACT")
 	}
+	if strings.Contains(script, "print-context-capacity") {
+		served, set := os.LookupEnv("KOU_CONVEYOR_SERVED_CONTEXT_WINDOW")
+		answer = fmt.Sprintf("served=%s present=%t context=%s ttl=%s auto=%s", served, set,
+			os.Getenv("KOU_CONVEYOR_CONTEXT_WINDOW"), os.Getenv("KOU_CONVEYOR_CACHE_TTL"), os.Getenv("KOU_CONVEYOR_AUTO_COMPACT"))
+	}
 	if strings.Contains(script, "print-thinking") {
 		answer = "thinking=" + request.Thinking
 	}

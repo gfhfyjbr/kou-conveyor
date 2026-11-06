@@ -78,3 +78,10 @@ func (s *server) contextEnv(model string) []string {
 	}
 	return nil
 }
+
+func servedContextEnv(tokens int64) []string {
+	if tokens <= 0 {
+		return nil
+	}
+	return []string{runconfig.ServedContextWindowEnvironment + "=" + strconv.FormatInt(tokens, 10)}
+}

@@ -116,7 +116,7 @@ func TestGatewayHostSharesStateAndDrainsItsLastLease(t *testing.T) {
 	fixturePeerRequest(t, second, "POST", "/api/cache-ttls", map[string]string{"model": "fake-model", "ttl": "1h"}, nil)
 	first.lease.Close()
 	front := &server{ctx: t.Context(), gatewayPeer: second}
-	env, err := front.gatewayRunEnv(t.Context(), "FAKE-MODEL")
+	env, _, err := front.gatewayRunEnv(t.Context(), "FAKE-MODEL")
 	if err != nil || !slices.Equal(env, []string{runconfig.ContextWindowEnvironment + "=64000", runconfig.CacheTTLEnvironment + "=1h"}) {
 		t.Fatalf("shared model settings: %v %v", env, err)
 	}

@@ -421,7 +421,7 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	// the connection's, so that the transcript says which model ran.
 	req.Model = model
 	current.model = model
-	modelEnv, err := s.gatewayRunEnv(ctx, model)
+	modelEnv, servedOwner, err := s.gatewayRunEnv(ctx, model)
 	if err != nil {
 		release()
 		return nil, err
@@ -480,7 +480,8 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		// The agent of a canvas's node is given the canvas's variables; every
 		// agent, where the tunnel's configuration is (tunnel.go), and the model
 		// settings on the Accounts page (contexts.go, caches.go).
-		Env: append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), modelEnv...),
+		Env:                append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), modelEnv...),
+		ServedContextOwner: servedOwner,
 		// Browsers show the model's text as it streams and the output of
 		// commands as they run (pump).
 		Stream:   true,

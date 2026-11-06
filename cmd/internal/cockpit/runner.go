@@ -213,6 +213,9 @@ type Request struct {
 	// Env adds variables to the runner's environment, after all the
 	// others: what a canvas gives the agents of its nodes.
 	Env []string
+	// ServedContextOwner binds a serving-capacity hint in Env to the managed
+	// gateway generation resolved for this launch. Empty leaves no hint.
+	ServedContextOwner string
 	// Stream asks for what the session records later, as it comes: the
 	// model's text as it streams and the output of commands as they run,
 	// which Transcript.Live folds. A runner built before cannot.
@@ -541,10 +544,13 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	env := os.Environ()
+	// A serving-capacity hint belongs to this launch, not a parent process or
+	// workspace .env. Keep the key present even when no current hint is valid.
+	env := setEnv(os.Environ(), runconfig.ServedContextWindowEnvironment, "")
 	var resolvedGateway *Gateway
 	provider := o.Provider
 	if o.Provider != "" {
+		env = loadCompactionSettings(o.SettingsFile).Environment(env)
 		env = setEnv(env, providerVariable, o.Provider)
 	} else if o.SettingsFile != "" {
 		settings, err := LoadSettings(o.SettingsFile)
@@ -588,8 +594,13 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	}
 	// What the request adds wins: a canvas's agents get its variables, and
 	// their sandbox.
+	var servedHint string
 	for _, entry := range r.Env {
 		if name, value, ok := strings.Cut(entry, "="); ok && name != "" {
+			if name == runconfig.ServedContextWindowEnvironment {
+				servedHint = value
+				continue
+			}
 			env = setEnv(env, name, value)
 		}
 	}
@@ -618,6 +629,9 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 			lease, err = g.Lease(ctx)
 			if err != nil {
 				return nil, err
+			}
+			if resolvedGateway != nil && r.ServedContextOwner != "" && r.ServedContextOwner == g.Owner {
+				env = setEnv(env, runconfig.ServedContextWindowEnvironment, servedHint)
 			}
 		}
 	}

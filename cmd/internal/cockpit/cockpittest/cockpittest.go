@@ -77,6 +77,7 @@ func Main() {
 //   - "touch": like "tool", and the call writes touched.txt in the workspace:
 //     the prompt, and on later runs what the file had, below it;
 //   - "print-env": answer with the connection variables the runner got;
+//   - "print-compaction": answer with the automatic compaction setting;
 //   - "print-thinking": answer with the thinking level it was asked for;
 //   - "steer": run one Bash call and wait for a message on stdin (-steer)
 //     while it runs; the message is recorded after the call's result, as the
@@ -412,6 +413,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 			values = append(values, strings.ToLower(name)+"="+value)
 		}
 		answer = strings.Join(values, " ")
+	}
+	if strings.Contains(script, "print-compaction") {
+		answer = "auto_compact=" + os.Getenv("KOU_CONVEYOR_AUTO_COMPACT")
+	}
+	if strings.Contains(script, "print-context-capacity") {
+		served, set := os.LookupEnv("KOU_CONVEYOR_SERVED_CONTEXT_WINDOW")
+		answer = fmt.Sprintf("served=%s present=%t context=%s ttl=%s auto=%s", served, set,
+			os.Getenv("KOU_CONVEYOR_CONTEXT_WINDOW"), os.Getenv("KOU_CONVEYOR_CACHE_TTL"), os.Getenv("KOU_CONVEYOR_AUTO_COMPACT"))
 	}
 	if strings.Contains(script, "print-thinking") {
 		answer = "thinking=" + request.Thinking

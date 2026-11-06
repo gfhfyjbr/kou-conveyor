@@ -22,3 +22,28 @@
   .conn-foot { display: grid; grid-template-columns: minmax(0, 1fr); row-gap: 4px; flex: 1 1 0; min-width: 0; }
   .link-state { margin-bottom: 0; }
 }
+
+.compaction-form { display: grid; gap: 12px; min-width: 0; }
+.compaction-form .field { min-width: 0; }
+.set-section[data-section="compaction"] > h2,
+.compaction-form :is(.label, .set-note, .settings-status[data-kind=""]) { color: var(--fg-2); }
+.compaction-form :is(input, select) {
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0 10px;
+  background: var(--bg);
+  border: 1px solid var(--fg-3);
+  border-radius: var(--radius);
+  color: var(--fg);
+  font: 12.5px var(--mono);
+}
+.compaction-form :is(input, select, button):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.compaction-form input[aria-invalid="true"] { border-color: var(--err); }
+.compaction-form :is(button.primary, button.act) { min-height: 44px; max-width: 100%; padding: 0 12px; }
+.compaction-form .act { color: var(--fg-2); }
+.compaction-form .primary:not(:disabled) { color: light-dark(var(--fg), var(--accent-ink)); }
+.compaction-form .primary:hover:not(:disabled) { background: var(--accent); }
+@media (pointer: coarse) {
+  .compaction-form :is(input, select) { font-size: 16px; }
+}

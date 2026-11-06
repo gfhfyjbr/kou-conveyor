@@ -44,6 +44,12 @@ const FIGURES = ['cache', 'context', 'speed', 'turns'];
 const FACE = { context: '', cache: 'cache', speed: 'tok/s', turns: 'turns' };
 const FACE_ORDER = ['context', 'cache', 'speed', 'turns'];
 
+export function contextMetrics(size, used) {
+  if (!Number.isFinite(size) || size <= 0) return null;
+  const left = Math.max(0, size - used);
+  return { left, share: Math.min(1, left / size) };
+}
+
 export default function activate(cockpit) {
   const { h, svg, fmt, prefs } = cockpit;
   const session = cockpit.use('session');
@@ -316,13 +322,6 @@ export default function activate(cockpit) {
 
   // ---------------------------------------------------------------- the figures
 
-  // The conversation is compacted before its window is full: unless
-  // KOU_CONVEYOR_AUTO_COMPACT says otherwise, 33k short of it (a quarter of
-  // a small one), and at 200k at most, 390k for a Claude model on the
-  // Messages API, whose IDs carry no vendor (agentrunner, compactionLimits).
-  // The context left is what is left until then.
-  const compactsAt = (size, model) =>
-    Math.min(size - Math.min(33_000, size / 4), /^claude-/i.test(model) ? 390_000 : 200_000);
   // Tokens per second: output tokens over the time their turns took, as the
   // inspector's Tokens counts them.
   const perSecond = (tokens, ms) => (tokens > 0 && ms > 0 ? (tokens * 1000) / ms : NaN);
@@ -377,17 +376,17 @@ export default function activate(cockpit) {
     const size = known?.context || 0;
     const used = usage.context || 0;
     // The chip's card says under its figures whose window it is.
+    const context = contextMetrics(size, used);
     let note;
-    if (size > 0) {
-      const at = compactsAt(size, model);
-      const left = Math.max(0, at - used);
+    if (context) {
+      const { left, share } = context;
       const label = models.contextLabel?.(size) || fmt.tokens(size);
       put(figures.context, {
-        value: fmt.tokens(left), unit: 'left', share: left / at,
-        tone: left <= at * 0.1 ? 'err' : left <= at * 0.25 ? 'warn' : '',
-        title: `Context left before the conversation is compacted: the latest request held ${fmt.tokens(used)} of about ${fmt.tokens(at)}, in the ${label} window of ${known.name || model}`,
+        value: fmt.tokens(left), unit: 'left', share,
+        tone: left <= size * 0.1 ? 'err' : left <= size * 0.25 ? 'warn' : '',
+        title: `Context left in the selected model's listed ${label} window: ${fmt.tokens(used)} input tokens in the latest request. Automatic compaction may happen earlier.`,
       });
-      note = `${known.name || model} · ${label} window · compacted at about ${fmt.tokens(at)}`;
+      note = `${known.name || model} · ${label} listed window`;
     } else {
       put(figures.context, {
         value: fmt.tokens(used), unit: 'used',
@@ -547,7 +546,7 @@ export default function activate(cockpit) {
           h('span', null, figures[key].name))));
       const node = h('div', null,
         h('div', { class: 'set-row' }, h('span', { class: 'label', text: 'Look' }), looks,
-          h('p', { class: 'set-note', text: 'The cache\'s hits, the context left before the conversation is compacted, the tokens per second of the latest turn and the turns, by the prompt: in a tray under it, as they were first; on a quiet line there; in a chip in its row, whose card has them all; or nowhere — the inspector\'s Tokens has them all.' })),
+          h('p', { class: 'set-note', text: 'The cache\'s hits, the context left in the selected model\'s listed window, the tokens per second of the latest turn and the turns, by the prompt: in a tray under it, as they were first; on a quiet line there; in a chip in its row, whose card has them all; or nowhere — the inspector\'s Tokens has them all.' })),
         h('div', { class: 'set-row' }, foldRow, hoverRow,
           h('p', { class: 'set-note', text: 'Folded, the tray or the line hides under the prompt. As the pointer comes to the prompt, an arrow slides out from under it: a click on it brings the figures out, another folds them again, and out, they have the arrow under them the same way. Without the second switch, or on a touch screen, the arrow stays out.' })),
         h('div', { class: 'set-row' }, h('span', { class: 'label', text: 'Figures' }), which,

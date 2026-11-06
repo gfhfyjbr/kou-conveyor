@@ -402,6 +402,8 @@ type runnerFeatures struct {
 	// file and the session's lock its own, and says last how it ended.
 	// One built before runs attached.
 	detach bool
+	// lease: it keeps inherited gateway lease fd 4 out of tool processes.
+	lease bool
 }
 
 var runnerSteering = struct {
@@ -436,6 +438,7 @@ func featuresOf(runner string) runnerFeatures {
 		stop:   bytes.Contains(usage.Bytes(), []byte(`{"stop": {"reason"`)),
 		stream: bytes.Contains(usage.Bytes(), []byte(`{"type": "delta"`)),
 		detach: bytes.Contains(usage.Bytes(), []byte(`{"type": "exit"`)),
+		lease:  bytes.Contains(usage.Bytes(), []byte("-gateway-lease")),
 	}
 	runnerSteering.Lock()
 	runnerSteering.byBinary[key] = features
@@ -539,6 +542,7 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		return nil, err
 	}
 	env := os.Environ()
+	var resolvedGateway *Gateway
 	provider := o.Provider
 	if o.Provider != "" {
 		env = setEnv(env, providerVariable, o.Provider)
@@ -550,9 +554,18 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		// The prompt's model may be another than the settings', of another
 		// provider; through the gateway, the run speaks the API it takes.
 		settings = settings.ForModel(r.Model)
-		// A run through the gateway goes where the gateway listens now.
-		if settings, err = ResolveGateway(ctx, o.SettingsFile, settings); err != nil {
-			return nil, err
+		// Keep the generation whose endpoint the runner receives. Reloading the
+		// publication later could silently launch it without that owner's lease.
+		if settings.API == APIGateway {
+			g, err := LoadGateway(GatewayPath(o.SettingsFile))
+			if err != nil {
+				return nil, err
+			}
+			if err := g.Reach(ctx); err != nil {
+				return nil, err
+			}
+			resolvedGateway = &g
+			settings = settings.Through(g)
 		}
 		env = settings.Environment(env)
 		provider = apiDefaults[settings.API].Provider
@@ -583,6 +596,37 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	if err := checkRunner(o.Runner, provider); err != nil {
 		return nil, err
 	}
+	var lease *os.File
+	var g Gateway
+	if resolvedGateway != nil {
+		g = *resolvedGateway
+	} else {
+		g, _ = LoadGateway(GatewayPath(o.SettingsFile))
+	}
+	if g.LeaseSocket != "" {
+		getenv := WorkspaceEnv(o.Workspace)
+		base := getenv(baseURLVariable)
+		for _, entry := range env {
+			if name, value, ok := strings.Cut(entry, "="); ok && name == baseURLVariable {
+				base = value
+			}
+		}
+		if strings.TrimSuffix(strings.TrimRight(base, "/"), "/v1") == strings.TrimRight(g.URL, "/") {
+			if r.Detached != "" && (!features.detach || !features.lease) {
+				return nil, fmt.Errorf("%w: rebuild or update the runner to keep the accounts gateway alive with -gateway-lease", ErrRunnerOutdated)
+			}
+			lease, err = g.Lease(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	leaseHandedOff := false
+	defer func() {
+		if lease != nil && !leaseHandedOff {
+			lease.Close()
+		}
+	}()
 	lock, err := lockSessionFile(o.SessionDir, r.SessionID)
 	if err != nil {
 		return nil, err
@@ -619,8 +663,11 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 		args = append(args, "-stream")
 	}
 	if r.Detached != "" && canDetach && features.detach {
+		if lease != nil {
+			args = append(args, "-gateway-lease")
+		}
 		job, err := startDetached(ctx, o, r, detachedStart{
-			request: request, args: append(args, "-detached"), env: env, lock: lock,
+			request: request, args: append(args, "-detached"), env: env, lock: lock, lease: lease,
 			steers: steers, stops: steers && features.stop, links: features.links,
 		})
 		if err != nil {
@@ -680,7 +727,11 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	} else {
 		close(job.fed)
 	}
+	leaseHandedOff = true
 	go func() {
+		if lease != nil {
+			defer lease.Close()
+		}
 		err := cmd.Wait() // Wait drains both writers before returning.
 		stdout.flush()
 		stderr.flush()

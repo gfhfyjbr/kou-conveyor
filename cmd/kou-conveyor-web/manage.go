@@ -92,9 +92,9 @@ func (s *server) settingsView(settings cockpit.Settings, ws *workspace) settings
 			cockpit.APIMessages:  cockpit.DefaultsFor(cockpit.APIMessages),
 		},
 	}
-	if s.gateway != nil {
-		view.Gateway = s.gateway.URL()
-		view.GatewayInUse = settings.API != cockpit.APIEnvironment && s.gateway.Serves(settings.BaseURL)
+	if s.hasGateway() {
+		view.Gateway = s.gatewayURL()
+		view.GatewayInUse = settings.API != cockpit.APIEnvironment && s.gatewayServes(settings.BaseURL)
 	}
 	return view
 }

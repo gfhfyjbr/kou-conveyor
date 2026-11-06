@@ -23,6 +23,10 @@ import (
 type Gateway struct {
 	URL    string `json:"url"`
 	APIKey string `json:"api_key"`
+	// Owner distinguishes helper generations even when their endpoint and key
+	// are unchanged. LeaseSocket keeps a managed gateway alive for its clients.
+	Owner       string `json:"owner,omitzero"`
+	LeaseSocket string `json:"lease_socket,omitzero"`
 }
 
 // ErrGatewayOff reports that no gateway runs.
@@ -46,12 +50,22 @@ func PublishGateway(path string, g Gateway) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	unlock, err := lockGatewayPublication(path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return replaceFile(path, append(data, '\n'))
 }
 
 // WithdrawGateway removes the publication, if it still names g: another
 // cockpit may have published its own since.
 func WithdrawGateway(path string, g Gateway) {
+	unlock, err := lockGatewayPublication(path)
+	if err != nil {
+		return
+	}
+	defer unlock()
 	if current, err := LoadGateway(path); err == nil && current == g {
 		_ = os.Remove(path)
 	}

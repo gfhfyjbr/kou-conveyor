@@ -164,6 +164,9 @@ func main() {
 }
 
 func runMain(args []string) int {
+	if len(args) == 2 && args[0] == gatewayHostMode {
+		return runGatewayHost(args[1])
+	}
 	if len(args) > 0 && args[0] == "tunnel" {
 		return tunnelMain(args[1:], os.Stdout, os.Stderr)
 	}
@@ -240,8 +243,8 @@ func runMain(args []string) int {
 		fmt.Printf("sessions          %s (every workspace's, linked, with index.json)\n", display(dir))
 		go s.keepSessionLinks(ctx, &sessionLinks{dir: dir})
 	}
-	if s.gateway != nil {
-		status := s.gateway.Status()
+	if s.hasGateway() {
+		status := s.gatewayStatus()
 		fmt.Printf("accounts          %s  (CLIProxyAPI %s, %s)\n", status.URL, status.Version, display(status.Dir))
 	} else if s.gatewayErr != "" {
 		fmt.Fprintln(os.Stderr, "kou-conveyor-web: accounts gateway:", s.gatewayErr)

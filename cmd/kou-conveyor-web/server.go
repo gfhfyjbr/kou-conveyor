@@ -43,8 +43,9 @@ type server struct {
 
 	// gateway is the accounts gateway (accounts.go), nil when it is off;
 	// gatewayErr says why it could not be set up.
-	gateway    *accounts.Host
-	gatewayErr string
+	gateway     *accounts.Host
+	gatewayPeer *gatewayPeer
+	gatewayErr  string
 	// gatewayGone is closed once the gateway stopped and its publication
 	// was withdrawn.
 	gatewayGone chan struct{}
@@ -178,38 +179,9 @@ func (s *server) handler() http.Handler {
 	mux.HandleFunc("DELETE /api/voice", s.handleForgetVoice)
 	// Accounts of the gateway (accounts.go), and signing new ones in.
 	mux.HandleFunc("GET /api/accounts", s.handleAccounts)
-	mux.HandleFunc("GET /api/accounts/models", s.withGateway(s.handleGatewayModels))
+	s.gatewayRoutes(mux)
 	mux.HandleFunc("PUT /api/connection", s.handleSaveConnection)
-	mux.HandleFunc("POST /api/connection/adopt", s.withGateway(s.handleAdoptConnection))
-	mux.HandleFunc("POST /api/endpoints", s.withGateway(s.handleAddEndpoint))
-	mux.HandleFunc("POST /api/endpoints/probe", s.withGateway(s.handleProbeEndpoint))
-	mux.HandleFunc("PUT /api/endpoints/{id}", s.withGateway(s.handleUpdateEndpoint))
-	mux.HandleFunc("PATCH /api/endpoints/{id}", s.withGateway(s.handleSwitchEndpoint))
-	mux.HandleFunc("DELETE /api/endpoints/{id}", s.withGateway(s.handleRemoveEndpoint))
-	mux.HandleFunc("POST /api/accounts/import", s.withGateway(s.handleImportAccount))
-	mux.HandleFunc("GET /api/accounts/{name}/quota", s.withGateway(s.handleAccountQuota))
-	mux.HandleFunc("POST /api/accounts/{name}/refresh", s.withGateway(s.handleRefreshAccount))
-	mux.HandleFunc("PATCH /api/accounts/{name}", s.withGateway(s.handleUpdateAccount))
-	mux.HandleFunc("DELETE /api/accounts/{name}", s.withGateway(s.handleRemoveAccount))
-	mux.HandleFunc("POST /api/sign-ins", s.withGateway(s.handleStartSignIn))
-	mux.HandleFunc("GET /api/sign-ins/{state}", s.withGateway(s.handleSignIn))
-	mux.HandleFunc("POST /api/sign-ins/{state}/callback", s.withGateway(s.handleFinishSignIn))
-	mux.HandleFunc("DELETE /api/sign-ins/{state}", s.withGateway(s.handleCancelSignIn))
-	// What the gateway's requests used, and what it comes to at API prices
-	// (usage.go).
-	mux.HandleFunc("GET /api/usage", s.withGateway(s.handleUsage))
-	mux.HandleFunc("GET /api/usage/prices", s.withGateway(s.handlePrices))
-	mux.HandleFunc("GET /api/usage/price", s.withGateway(s.handleModelPrices))
-	mux.HandleFunc("POST /api/usage/prices", s.withGateway(s.handleSetPrice))
-	mux.HandleFunc("DELETE /api/usage/prices", s.withGateway(s.handleRemovePrice))
-	mux.HandleFunc("PUT /api/usage/unit", s.withGateway(s.handleSetUnit))
-	mux.HandleFunc("POST /api/usage/prices/refresh", s.withGateway(s.handleRefreshPrices))
-	mux.HandleFunc("GET /api/context-windows", s.withGateway(s.handleContextWindows))
-	mux.HandleFunc("POST /api/context-windows", s.withGateway(s.handleSetContextWindow))
-	mux.HandleFunc("DELETE /api/context-windows", s.withGateway(s.handleRemoveContextWindow))
-	mux.HandleFunc("GET /api/context-windows/openrouter", s.withGateway(s.handleOpenRouterWindow))
-	mux.HandleFunc("POST /api/cache-ttls", s.withGateway(s.handleSetCacheTTL))
-	mux.HandleFunc("DELETE /api/cache-ttls", s.withGateway(s.handleRemoveCacheTTL))
+	mux.HandleFunc("POST /api/connection/adopt", s.withGatewayHere(s.handleAdoptConnection))
 	// The gateway's version, and taking its latest release up
 	// (gatewayupdate.go).
 	mux.HandleFunc("GET /api/gateway/update", s.handleGatewayVersion)

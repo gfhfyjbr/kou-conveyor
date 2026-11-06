@@ -136,7 +136,7 @@ func TestGatewayRunEnvironmentNeverHintsFromReadOnlyBooks(t *testing.T) {
 			}
 			path := filepath.Join(dir, "context-windows.json")
 			book := accounts.NewContextBook(path)
-			if _, err := book.Save(accounts.ContextWindow{Model: "alias", Tokens: 64_000}); err != nil {
+			if _, err := book.Set(accounts.ContextWindow{Model: "alias", Tokens: 64_000}); err != nil {
 				t.Fatal(err)
 			}
 			before, err := os.ReadFile(path)

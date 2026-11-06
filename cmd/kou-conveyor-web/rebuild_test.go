@@ -225,6 +225,28 @@ func TestInheritedListener(t *testing.T) {
 	conn.Close()
 }
 
+func TestTakeUpFailureReopensServer(t *testing.T) {
+	h := newHarness(t)
+	root := t.TempDir()
+	h.server.rebuild = &rebuilder{root: root, exe: filepath.Join(root, "missing-server")}
+	if again := h.server.takeUp(h.Context(), h.http.Listener, goFingerprint(root), nil); again != "" {
+		t.Fatalf("takeUp returned a new fingerprint: %s", again)
+	}
+	if status := h.server.rebuild.current(); status.State != "failed" {
+		t.Fatalf("status = %+v", status)
+	}
+	h.server.mu.Lock()
+	closed := h.server.closed
+	h.server.mu.Unlock()
+	if closed {
+		t.Fatal("a failed restart left the server closed to new prompts")
+	}
+	started := h.start(`{"prompt":"after restart"}`)
+	if got, status := h.stream(started["run_id"].(string), ""); status != 200 || got.last().Type != "done" || got.last().Error != "" {
+		t.Fatalf("run after failed restart: status %d, events %#v", status, got.events)
+	}
+}
+
 func itoa(n int) string {
 	digits := ""
 	for {

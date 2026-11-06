@@ -14,6 +14,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -50,6 +51,11 @@ const NoStop = "COCKPITTEST_NO_STOP"
 // apart from their front-ends (-detached).
 const NoDetach = "COCKPITTEST_NO_DETACH"
 
+const NoGatewayLease = "COCKPITTEST_NO_GATEWAY_LEASE"
+
+// ProviderGate is a FIFO a test releases after the providers probe starts.
+const ProviderGate = "COCKPITTEST_PROVIDER_GATE"
+
 // Main turns the test binary into a fake runner when a test launched it
 // through Runner. Call it first in TestMain.
 func Main() {
@@ -79,6 +85,8 @@ func Main() {
 //     "steered: <message>";
 //   - "gate": block until a file named gate exists in the workspace, or
 //     until interrupted;
+//   - "request-model": make one chat-completion request through the connection
+//     in the environment before answering (after "gate", when present);
 //   - "retry": report, once the turn started, that the request to the model
 //     failed and is tried again (retry> on stderr), as the runner does;
 //   - "unfinished": the model stops short of an answer, its thinking cut off
@@ -122,6 +130,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	if os.Getenv(NoSteer) != "1" {
 		steer = flags.Bool("steer", false, "keep reading stdin for messages")
 	}
+	gatewayLease := new(bool)
+	if os.Getenv(NoGatewayLease) != "1" {
+		gatewayLease = flags.Bool("gateway-lease", false, "hold the gateway lease on file descriptor 4")
+	}
 	detached := new(bool)
 	if os.Getenv(NoDetach) != "1" {
 		detached = flags.Bool("detached", false, "run apart from the front-end")
@@ -142,6 +154,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
+	if *gatewayLease {
+		syscall.CloseOnExec(4)
+	}
 	if *detached {
 		following := make(chan struct{})
 		defer func() {
@@ -153,6 +168,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 		}
 	}
 	if *providers {
+		if gate := os.Getenv(ProviderGate); gate != "" {
+			if err := os.WriteFile(gate+".ready", nil, 0o600); err != nil {
+				return 1
+			}
+			f, err := os.Open(gate)
+			if err != nil {
+				return 1
+			}
+			f.Close()
+		}
 		fmt.Fprintln(stdout, "ollama\nopenai\nanthropic\nopenai-codex\nopenrouter\nfireworks")
 		return 0
 	}
@@ -350,6 +375,29 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) (code int) {
 			Operations: shell(operation.StatusCompleted, &operation.ShellResult{Out: "hi\n", OutSize: 3}),
 		})
 		turn = s.turn()
+	}
+	if strings.Contains(script, "request-model") {
+		body, _ := json.Marshal(map[string]any{"model": model, "messages": []map[string]string{{"role": "user", "content": "hello"}}})
+		url := strings.TrimRight(os.Getenv("KOU_CONVEYOR_LLM_BASE_URL"), "/") + "/chat/completions"
+		req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+		if err == nil {
+			req.Header.Set("Authorization", "Bearer "+os.Getenv("KOU_CONVEYOR_LLM_API_KEY"))
+			req.Header.Set("Content-Type", "application/json")
+			var res *http.Response
+			res, err = (&http.Client{Timeout: 5 * time.Second}).Do(req)
+			if err == nil {
+				_, err = io.Copy(io.Discard, res.Body)
+				res.Body.Close()
+				if res.StatusCode != http.StatusOK {
+					err = fmt.Errorf("model request answered %d", res.StatusCode)
+				}
+			}
+		}
+		if err != nil {
+			line, _ := json.Marshal(map[string]string{"type": "error", "message": "model request: " + err.Error()})
+			fmt.Fprintln(stdout, string(line))
+			return 1
+		}
 	}
 	answer := "echo: " + prompt
 	if len(images) != 0 {

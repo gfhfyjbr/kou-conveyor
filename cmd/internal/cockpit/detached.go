@@ -208,7 +208,7 @@ type detachedStart struct {
 	args    []string
 	env     []string
 	// lock holds the session's lock, which goes to the runner.
-	lock                 *os.File
+	lock, lease          *os.File
 	steers, stops, links bool
 }
 
@@ -260,8 +260,11 @@ func startDetached(ctx context.Context, o Options, r Request, s detachedStart) (
 	cmd := spawn.Command(o.Runner, s.args...)
 	cmd.Dir, cmd.Env = o.Workspace, s.env
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
-	if s.lock != nil {
+	if s.lock != nil || s.lease != nil {
 		cmd.ExtraFiles = []*os.File{s.lock} // the runner's file descriptor 3
+		if s.lease != nil {
+			cmd.ExtraFiles = append(cmd.ExtraFiles, s.lease) // gateway lease, fd 4
+		}
 	}
 	detachProcess(cmd.Cmd)
 	if err := cmd.Start(); err != nil {

@@ -97,7 +97,7 @@ func (s *server) startingModel(settings cockpit.Settings, ws *workspace, listed 
 
 // throughGateway says runs go through the gateway this server runs.
 func (s *server) throughGateway(settings cockpit.Settings) bool {
-	return s.opt.Provider == "" && settings.API == cockpit.APIGateway && s.gateway != nil
+	return s.opt.Provider == "" && settings.API == cockpit.APIGateway && s.hasGateway()
 }
 
 // catalogKey tells apart the endpoints whose models are cached.
@@ -108,6 +108,13 @@ func catalogKey(settings cockpit.Settings, ws *workspace) string {
 // gatewayModels are the models the gateway serves, as the composer offers
 // them.
 func (s *server) gatewayModels(ctx context.Context) ([]cockpit.ModelInfo, error) {
+	if s.gatewayPeer != nil {
+		var response struct {
+			Models []cockpit.ModelInfo `json:"models"`
+		}
+		err := s.gatewayPeer.request(ctx, "GET", "/api/accounts/models", nil, &response)
+		return response.Models, err
+	}
 	served, err := s.gateway.Models(ctx)
 	if err != nil {
 		return nil, err

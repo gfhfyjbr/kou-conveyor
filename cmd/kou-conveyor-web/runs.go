@@ -421,6 +421,11 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 	// the connection's, so that the transcript says which model ran.
 	req.Model = model
 	current.model = model
+	modelEnv, err := s.gatewayRunEnv(ctx, model)
+	if err != nil {
+		release()
+		return nil, err
+	}
 	var prompt *cockpit.Entry
 	var tracker *cockpit.Tracker
 	briefed := false
@@ -475,7 +480,7 @@ func (s *server) launch(ctx context.Context, ws *workspace, req startRequest, ha
 		// The agent of a canvas's node is given the canvas's variables; every
 		// agent, where the tunnel's configuration is (tunnel.go), and the model
 		// settings on the Accounts page (contexts.go, caches.go).
-		Env: append(append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), s.contextEnv(req.Model)...), s.cacheEnv(req.Model)...),
+		Env: append(append(s.canvas.RunEnv(ws.ID, req.SessionID), s.tunnel.runEnv()...), modelEnv...),
 		// Browsers show the model's text as it streams and the output of
 		// commands as they run (pump).
 		Stream:   true,
@@ -827,8 +832,11 @@ func (s *server) close(ctx context.Context) bool {
 	if err := s.saveQueues(); err != nil {
 		log.Printf("queues are not kept: %v", err)
 	}
-	// The gateway stops with the server's context, saves its history and
-	// withdraws its publication.
+	if s.gatewayPeer != nil {
+		s.gatewayPeer.lease.Close()
+	}
+	// An embedded gateway stops with the server; a managed gateway keeps
+	// serving every runner or other front-end that still holds its lease.
 	if s.gatewayGone == nil {
 		return true
 	}

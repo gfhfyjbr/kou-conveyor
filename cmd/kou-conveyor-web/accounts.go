@@ -16,14 +16,14 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit"
 )
 
-// The accounts gateway: CLIProxyAPI, run inside the server (package
-// accounts), through which runs reach every model: the accounts signed in
+// The accounts gateway: CLIProxyAPI (package accounts), through which
+// runs reach every model: the accounts signed in
 // with OAuth and the endpoints added with an API key. Browsers see both and
 // how they do, add and remove them, and choose the model runs use; the
 // gateway's key, the accounts' tokens and the endpoints' keys stay here.
 
-// startGateway runs the gateway for the server's lifetime, unless the
-// server was told not to or has nowhere to keep credentials.
+// startGateway attaches a managed gateway for detached runs, or starts an
+// embedded one for the server's lifetime, unless accounts are off.
 func (s *server) startGateway(ctx context.Context) {
 	address := s.opt.accounts
 	if address == "" || address == "off" {
@@ -36,8 +36,30 @@ func (s *server) startGateway(ctx context.Context) {
 	if dir == "" {
 		return
 	}
+	if gatewayHostAvailable && s.opt.detach {
+		o := s.opt
+		var err error
+		o.accountsDir, err = filepath.Abs(dir)
+		if err != nil {
+			s.gatewayErr = err.Error()
+			return
+		}
+		peer, err := startGatewayPeer(ctx, o)
+		if err != nil {
+			s.gatewayErr = err.Error()
+		} else {
+			s.gatewayPeer = peer
+		}
+		return
+	}
+	release, err := ownEmbeddedGateway(dir)
+	if err != nil {
+		s.gatewayErr = err.Error()
+		return
+	}
 	gateway, err := accounts.New(accounts.Options{Dir: dir, Address: address})
 	if err != nil {
+		release()
 		s.gatewayErr = err.Error()
 		return
 	}
@@ -47,6 +69,7 @@ func (s *server) startGateway(ctx context.Context) {
 	// beside the settings, for as long as it runs.
 	go func() {
 		defer close(s.gatewayGone)
+		defer release()
 		published := cockpit.Gateway{}
 		select {
 		case <-gateway.Ready():
@@ -82,12 +105,12 @@ type gatewayUse struct {
 }
 
 func (s *server) gatewayView() gatewayView {
-	if s.gateway == nil {
+	if !s.hasGateway() {
 		view := gatewayView{}
 		view.State, view.Error = "off", s.gatewayErr
 		return view
 	}
-	view := gatewayView{Status: s.gateway.Status(), Enabled: true}
+	view := gatewayView{Status: s.gatewayStatus(), Enabled: true}
 	settings, err := s.settings()
 	switch {
 	case err != nil:
@@ -97,7 +120,7 @@ func (s *server) gatewayView() gatewayView {
 			api = cockpit.GatewayAPI(settings.Model)
 		}
 		view.Use = &gatewayUse{API: api, Model: settings.Model}
-	case settings.API != cockpit.APIEnvironment && s.gateway.Serves(settings.BaseURL):
+	case settings.API != cockpit.APIEnvironment && s.gatewayServes(settings.BaseURL):
 		view.Use = &gatewayUse{API: settings.API, Model: settings.Model}
 	}
 	return view
@@ -139,7 +162,7 @@ func (s *server) connectionView(r *http.Request) connectionView {
 		view.Mode = "environment"
 	default:
 		view.Mode, view.Model, view.API, view.BaseURL, view.KeyHint = "direct", settings.Model, settings.API, settings.BaseURL, settings.KeyHint()
-		view.ViaGateway = s.gateway != nil && s.gateway.Serves(settings.BaseURL)
+		view.ViaGateway = s.gatewayServes(settings.BaseURL)
 	}
 	return view
 }
@@ -165,7 +188,17 @@ func accountsError(w http.ResponseWriter, err error) {
 // withGateway runs a handler that needs the gateway.
 func (s *server) withGateway(handle func(w http.ResponseWriter, r *http.Request, gateway *accounts.Host)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.gateway == nil {
+		if s.gatewayPeer != nil {
+			s.gatewayPeer.forward(w, r)
+			return
+		}
+		s.withGatewayHere(handle)(w, r)
+	}
+}
+
+func (s *server) withGatewayHere(handle func(http.ResponseWriter, *http.Request, *accounts.Host)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.hasGateway() {
 			message := "the accounts gateway is off: start the server with -accounts 127.0.0.1:8318"
 			if s.gatewayErr != "" {
 				message = s.gatewayErr
@@ -182,6 +215,16 @@ func (s *server) withGateway(handle func(w http.ResponseWriter, r *http.Request,
 // handleAccounts lists the accounts, with their uptime over ?range= (24h
 // or 7d), and the sign-ins the gateway offers.
 func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	if s.gatewayPeer != nil {
+		var answer map[string]any
+		if err := s.gatewayPeer.request(r.Context(), "GET", "/api/accounts?"+r.URL.RawQuery, nil, &answer); err != nil {
+			accountsError(w, err)
+			return
+		}
+		answer["gateway"], answer["connection"] = s.gatewayView(), s.connectionView(r)
+		writeJSON(w, http.StatusOK, answer)
+		return
+	}
 	span := r.URL.Query().Get("range")
 	if span == "" {
 		span = "24h"
@@ -212,11 +255,13 @@ func (s *server) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 	// The gateway's summary is the overview's; amounts show in the unit
 	// the user chose for the Usage tab.
-	answer["gateway"] = s.gatewayView()
 	if s.gateway != nil {
 		answer["unit"] = s.gateway.Unit()
 	}
-	answer["connection"] = s.connectionView(r)
+	// An accounts-only helper has no workspace or front-end connection.
+	if s.workspaces != nil {
+		answer["gateway"], answer["connection"] = s.gatewayView(), s.connectionView(r)
+	}
 	writeJSON(w, http.StatusOK, answer)
 }
 
@@ -311,7 +356,7 @@ func (s *server) handleSaveConnection(w http.ResponseWriter, r *http.Request) {
 	var next cockpit.Settings
 	switch choice.Mode {
 	case "gateway":
-		if s.gateway == nil {
+		if !s.hasGateway() {
 			writeError(w, http.StatusConflict, "the accounts gateway is off: start the server with -accounts 127.0.0.1:8318")
 			return
 		}
@@ -363,7 +408,7 @@ func (s *server) handleAdoptConnection(w http.ResponseWriter, r *http.Request, g
 		model = cockpit.DefaultsFor(settings.API).Model
 	}
 	next := cockpit.Settings{API: cockpit.APIGateway, Model: model, Protocol: settings.API}
-	if gateway.Serves(settings.BaseURL) {
+	if s.gatewayServes(settings.BaseURL) {
 		s.saveConnection(w, r, next)
 		return
 	}
@@ -376,7 +421,17 @@ func (s *server) handleAdoptConnection(w http.ResponseWriter, r *http.Request, g
 		in.Kind = "openai"
 	}
 	// The endpoint serves what it lists, else the model runs use.
-	if models, err := gateway.ProbeEndpoint(r.Context(), "", in); err == nil && len(models) > 0 {
+	var models []string
+	if s.gatewayPeer != nil {
+		var response struct {
+			Models []string `json:"models"`
+		}
+		_ = s.gatewayPeer.request(r.Context(), "POST", "/api/endpoints/probe", in, &response)
+		models = response.Models
+	} else {
+		models, _ = gateway.ProbeEndpoint(r.Context(), "", in)
+	}
+	if len(models) > 0 {
 		for _, m := range models {
 			in.Models = append(in.Models, accounts.EndpointModel{Name: m})
 		}
@@ -386,7 +441,12 @@ func (s *server) handleAdoptConnection(w http.ResponseWriter, r *http.Request, g
 	if !slices.ContainsFunc(in.Models, func(m accounts.EndpointModel) bool { return m.Name == model }) {
 		in.Models = append(in.Models, accounts.EndpointModel{Name: model})
 	}
-	if _, err := gateway.AddEndpoint(r.Context(), in); err != nil && !strings.Contains(err.Error(), "already") {
+	if s.gatewayPeer != nil {
+		err = s.gatewayPeer.request(r.Context(), "POST", "/api/endpoints", in, nil)
+	} else {
+		_, err = gateway.AddEndpoint(r.Context(), in)
+	}
+	if err != nil && !strings.Contains(err.Error(), "already") {
 		accountsError(w, err)
 		return
 	}

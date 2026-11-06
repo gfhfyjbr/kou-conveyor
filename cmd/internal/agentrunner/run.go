@@ -378,6 +378,7 @@ func Run(
 	steer := flags.Bool("steer", false, "keep reading stdin after the request: each further JSON object, {\"content\": string, \"message_id\"?: UUID}, is a message for the running agent, which reads it after the tool calls it is making; {\"stop\": {\"reason\": string}} stops the run, which records why")
 	stream := flags.Bool("stream", false, "also write, between the session items, what the session records later if at all: {\"type\": \"delta\", ...} lines with the text of the model's response as it streams, and {\"type\": \"output\", ...} lines with the output of the commands tool calls run, as they run")
 	detached := flags.Bool("detached", false, "run apart from the front-end, which may exit and another take the run up: stdin is a file the front-end appends to, which -steer reads past its end as it grows; file descriptor 3, when open, is the session's lock, which the run holds until it exits and keeps from the commands it runs; and the last line written is {\"type\": \"exit\", \"code\": integer}, the runner's exit status")
+	gatewayLease := flags.Bool("gateway-lease", false, "hold the managed accounts gateway's lease on file descriptor 4 until exit, keeping it from commands")
 	steerWait := flags.Duration("steer-wait", defaultSteerWait, "the longest a message sent with -steer waits for the tool calls the agent is making before it goes in with the results that are in (0 waits for them)")
 	toolGrace := flags.Duration("tool-grace", 3*time.Second, "how long the results of a turn's tool calls are gathered before they wake the model; a result that arrives while other calls run waits this long again for them")
 	toolGraceLimit := flags.Duration("tool-grace-limit", 15*time.Second, "the longest the results wait for the other calls, from when the calls started (0 does not extend the wait)")
@@ -433,6 +434,9 @@ func Run(
 		return listSkills(output, found)
 	}
 
+	if *gatewayLease {
+		keepGatewayLease()
+	}
 	if *detached {
 		// The session's lock stays the runner's: a command that inherited it
 		// would hold the session after the run.

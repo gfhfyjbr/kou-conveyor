@@ -25,8 +25,9 @@ import (
 // Code, Codex — that kou-canvas launch starts in the shell's place. The
 // engine follows what the shell prints: its prompts and commands, which the
 // shell integration marks (OSC 133), say when it is idle and what a command
-// printed, its output; a harness says it through its hooks
-// (kou-canvas hook), or by falling quiet. An agent the user runs in the
+// printed, its output; programs report their state with OSC 7501. Only a
+// program that has never reported falls back to hooks (kou-canvas hook)
+// or silence. An agent the user runs in the
 // shell is found and followed as a harness is (detect.go).
 
 // instance is what runs for a node.
@@ -95,8 +96,11 @@ type terminalInstance struct {
 	// user a question of its own — a folder to trust —; asking, that it
 	// does now: nothing is typed into it then, as a message's Enter would
 	// answer the question.
-	asks   *regexp.Regexp
-	asking atomic.Bool
+	asks           *regexp.Regexp
+	asking         atomic.Bool
+	reported       atomic.Bool             // the current foreground program has sent OSC 7501
+	awaitingReport atomic.Bool             // delivery is reserved until the next root report
+	program        *terminal.ProgramStatus // loop-owned root record
 
 	signal   chan struct{}
 	quit     chan struct{}
@@ -400,7 +404,7 @@ func shellQuote(word string) string {
 // block.
 func (t *terminalInstance) observe(ev terminal.Event) {
 	t.mu.Lock()
-	if len(t.queue) < 8192 || ev.Exit != nil || len(ev.Marks) > 0 {
+	if len(t.queue) < 8192 || ev.Exit != nil || len(ev.Marks) > 0 || len(ev.Programs) > 0 {
 		t.queue = append(t.queue, ev)
 	}
 	t.mu.Unlock()
@@ -456,15 +460,22 @@ func (t *terminalInstance) handle(ev terminal.Event) bool {
 		at := time.Now()
 		t.lastOutput.Store(at.UnixNano())
 		t.noteOutput(at)
-		prev := 0
-		for _, mark := range ev.Marks {
-			at := min(max(mark.At, prev), len(ev.Output))
-			t.segment(ev.Output[prev:at])
-			t.mark(mark)
-			prev = at
-		}
-		t.segment(ev.Output[prev:])
 	}
+	prev, marks, programs := 0, ev.Marks, ev.Programs
+	for len(marks) > 0 || len(programs) > 0 {
+		if len(marks) > 0 && (len(programs) == 0 || marks[0].At < programs[0].At) {
+			at := min(max(marks[0].At, prev), len(ev.Output))
+			t.segment(ev.Output[prev:at])
+			t.mark(marks[0])
+			marks, prev = marks[1:], at
+		} else {
+			at := min(max(programs[0].At, prev), len(ev.Output))
+			t.segment(ev.Output[prev:at])
+			t.programStatus(programs[0])
+			programs, prev = programs[1:], at
+		}
+	}
+	t.segment(ev.Output[prev:])
 	if ev.Meta != nil {
 		t.c.terminalMeta(t.id, t.session)
 	}
@@ -630,6 +641,9 @@ func (t *terminalInstance) foundAgent(f found, started bool) {
 		return
 	}
 	t.c.unanswered(t.id, "it started "+f.agent.Title+" there, which waits for its prompt")
+	if t.reported.Load() {
+		return
+	}
 	if started {
 		t.activeSince, t.lastActive = time.Now(), time.Now()
 		t.c.setStatus(t.id, StateStarting, "starting "+f.agent.Title)
@@ -696,7 +710,11 @@ func (t *terminalInstance) heuristics() {
 	at := time.Now()
 	if at.Sub(t.probed) >= probeEvery {
 		t.probed = at
+		t.session.ProgramState() // also observes a foreground exit with no output
 		t.probe()
+	}
+	if t.reported.Load() {
+		return // no heartbeat or silence timeout applies to explicit status
 	}
 	st := t.c.status(t.id)
 	if t.asks != nil && t.agent == nil && !t.shell && t.followAsks(st) {
@@ -888,7 +906,12 @@ func (t *terminalInstance) followAgent(at time.Time, st Status) {
 	}
 }
 
-func (t *terminalInstance) markDelivered() { t.delivered.Store(time.Now().UnixNano()) }
+func (t *terminalInstance) markDelivered() {
+	t.delivered.Store(time.Now().UnixNano())
+	if t.reported.Load() {
+		t.awaitingReport.Store(true)
+	}
+}
 
 func (t *terminalInstance) deliver(m *Message) error {
 	options := terminal.PasteOptions{Bracketed: true, Submit: "\r", SubmitDelay: 60 * time.Millisecond}

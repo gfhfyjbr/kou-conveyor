@@ -339,10 +339,18 @@ func (c *Canvas) readyLocked(n *Node, st *nodeState, deliver string) bool {
 		case StateExited, StateStopped, StateStarting, StateError, StatePaused:
 			return false
 		}
-		if t, ok := st.inst.(*terminalInstance); ok && t.asking.Load() {
-			// Its harness asks the user a question as it starts: Enter
-			// would answer it.
-			return false
+		if t, ok := st.inst.(*terminalInstance); ok {
+			if t.asking.Load() {
+				// A startup question or an explicit blocked report needs
+				// the user: a queued message's Enter would answer it.
+				return false
+			}
+			if deliver != DeliverNow && (t.awaitingReport.Load() ||
+				t.reported.Load() && t.def.Harness.Output == "hooks" && st.cause != nil) {
+				// A done report can precede the answer hook. Don't give
+				// that answer the next queued message as its cause.
+				return false
+			}
 		}
 		return deliver == DeliverNow || st.status.State == StateIdle
 	}
@@ -399,7 +407,9 @@ func (c *Canvas) dispatchOne() bool {
 		st.cause = m
 		if ti, ok := inst.(*terminalInstance); ok {
 			ti.markDelivered()
-			c.setStatusLocked(target, StateBusy, "delivered")
+			if !ti.reported.Load() {
+				c.setStatusLocked(target, StateBusy, "delivered")
+			}
 		}
 		c.mu.Unlock()
 		err := inst.deliver(m)
@@ -443,6 +453,11 @@ func (c *Canvas) delivered(m *Message, n *Node, err error, before Status) {
 		return
 	}
 	if err != nil {
+		if st := c.states[n.ID]; st != nil {
+			if ti, ok := st.inst.(*terminalInstance); ok {
+				ti.awaitingReport.Store(false)
+			}
+		}
 		m.State, m.Reason = MessageDropped, "delivery failed: "+err.Error()
 		c.recordLocked(m)
 		c.settleLocked(m.ID, "", "it was not delivered: "+err.Error())

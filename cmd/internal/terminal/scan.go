@@ -23,9 +23,13 @@ type scanner struct {
 	// marking has the scanner keep the semantic prompt marks (OSC 133) it
 	// reads in marks, with where each ended in the output fed; the caller
 	// takes them after each feed.
-	marking bool
-	marks   []Mark
-	at      int // where in the output fed now the scanner is
+	marking   bool
+	marks     []Mark
+	at        int // where in the output fed now the scanner is
+	program   ProgramState
+	programs  []ProgramEvent
+	responses []byte
+	truncated bool
 }
 
 // Mark is a semantic prompt mark a shell prints (OSC 133): where its
@@ -85,6 +89,8 @@ func (s *scanner) clone() *scanner {
 		c.modes[mode] = set
 	}
 	c.marking, c.marks = false, nil
+	c.program = s.program.clone()
+	c.programs, c.responses = nil, nil
 	return &c
 }
 
@@ -108,9 +114,13 @@ func (s *scanner) feed(p []byte) (changed bool) {
 		case escape:
 			switch b {
 			case ']':
-				s.state, s.payload = osc, s.payload[:0]
+				s.state, s.payload, s.truncated = osc, s.payload[:0], false
 			case '[':
 				s.state, s.payload = csi, s.payload[:0]
+			case 'c': // RIS clears records, not the current program's reporting history.
+				s.program.Records = nil
+				s.programEvent(true)
+				s.state = ground
 			case 0x1b:
 				// another ESC starts again
 			default:
@@ -119,7 +129,7 @@ func (s *scanner) feed(p []byte) (changed bool) {
 		case osc:
 			switch b {
 			case 0x07:
-				changed = s.command() || changed
+				changed = s.command("\x07") || changed
 				s.state = ground
 			case 0x1b:
 				s.state = oscEscape
@@ -128,16 +138,18 @@ func (s *scanner) feed(p []byte) (changed bool) {
 			default:
 				if len(s.payload) < maxPayload {
 					s.payload = append(s.payload, b)
+				} else {
+					s.truncated = true
 				}
 			}
 		case oscEscape:
 			if b == '\\' {
-				changed = s.command() || changed
+				changed = s.command("\x1b\\") || changed
 				s.state = ground
 			} else if b == '[' {
 				s.state, s.payload = csi, s.payload[:0]
 			} else if b == ']' {
-				s.state, s.payload = osc, s.payload[:0]
+				s.state, s.payload, s.truncated = osc, s.payload[:0], false
 			} else {
 				s.state = ground
 			}
@@ -161,7 +173,7 @@ func (s *scanner) feed(p []byte) (changed bool) {
 }
 
 // command takes an operating system command: a title, or a directory.
-func (s *scanner) command() bool {
+func (s *scanner) command(terminator string) bool {
 	number, text, ok := strings.Cut(string(s.payload), ";")
 	if !ok {
 		return false
@@ -178,7 +190,27 @@ func (s *scanner) command() bool {
 			s.dir = dir
 			return true
 		}
+	case "7501":
+		if s.truncated {
+			break
+		}
+		if text == "?" {
+			if s.marking {
+				s.responses = append(s.responses, "\x1b]7501;"+programStatusReply+terminator...)
+			}
+		} else if report, ok := parseProgramStatus(text); ok {
+			s.program.apply(report)
+			s.programEvent(report.ID == "")
+		}
 	case "133":
+		if text != "" {
+			switch text[0] {
+			case 'A', 'D':
+				s.endProgram()
+			case 'C':
+				s.resetProgram()
+			}
+		}
 		if s.marking && text != "" && strings.IndexByte("ABCD", text[0]) >= 0 {
 			mark := Mark{Kind: text[0], Code: -1, At: s.at}
 			if mark.Kind == 'D' {

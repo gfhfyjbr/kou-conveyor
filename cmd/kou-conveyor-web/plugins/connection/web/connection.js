@@ -5,6 +5,8 @@
 // an endpoint — the dialog the Accounts view opens for one too. It provides
 // the connection service: open(), openDirect(), describe(link), host(url),
 // viaGateway(url, link).
+import { compactionSettings } from './compaction.js';
+
 const SLIDERS = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 4.5h6.5M12 4.5h2.5M1.5 11.5h2.5M8 11.5h6.5" stroke="currentColor" stroke-width="1.4"/><rect x="8.5" y="2.5" width="3" height="4" fill="none" stroke="currentColor" stroke-width="1.4"/><rect x="4.5" y="9.5" width="3" height="4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
 const API_LABEL = { responses: 'Responses API', messages: 'Messages API' };
 
@@ -282,6 +284,10 @@ export default function activate(cockpit) {
   });
 
   cockpit.provide('connection', { open, openDirect, closeDirect, describe, host, viaGateway });
+  cockpit.contribute('settings.section', {
+    id: 'compaction', title: 'Automatic compaction', order: 20,
+    render: () => compactionSettings(cockpit),
+  });
   cockpit.commands.register({ name: 'settings', aliases: ['config', 'connection'], help: 'Connection: the model runs use through the accounts gateway', order: 150, run: open });
   cockpit.keys.register({ key: ',', run: open });
   cockpit.contribute('help.keys', { keys: [','], text: 'Connection: the model runs use through the gateway', order: 120 });

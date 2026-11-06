@@ -42,6 +42,7 @@ type settingsView struct {
 	API                cockpit.API `json:"provider_type"`
 	BaseURL            string      `json:"base_url"`
 	Model              string      `json:"model"`
+	Protocol           cockpit.API `json:"protocol"`
 	KeySet             bool        `json:"api_key_set"`
 	KeyHint            string      `json:"api_key_hint,omitzero"`
 	Flag               string      `json:"provider_flag,omitzero"`
@@ -85,7 +86,7 @@ func (s *server) queryWorkspace(r *http.Request) *workspace {
 func (s *server) settingsView(settings cockpit.Settings, ws *workspace) settingsView {
 	view := settingsView{
 		Available: s.opt.SettingsFile != "", Path: s.opt.SettingsFile,
-		API: settings.API, BaseURL: settings.BaseURL, Model: settings.Model,
+		API: settings.API, BaseURL: settings.BaseURL, Model: settings.Model, Protocol: settings.Protocol,
 		KeySet: settings.APIKey != "", KeyHint: settings.KeyHint(),
 		Flag: s.opt.Provider, Effective: s.connection(settings, ws),
 		AutoCompactPercent: settings.AutoCompactPercent,

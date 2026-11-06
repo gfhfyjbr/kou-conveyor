@@ -23,13 +23,14 @@ type scanner struct {
 	// marking has the scanner keep the semantic prompt marks (OSC 133) it
 	// reads in marks, with where each ended in the output fed; the caller
 	// takes them after each feed.
-	marking   bool
-	marks     []Mark
-	at        int // where in the output fed now the scanner is
-	program   ProgramState
-	programs  []ProgramEvent
-	responses []byte
-	truncated bool
+	marking      bool
+	marks        []Mark
+	at           int // where in the output fed now the scanner is
+	program      ProgramState
+	programEpoch uint64 // OSC 133 command starts, including those in the current feed
+	programs     []ProgramEvent
+	responses    []byte
+	truncated    bool
 }
 
 // Mark is a semantic prompt mark a shell prints (OSC 133): where its
@@ -146,6 +147,10 @@ func (s *scanner) feed(p []byte) (changed bool) {
 			if b == '\\' {
 				changed = s.command("\x1b\\") || changed
 				s.state = ground
+			} else if b == 'c' {
+				s.program.Records = nil
+				s.programEvent(true)
+				s.state = ground
 			} else if b == '[' {
 				s.state, s.payload = csi, s.payload[:0]
 			} else if b == ']' {
@@ -208,6 +213,7 @@ func (s *scanner) command(terminator string) bool {
 			case 'A', 'D':
 				s.endProgram()
 			case 'C':
+				s.programEpoch++
 				s.resetProgram()
 			}
 		}

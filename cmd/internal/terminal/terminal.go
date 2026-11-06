@@ -585,9 +585,9 @@ func (s *Session) pump() {
 		if n > 0 {
 			chunk := slices.Clone(buf[:n])
 			s.mu.Lock()
-			s.syncProgramLocked()
+			ended := s.syncProgramLocked()
 			s.ring.write(chunk)
-			changed := s.scan.feed(chunk)
+			changed := s.scan.feedOutput(chunk, ended)
 			marks := s.scan.takeMarks()
 			programs := s.scan.takePrograms()
 			responses := s.scan.takeResponses()

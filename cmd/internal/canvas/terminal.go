@@ -99,18 +99,21 @@ type terminalInstance struct {
 	asks           *regexp.Regexp
 	asking         atomic.Bool
 	reported       atomic.Bool             // the current foreground program has sent OSC 7501
+	closing        atomic.Bool             // old foreground output may still be buffered
 	awaitingReport atomic.Bool             // delivery is reserved until the next root report
 	program        *terminal.ProgramStatus // loop-owned root record
+	handling       int                     // protected by c.mu; nested startup/batch/event admission gates
 
 	signal   chan struct{}
 	quit     chan struct{}
 	stopOnce sync.Once
 
-	mu       sync.Mutex
-	queue    []terminal.Event
-	cancel   func()
-	answer   string
-	launchAs string // what to type at the first prompt
+	mu            sync.Mutex
+	queue         []terminal.Event
+	programQueued bool // mu protects semantic updates awaiting the loop
+	cancel        func()
+	answer        string
+	launchAs      string // what to type at the first prompt
 	// input is how the agent found in the shell takes text.
 	input *plugin.CanvasInput
 
@@ -224,6 +227,7 @@ func (c *Canvas) startTerminal(n *Node, start bool, resume bool) {
 		defer old.stop()
 	}
 	st.inst, st.terminal = t, session
+	t.handling = 1 // retained state and initial observer drain precede admission
 	state, detail := StateStarting, ""
 	var agent *Agent
 	if !fresh {
@@ -236,11 +240,23 @@ func (c *Canvas) startTerminal(n *Node, start bool, resume bool) {
 			agent = t.presetAgent()
 		}
 	}
-	c.setStatusLocked(n.ID, state, detail)
 	c.setAgentLocked(n.ID, agent)
+	var initial terminal.ProgramState
+	var first sync.Once
+	t.cancel = session.Observe(func(ev terminal.Event) {
+		first.Do(func() {
+			if len(ev.Programs) > 0 {
+				initial = ev.Programs[0].State
+			}
+		})
+		t.observe(ev)
+	})
+	if reportedState, reportedDetail, ok := t.bootstrapProgramLocked(initial); ok {
+		state, detail = reportedState, reportedDetail
+	}
+	c.setStatusLocked(n.ID, state, detail)
 	c.hub.publish(map[string]any{"type": "terminal", "node": n.ID, "terminal": session.Info()})
 	c.mu.Unlock()
-	t.cancel = session.Observe(t.observe)
 	go t.loop(fresh)
 }
 
@@ -406,6 +422,9 @@ func (t *terminalInstance) observe(ev terminal.Event) {
 	t.mu.Lock()
 	if len(t.queue) < 8192 || ev.Exit != nil || len(ev.Marks) > 0 || len(ev.Programs) > 0 {
 		t.queue = append(t.queue, ev)
+		if len(ev.Programs) > 0 || len(ev.Marks) > 0 || ev.Exit != nil {
+			t.programQueued = true
+		}
 	}
 	t.mu.Unlock()
 	select {
@@ -419,6 +438,7 @@ func (t *terminalInstance) take() []terminal.Event {
 	defer t.mu.Unlock()
 	events := t.queue
 	t.queue = nil
+	t.programQueued = false
 	return events
 }
 
@@ -432,15 +452,27 @@ func (t *terminalInstance) loop(fresh bool) {
 	} else {
 		t.prompted = true
 	}
+	initialGate := true
 	for {
 		select {
 		case <-t.quit:
 			return
 		case <-t.signal:
+			t.beginEvent()
+			ended := false
 			for _, ev := range t.take() {
 				if t.handle(ev) {
-					return
+					ended = true
+					break
 				}
+			}
+			t.endEvent()
+			if initialGate {
+				initialGate = false
+				t.endEvent() // drain the observer's initial snapshot before admitting text
+			}
+			if ended {
+				return
 			}
 		case <-fallback:
 			fallback = nil
@@ -456,6 +488,8 @@ func (t *terminalInstance) loop(fresh bool) {
 
 // handle takes an event of the shell in; true when the shell ended.
 func (t *terminalInstance) handle(ev terminal.Event) bool {
+	t.beginEvent()
+	defer t.endEvent()
 	if ev.Output != nil {
 		at := time.Now()
 		t.lastOutput.Store(at.UnixNano())
@@ -490,10 +524,11 @@ func (t *terminalInstance) handle(ev terminal.Event) bool {
 // noteOutput takes in output that came at at: unless it is the echo of
 // what was typed, it shows the program at work.
 func (t *terminalInstance) noteOutput(at time.Time) {
-	if at.Sub(t.session.LastInput()) < echoWindow {
+	input := t.session.LastInput()
+	if at.Sub(input) < echoWindow {
 		return
 	}
-	if at.Sub(t.lastActive) > activityGap {
+	if input.After(t.lastActive) || at.Sub(t.lastActive) > activityGap {
 		t.activeSince = at
 	}
 	t.lastActive = at
@@ -574,7 +609,24 @@ func (t *terminalInstance) mark(mark terminal.Mark) {
 			}
 			t.dropAgent()
 			t.c.unanswered(t.id, title+" exited")
-			t.c.setStatus(t.id, StateIdle, "")
+			if t.closing.Load() {
+				t.c.setStatus(t.id, StateExited, title+" exited")
+			} else {
+				t.c.setStatus(t.id, StateIdle, "")
+			}
+			return
+		}
+		if t.harnessUp || !t.shell && t.inLine && t.launching.Swap(false) {
+			// Without PS0, B precedes the owned command but C never arrives.
+			// A slow shell's initial D before B ends no preset launch.
+			t.harnessUp, t.capturing, t.inLine = false, false, false
+			detail := t.def.Harness.Title + " exited"
+			if mark.Code > 0 {
+				detail += " (" + strconv.Itoa(mark.Code) + ")"
+			}
+			t.c.unanswered(t.id, detail)
+			t.c.setAgent(t.id, nil)
+			t.c.setStatus(t.id, StateExited, detail)
 			return
 		}
 		if !t.capturing {
@@ -592,17 +644,6 @@ func (t *terminalInstance) mark(mark terminal.Mark) {
 		}
 		t.capturing = false
 		code := mark.Code
-		if t.harnessUp {
-			t.harnessUp = false
-			detail := t.def.Harness.Title + " exited"
-			if code > 0 {
-				detail += " (" + strconv.Itoa(code) + ")"
-			}
-			t.c.unanswered(t.id, detail)
-			t.c.setAgent(t.id, nil)
-			t.c.setStatus(t.id, StateExited, detail)
-			return
-		}
 		if !t.shell {
 			t.c.unanswered(t.id, "the command it started ended")
 			t.c.setStatus(t.id, StateIdle, "")
@@ -713,7 +754,7 @@ func (t *terminalInstance) heuristics() {
 		t.session.ProgramState() // also observes a foreground exit with no output
 		t.probe()
 	}
-	if t.reported.Load() {
+	if t.reported.Load() || t.closing.Load() {
 		return // no heartbeat or silence timeout applies to explicit status
 	}
 	st := t.c.status(t.id)
@@ -784,8 +825,8 @@ func (t *terminalInstance) asked() bool {
 // probe looks at the program in the foreground of the shell: an agent
 // that runs there is found, one that ended is let go.
 func (t *terminalInstance) probe() {
-	if t.harnessUp {
-		return // the preset says what runs
+	if !t.shell || t.harnessUp || t.reported.Load() || t.closing.Load() {
+		return // the preset or an explicit report says what runs
 	}
 	program, running := t.session.Foreground()
 	if !running {
@@ -878,7 +919,10 @@ func (t *terminalInstance) followHarness(at time.Time, st Status) {
 // just finished is no new work; and a harness whose hooks say when its
 // turns start is at work again by them alone, save after a question.
 func (t *terminalInstance) resumed(at time.Time, st Status) bool {
-	if !t.harnessUp || !t.working(at) || !t.activeSince.After(st.Since) {
+	// A preset launch without PS0 has no C to confirm it, but is still
+	// owned by this node until D; discovery must not discard its prompt.
+	owned := t.harnessUp || !t.shell && t.inLine && t.launching.Load()
+	if !owned || !t.working(at) || !t.activeSince.After(st.Since) {
 		return false
 	}
 	return st.State == StateWaiting || !slices.Contains(t.def.Harness.Status, "hooks")
@@ -906,6 +950,7 @@ func (t *terminalInstance) followAgent(at time.Time, st Status) {
 	}
 }
 
+// markDelivered is called once by the dispatcher, with c.mu held.
 func (t *terminalInstance) markDelivered() {
 	t.delivered.Store(time.Now().UnixNano())
 	if t.reported.Load() {
@@ -938,7 +983,6 @@ func (t *terminalInstance) deliver(m *Message) error {
 	if m.NoSubmit {
 		options.Submit = ""
 	}
-	t.markDelivered()
 	return t.session.Paste(m.Text, options)
 }
 

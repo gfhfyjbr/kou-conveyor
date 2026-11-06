@@ -30,6 +30,9 @@ type ProgramStatus struct {
 type ProgramState struct {
 	Reported bool            `json:"reported,omitzero"`
 	Records  []ProgramStatus `json:"records,omitzero"`
+	// Closed persists an observed end across buffered/partial output and
+	// foreground probes. Only a new command or foreground program clears it.
+	Closed bool `json:"closed,omitzero"`
 }
 
 func (s ProgramState) clone() ProgramState {
@@ -85,7 +88,7 @@ func (s *ProgramState) apply(r ProgramStatus) {
 // ended drops live records at a shell prompt or process exit. Completed
 // records survive these events, but are no longer the next program's status.
 func (s *ProgramState) ended() {
-	s.Reported = false
+	s.Reported, s.Closed = false, true
 	s.Records = slices.DeleteFunc(s.Records, func(r ProgramStatus) bool {
 		return r.State != "done" && r.State != "error"
 	})
@@ -100,10 +103,12 @@ type ProgramEvent struct {
 	// Root distinguishes a root report (including an unchanged one) from
 	// a child update or a lifecycle boundary.
 	Root bool
+	// Ended removes admission to an exited harness even without OSC 133.
+	Ended bool
 }
 
 func (s ProgramState) rootState() ProgramState {
-	state := ProgramState{Reported: s.Reported}
+	state := ProgramState{Reported: s.Reported, Closed: s.Closed}
 	if root := s.Record(""); root != nil {
 		state.Records = []ProgramStatus{*root}
 	}
@@ -119,7 +124,7 @@ func (s *scanner) programEvent(root bool) {
 }
 
 func (s *scanner) resetProgram() {
-	if !s.program.Reported && len(s.program.Records) == 0 {
+	if !s.program.Reported && !s.program.Closed && len(s.program.Records) == 0 {
 		return
 	}
 	s.program = ProgramState{}
@@ -132,6 +137,20 @@ func (s *scanner) endProgram() {
 	}
 	s.program.ended()
 	s.programEvent(false)
+	if s.marking {
+		s.programs[len(s.programs)-1].Ended = true
+	}
+}
+
+// feedOutput finishes buffered reports from an observed departed foreground
+// program, unless shell integration identifies a newer command in this chunk.
+func (s *scanner) feedOutput(p []byte, ended bool) bool {
+	epoch := s.programEpoch
+	changed := s.feed(p)
+	if s.program.Closed || ended && s.programEpoch == epoch {
+		s.endProgram()
+	}
+	return changed
 }
 
 func (s *scanner) takePrograms() []ProgramEvent {

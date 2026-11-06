@@ -340,15 +340,24 @@ func (c *Canvas) readyLocked(n *Node, st *nodeState, deliver string) bool {
 			return false
 		}
 		if t, ok := st.inst.(*terminalInstance); ok {
+			t.mu.Lock()
+			programQueued := t.programQueued
+			t.mu.Unlock()
+			if t.handling != 0 || t.closing.Load() || programQueued {
+				return false
+			}
 			if t.asking.Load() {
 				// A startup question or an explicit blocked report needs
 				// the user: a queued message's Enter would answer it.
 				return false
 			}
-			if deliver != DeliverNow && (t.awaitingReport.Load() ||
-				t.reported.Load() && t.def.Harness.Output == "hooks" && st.cause != nil) {
-				// A done report can precede the answer hook. Don't give
-				// that answer the next queued message as its cause.
+			if t.reported.Load() && st.cause != nil && st.status.State == StateIdle {
+				// A done report can precede its answer hook; clear may
+				// remove status before completion. Neither may give the
+				// unfinished answer the next message as its cause, even Now.
+				return false
+			}
+			if t.awaitingReport.Load() && deliver != DeliverNow {
 				return false
 			}
 		}

@@ -142,11 +142,14 @@ func TestProgramStatusDoneAndErrorSettleOnlyTheCompletedTurn(t *testing.T) {
 	ti.programStatus(rootReport(terminal.ProgramStatus{State: "working"}))
 	st := ti.c.states[ti.id]
 	st.cause = &Message{ID: "m", Actor: "parent"}
+	if !ti.c.readyLocked(ti.c.doc.node(ti.id), st, DeliverNow) {
+		t.Fatal("Now no longer interrupts an actively working program")
+	}
 	ti.programStatus(rootReport(terminal.ProgramStatus{State: "done"}))
 	if st.cause == nil || st.unanswered != 0 {
 		t.Fatal("done prematurely discarded an answer that still comes through a hook")
 	}
-	if ti.c.readyLocked(ti.c.doc.node(ti.id), st, DeliverQueue) {
+	if ti.c.readyLocked(ti.c.doc.node(ti.id), st, DeliverQueue) || ti.c.readyLocked(ti.c.doc.node(ti.id), st, DeliverNow) {
 		t.Fatal("done let the next prompt steal the pending hook answer's cause")
 	}
 	ti.c.unansweredLocked(ti.id, "answer received")

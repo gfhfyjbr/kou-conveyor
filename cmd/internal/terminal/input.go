@@ -43,6 +43,7 @@ func (s *Session) Observe(fn func(Event)) (cancel func()) {
 		return func() {}
 	}
 	s.syncProgramLocked()
+	s.notifyProgramsLocked()
 	s.observers[n] = fn
 	fn(Event{Programs: []ProgramEvent{{State: s.scan.program.rootState()}}})
 	return func() {

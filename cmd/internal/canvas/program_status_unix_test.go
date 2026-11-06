@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/terminal"
 	"github.com/gfhfyjbr/kou-conveyor/harness/plugin"
 )
 
@@ -76,5 +77,39 @@ done
 	te.must(t, http.StatusOK, "GET", "/api/canvas/nodes/self/read?what=answer", "", token, &read)
 	if read.Text != "hook answer" || read.Status.State != StateError || read.Status.Program == nil || read.Status.Program.State != "error" {
 		t.Fatalf("hook output or reported error was lost: %#v", read)
+	}
+	c.mu.Lock()
+	ti := c.states[node].inst.(*terminalInstance)
+	cause := &Message{ID: "late-hook", Actor: "parent"}
+	wait := &replyWait{done: make(chan struct{})}
+	c.states[node].cause, c.waits[cause.ID] = cause, wait
+	ti.delivered.Store(time.Now().Add(-2 * startedBy).UnixNano())
+	c.mu.Unlock()
+	ti.programStatus(terminal.ProgramEvent{Ended: true, State: terminal.ProgramState{Closed: true}})
+	te.must(t, http.StatusOK, "POST", "/api/canvas/emit", `{"status":"busy"}`, token, nil)
+	c.mu.Lock()
+	if st := c.states[node]; st.cause != cause || st.status.State != StateExited {
+		t.Fatalf("late busy hook discarded the closing scope's cause/state: %#v, %#v", st.cause, st.status)
+	}
+	c.mu.Unlock()
+	select {
+	case <-wait.done:
+		t.Fatal("late busy hook prematurely settled the closing wait")
+	default:
+	}
+	te.must(t, http.StatusOK, "POST", "/api/canvas/emit", `{"status":"idle","text":"late hook answer"}`, token, nil)
+	select {
+	case <-wait.done:
+	default:
+		t.Fatal("late answer hook did not settle the original closing wait")
+	}
+	te.must(t, http.StatusOK, "GET", "/api/canvas/nodes/self/read?what=answer", "", token, &read)
+	if wait.answer != "late hook answer" || wait.reason != "" || read.Text != "late hook answer" || read.Status.State != StateExited {
+		t.Fatalf("late answer was lost or reopened the exited program: %#v, %#v", wait, read)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.readyLocked(c.doc.node(node), c.states[node], DeliverNow) || c.readyLocked(c.doc.node(node), c.states[node], DeliverQueue) {
+		t.Fatal("a late hook reopened delivery into the departed agent's shell")
 	}
 }

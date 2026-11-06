@@ -1318,12 +1318,12 @@ func (e *Engine) handleEmit(w http.ResponseWriter, r *http.Request, a *agentCall
 	if st := c.states[n.ID]; st != nil && st.cause != nil && state == StateBusy && !output && n.harness() {
 		// A turn the canvas did not start — its message went in a while
 		// before — is the user's: its answer stays with the user.
-		if t, ok := st.inst.(*terminalInstance); ok && !t.reported.Load() && time.Since(time.Unix(0, t.delivered.Load())) > startedBy {
+		if t, ok := st.inst.(*terminalInstance); ok && !t.reported.Load() && !t.closing.Load() && time.Since(time.Unix(0, t.delivered.Load())) > startedBy {
 			c.unansweredLocked(n.ID, "«"+n.Title+"» was given another prompt before it answered")
 		}
 	}
 	if st := c.states[n.ID]; st != nil {
-		if t, ok := st.inst.(*terminalInstance); ok && t.reported.Load() {
+		if t, ok := st.inst.(*terminalInstance); ok && (t.reported.Load() || t.closing.Load()) {
 			state = "" // hooks still deliver answers, but cannot replace a report
 			if output {
 				c.kickDispatch()

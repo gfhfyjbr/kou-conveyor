@@ -533,7 +533,7 @@ func (t *Transcript) Apply(line []byte) ([]*Entry, error) {
 		return []*Entry{t.put(&Entry{
 			ID: t.liveID("error"), Kind: KindError, At: time.Now().UTC(), Text: Clean(envelope.Message),
 		})}, nil
-	case "session":
+	case "session", "checkpoint":
 		return nil, nil
 	case "delta", "output":
 		// What streams before the session records it (-stream) is for

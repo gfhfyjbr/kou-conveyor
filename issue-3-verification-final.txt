@@ -1,0 +1,56 @@
+go test -race ./...
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/agentrunner	23.935s
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/canvas	50.484s
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/canvascli	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit	96.207s
+?   	github.com/gfhfyjbr/kou-conveyor/cmd/internal/cockpit/cockpittest	[no test files]
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/fswatch	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/highlight	(cached)
+?   	github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig	[no test files]
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/sessionmetrics	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/surface	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/terminal	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/tunnel	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/worktree	(cached)
+?   	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-canvas	[no test files]
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-relay	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-runner	1.356s
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-tui	114.519s
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-web	112.258s
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/codevm	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/contextbuilder	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/coordinator	6.625s
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/fileops	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/inbox	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/anthropic	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/fireworks	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/ollama	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/openai	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/openaicodex	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/openrouter	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/llm/responsesapi	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/operation	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/plugin	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/primitives	(cached)
+?   	github.com/gfhfyjbr/kou-conveyor/harness/session	[no test files]
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/sessionstore	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/sessionstore/localfile	17.397s
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/skill	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/bash	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/code	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/command	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/file	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/toolarg	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/tool/viewimage	(cached)
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/transcript	(cached)
+?   	github.com/gfhfyjbr/kou-conveyor/internal/openaiapi	[no test files]
+ok  	github.com/gfhfyjbr/kou-conveyor/internal/spawn	(cached)
+# The tests that run the accounts gateway (CLIProxyAPI) skip under the race
+# detector, which reports a race inside it; they run here without it.
+go test -count=1 -run 'TestHost$|TestAccountsGateway$' ./cmd/internal/accounts ./cmd/kou-conveyor-web
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/internal/accounts	2.037s
+ok  	github.com/gfhfyjbr/kou-conveyor/cmd/kou-conveyor-web	2.396s
+go vet ./...

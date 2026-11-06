@@ -3,6 +3,7 @@ package sessionstore
 
 import (
 	"context"
+	"encoding/json/jsontext"
 	"time"
 	"uuid"
 
@@ -97,6 +98,23 @@ type ResumeState struct {
 	Snapshot         Snapshot
 	Operations       []operation.Operation // Unfinished operations and terminal states missing from tool-call history.
 	ExternalInputIDs []inbox.ID
+	// Checkpoint restores the consumer's state before its Items, which hold
+	// only later history. Store.Items and Fork still expose all history.
+	Checkpoint *ResumeCheckpoint
+}
+
+// ResumeCheckpoint is a consumer's replay state at a committed item boundary.
+// State belongs to the consumer; the store does not interpret it.
+type ResumeCheckpoint struct {
+	State jsontext.Value
+	After Sequence
+	Items []Item
+}
+
+// Checkpointer optionally accelerates Store without replacing any history.
+// An interrupted checkpoint write leaves ordinary replay usable.
+type Checkpointer interface {
+	SaveCheckpoint(context.Context, session.ID, jsontext.Value) error
 }
 
 // Store does not serialize methods for the same session ID.

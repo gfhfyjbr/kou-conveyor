@@ -356,6 +356,8 @@ func (m *meter) line(line []byte) {
 			return
 		}
 		m.report.Session = string(record.Session.ID)
+	case "checkpoint":
+		// Replay acceleration repeats no new conversation or operation.
 	case "operation":
 		var record struct{ Operation operation.Operation }
 		if err := json.Unmarshal(envelope.Data, &record); err != nil {

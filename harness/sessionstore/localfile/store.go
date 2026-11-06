@@ -35,6 +35,7 @@ type cachedReadState struct {
 	committedSize int64
 	file          os.FileInfo
 	mapped        *mapping
+	forResume     bool
 }
 
 type Store struct {
@@ -261,7 +262,7 @@ func (store *Store) SaveOperation(
 }
 
 func (store *Store) Resume(ctx context.Context, id session.ID) (sessionstore.ResumeState, error) {
-	state, _, err := store.sharedState(ctx, id)
+	state, _, err := store.sharedState(ctx, id, true)
 	if err != nil {
 		return sessionstore.ResumeState{}, err
 	}
@@ -318,6 +319,7 @@ func (store *Store) readState(
 func (store *Store) readMappedState(
 	ctx context.Context,
 	id session.ID,
+	resume ...bool,
 ) (storedState, int64, *mapping, error) {
 	if err := validateSessionID(id); err != nil {
 		return storedState{}, 0, nil, err
@@ -342,7 +344,11 @@ func (store *Store) readMappedState(
 	if mapped != nil {
 		options = append(options, aliasing(encoded))
 	}
-	state, committedSize, err := decodeLog(encoded, options...)
+	decode := decodeLog
+	if len(resume) > 0 && resume[0] {
+		decode = decodeResumeLog
+	}
+	state, committedSize, err := decode(encoded, options...)
 	mapped.drop()
 	if err == nil && state.Snapshot.Session.ID != id {
 		err = fmt.Errorf("file contains session %q", state.Snapshot.Session.ID)
@@ -365,6 +371,7 @@ func (store *Store) readMappedState(
 func (store *Store) sharedState(
 	ctx context.Context,
 	id session.ID,
+	resume ...bool,
 ) (storedState, int64, error) {
 	if err := validateSessionID(id); err != nil {
 		return storedState{}, 0, err
@@ -372,6 +379,7 @@ func (store *Store) sharedState(
 	if err := context.Cause(ctx); err != nil {
 		return storedState{}, 0, err
 	}
+	forResume := len(resume) > 0 && resume[0]
 	// The file is examined before it is read, so one that grows while it is
 	// read is remembered as it was before and read again the next time.
 	file, statErr := os.Stat(store.sessionPath(id))
@@ -379,11 +387,12 @@ func (store *Store) sharedState(
 		store.readStateCacheMutex.Lock()
 		cached, ok := store.readStateCache[id]
 		store.readStateCacheMutex.Unlock()
-		if ok && sameFileVersion(cached.file, file) {
+		if ok && sameFileVersion(cached.file, file) &&
+			(forResume && cached.forResume || !forResume && cached.state.checkpoint == nil) {
 			return cached.state, cached.committedSize, nil
 		}
 	}
-	state, committedSize, mapped, err := store.readMappedState(ctx, id)
+	state, committedSize, mapped, err := store.readMappedState(ctx, id, resume...)
 	if err != nil {
 		return storedState{}, 0, err
 	}
@@ -398,6 +407,7 @@ func (store *Store) sharedState(
 		committedSize: committedSize,
 		file:          file,
 		mapped:        mapped,
+		forResume:     forResume,
 	}
 	store.readStateCacheMutex.Unlock()
 	previous.mapped.release()
@@ -431,7 +441,7 @@ func (store *Store) loadWriteState(
 	if head, committedSize, ok := store.getCachedWriteState(id); ok {
 		return head, committedSize, nil
 	}
-	state, committedSize, err := store.sharedState(ctx, id)
+	state, committedSize, err := store.sharedState(ctx, id, true)
 	if err != nil {
 		return sessionHead{}, 0, err
 	}
@@ -472,6 +482,7 @@ func (store *Store) append(
 		store.evictCachedWriteState(id)
 		return err
 	}
+	head.noteRecord(kind, value, committedSize)
 	store.putCachedWriteState(id, head, committedSize+int64(len(encoded)))
 	return nil
 }

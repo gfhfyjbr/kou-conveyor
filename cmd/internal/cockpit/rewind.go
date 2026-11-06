@@ -191,8 +191,9 @@ type logRecord struct {
 	item *sessionstore.Item // item records only
 	// operations lists the operations a tool-call status carries, or the one
 	// an operation record saves.
-	operations []operation.ID
-	checkpoint bool // an operation record
+	operations       []operation.ID
+	checkpoint       bool // an operation record
+	resumeCheckpoint bool
 }
 
 // logCut is a session log cut before the run of a prompt (cutLog).
@@ -324,7 +325,7 @@ func (c *logCutter) add(line []byte, where span) error {
 	if err != nil {
 		return fmt.Errorf("read session record %d: %w", c.records+1, err)
 	}
-	if header := record.item == nil && !record.checkpoint; header != (c.records == 0) {
+	if header := record.item == nil && !record.checkpoint && !record.resumeCheckpoint; header != (c.records == 0) {
 		return fmt.Errorf("read session record %d: the session header must come first, and only once", c.records+1)
 	}
 	c.records++
@@ -434,6 +435,8 @@ func decodeLogRecord(line []byte) (logRecord, error) {
 	var record logRecord
 	switch envelope.Type {
 	case "session":
+	case "checkpoint":
+		record.resumeCheckpoint = true
 	case "item":
 		var value struct {
 			Item       sessionstore.Item

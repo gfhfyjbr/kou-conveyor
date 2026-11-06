@@ -85,6 +85,7 @@ const overflowRetries = 3
 type coordinator struct {
 	dependencies Dependencies
 	state        loopState
+	history      replayHistory
 	stop         stopState
 	cancelModel  context.CancelFunc
 }
@@ -1310,6 +1311,11 @@ func (current *coordinator) handleModelResponse(
 		return nil, err
 	}
 	if current.isCompactionTurn(response.TurnID) {
+		if item.Data.(sessionstore.ModelResponse).Compacted != nil {
+			if err := current.saveCheckpoint(ctx); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
 	}
 	statuses, err := current.scheduleToolCalls(ctx)
@@ -1363,7 +1369,14 @@ func (current *coordinator) refreshRunning(update operation.Operation) {
 			continue
 		}
 		current.state.runningDetail[key] = detail
-		current.dependencies.ContextBuilder.AddToolResult(key.callID, []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: detail}}, true)
+		payload := []llm.ToolResultOutput{{Kind: llm.ToolResultText, Value: detail}}
+		if refresher, ok := current.dependencies.ContextBuilder.(interface {
+			RefreshToolResult(string, []llm.ToolResultOutput)
+		}); ok {
+			refresher.RefreshToolResult(key.callID, payload)
+		} else {
+			current.dependencies.ContextBuilder.AddToolResult(key.callID, payload, true)
+		}
 	}
 }
 
@@ -1384,8 +1397,17 @@ func (current *coordinator) restore(ctx context.Context) error {
 }
 
 func (current *coordinator) loadHistory(ctx context.Context) error {
+	checkpoint := current.dependencies.Restored.Checkpoint
+	fromCheckpoint := checkpoint != nil && current.restoreCheckpoint(checkpoint.State)
+	if fromCheckpoint {
+		for _, item := range checkpoint.Items {
+			if err := current.restoreItem(item); err != nil {
+				return err
+			}
+		}
+	}
 	after := sessionstore.BeforeFirst
-	for {
+	for !fromCheckpoint {
 		page, err := current.dependencies.Sessions.Items(
 			ctx,
 			current.dependencies.SessionID,
@@ -1408,6 +1430,7 @@ func (current *coordinator) loadHistory(ctx context.Context) error {
 		}
 		after = page.NextAfter
 	}
+	return nil
 }
 
 func (current *coordinator) restoreItem(item sessionstore.Item) error {
@@ -1467,6 +1490,7 @@ func (current *coordinator) addItemToLocalState(
 			current.state.availableInputs++
 			// A prompt of the user's starts the verifications over.
 			current.state.verifications = 0
+			current.history.Verifications = 0
 			current.state.heartbeats = 0
 		}
 		if input.Kind == inbox.InputControl {
@@ -1479,6 +1503,7 @@ func (current *coordinator) addItemToLocalState(
 				current.state.availableInputs++
 				if strings.HasPrefix(request.Reason, verificationPrefix) {
 					current.state.verifications++
+					current.history.Verifications++
 				}
 				if strings.HasPrefix(request.Reason, reminderPrefix) {
 					current.state.reminded = true
@@ -1489,6 +1514,7 @@ func (current *coordinator) addItemToLocalState(
 			}
 			if request.Mode == inbox.StopHard && request.Reason != "" {
 				current.state.stopped = &recordedStop{at: item.RecordedAt, reason: request.Reason}
+				current.history.Stopped = &checkpointStop{At: item.RecordedAt, Reason: request.Reason}
 			}
 		}
 
@@ -1518,6 +1544,7 @@ func (current *coordinator) addItemToLocalState(
 			// An ordinary turn after a stop was told of it, or was no
 			// run's first.
 			current.state.stopped = nil
+			current.history.Stopped = nil
 		}
 		current.state.compactionAsked = false
 		current.state.currentTurnInputs = current.state.availableInputs
@@ -1599,6 +1626,7 @@ func (current *coordinator) addToolCallsToLocalState(response sessionstore.Model
 			continue
 		}
 		current.state.workSinceVerification = true
+		current.history.WorkSinceVerification = true
 		call := output.Data.(llm.ToolCall)
 		current.state.toolCalls[toolCallKey{
 			turnID: response.TurnID,

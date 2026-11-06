@@ -29,11 +29,17 @@ type sessionHead struct {
 	respondedTurns     map[session.TurnID]struct{}
 	toolCallStatuses   map[toolCallStatusKey]struct{}
 	operationPositions map[operation.ID]int
+	externalInputIDs   []inbox.ID
+	pendingOperations  map[operation.ID]struct{}
+	// Checkpoint-backed heads leave settled operation bodies in the log.
+	operationOffsets   []int64
+	archivedOperations map[operation.ID]bool
 }
 
 type storedState struct {
 	sessionHead
-	Items []sessionstore.Item
+	Items      []sessionstore.Item
+	checkpoint *sessionstore.ResumeCheckpoint
 }
 
 func newStoredState(id session.ID, createdAt time.Time) storedState {
@@ -52,6 +58,7 @@ func newSessionHead(id session.ID, createdAt time.Time) sessionHead {
 		respondedTurns:     make(map[session.TurnID]struct{}),
 		toolCallStatuses:   make(map[toolCallStatusKey]struct{}),
 		operationPositions: make(map[operation.ID]int),
+		pendingOperations:  make(map[operation.ID]struct{}),
 	}
 }
 
@@ -64,6 +71,10 @@ func (head sessionHead) clone() sessionHead {
 	head.respondedTurns = maps.Clone(head.respondedTurns)
 	head.toolCallStatuses = maps.Clone(head.toolCallStatuses)
 	head.operationPositions = maps.Clone(head.operationPositions)
+	head.externalInputIDs = slices.Clone(head.externalInputIDs)
+	head.pendingOperations = maps.Clone(head.pendingOperations)
+	head.operationOffsets = slices.Clone(head.operationOffsets)
+	head.archivedOperations = maps.Clone(head.archivedOperations)
 	return head
 }
 
@@ -76,6 +87,9 @@ func (head *sessionHead) appendInput(
 		return sessionstore.Item{}, fmt.Errorf("append input to session %q: %w", id, err)
 	}
 
+	if input.Kind == inbox.InputExternal {
+		head.externalInputIDs = append(head.externalInputIDs, input.ID)
+	}
 	return head.appendItem(sessionstore.ItemInput, input, recordedAt), nil
 }
 
@@ -150,6 +164,7 @@ func (head *sessionHead) appendToolCallStatus(
 	}
 	key := toolCallStatusKey{turnID: status.TurnID, callID: status.CallID}
 	if _, exists := head.toolCallStatuses[key]; exists {
+		head.recordStatusOperations(operations)
 		return head.appendItem(sessionstore.ItemToolCallStatus, status, recordedAt), nil
 	}
 	seen := make(map[operation.ID]struct{}, len(operations))
@@ -187,7 +202,18 @@ func (head *sessionHead) appendToolCallStatus(
 		head.operationPositions[value.ID] = len(head.Operations)
 		head.Operations = append(head.Operations, value)
 	}
+	head.recordStatusOperations(operations)
 	return head.appendItem(sessionstore.ItemToolCallStatus, status, recordedAt), nil
+}
+
+func (head *sessionHead) recordStatusOperations(operations []operation.Operation) {
+	for _, value := range operations {
+		if terminalOperationStatus(value.Status) {
+			delete(head.pendingOperations, value.ID)
+		} else {
+			head.pendingOperations[value.ID] = struct{}{}
+		}
+	}
 }
 
 func (state *storedState) appendInput(input inbox.Input, recordedAt time.Time) error {
@@ -298,37 +324,23 @@ func (head *sessionHead) saveOperation(value operation.Operation) error {
 }
 
 func (state storedState) resume() sessionstore.ResumeState {
-	externalInputIDs := make([]inbox.ID, 0)
-	pending := make(map[operation.ID]struct{})
-	for _, item := range state.Items {
-		switch item.Kind {
-		case sessionstore.ItemInput:
-			input := item.Data.(inbox.Input)
-			if input.Kind == inbox.InputExternal {
-				externalInputIDs = append(externalInputIDs, input.ID)
-			}
-		case sessionstore.ItemToolCallStatus:
-			for _, value := range item.Data.(sessionstore.ToolCallStatus).Operations {
-				if terminalOperationStatus(value.Status) {
-					delete(pending, value.ID)
-				} else {
-					pending[value.ID] = struct{}{}
-				}
-			}
-		}
-	}
 	var operations []operation.Operation
 	for _, value := range state.Operations {
-		_, unrecorded := pending[value.ID]
+		_, unrecorded := state.pendingOperations[value.ID]
 		if !terminalOperationStatus(value.Status) || unrecorded {
 			operations = append(operations, value)
 		}
 	}
-	return sessionstore.ResumeState{
-		Snapshot:         state.Snapshot,
-		Operations:       operations,
-		ExternalInputIDs: externalInputIDs,
+	resumed := sessionstore.ResumeState{
+		Snapshot: state.Snapshot, Operations: operations,
+		ExternalInputIDs: append([]inbox.ID{}, state.externalInputIDs...),
 	}
+	if state.checkpoint != nil {
+		checkpoint := *state.checkpoint
+		checkpoint.Items = slices.Clone(state.Items)
+		resumed.Checkpoint = &checkpoint
+	}
+	return resumed
 }
 
 func forkStoredState(
@@ -402,6 +414,11 @@ func (state *storedState) appendFork(value sessionstore.Fork, recordedAt time.Ti
 func (state *storedState) inheritItem(item sessionstore.Item) {
 	state.itemSequence = item.Sequence
 	switch item.Kind {
+	case sessionstore.ItemInput:
+		input := item.Data.(inbox.Input)
+		if input.Kind == inbox.InputExternal {
+			state.externalInputIDs = append(state.externalInputIDs, input.ID)
+		}
 	case sessionstore.ItemTurn:
 		turn := item.Data.(session.Turn)
 		state.turns[turn.ID] = struct{}{}
@@ -431,6 +448,9 @@ func (head *sessionHead) resetOwnedState() {
 	head.toolCallStatuses = make(map[toolCallStatusKey]struct{})
 	head.Operations = nil
 	head.operationPositions = make(map[operation.ID]int)
+	head.pendingOperations = make(map[operation.ID]struct{})
+	head.operationOffsets = nil
+	head.archivedOperations = nil
 }
 
 func validateOperation(value operation.Operation) error {

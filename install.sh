@@ -117,6 +117,20 @@ go_usable() {
 	[ "$major" -eq 1 ] 2>/dev/null && [ "${minor:-0}" -ge 21 ] 2>/dev/null
 }
 
+# clang's implicit SDK may come from Command Line Tools even when Xcode
+# supplies the linker. Ask the selected developer tools for their matching SDK.
+prepare_build_env() {
+	[ "$(uname -s)" = Darwin ] || return 0
+	[ -z "${SDKROOT:-}" ] || return 0
+	if ! sdk=$(xcrun --sdk macosx --show-sdk-path 2>/dev/null) || [ ! -d "$sdk" ]; then
+		say "Cannot find the macOS SDK with xcrun. Check Xcode/Command Line Tools and DEVELOPER_DIR, or set SDKROOT."
+		return 1
+	fi
+	SDKROOT=$sdk
+	export SDKROOT
+	note "macOS SDK: $SDKROOT"
+}
+
 tmp=
 cleanup() { [ -z "$tmp" ] || rm -rf "$tmp"; }
 trap cleanup EXIT
@@ -141,6 +155,7 @@ place() {
 # back to the next one.
 from_checkout() {
 	go_usable || { say "Building needs Go 1.21 or newer: https://go.dev/dl/"; return 1; }
+	prepare_build_env || return 1
 	[ "$version" = latest ] || say "Note: building the checkout as it is; --version applies to go and release installs."
 	say "Building $checkout"
 	for name in $ALL; do
@@ -161,6 +176,7 @@ from_checkout() {
 
 from_go() {
 	go_usable || { say "go install needs Go 1.21 or newer: https://go.dev/dl/"; return 1; }
+	prepare_build_env || return 1
 	say "Installing $MODULE@$version with go install"
 	for name in $ALL; do
 		note "$name"

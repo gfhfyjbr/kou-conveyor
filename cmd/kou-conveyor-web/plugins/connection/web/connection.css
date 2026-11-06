@@ -25,7 +25,7 @@
 
 .compaction-form { display: grid; gap: 12px; min-width: 0; }
 .compaction-form .field { min-width: 0; }
-[data-section="compaction"] > h2,
+.set-section[data-section="compaction"] > h2,
 .compaction-form :is(.label, .set-note, .settings-status[data-kind=""]) { color: var(--fg-2); }
 .compaction-form :is(input, select) {
   width: 100%;

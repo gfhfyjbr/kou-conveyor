@@ -52,7 +52,7 @@ const (
 	llmMaxTokensEnvironment   = "KOU_CONVEYOR_LLM_MAX_TOKENS"
 	thinkingTurnsEnvironment  = "KOU_CONVEYOR_THINKING_TURNS"
 	contextWindowEnvironment  = runconfig.ContextWindowEnvironment
-	autoCompactEnvironment    = "KOU_CONVEYOR_AUTO_COMPACT"
+	autoCompactEnvironment    = runconfig.AutoCompactEnvironment
 	maskResultsEnvironment    = "KOU_CONVEYOR_MASK_RESULTS"
 	// recoveryEnvironment set to off leaves the model's answers as they
 	// come: no request to go on after the output limit, none to answer
@@ -1364,7 +1364,11 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 	if value, ok := strings.CutSuffix(setting, "%"); ok {
 		percent, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
 		if err == nil && percent > 0 && percent <= 100 {
-			return window, int64(float64(window) * percent / 100), nil
+			tokens := float64(window) * percent / 100
+			if tokens >= float64(window) {
+				return window, window, nil
+			}
+			return window, max(1, int64(tokens)), nil
 		}
 	} else if tokens, ok := parseTokens(setting); ok {
 		return window, tokens, nil

@@ -37,14 +37,15 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 // settingsView is what browsers learn about the saved settings. The key never
 // leaves the server; a hint is enough to recognize it.
 type settingsView struct {
-	Available bool        `json:"available"`
-	Path      string      `json:"path,omitzero"`
-	API       cockpit.API `json:"provider_type"`
-	BaseURL   string      `json:"base_url"`
-	Model     string      `json:"model"`
-	KeySet    bool        `json:"api_key_set"`
-	KeyHint   string      `json:"api_key_hint,omitzero"`
-	Flag      string      `json:"provider_flag,omitzero"`
+	Available          bool        `json:"available"`
+	Path               string      `json:"path,omitzero"`
+	API                cockpit.API `json:"provider_type"`
+	BaseURL            string      `json:"base_url"`
+	Model              string      `json:"model"`
+	KeySet             bool        `json:"api_key_set"`
+	KeyHint            string      `json:"api_key_hint,omitzero"`
+	Flag               string      `json:"provider_flag,omitzero"`
+	AutoCompactPercent float64     `json:"auto_compact_percent"`
 	// Error says why the saved settings could not be read; saving replaces them.
 	Error     string                              `json:"error,omitzero"`
 	Effective cockpit.Connection                  `json:"connection"`
@@ -87,6 +88,7 @@ func (s *server) settingsView(settings cockpit.Settings, ws *workspace) settings
 		API: settings.API, BaseURL: settings.BaseURL, Model: settings.Model,
 		KeySet: settings.APIKey != "", KeyHint: settings.KeyHint(),
 		Flag: s.opt.Provider, Effective: s.connection(settings, ws),
+		AutoCompactPercent: settings.AutoCompactPercent,
 		Defaults: map[cockpit.API]cockpit.APIDefaults{
 			cockpit.APIResponses: cockpit.DefaultsFor(cockpit.APIResponses),
 			cockpit.APIMessages:  cockpit.DefaultsFor(cockpit.APIMessages),

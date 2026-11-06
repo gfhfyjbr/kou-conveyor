@@ -7,15 +7,18 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/gfhfyjbr/kou-conveyor/cmd/internal/runconfig"
 	"github.com/gfhfyjbr/kou-conveyor/harness/llm/clients/anthropic"
 )
 
@@ -72,6 +75,10 @@ type Settings struct {
 	// Protocol is the API runs speak through the gateway; empty picks it by
 	// the model (GatewayAPI). Only APIGateway settings have one.
 	Protocol API `json:"protocol,omitzero"`
+	// AutoCompactPercent is the used share of the context window that starts
+	// automatic compaction. Zero leaves the runner's default or environment
+	// override in place; a custom percentage takes precedence over that override.
+	AutoCompactPercent float64 `json:"auto_compact_percent,omitzero"`
 }
 
 // SettingsPath is KOU_CONVEYOR_CONFIG, or settings.json in the user's
@@ -105,6 +112,26 @@ func LoadSettings(path string) (Settings, error) {
 		return Settings{}, fmt.Errorf("settings %s: %w", path, err)
 	}
 	return s, nil
+}
+
+// An explicit provider bypasses the saved connection, even when its file is
+// broken. Read only the independent compaction policy when it is usable.
+func loadCompactionSettings(path string) Settings {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Settings{}
+	}
+	var policy struct {
+		AutoCompactPercent float64 `json:"auto_compact_percent"`
+	}
+	if err := json.Unmarshal(data, &policy); err != nil {
+		return Settings{}
+	}
+	s := Settings{AutoCompactPercent: policy.AutoCompactPercent}
+	if s.Validate() != nil {
+		return Settings{}
+	}
+	return s
 }
 
 // SaveSettings replaces the settings file atomically, readable only by the user.
@@ -157,9 +184,12 @@ func (s Settings) normalized() Settings {
 
 // Validate reports settings the runner could not use.
 func (s Settings) Validate() error {
+	if math.IsNaN(s.AutoCompactPercent) || s.AutoCompactPercent < 0 || s.AutoCompactPercent > 100 {
+		return errors.New("automatic compaction percent must be greater than 0 and at most 100, or 0 for the default")
+	}
 	switch s.API {
 	case APIEnvironment:
-		if s != (Settings{}) {
+		if s.BaseURL != "" || s.APIKey != "" || s.Model != "" || s.Protocol != "" {
 			return errors.New("choose the Responses or Messages API before setting a base URL, key or model")
 		}
 		return nil
@@ -219,19 +249,25 @@ type SettingsUpdate struct {
 	APIKey  *string `json:"api_key,omitzero"`
 	// Protocol is the API runs speak through the gateway, if not the model's.
 	Protocol API `json:"protocol,omitzero"`
+	// Omitted keeps the saved threshold; zero restores the runner's default.
+	AutoCompactPercent *float64 `json:"auto_compact_percent,omitzero"`
 }
 
 // Update applies a form's change to the saved settings.
 func (s Settings) Update(u SettingsUpdate) (Settings, error) {
-	next := Settings{API: u.API, BaseURL: u.BaseURL, Model: u.Model}.normalized()
+	next := Settings{API: u.API, BaseURL: u.BaseURL, Model: u.Model, AutoCompactPercent: s.AutoCompactPercent}.normalized()
+	if u.AutoCompactPercent != nil {
+		next.AutoCompactPercent = *u.AutoCompactPercent
+	}
 	switch next.API {
 	case APIEnvironment:
-		// The environment decides everything, so nothing else is kept.
-		return Settings{}, nil
+		// The environment decides the connection, not compaction.
+		next = Settings{AutoCompactPercent: next.AutoCompactPercent}
+		return next, next.Validate()
 	case APIGateway:
 		// The gateway has an address and a key of its own; a key saved for
 		// another endpoint is dropped rather than kept for nothing.
-		next = Settings{API: APIGateway, Model: next.Model, Protocol: u.Protocol}.normalized()
+		next = Settings{API: APIGateway, Model: next.Model, Protocol: u.Protocol, AutoCompactPercent: next.AutoCompactPercent}.normalized()
 		return next, next.Validate()
 	}
 	switch {
@@ -270,10 +306,13 @@ func (s Settings) KeyHint() string {
 // API define the whole connection, so no base URL, key or model meant for
 // another provider leaks into it. Unset values are set empty rather than
 // removed: the runner treats empty as unset, and a present variable keeps
-// the workspace .env from filling it in. Settings of APIGateway apply once
-// resolved against the gateway (Through); unresolved, they leave the
-// environment alone.
+// the workspace .env from filling it in. Settings of APIGateway apply the
+// connection once resolved against the gateway (Through). Compaction is
+// independent of the connection.
 func (s Settings) Environment(env []string) []string {
+	if s.AutoCompactPercent > 0 {
+		env = setEnv(env, runconfig.AutoCompactEnvironment, strconv.FormatFloat(s.AutoCompactPercent, 'f', -1, 64)+"%")
+	}
 	if s.API == APIEnvironment || s.API == APIGateway {
 		return env
 	}

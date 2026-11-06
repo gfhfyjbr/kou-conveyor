@@ -330,7 +330,9 @@ func (s *server) saveConnection(w http.ResponseWriter, r *http.Request, next coc
 		return
 	}
 	s.settingsMu.Lock()
-	next, err := (cockpit.Settings{}).Update(cockpit.SettingsUpdate{API: next.API, Model: next.Model, Protocol: next.Protocol})
+	saved, _ := s.settings()
+	baseline := cockpit.Settings{AutoCompactPercent: saved.AutoCompactPercent}
+	next, err := baseline.Update(cockpit.SettingsUpdate{API: next.API, Model: next.Model, Protocol: next.Protocol})
 	if err == nil {
 		err = cockpit.SaveSettings(s.opt.SettingsFile, next)
 	}

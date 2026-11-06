@@ -141,7 +141,7 @@ func (s Settings) Through(g Gateway) Settings {
 	if api == APIResponses {
 		base += "/v1"
 	}
-	return Settings{API: api, BaseURL: base, APIKey: g.APIKey, Model: s.Model}
+	return Settings{API: api, BaseURL: base, APIKey: g.APIKey, Model: s.Model, AutoCompactPercent: s.AutoCompactPercent}
 }
 
 // ResolveGateway resolves settings of APIGateway against the gateway

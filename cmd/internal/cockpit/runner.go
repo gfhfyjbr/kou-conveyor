@@ -541,6 +541,7 @@ func Start(ctx context.Context, o Options, r Request) (*Job, error) {
 	env := os.Environ()
 	provider := o.Provider
 	if o.Provider != "" {
+		env = loadCompactionSettings(o.SettingsFile).Environment(env)
 		env = setEnv(env, providerVariable, o.Provider)
 	} else if o.SettingsFile != "" {
 		settings, err := LoadSettings(o.SettingsFile)

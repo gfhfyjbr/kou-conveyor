@@ -57,6 +57,14 @@ func (h canvasHost) Plugins(ws canvas.Workspace) plugin.Found {
 	return plugin.Found{}
 }
 
+func (h canvasHost) Models(ctx context.Context, ws canvas.Workspace, fresh bool) cockpit.Catalog {
+	w := h.s.workspaces.find(ws.ID)
+	if w == nil {
+		return cockpit.Catalog{Error: "the workspace is gone"}
+	}
+	return h.s.catalog(ctx, w, fresh)
+}
+
 func (h canvasHost) Enqueue(ctx context.Context, ws canvas.Workspace, session, id, text, model string, force bool) error {
 	w := h.s.workspaces.find(ws.ID)
 	if w == nil {

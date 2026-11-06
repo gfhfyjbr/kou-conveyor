@@ -98,6 +98,9 @@ func (h *Host) Models(ctx context.Context) ([]Model, error) {
 		now := time.Now()
 		for _, r := range records {
 			a := accountOf(r, now)
+			// The account UI falls back to credential filenames and masked keys;
+			// model attribution uses only explicit human labels.
+			a.Label = firstNonEmpty(r.str("email"), r.str("label"))
 			accounts = append(accounts, a)
 			h.clients.add(a.ID)
 		}
@@ -105,7 +108,9 @@ func (h *Host) Models(ctx context.Context) ([]Model, error) {
 	models := servedModels(cliproxy.GlobalModelRegistry(), h.clients.list())
 	for i := range models {
 		for _, id := range models[i].Clients {
-			models[i].Via = append(models[i].Via, ClientLabel(id, accounts))
+			if label := ClientLabel(id, accounts); label != "" {
+				models[i].Via = append(models[i].Via, label)
+			}
 		}
 	}
 	return models, nil
@@ -177,10 +182,14 @@ func accountModels(reg registry, clientID string) []string {
 }
 
 // ClientLabel names a client of the gateway for people: an account by its
-// label, a key of the configuration by its kind.
+// label, a key of the configuration by its kind. An unresolved client has no
+// label: its registry ID can identify a private credential file.
 func ClientLabel(id string, accounts []Account) string {
 	for _, a := range accounts {
 		if a.ID == id || a.Name == id {
+			if a.Label == "" || a.Label == a.ID || a.Label == a.Name {
+				return a.ProviderName
+			}
 			return a.ProviderName + " · " + a.Label
 		}
 	}
@@ -196,5 +205,5 @@ func ClientLabel(id string, accounts []Account) string {
 		}
 		return ProviderName(parts[0]) + " API key"
 	}
-	return id
+	return ""
 }

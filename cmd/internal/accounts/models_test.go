@@ -72,7 +72,7 @@ func TestClientLabel(t *testing.T) {
 		"xai:apikey:1a2b3c4d5e6f":            "xAI API key",
 		"openai-compatibility:fakeai:0a1b2c": "fakeai",
 		"vertex:apikey:1a2b3c":               "Vertex AI API key",
-		"something-else":                     "something-else",
+		"something-else":                     "",
 	} {
 		if got := ClientLabel(id, accounts); got != want {
 			t.Errorf("ClientLabel(%q) = %q, want %q", id, got, want)

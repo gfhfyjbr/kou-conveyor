@@ -92,6 +92,23 @@ var tools = []Tool{
 		},
 	},
 	{
+		Name: "CanvasListModels",
+		Description: "List the workspace's models for kou agents, from the same catalog as the cockpit's model picker. " +
+			"Pass an entry's id unchanged as CanvasSpawn config.model, not its display name: IDs include configured aliases and endpoint prefixes. " +
+			"Names, provider and named routes, API, context window and cooling state are included where known; per-model effort and other capabilities are unknown. " +
+			"Media-only models are left out. No credentials or endpoint URLs are returned. Use fresh to refresh an endpoint's cached list.",
+		Schema: `{"type":"object","properties":{` +
+			`"fresh":{"type":"boolean","default":false,"description":"Ask the endpoint again instead of using its recently cached list."}}}`,
+		Refetch: true,
+		run: func(ctx context.Context, c *client, args jsontext.Value) (result, error) {
+			var a listModelsArgs
+			if err := decodeArgs("CanvasListModels", args, &a); err != nil {
+				return result{}, err
+			}
+			return c.listModels(ctx, a)
+		},
+	},
+	{
 		Name: "CanvasSpawn",
 		Description: "Create a node on the canvas — a kou agent (the default), a terminal running a command or another coding agent, a note — beside your node unless you say where, " +
 			"and give it its first prompt. A kou agent is an agent like you with a session of its own, which the canvas talks to directly: " +
@@ -108,7 +125,7 @@ var tools = []Tool{
 			`"include":{"type":"array","items":{"type":"string"},"description":"Paths of the workspace git does not carry (vendor/, a tool's folder, fonts) to copy into its worktree, which gets the submodules of the user's checkout by itself."},` +
 			`"link":{"type":"array","items":{"type":"string"},"description":"Such paths to link into its worktree instead of copying: shared with the user's checkout, for big things nobody writes."},` +
 			`"prompt":{"type":"string","description":"Its first prompt, sent once it runs; for a note, its text."},` +
-			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: for a kou agent model, effort (low, medium, high, xhigh, max), instructions (its role), output, and reply (auto: what it answers at a turn's end goes back to the node that sent it a message; off: it answers nodes with CanvasSend only — a foreman's default); permission_mode for claude-code."},` +
+			`"config":{"type":"object","description":"More of its configuration, as its preset defines it: for a kou agent model (an id from CanvasListModels, not its display name), effort (low, medium, high, xhigh, max), instructions (its role), output, and reply (auto: what it answers at a turn's end goes back to the node that sent it a message; off: it answers nodes with CanvasSend only — a foreman's default); permission_mode for claude-code."},` +
 			`"access":{"type":"string","enum":["none","observe","talk","build"],"description":"What its program may do on the canvas: talk by default for what an agent makes; build lets it make nodes too."},` +
 			`"near":{"type":"string","description":"The node to place it beside: yours by default."},` +
 			`"side":{"type":"string","enum":["right","below","left","above"],"description":"Which side of near: the first free one by default."},` +

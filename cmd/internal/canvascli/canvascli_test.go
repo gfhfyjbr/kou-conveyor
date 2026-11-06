@@ -49,6 +49,8 @@ func newFakeCanvas(t *testing.T) *fakeCanvas {
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case r.URL.Path == "/api/canvas/models":
+			fmt.Fprint(w, modelsFixture)
 		case r.URL.Path == "/api/canvas/view":
 			io.WriteString(w, `{"canvas":{"id":"c1","title":"Triage","live":true,"rev":3},"scope":"build",
 				"me":{"id":"n_me","kind":"agent","title":"Triage","status":"busy","x":0,"y":0,"w":440,"h":560,"inputs":["in"],"outputs":["out"]},

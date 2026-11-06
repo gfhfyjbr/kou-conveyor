@@ -30,6 +30,7 @@ type fakeHost struct {
 	ws        Workspace
 	terminals *terminal.Manager
 	plugins   []plugin.Plugin
+	models    func(context.Context, Workspace, bool) cockpit.Catalog
 
 	mu      sync.Mutex
 	prompts []prompt
@@ -54,6 +55,13 @@ func (h *fakeHost) Workspace(id string) (Workspace, bool) {
 }
 
 func (h *fakeHost) Terminals() *terminal.Manager { return h.terminals }
+
+func (h *fakeHost) Models(ctx context.Context, ws Workspace, fresh bool) cockpit.Catalog {
+	if h.models != nil {
+		return h.models(ctx, ws, fresh)
+	}
+	return cockpit.Catalog{}
+}
 
 func (h *fakeHost) Plugins(Workspace) plugin.Found {
 	h.mu.Lock()

@@ -175,6 +175,7 @@ func (current *builder) leaveOut(indices []int) {
 	if len(indices) == 0 {
 		return
 	}
+	current.recordedPrefixDelta += len(indices)
 	kept := make([]llm.Item, 0, len(current.committedPrefix)-len(indices))
 	mark := current.usageMark
 	for index, item := range current.committedPrefix {

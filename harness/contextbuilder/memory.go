@@ -169,17 +169,30 @@ type touchedFile struct {
 	changed bool
 }
 
-// touchedFiles are the files the calls of items read or changed through
-// the file tools, by any name a gateway gave them, the latest first, before
-// those of earlier, already listed. A call that failed touched nothing.
-func touchedFiles(items []llm.Item, earlier []touchedFile) []touchedFile {
-	failed := make(map[string]bool)
+func failedToolCalls(items []llm.Item, failed map[string]bool) map[string]bool {
 	for _, item := range items {
 		if result, ok := item.Data.(llm.ToolResult); ok && len(result.Output) != 0 &&
 			strings.HasPrefix(result.Output[0].Value, "Error:") {
+			if failed == nil {
+				failed = make(map[string]bool)
+			}
 			failed[result.CallID] = true
 		}
 	}
+	return failed
+}
+
+// touchedFiles are the files the calls of items read or changed through
+// the file tools, by any name a gateway gave them, the latest first, before
+// those of earlier, already listed. A call that failed touched nothing.
+func touchedFiles(items []llm.Item, earlier []touchedFile, recordedFailures ...map[string]bool) []touchedFile {
+	failed := make(map[string]bool)
+	if len(recordedFailures) != 0 {
+		for id := range recordedFailures[0] {
+			failed[id] = true
+		}
+	}
+	failed = failedToolCalls(items, failed)
 	var files []touchedFile
 	touch := func(path string, changed bool) {
 		path = strings.TrimSpace(path)

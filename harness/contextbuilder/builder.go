@@ -25,6 +25,12 @@ type builder struct {
 	systemPrompt    string
 	committedPrefix []llm.Item
 	stagedSuffix    []llm.Item
+	// Progress refreshes are not session items. Keep their pre-refresh
+	// staged projection for checkpoints, including its original order.
+	recordedStagedSuffix []llm.Item
+	stagedRefreshed      bool
+	recordedPrefixDelta  int
+	checkpointCompacted  int
 
 	// calls holds every tool call the model made, so a result that arrives
 	// after compaction removed its call can still say what it answers.
@@ -35,6 +41,10 @@ type builder struct {
 	stagedInputs []userInput
 	unanswered   []userInput
 	answered     []string
+	// A resumed checkpoint keeps only the budgeted earlier prompts. Those
+	// strings have already been clipped; clipping them twice changes text.
+	answeredPrepared int
+	answeredOmitted  int
 	// compactable is set once the model responds and cleared by compaction.
 	compactable bool
 	// compacted counts the items the latest compaction replaced.
@@ -51,9 +61,10 @@ type builder struct {
 	// transcript is the file that keeps the whole conversation; memory
 	// is what a compaction keeps besides the summary, and touched the
 	// files the compacted conversation read or changed.
-	transcript string
-	memory     Memory
-	touched    []touchedFile
+	transcript  string
+	memory      Memory
+	touched     []touchedFile
+	failedCalls map[string]bool // Canonical committed errors, before masking/pruning.
 	// shownNotes is what the conversation last showed of the notes, in
 	// the message of its latest compaction or a NotesUpdate since; nil
 	// before any.
@@ -117,6 +128,9 @@ func (current *builder) AddExternalInput(input inbox.Input) error {
 		Data: llm.Message{Role: llm.RoleUser, Text: linkedText(message.Text, message.Files), Images: message.Images},
 	}
 	current.stagedSuffix = append(current.stagedSuffix, item)
+	if current.stagedRefreshed {
+		current.recordedStagedSuffix = append(current.recordedStagedSuffix, item)
+	}
 	current.stagedInputs = append(current.stagedInputs, userInput{item: item, answered: answeredText(message)})
 	return nil
 }
@@ -147,10 +161,11 @@ func (current *builder) AddControlMessage(request inbox.ControlMessage) {
 		settings := request.Parameters.(inbox.Settings)
 		current.request.Model.ReasoningEffort = settings.ReasoningEffort
 	case inbox.Heartbeat:
-		current.stagedSuffix = append(current.stagedSuffix, llm.Item{
-			Type: llm.ItemMessage,
-			Data: llm.Message{Role: llm.RoleUser, Text: request.Reason},
-		})
+		item := llm.Item{Type: llm.ItemMessage, Data: llm.Message{Role: llm.RoleUser, Text: request.Reason}}
+		current.stagedSuffix = append(current.stagedSuffix, item)
+		if current.stagedRefreshed {
+			current.recordedStagedSuffix = append(current.recordedStagedSuffix, item)
+		}
 		if notes, update := notesIn(request.Reason); update {
 			current.shownNotes = &notes
 		}
@@ -192,10 +207,11 @@ func (current *builder) Resumed() {
 }
 
 func (current *builder) AddReasoning(reasoning llm.Reasoning) {
-	current.stagedSuffix = append(current.stagedSuffix, llm.Item{
-		Type: llm.ItemReasoning,
-		Data: reasoning,
-	})
+	item := llm.Item{Type: llm.ItemReasoning, Data: reasoning}
+	current.stagedSuffix = append(current.stagedSuffix, item)
+	if current.stagedRefreshed {
+		current.recordedStagedSuffix = append(current.recordedStagedSuffix, item)
+	}
 }
 
 func (current *builder) AddTool(tool llm.Tool) {
@@ -221,14 +237,32 @@ func (current *builder) AddToolResult(
 	if running {
 		payload = runningPayload(payload)
 	}
-	current.stagedSuffix = slices.DeleteFunc(current.stagedSuffix, func(item llm.Item) bool {
+	current.stagedSuffix = withToolResult(current.stagedSuffix, callID, payload)
+	if current.stagedRefreshed {
+		current.recordedStagedSuffix = withToolResult(current.recordedStagedSuffix, callID, payload)
+	}
+}
+
+// RefreshToolResult changes a running placeholder without changing what the
+// session's recorded items would replay. Only the coordinator's progress path
+// uses this method; recorded statuses still use AddToolResult.
+func (current *builder) RefreshToolResult(callID string, payload []llm.ToolResultOutput) {
+	if !current.stagedRefreshed {
+		current.recordedStagedSuffix = slices.Clone(current.stagedSuffix)
+		current.stagedRefreshed = true
+	}
+	current.stagedSuffix = withToolResult(current.stagedSuffix, callID, runningPayload(payload))
+}
+
+func withToolResult(items []llm.Item, callID string, payload []llm.ToolResultOutput) []llm.Item {
+	items = slices.DeleteFunc(items, func(item llm.Item) bool {
 		if item.Type != llm.ItemToolResult {
 			return false
 		}
 		result := item.Data.(llm.ToolResult)
 		return result.CallID == callID && isRunning(result.Output)
 	})
-	current.stagedSuffix = append(current.stagedSuffix, llm.Item{
+	return append(items, llm.Item{
 		Type: llm.ItemToolResult,
 		Data: llm.ToolResult{CallID: callID, Output: payload},
 	})
@@ -248,6 +282,11 @@ func runningPayload(payload []llm.ToolResultOutput) []llm.ToolResultOutput {
 }
 
 func (current *builder) Commit() {
+	current.failedCalls = failedToolCalls(current.stagedSuffix, current.failedCalls)
+	if current.stagedRefreshed {
+		current.recordedPrefixDelta += len(current.recordedStagedSuffix) - len(current.stagedSuffix)
+	}
+	current.recordedStagedSuffix, current.stagedRefreshed = nil, false
 	current.committedPrefix = append(current.committedPrefix, current.stagedSuffix...)
 	current.stagedSuffix = nil
 	current.unanswered = append(current.unanswered, current.stagedInputs...)

@@ -19,9 +19,10 @@ const formatVersion = 2
 type recordType string
 
 const (
-	recordSession   recordType = "session"
-	recordItem      recordType = "item"
-	recordOperation recordType = "operation"
+	recordSession    recordType = "session"
+	recordItem       recordType = "item"
+	recordOperation  recordType = "operation"
+	recordCheckpoint recordType = "checkpoint"
 )
 
 type logRecord struct {
@@ -287,6 +288,10 @@ func decodeLog(encoded []byte, options ...json.Options) (storedState, int64, err
 			records = append(records, decodedRecord{
 				Type: recordOperation, Operation: update.Operation,
 			})
+		case recordCheckpoint:
+			if lineIndex == 0 {
+				return storedState{}, 0, fmt.Errorf("session record must be first")
+			}
 		default:
 			return storedState{}, 0, fmt.Errorf("unsupported record type %q", record.Type)
 		}

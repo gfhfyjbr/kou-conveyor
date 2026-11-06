@@ -1,0 +1,17 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/gfhfyjbr/kou-conveyor/harness/coordinator
+cpu: Apple M4 Max
+BenchmarkCheckpointResume
+    checkpoint_benchmark_test.go:30: sample shape: one output=524288 bytes; 256 turns estimate <=134742016 bytes plus identity metadata
+    checkpoint_benchmark_test.go:46: measured fixture: log=134697956 bytes; output=134218240 bytes; latest checkpoint=87196 bytes; turns/calls/ops/inputIDs=257/256/256/256
+BenchmarkCheckpointResume/checkpoint=false
+BenchmarkCheckpointResume/checkpoint=false-16         	       1	 164735334 ns/op	 817.66 MB/s	     87196 checkpoint-B	 134697956 log-B	    693128 retained-heap-B/op	139897416 B/op	   24122 allocs/op
+BenchmarkCheckpointResume/checkpoint=false-16         	       1	 171912791 ns/op	 783.52 MB/s	     87196 checkpoint-B	 134697956 log-B	    682616 retained-heap-B/op	139879160 B/op	   24023 allocs/op
+BenchmarkCheckpointResume/checkpoint=false-16         	       1	 176273666 ns/op	 764.14 MB/s	     87196 checkpoint-B	 134697956 log-B	    693128 retained-heap-B/op	139905720 B/op	   24041 allocs/op
+BenchmarkCheckpointResume/checkpoint=true
+BenchmarkCheckpointResume/checkpoint=true-16          	       1	   3722542 ns/op	36184.40 MB/s	     87196 checkpoint-B	 134697956 log-B	    216528 retained-heap-B/op	  752112 B/op	    3467 allocs/op
+BenchmarkCheckpointResume/checkpoint=true-16          	       1	   3746333 ns/op	35954.61 MB/s	     87196 checkpoint-B	 134697956 log-B	    215832 retained-heap-B/op	  752184 B/op	    3448 allocs/op
+BenchmarkCheckpointResume/checkpoint=true-16          	       1	   3742792 ns/op	35988.63 MB/s	     87196 checkpoint-B	 134697956 log-B	    215504 retained-heap-B/op	  751248 B/op	    3443 allocs/op
+PASS
+ok  	github.com/gfhfyjbr/kou-conveyor/harness/coordinator	10.734s

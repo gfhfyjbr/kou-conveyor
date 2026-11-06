@@ -163,7 +163,8 @@ func (current *builder) Compact(response llm.Response, kept *Compacted) (Compact
 	if summary == "" {
 		return Compacted{}, false
 	}
-	current.touched = touchedFiles(current.committedPrefix, current.touched)
+	current.touched = touchedFiles(current.committedPrefix, current.touched, current.failedCalls)
+	current.failedCalls = nil
 	made := Compacted{}
 	if kept != nil && kept.Message != "" {
 		made = *kept
@@ -172,6 +173,8 @@ func (current *builder) Compact(response llm.Response, kept *Compacted) (Compact
 	}
 	current.shownNotes = made.Notes
 	current.compacted = len(current.committedPrefix) - 1 - len(current.unanswered)
+	current.checkpointCompacted = current.compacted + current.recordedPrefixDelta
+	current.recordedPrefixDelta = 0
 	prefix := make([]llm.Item, 0, 2+len(current.unanswered))
 	prefix = append(prefix, current.committedPrefix[0], userMessage(made.Message))
 	current.committedPrefix = append(prefix, inputItems(current.unanswered)...)
@@ -225,7 +228,9 @@ func (current *builder) compactedMessage(summary string) Compacted {
 	notes := current.readNotes()
 	var text strings.Builder
 	text.WriteString(compactedPreface)
-	if kept, omitted := keptInputs(current.answered); len(kept) != 0 {
+	kept, omitted := keptPreparedInputs(current.answered, current.answeredPrepared)
+	omitted += current.answeredOmitted
+	if len(kept) != 0 {
 		text.WriteString("\n\nThe user's messages before the compaction, oldest first")
 		if omitted > 0 {
 			fmt.Fprintf(&text, " (%d earlier ones are left out)", omitted)
@@ -258,11 +263,18 @@ func (current *builder) SetTranscript(path string) {
 // keptInputs returns the newest messages that fit the budget, oldest first,
 // and how many older ones do not.
 func keptInputs(messages []string) ([]string, int) {
+	return keptPreparedInputs(messages, 0)
+}
+
+func keptPreparedInputs(messages []string, prepared int) ([]string, int) {
 	var kept []string
 	budget := keptInputsBudget
 	omitted := 0
 	for index := len(messages) - 1; index >= 0; index-- {
-		message := clip(strings.TrimSpace(messages[index]), keptInputLimit)
+		message := messages[index]
+		if index >= prepared {
+			message = clip(strings.TrimSpace(message), keptInputLimit)
+		}
 		if message == "" {
 			continue
 		}

@@ -26,6 +26,26 @@
       "refetch": true
     },
     {
+      "name": "CanvasListModels",
+      "description": "List the workspace's models for kou agents, from the same catalog as the cockpit's model picker. Pass an entry's id unchanged as CanvasSpawn config.model, not its display name: IDs include configured aliases and endpoint prefixes. Names, provider and named routes, API, context window and cooling state are included where known; per-model effort and other capabilities are unknown. Media-only models are left out. No credentials or endpoint URLs are returned. Use fresh to refresh an endpoint's cached list.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "fresh": {
+            "type": "boolean",
+            "default": false,
+            "description": "Ask the endpoint again instead of using its recently cached list."
+          }
+        }
+      },
+      "run": [
+        "kou-canvas",
+        "tool",
+        "CanvasListModels"
+      ],
+      "refetch": true
+    },
+    {
       "name": "CanvasSpawn",
       "description": "Create a node on the canvas — a kou agent (the default), a terminal running a command or another coding agent, a note — beside your node unless you say where, and give it its first prompt. A kou agent is an agent like you with a session of its own, which the canvas talks to directly: make coders, reviewers and researchers kou agents, and give each one that writes code a worktree of its own. An agent you spawn (a kou agent, claude-code, codex, opencode) is wired to you: its output to your input, so what it answers comes back to you as a message; connect wires it otherwise, connect {} not at all. It answers the node's ID and place.",
       "parameters": {
@@ -75,7 +95,7 @@
           },
           "config": {
             "type": "object",
-            "description": "More of its configuration, as its preset defines it: for a kou agent model, effort (low, medium, high, xhigh, max), instructions (its role), output, and reply (auto: what it answers at a turn's end goes back to the node that sent it a message; off: it answers nodes with CanvasSend only — a foreman's default); permission_mode for claude-code."
+            "description": "More of its configuration, as its preset defines it: for a kou agent model (an id from CanvasListModels, not its display name), effort (low, medium, high, xhigh, max), instructions (its role), output, and reply (auto: what it answers at a turn's end goes back to the node that sent it a message; off: it answers nodes with CanvasSend only — a foreman's default); permission_mode for claude-code."
           },
           "access": {
             "type": "string",

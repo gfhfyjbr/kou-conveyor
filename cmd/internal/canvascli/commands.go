@@ -144,6 +144,15 @@ var commands = map[string]command{
 			return c.view(ctx, a)
 		},
 	},
+	"models": {
+		flags: map[string]flagKind{"fresh": boolFlag},
+		run: func(ctx context.Context, c *client, p parsed) (result, error) {
+			if err := p.need(0, 0, "kou-canvas models [--fresh] [--json]"); err != nil {
+				return result{}, err
+			}
+			return c.listModels(ctx, listModelsArgs{Fresh: loose(p.bool("fresh"))})
+		},
+	},
 	"spawn": {
 		flags: map[string]flagKind{
 			"title": valueFlag, "cmd": valueFlag, "command": valueFlag, "cwd": valueFlag, "worktree": optionalFlag, "base": valueFlag, "include": valueFlag, "link": valueFlag,

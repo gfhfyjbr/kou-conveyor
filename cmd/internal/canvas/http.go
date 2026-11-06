@@ -59,6 +59,7 @@ import (
 //	GET  /api/canvas/self                  the node, its canvas, its access, its brief
 //	GET  /api/canvas/self/launch           ?resume=1: how kou-canvas launch starts its harness
 //	GET  /api/canvas/view                  ?detail=full: the canvas as the agent sees it (observe)
+//	GET  /api/canvas/models                ?fresh=1: the workspace's agent models (observe)
 //	POST /api/canvas/ops                   a batch of operations (build)
 //	POST /api/canvas/nodes/{node}/send     as the pages' (talk)
 //	GET  /api/canvas/nodes/{node}/read     as the pages', and ?wait=idle|output|exit&timeout= (observe)
@@ -107,6 +108,7 @@ func (e *Engine) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/canvas/self", e.agentRoute("", e.handleSelf))
 	mux.HandleFunc("GET /api/canvas/self/launch", e.agentRoute("", e.handleLaunch))
 	mux.HandleFunc("GET /api/canvas/view", e.agentRoute(ScopeObserve, e.handleView))
+	mux.HandleFunc("GET /api/canvas/models", e.agentRoute(ScopeObserve, e.handleAgentModels))
 	mux.HandleFunc("POST /api/canvas/ops", e.agentRoute(ScopeBuild, e.handleAgentOps))
 	mux.HandleFunc("POST /api/canvas/nodes/{node}/send", e.agentRoute(ScopeTalk, e.handleAgentSend))
 	mux.HandleFunc("GET /api/canvas/nodes/{node}/read", e.agentRoute(ScopeObserve, e.handleAgentRead))

@@ -136,7 +136,7 @@ func TestRunnerOffersTheCanvasToolsOnACanvas(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d: %s\n%s", code, stderr, stdout)
 	}
-	if got := toolNames(first); !strings.HasPrefix(got, "Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse,CanvasView,CanvasSpawn,") ||
+	if got := toolNames(first); !strings.HasPrefix(got, "Bash,Read,apply_patch,ViewImage,TranscriptSearch,SkillUse,CanvasView,CanvasListModels,CanvasSpawn,") ||
 		!strings.Contains(got, ",CanvasSend,CanvasRead,") {
 		t.Fatalf("tools = %s", got)
 	}

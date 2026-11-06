@@ -35,6 +35,9 @@ type Host interface {
 	Terminals() *terminal.Manager
 	// Plugins finds a workspace's plugins, the cockpit's own among them.
 	Plugins(ws Workspace) plugin.Found
+	// Models lists the models the workspace's agents can run with, as the
+	// composer's catalog does. fresh asks the endpoint again.
+	Models(ctx context.Context, ws Workspace, fresh bool) cockpit.Catalog
 	// Enqueue gives an agent's session a prompt: it runs at once when
 	// nothing else does, else waits its turn, or, forced, goes to the agent
 	// at work. id, a UUID, is the prompt's: RunFinished names the prompts a

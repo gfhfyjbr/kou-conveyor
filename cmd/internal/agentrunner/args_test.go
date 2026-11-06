@@ -166,9 +166,16 @@ func TestRunMainHelp(t *testing.T) {
 				"-p prompt", "-workspace", "-session-directory", "-log-directory", "-tool-heartbeat-interval",
 				"Request schema", "messages:", "role:", "content:", "message_id?:", "prompt:", "model:", "max_attempts:",
 				"system_prompt:", "thinking_level:", "session_id:", "disallowed_tools:", "extra_allowed_tools:", "include_partial_messages:",
+				"default: window - min(33000, window/4)",
+				"reserving up to 33000 tokens for the summary and next turn",
 			} {
 				if !strings.Contains(stderr.String(), want) {
 					t.Errorf("help missing %q: %s", want, stderr.String())
+				}
+			}
+			for _, obsolete := range []string{"200000 at most", "390000 for a Claude model"} {
+				if strings.Contains(stderr.String(), obsolete) {
+					t.Errorf("help retains obsolete compaction ceiling %q", obsolete)
 				}
 			}
 			if strings.Contains(stderr.String(), "mcp_servers") {

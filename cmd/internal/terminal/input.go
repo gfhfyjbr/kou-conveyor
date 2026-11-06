@@ -21,8 +21,11 @@ type Event struct {
 	Output []byte
 	// Marks are the OSC 133 marks of Output, with where in it each ended.
 	Marks []Mark
-	Meta  *Meta
-	Exit  *int
+	// Programs follows reports and lifecycle changes, in output order
+	// alongside Marks. The current records are also given at Observe.
+	Programs []ProgramEvent
+	Meta     *Meta
+	Exit     *int
 }
 
 // Observe has fn hear what the session prints from now on, until the
@@ -39,7 +42,10 @@ func (s *Session) Observe(fn func(Event)) (cancel func()) {
 		fn(Event{Exit: &code})
 		return func() {}
 	}
+	s.syncProgramLocked()
+	s.notifyProgramsLocked()
 	s.observers[n] = fn
+	fn(Event{Programs: []ProgramEvent{{State: s.scan.program.rootState()}}})
 	return func() {
 		s.mu.Lock()
 		delete(s.observers, n)

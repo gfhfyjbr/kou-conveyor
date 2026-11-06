@@ -10,6 +10,8 @@ type handedOver struct {
 	Title, Dir string
 	Modes      []int
 	Output     []byte
+	Program    ProgramState
+	ProgramPID int
 }
 
 // Handover hands nothing over here: a server restarts by hand.

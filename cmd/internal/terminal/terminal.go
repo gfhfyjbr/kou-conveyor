@@ -135,6 +135,8 @@ type Session struct {
 	// Unix nanoseconds.
 	lastInput atomic.Int64
 
+	programPID int // foreground group the current reports belong to; protected by mu
+
 	mu        sync.Mutex
 	ring      *ring
 	scan      *scanner // what the output said, all of it
@@ -228,6 +230,10 @@ func (s *Session) init(kept *handedOver) {
 		s.scan.feed(kept.Output)
 		s.ring.write(kept.Output)
 		s.scan.title, s.scan.dir = kept.Title, kept.Dir
+		// Replaying output must neither answer old queries nor resurrect
+		// a report from a program that ended before the handover.
+		s.scan.program = kept.Program.clone()
+		s.programPID = kept.ProgramPID
 	}
 	// The marks of the output from here on are the observers'.
 	s.scan.marking = true
@@ -579,9 +585,12 @@ func (s *Session) pump() {
 		if n > 0 {
 			chunk := slices.Clone(buf[:n])
 			s.mu.Lock()
+			ended := s.syncProgramLocked()
 			s.ring.write(chunk)
-			changed := s.scan.feed(chunk)
+			changed := s.scan.feedOutput(chunk, ended)
 			marks := s.scan.takeMarks()
+			programs := s.scan.takePrograms()
+			responses := s.scan.takeResponses()
 			var meta *Meta
 			if changed {
 				meta = &Meta{Title: s.scan.title, Dir: s.scan.dir}
@@ -593,9 +602,16 @@ func (s *Session) pump() {
 				}
 			}
 			for _, observe := range s.observers {
-				observe(Event{Output: chunk, Marks: marks, Meta: meta})
+				observe(Event{Output: chunk, Marks: marks, Programs: programs, Meta: meta})
 			}
 			s.mu.Unlock()
+			// Reply in the PTY, without recording user activity or waiting
+			// for a browser to attach. Historical replay never queues replies.
+			if len(responses) > 0 {
+				s.writing.Lock()
+				_, _ = s.master.Write(responses)
+				s.writing.Unlock()
+			}
 		}
 		if err != nil {
 			return
@@ -621,12 +637,15 @@ func (s *Session) wait() {
 	case <-time.After(500 * time.Millisecond):
 	}
 	s.mu.Lock()
+	s.scan.at = 0
+	s.scan.endProgram()
+	programs := s.scan.takePrograms()
 	s.exited, s.code = true, code
 	for c := range s.clients {
 		c.send(Message{Exit: &code})
 	}
 	for _, observe := range s.observers {
-		observe(Event{Exit: &code})
+		observe(Event{Exit: &code, Programs: programs})
 	}
 	s.mu.Unlock()
 	close(s.ended)

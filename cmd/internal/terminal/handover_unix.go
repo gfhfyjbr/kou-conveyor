@@ -31,8 +31,10 @@ type handedOver struct {
 	Title     string    `json:"title,omitzero"`
 	Dir       string    `json:"cwd,omitzero"`
 	// Modes are those set where the output kept starts.
-	Modes  []int  `json:"modes,omitzero"`
-	Output []byte `json:"output,omitzero"`
+	Modes      []int        `json:"modes,omitzero"`
+	Output     []byte       `json:"output,omitzero"`
+	Program    ProgramState `json:"program,omitzero"`
+	ProgramPID int          `json:"program_pid,omitzero"`
 	// ClosingAt is when the shell of a tab closed ends.
 	ClosingAt time.Time `json:"closing_at,omitzero"`
 	// Owner is what the shell belongs to besides the tabs (Spec.Owner).
@@ -60,6 +62,7 @@ func (m *Manager) Handover() (string, error) {
 			ID: s.id, Workspace: s.workspace, Shell: s.shell, Theme: s.theme, Started: s.started, PID: s.pid,
 			Cols: s.cols, Rows: s.rows, Title: s.scan.title, Dir: s.scan.dir,
 			Modes: s.base.setModes(), Output: s.ring.bytes(), ClosingAt: s.closeAt, Owner: s.Owner(),
+			Program: s.scan.program.clone(), ProgramPID: s.programPID,
 		}
 		s.mu.Unlock()
 		fd := int(s.master.Fd())

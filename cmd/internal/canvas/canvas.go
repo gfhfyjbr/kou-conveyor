@@ -36,6 +36,9 @@ type Status struct {
 	// Agent is the agent a terminal node runs: its harness, or one found
 	// running in its shell.
 	Agent *Agent `json:"agent,omitzero"`
+	// Program is the explicit root OSC 7501 record, when the current
+	// program reports one. State keeps the canvas's routing vocabulary.
+	Program *terminal.ProgramStatus `json:"program_status,omitzero"`
 	// Quiet says that a node at work has shown nothing for a while: a
 	// command that waits, a server that serves.
 	Quiet bool `json:"quiet,omitzero"`
@@ -206,7 +209,7 @@ func (c *Canvas) setStatusLocked(id, state, detail string) {
 	if state == st.status.State {
 		activity = st.status.Activity
 	}
-	st.status = Status{State: state, Detail: detail, Since: now(), Activity: activity, Agent: st.status.Agent}
+	st.status = Status{State: state, Detail: detail, Since: now(), Activity: activity, Agent: st.status.Agent, Program: st.status.Program}
 	c.hub.publish(map[string]any{"type": "status", "node": id, "status": st.status})
 	st.wake()
 	if state == StateIdle || state == StateWaiting {

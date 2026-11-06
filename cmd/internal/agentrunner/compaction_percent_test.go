@@ -44,13 +44,17 @@ func TestCompactionPercentLimits(t *testing.T) {
 }
 
 func TestCompactionPercentUsesPhysicalWindow(t *testing.T) {
+	claude, err := selectProvider(DefaultProviders(), "anthropic")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, test := range []struct {
 		name, model string
 		provider    Provider
 		defaultAt   int64
 	}{
-		{name: "standard", model: "gpt-6-sol", provider: Provider{}, defaultAt: 200_000},
-		{name: "claude", model: "claude-opus-5-5", provider: Provider{CompactCeiling: claudeCeiling}, defaultAt: 390_000},
+		{name: "standard", model: "gpt-6-sol", provider: Provider{}, defaultAt: 967_000},
+		{name: "claude", model: "claude-opus-5-5", provider: claude, defaultAt: 967_000},
 	} {
 		for _, setting := range []string{"", "62.5%"} {
 			window, limit, err := compactionLimits(func(name string) string {

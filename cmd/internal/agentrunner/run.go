@@ -73,19 +73,6 @@ const (
 	// the summary, up to 20,000 tokens, and 13,000 for what arrives before
 	// the next turn. A small window keeps a quarter of itself free instead.
 	autoCompactReserve = 33_000
-	// autoCompactCeiling is the most a conversation grows before it is
-	// compacted, whatever the window: past a couple of hundred thousand
-	// tokens a model reasons worse and every turn costs more, long before
-	// the window is full. What a compaction loses, the model's notes keep.
-	autoCompactCeiling = 200_000
-	// claudeCompactCeiling replaces it for Claude models on the Messages API
-	// (claudeCeiling), as a Claude subscription reaches them through a
-	// gateway. A prune or a compaction writes the conversation to the prompt
-	// cache anew, and a subscription's limits count those writes but hardly
-	// the reads, so a conversation let grow longer between them costs less.
-	// Pruned at 255–285k and compacted at about 300k, the cache served
-	// 96–98% of Claude's input; under the 200k ceiling, 87–90%.
-	claudeCompactCeiling = 390_000
 	// pruneShare is the share of the compaction threshold the conversation
 	// may take before the oldest tool results are pruned; pruneKeep is how
 	// many of the latest results are never pruned, and pruneBytes what a
@@ -120,10 +107,6 @@ type Provider struct {
 	// turn a request carries unless the request clears it, as the Messages
 	// API does (KOU_CONVEYOR_THINKING_TURNS, thinkingPruning).
 	KeepsThinking bool
-	// CompactCeiling returns the most a conversation with a model grows
-	// before it is compacted automatically, unless configured, in place of
-	// autoCompactCeiling; 0 or nil leaves that (compactCeiling).
-	CompactCeiling func(model string) int64
 }
 
 type Request struct {
@@ -832,7 +815,7 @@ func Run(
 	// thinking of older turns goes with them.
 	if autoCompact > 0 {
 		builder.SetPruning(contextbuilder.PruneOptions{
-			Budget: autoCompact * pruneShare / 100, Keep: pruneKeep, Bytes: pruneBytes,
+			Budget: pruneBudget(autoCompact), Keep: pruneKeep, Bytes: pruneBytes,
 			First:         func(name string) bool { return live != nil && live.refetches(name) },
 			ThinkingTurns: thinkingTurns,
 		})
@@ -1361,7 +1344,7 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 	setting := strings.ToLower(strings.TrimSpace(getenv(autoCompactEnvironment)))
 	switch setting {
 	case "":
-		return window, min(window-min(autoCompactReserve, window/4), compactCeiling(provider, model)), nil
+		return window, window - min(autoCompactReserve, window/4), nil
 	case "off", "false", "no", "0":
 		return window, 0, nil
 	}
@@ -1378,6 +1361,12 @@ func compactionLimits(getenv func(string) string, provider Provider, model strin
 		return window, tokens, nil
 	}
 	return 0, 0, fmt.Errorf("%s must be off, a number of tokens such as 150000 or 150k, or a share of the context window such as 80%%", autoCompactEnvironment)
+}
+
+// pruneBudget scales with the compaction threshold without overflowing on
+// large provider windows.
+func pruneBudget(autoCompact int64) int64 {
+	return autoCompact/100*pruneShare + autoCompact%100*pruneShare/100
 }
 
 // readMaskResults reads KOU_CONVEYOR_MASK_RESULTS: how many of the latest

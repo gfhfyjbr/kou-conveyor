@@ -1,5 +1,6 @@
 use super::*;
 use std::{sync::mpsc, time::Duration};
+mod shells;
 
 async fn next(updates: &mut Updates) -> Update {
     tokio::time::timeout(Duration::from_secs(3), updates.next())

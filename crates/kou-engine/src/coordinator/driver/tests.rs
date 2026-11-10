@@ -10,6 +10,7 @@ mod clock;
 mod commit;
 mod http;
 mod operations;
+mod shells;
 mod storage;
 
 #[derive(Default)]

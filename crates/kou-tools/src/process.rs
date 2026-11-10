@@ -33,6 +33,11 @@ const IO_BUDGET: usize = 256 * 1024;
 
 #[derive(Clone, Default)]
 pub struct CancelToken(Arc<AtomicBool>);
+impl From<Arc<AtomicBool>> for CancelToken {
+    fn from(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
+}
 impl CancelToken {
     pub fn cancel(&self) {
         self.0.store(true, Ordering::Release);

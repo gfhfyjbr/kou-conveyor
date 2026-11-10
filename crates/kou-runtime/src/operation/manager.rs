@@ -10,6 +10,8 @@ use std::{
 };
 use tokio::sync::Notify;
 
+mod shell_work;
+use shell_work::Checkpoint;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +56,14 @@ impl Limits {
 
 pub trait Executor: Send + Sync + 'static {
     fn run(&self, state: &FileState, canceled: &AtomicBool) -> Result<FileResult>;
+    fn run_shell(
+        &self,
+        current: Operation,
+        canceled: &kou_tools::process::CancelToken,
+        publish: &mut dyn FnMut(Operation) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        shell::run_shell(current, canceled, publish)
+    }
 }
 pub struct NativeFiles;
 impl Executor for NativeFiles {
@@ -109,20 +119,28 @@ impl Budget {
     }
 }
 
-/// Keep this handle until the next queue has admitted its operation. Its lease
-/// covers both the immutable snapshot and any other snapshots from this task.
+/// Keep this handle through forwarding; shell checkpoints additionally require
+/// explicit durable acknowledgement. Its lease covers all snapshots of the task.
 pub struct Update {
     pub operation: Arc<Operation>,
     _lease: Arc<Lease>,
+    checkpoint: Option<Arc<Checkpoint>>,
 }
 struct Active {
     current: Arc<Operation>,
     lease: Arc<Lease>,
     canceled: Arc<AtomicBool>,
     input_state_bytes: usize,
+    snapshot_bytes: usize,
+    checkpoints: usize,
+    pending: Option<Arc<Checkpoint>>,
+}
+enum Task {
+    File(ComputeDispatch),
+    Shell(Arc<Operation>),
 }
 struct Job {
-    dispatch: ComputeDispatch,
+    task: Task,
     canceled: Arc<AtomicBool>,
     _lease: Arc<Lease>,
 }
@@ -148,6 +166,9 @@ impl Shared {
         state.closed = true;
         for active in state.active.values() {
             active.canceled.store(true, Ordering::Release);
+            if let Some(pending) = &active.pending {
+                pending.cancel();
+            }
         }
         drop(state);
         self.work.notify_all();
@@ -157,13 +178,15 @@ impl Shared {
         state.updates.push_back(Update {
             operation,
             _lease: lease,
+            checkpoint: None,
         });
         self.updates.notify_one();
     }
 }
 
-/// File/value v1 only. The coordinator must journal initial statuses before Add.
-/// Worker shutdown joins blocking filesystem work; it cannot forcibly preempt it.
+/// File/value v1 and shell v3 share a fixed worker pool. Journal initial statuses
+/// before Add, then acknowledge shell updates after durable publication.
+/// Shutdown joins owned work; blocking filesystem calls cannot be preempted.
 pub struct LocalManager {
     shared: Arc<Shared>,
     workers: Vec<JoinHandle<()>>,
@@ -216,7 +239,7 @@ impl LocalManager {
         for index in 0..limits.workers {
             let shared = shared.clone();
             let worker = thread::Builder::new()
-                .name(format!("kou-file-{index}"))
+                .name(format!("kou-operation-{index}"))
                 .spawn(move || work(shared))
                 .map_err(|error| Error(format!("start operation worker: {error}")))?;
             manager.workers.push(worker);
@@ -227,7 +250,10 @@ impl LocalManager {
         current
             .validate()
             .map_err(|error| Error(format!("add operation {:?}: {error}", current.id)))?;
-        if current.version != 1 || !matches!(current.kind.as_str(), "file" | "value") {
+        if !matches!(
+            (current.kind.as_str(), current.version),
+            ("file" | "value", 1) | ("shell", 3)
+        ) {
             return Err(Error(format!(
                 "add operation {:?}: type {:?} version {}: unsupported operation",
                 current.id, current.kind, current.version
@@ -251,20 +277,28 @@ impl LocalManager {
         if bytes > limits.operation_bytes {
             return Err(Error("operation exceeds runtime byte limit".into()));
         }
-        let reserved = bytes
-            .checked_mul(4)
-            .and_then(|n| {
-                limits
-                    .completion_extra_bytes
-                    .checked_mul(2)
-                    .and_then(|extra| n.checked_add(extra))
-            })
-            .and_then(|n| n.checked_add(4096))
-            .ok_or_else(|| Error("operation runtime reservation overflow".into()))?;
+        let is_shell = current.kind == "shell";
+        let (reserved, snapshot_bytes) = if is_shell {
+            let validated = shell::Shell::new(current.clone())?;
+            shell::paths(&validated.state().base_directory, &current.id)?;
+            shell_work::budget(bytes, current.max_output_length, limits)?
+        } else {
+            let reserved = bytes
+                .checked_mul(4)
+                .and_then(|n| {
+                    limits
+                        .completion_extra_bytes
+                        .checked_mul(2)
+                        .and_then(|extra| n.checked_add(extra))
+                })
+                .and_then(|n| n.checked_add(4096))
+                .ok_or_else(|| Error("operation runtime reservation overflow".into()))?;
+            (reserved, 0)
+        };
         let lease = self.shared.budget.reserve(reserved)?;
         let id = current.id.clone();
         let input_state_bytes = current.state.as_str().map_or(0, str::len);
-        let step = if terminal(&current) {
+        let step = if is_shell || terminal(&current) {
             Step {
                 operation: current,
                 dispatches: Vec::new(),
@@ -280,8 +314,10 @@ impl LocalManager {
         state.seen_bytes += id.len();
         state.seen.insert(id.clone().into_boxed_str());
         let operation = Arc::new(step.operation);
-        self.shared
-            .publish(&mut state, operation.clone(), lease.clone());
+        if !is_shell || terminal(&operation) {
+            self.shared
+                .publish(&mut state, operation.clone(), lease.clone());
+        }
         if terminal(&operation) {
             return Ok(());
         }
@@ -289,15 +325,25 @@ impl LocalManager {
         state.active.insert(
             id,
             Active {
-                current: operation,
+                current: operation.clone(),
                 lease: lease.clone(),
                 canceled: canceled.clone(),
                 input_state_bytes,
+                snapshot_bytes,
+                checkpoints: 0,
+                pending: None,
             },
         );
+        if is_shell {
+            state.jobs.push_back(Job {
+                task: Task::Shell(operation),
+                canceled: canceled.clone(),
+                _lease: lease.clone(),
+            });
+        }
         for dispatch in step.dispatches {
             state.jobs.push_back(Job {
-                dispatch,
+                task: Task::File(dispatch),
                 canceled: canceled.clone(),
                 _lease: lease.clone(),
             });
@@ -313,8 +359,13 @@ impl LocalManager {
         if state.closed {
             return Err(Error("operation runtime is closed".into()));
         }
-        if let Some(active) = state.active.get(id) {
+        if let Some(active) = state.active.get(id)
+            && !active.current.terminal()
+        {
             active.canceled.store(true, Ordering::Release);
+            if let Some(pending) = &active.pending {
+                pending.cancel();
+            }
         }
         Ok(())
     }
@@ -381,16 +432,23 @@ fn work(shared: Arc<Shared>) {
             };
             job
         };
+        let dispatch = match &job.task {
+            Task::Shell(operation) => {
+                shell_work::run(&shared, operation, &job.canceled, &job._lease);
+                continue;
+            }
+            Task::File(dispatch) => dispatch,
+        };
         let result = if job.canceled.load(Ordering::Acquire) {
             Err(Error("context canceled".into()))
         } else {
             catch_unwind(AssertUnwindSafe(|| {
-                shared.executor.run(&job.dispatch.file, &job.canceled)
+                shared.executor.run(&dispatch.file, &job.canceled)
             }))
             .unwrap_or_else(|_| Err(Error("file computation panicked".into())))
         };
         let mut state = shared.state.lock().unwrap();
-        let Some(active) = state.active.remove(&job.dispatch.source) else {
+        let Some(active) = state.active.remove(&dispatch.source) else {
             continue;
         };
         let canceled = active.canceled.load(Ordering::Acquire);
@@ -408,7 +466,7 @@ fn work(shared: Arc<Shared>) {
         };
         let event = Event {
             kind: kind.into(),
-            source: job.dispatch.source.clone(),
+            source: dispatch.source.clone(),
             result,
         };
         let mut step = transition(current, Some(event));

@@ -336,7 +336,7 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**42 native driver tests** cover these boundaries and policies. A real FileJournal
+**43 native driver tests** cover these boundaries and policies. A real FileJournal
 matrix checks that empty/review-only summaries do not write a consumer checkpoint,
 that successful summaries do, and that cold recovery preserves the right context.
 Durable errors retain Go's input/turn/response/call/operation context.
@@ -400,30 +400,45 @@ Read/Write/Edit/Patch use the existing native file backends. Transcript-search
 execution remains unconnected. Malformed typed-field diagnostics and wider
 state/event fuzzing are still gates.
 
-### File/value local manager
+### File/value/shell local manager
 
-`LocalManager` runs those handlers through a fixed worker pool (default four,
-maximum eight). It deduplicates accepted IDs, preserves FIFO snapshots, cancels
-queued tasks before effects and discards a late result after cancellation. Drop
-closes admission and joins all workers, even with a retained update receiver.
-Blocking filesystem calls are not forcibly preemptible.
+`LocalManager` runs file/value v1 and shell v3 through the same fixed worker pool
+(default four, maximum eight). It deduplicates accepted IDs, preserves FIFO
+snapshots, cancels queued tasks before effects and discards a late result after
+cancellation. Drop closes admission and joins all workers, even with a retained
+update receiver. Blocking filesystem calls are not forcibly preemptible.
+
+Shell workers wait for each `Update::acknowledge` before crossing the next effect
+boundary. The consumer must durably publish the snapshot, for example through
+`OperationHandle::submit_committed`, before acknowledging success. Refusal or a
+dropped unacknowledged update fails the task and cleans up its owned invocation.
+Cancel/shutdown wake pending receipts and share the native cancellation flag;
+there is no per-process watcher thread. They cannot authorize a subsequent effect.
 
 New policies cap admitted tasks at 64, estimated retained reservations at 128 MiB,
-input operations at 16 MiB and completion growth at 256 KiB. Seen IDs are compact
-boxed strings, limited to 100,000 IDs and 8 MiB of ID payload. Reservations are not
-preallocated buffers. A task lease remains with its immutable update until the
-next queue admits it. Oversized completions become an explicit failure warning
-that the effect may already have happened; data is not silently truncated. These
-bounds do not cover all filesystem/JSON scratch or caller-retained snapshots and
+and input operations at 16 MiB. File completion growth is capped at 256 KiB. Shell
+snapshots instead have a checked cap of `input_bytes*8 + max_output_runes*16 +
+completion_extra_bytes + 4096`, and reserve sixteen such slots for twelve normal
+checkpoints, a failure, input and typed state. This conservative policy can reject
+a one-million-rune shell under the default 128 MiB budget; callers must explicitly
+raise the budget rather than silently lose output. Reservations allocate no
+buffers. Immutable updates retain the task lease through forwarding/acknowledgement.
+Seen IDs are boxed strings, capped at 100,000 IDs and 8 MiB of ID payload. Oversized
+completions fail explicitly, warning that an effect may already have happened.
+These bounds exclude filesystem/JSON scratch and caller-retained clones; they
 are **not a global RSS guarantee** or Go-default compatibility claim.
 
-Eleven manager tests cover deduplication, count/byte/ID caps, cancellation at
-capacity, queued effects, immutable snapshots, panic recovery and joined shutdown;
-20 extra repetitions passed. A real coordinator/FileJournal/manager fixture proves
-that response/status write failures prevent a private file effect, and that
-awaiting/completed updates are durable before the next model request. Completed,
-delivered operations stay cold on recovery. This integration is test wiring, not
-the production runner or an independent full Go/Rust manager trace corpus.
+Eleven file/value manager tests and eight shell manager tests cover admission,
+shared workers, immutable snapshots, durable-receipt refusal/drop, queued/active
+cancel, late success, panic recovery, count/byte/metadata guards and joined shutdown.
+A real coordinator/FileJournal/manager fixture prevents file effects across failed
+response/status writes. The shell fixture covers success plus response/status,
+create-directory/out/err, pre-start and started-write refusal. Restoring the
+recorded process/PID-zero state fails with unknown outcome without relaunching or
+truncating captures. Completed delivered operations stay cold on recovery. These
+are actual private fixtures, not production runner wiring or independent full
+Go/Rust manager trace parity. All nineteen manager tests and the eight-case
+coordinator shell fixture also passed twenty extra repetitions.
 
 ## Native artifact I/O
 
@@ -500,13 +515,14 @@ callback refusal/panic, cancellation, invalid timer configurations, timeout-befo
 TERM ordering and a slow timeout publisher that must not consume physical TERM
 grace. Callbacks are synchronous and non-preemptible; spool disk is uncapped.
 
-The concrete executor is not yet connected to the bounded local manager or the
-production runner. Persistent process status/attachment/control remains open.
+The bounded local manager now uses the concrete executor and explicit durable
+receipts. Production runner wiring and persistent process status/attachment/control
+remain open.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **272 native workspace tests**, including
-**67 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **282 native workspace tests**, including
+**68 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
 **87 sources, 136 HTTP registrations and 31 built-in plugins**.

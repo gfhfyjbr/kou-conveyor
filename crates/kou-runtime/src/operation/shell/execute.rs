@@ -78,7 +78,7 @@ where
     }
     fn emit(&mut self, current: Option<Operation>) -> io::Result<()> {
         if let Some(current) = current {
-            if self.checkpoints >= 12 {
+            if self.checkpoints >= MAX_CHECKPOINTS {
                 return Err(io::Error::other(
                     "shell checkpoint limit exceeded; the effect may already have occurred",
                 ));

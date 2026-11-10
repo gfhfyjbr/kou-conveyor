@@ -12,6 +12,7 @@ use std::path::{Component, Path, PathBuf};
 pub use wire::*;
 
 pub const MAX_OUTPUT_LENGTH: i64 = 1_000_000;
+pub(crate) const MAX_CHECKPOINTS: usize = 12;
 
 pub fn shell_spec(
     input: ShellInput,
@@ -67,12 +68,12 @@ fn validate_limit(limit: i64) -> Result<()> {
     }
     Ok(())
 }
-struct Paths {
+pub(super) struct Paths {
     directory: String,
     out: String,
     err: String,
 }
-fn paths(base: &str, id: &str) -> Result<Paths> {
+pub(super) fn paths(base: &str, id: &str) -> Result<Paths> {
     if id.is_empty() || matches!(id, "." | "..") || id.contains('/') {
         return Err(Error(format!(
             "operation ID {id:?} is not a path component"
@@ -604,6 +605,21 @@ impl Shell {
         self.current.status = "canceled".into();
         self.checkpoint()
     }
+}
+pub(super) fn terminate(current: Operation, canceled: bool, error: String) -> Result<Operation> {
+    let mut shell = Shell::new(current)?;
+    shell.state.result = None;
+    shell.state.inline_out = Vec::new();
+    shell.state.inline_err = Vec::new();
+    shell.state.inline_out_tail = Vec::new();
+    shell.state.inline_err_tail = Vec::new();
+    let step = if canceled {
+        shell.cancel()?
+    } else {
+        shell.fail(error)?
+    };
+    step.operation
+        .ok_or_else(|| Error("shell termination produced no checkpoint".into()))
 }
 fn elapsed(at: Timestamp, start: Timestamp) -> Result<f64> {
     let end =

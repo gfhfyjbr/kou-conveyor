@@ -1,0 +1,107 @@
+package cockpit
+
+// Public DTO control: same types, grouped allocations, no unsafe or Go arenas.
+// Source entries are decoded from JSON, so private fold-only fields are zero.
+func rustGoBatchCloneEntries(source []*Entry) []*Entry {
+	var toolN, callN, codeN, imageN, linkedN, syntaxN, fileN, changeN int
+	for _, entry := range source {
+		imageN += len(entry.Images)
+		linkedN += len(entry.Files)
+		if tool := entry.Tool; tool != nil {
+			toolN++
+			callN += len(tool.Calls)
+			syntaxN += len(tool.Syntax)
+			fileN += len(tool.Files)
+			if tool.ExitCode != nil {
+				codeN++
+			}
+			if tool.Image != nil {
+				imageN++
+			}
+			for _, call := range tool.Calls {
+				if call.ExitCode != nil {
+					codeN++
+				}
+			}
+			if tool.Change != nil {
+				changeN++
+				syntaxN += len(tool.Change.Syntax)
+			}
+		}
+	}
+	entries := make([]Entry, len(source))
+	out := make([]*Entry, len(source))
+	tools := make([]Tool, toolN)
+	calls := make([]CodeCall, callN)
+	codes := make([]int, codeN)
+	images := make([]ImageInfo, imageN)
+	linked := make([]LinkedFileInfo, linkedN)
+	syntax := make([]int32, syntaxN)
+	files := make([]string, fileN)
+	changes := make([]FileView, changeN)
+	for i, src := range source {
+		dst := &entries[i]
+		*dst = *src
+		out[i] = dst
+		if n := len(src.Images); n > 0 {
+			dst.Images = images[:n:n]
+			copy(dst.Images, src.Images)
+			images = images[n:]
+		}
+		if n := len(src.Files); n > 0 {
+			dst.Files = linked[:n:n]
+			copy(dst.Files, src.Files)
+			linked = linked[n:]
+		}
+		if src.Tool == nil {
+			continue
+		}
+		tool := &tools[0]
+		tools = tools[1:]
+		*tool = *src.Tool
+		dst.Tool = tool
+		if tool.ExitCode != nil {
+			codes[0] = *tool.ExitCode
+			tool.ExitCode = &codes[0]
+			codes = codes[1:]
+		}
+		if tool.Image != nil {
+			images[0] = *tool.Image
+			tool.Image = &images[0]
+			images = images[1:]
+		}
+		if n := len(tool.Syntax); n > 0 {
+			tool.Syntax = syntax[:n:n]
+			copy(tool.Syntax, src.Tool.Syntax)
+			syntax = syntax[n:]
+		}
+		if n := len(tool.Calls); n > 0 {
+			tool.Calls = calls[:n:n]
+			copy(tool.Calls, src.Tool.Calls)
+			calls = calls[n:]
+			for j := range tool.Calls {
+				if code := tool.Calls[j].ExitCode; code != nil {
+					codes[0] = *code
+					tool.Calls[j].ExitCode = &codes[0]
+					codes = codes[1:]
+				}
+			}
+		}
+		if n := len(tool.Files); n > 0 {
+			tool.Files = files[:n:n]
+			copy(tool.Files, src.Tool.Files)
+			files = files[n:]
+		}
+		if src.Tool.Change != nil {
+			changes[0] = *src.Tool.Change
+			tool.Change = &changes[0]
+			changes = changes[1:]
+			if n := len(tool.Change.Syntax); n > 0 {
+				tool.Change.Syntax = syntax[:n:n]
+				copy(tool.Change.Syntax, src.Tool.Change.Syntax)
+				syntax = syntax[n:]
+			}
+		}
+	}
+	return out
+}

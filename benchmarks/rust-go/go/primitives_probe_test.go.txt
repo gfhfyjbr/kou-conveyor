@@ -1,0 +1,181 @@
+package primitives
+
+import (
+	"encoding/json/v2"
+	"fmt"
+	"math/rand"
+	"os"
+	"runtime"
+	"runtime/metrics"
+	"strconv"
+	"syscall"
+	"testing"
+	"time"
+)
+
+type rustGoWireFrame struct {
+	Offset int64  `json:"offset"`
+	Data   string `json:"data"`
+}
+
+type rustGoSSECase struct {
+	Name   string            `json:"name"`
+	Chunks []string          `json:"chunks"`
+	Limit  int64             `json:"limit"`
+	Pass   bool              `json:"pass"`
+	Frames []rustGoWireFrame `json:"frames"`
+	Error  bool              `json:"error"`
+}
+
+func rustGoSSECaseOf(name string, chunks []string, limit int64, pass bool) rustGoSSECase {
+	mode := SSEFrameDelimiterStrip
+	if pass {
+		mode = SSEFrameDelimiterPassThrough
+	}
+	f := newRemoteSSEFramer(limit, mode)
+	c := rustGoSSECase{Name: name, Chunks: chunks, Limit: limit, Pass: pass, Frames: []rustGoWireFrame{}}
+	for _, chunk := range chunks {
+		frames, err := f.append([]byte(chunk))
+		for _, frame := range frames {
+			c.Frames = append(c.Frames, rustGoWireFrame{frame.offset, string(frame.data)})
+		}
+		if err != nil {
+			c.Error = true
+			break
+		}
+	}
+	if !c.Error {
+		for _, frame := range f.finish() {
+			c.Frames = append(c.Frames, rustGoWireFrame{frame.offset, string(frame.data)})
+		}
+	}
+	return c
+}
+
+func TestRustGoSSEExport(t *testing.T) {
+	path := os.Getenv("RUSTGO_OUTPUT")
+	if path == "" {
+		t.Skip("benchmark export only")
+	}
+	cases := []rustGoSSECase{}
+	for _, pass := range []bool{false, true} {
+		for _, ending := range []string{"\n", "\r", "\r\n"} {
+			for _, blank := range []string{"\n", "\r", "\r\n"} {
+				if ending == "\r" && blank == "\n" {
+					continue
+				}
+				wire := "data: one" + ending + blank + "data: two" + ending + blank
+				for cut := 0; cut <= len(wire); cut++ {
+					cases = append(cases, rustGoSSECaseOf(fmt.Sprintf("newline-%v-%q-%q-%d", pass, ending, blank, cut), []string{wire[:cut], wire[cut:]}, int64(len(wire)), pass))
+				}
+			}
+		}
+	}
+	r := rand.New(rand.NewSource(74829))
+	alphabet := []byte("\r\nxy: 123")
+	for i := 0; i < 1000; i++ {
+		wire := make([]byte, r.Intn(200))
+		for j := range wire {
+			wire[j] = alphabet[r.Intn(len(alphabet))]
+		}
+		chunks := []string{}
+		for len(wire) > 0 {
+			n := min(len(wire), 1+r.Intn(17))
+			chunks = append(chunks, string(wire[:n]))
+			wire = wire[n:]
+		}
+		cases = append(cases, rustGoSSECaseOf(fmt.Sprintf("random-%d", i), chunks, int64(1+r.Intn(70)), r.Intn(2) == 1))
+	}
+	for _, pass := range []bool{false, true} {
+		for _, chunks := range [][]string{{"one\n\n123456"}, {"one\n\r", "\n"}, {"data: partial"}, {"\n\ndata: x\n\n"}, {"data: one\r", "\n\r", "\ndata: two\n\n: keepalive\r\rpartial"}} {
+			cases = append(cases, rustGoSSECaseOf(fmt.Sprint("edge-", len(cases)), chunks, 5, pass))
+			cases = append(cases, rustGoSSECaseOf(fmt.Sprint("edge-", len(cases)), chunks, 1024, pass))
+		}
+	}
+	data, err := json.Marshal(cases)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("exported %d differential cases", len(cases))
+}
+
+var rustGoSSESink [3]uint64
+
+func TestRustGoSSEProbe(t *testing.T) {
+	mode := os.Getenv("RUSTGO_MODE")
+	if mode != "sse" && mode != "sse-chunked" {
+		t.Skip("benchmark probe only")
+	}
+	encoded, err := os.ReadFile(os.Getenv("RUSTGO_INPUT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	iterations, err := strconv.Atoi(os.Getenv("RUSTGO_ITERATIONS"))
+	if err != nil || iterations < 1 {
+		t.Fatal("positive RUSTGO_ITERATIONS required")
+	}
+	run := func() [3]uint64 {
+		f := newRemoteSSEFramer(128, SSEFrameDelimiterStrip)
+		chunk := len(encoded)
+		if mode == "sse-chunked" {
+			chunk = 97
+		}
+		var summary [3]uint64
+		for begin := 0; begin < len(encoded); begin += chunk {
+			frames, err := f.append(encoded[begin:min(begin+chunk, len(encoded))])
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, frame := range frames {
+				summary[0]++
+				summary[1] += uint64(len(frame.data))
+				summary[2] += uint64(frame.offset)
+				if len(frame.data) > 0 {
+					summary[2] += uint64(frame.data[0]) + uint64(frame.data[len(frame.data)-1])
+				}
+			}
+		}
+		if len(f.finish()) != 0 {
+			t.Fatal("unexpected incomplete frame")
+		}
+		return summary
+	}
+	want := run()
+	runtime.GC()
+	var before, after runtime.MemStats
+	metric := []metrics.Sample{{Name: "/cpu/classes/gc/total:cpu-seconds"}, {Name: "/cpu/classes/gc/mark/assist:cpu-seconds"}}
+	metrics.Read(metric)
+	gcBefore, assistBefore := metric[0].Value.Float64(), metric[1].Value.Float64()
+	runtime.ReadMemStats(&before)
+	var cpuBefore, cpuAfter syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpuBefore); err != nil {
+		t.Fatal(err)
+	}
+	cpuBeforeNS := int64(cpuBefore.Utime.Sec+cpuBefore.Stime.Sec)*1e9 + int64(cpuBefore.Utime.Usec+cpuBefore.Stime.Usec)*1000
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		rustGoSSESink = run()
+	}
+	elapsed := time.Since(start)
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpuAfter); err != nil {
+		t.Fatal(err)
+	}
+	cpuElapsedNS := int64(cpuAfter.Utime.Sec+cpuAfter.Stime.Sec)*1e9 + int64(cpuAfter.Utime.Usec+cpuAfter.Stime.Usec)*1000 - cpuBeforeNS
+	runtime.ReadMemStats(&after)
+	metrics.Read(metric)
+	if rustGoSSESink != want {
+		t.Fatal("SSE summary changed")
+	}
+	row := map[string]any{"mode": mode, "iterations": iterations, "elapsed_ns": elapsed.Nanoseconds(), "process_cpu_ns": cpuElapsedNS, "bytes": len(encoded), "summary": want,
+		"allocated_bytes": after.TotalAlloc - before.TotalAlloc, "allocations": after.Mallocs - before.Mallocs, "gc_cycles": after.NumGC - before.NumGC,
+		"gc_cpu_seconds": metric[0].Value.Float64() - gcBefore, "gc_assist_seconds": metric[1].Value.Float64() - assistBefore,
+		"heap_before": before.HeapAlloc, "heap_after": after.HeapAlloc}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("RUSTGO " + string(data))
+}

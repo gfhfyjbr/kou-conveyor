@@ -1,0 +1,316 @@
+package cockpit
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json/v2"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
+	"runtime/metrics"
+	"strconv"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// This keeps the current lastPrompt JSON projection, but reuses line storage.
+func rustGoLastPromptReuse(path string) (time.Time, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer file.Close()
+	reader := bufio.NewReaderSize(file, 64<<10)
+	var overflow []byte
+	var last time.Time
+	for {
+		part, err := reader.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			overflow = append(overflow, part...)
+			continue
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return last, err
+		}
+		line := part
+		if len(overflow) != 0 {
+			overflow = append(overflow, part...)
+			line = overflow
+		}
+		if bytes.Contains(line, inputKind) {
+			var record struct {
+				Type string `json:"type"`
+				Data struct {
+					Item struct {
+						RecordedAt time.Time
+						Kind       string
+						Data       struct{ Kind string }
+					}
+				} `json:"data"`
+			}
+			if json.Unmarshal(line, &record) == nil && record.Type == "item" {
+				if item := record.Data.Item; item.Kind == "input" && item.Data.Kind == "external" && item.RecordedAt.After(last) {
+					last = item.RecordedAt.UTC()
+				}
+			}
+		}
+		overflow = overflow[:0]
+	}
+	return last, nil
+}
+
+func TestRustGoReuseMatchesOriginal(t *testing.T) {
+	if os.Getenv("RUSTGO_CHECK") == "" {
+		t.Skip("benchmark check only")
+	}
+	defer func() { prompts = sync.Map{} }()
+	base := `{"type":"item","data":{"Item":{"Kind":"input","RecordedAt":"2026-11-09T09:00:00.000000001Z","Data":{"Kind":"external"}}}}`
+	offset := strings.Replace(base, "2026-11-09T09:00:00.000000001Z", "2026-11-09T12:00:00+03:00", 1)
+	long := `{"type":"operation","data":{"output":"` + strings.Repeat("x", 200000) + `"}}`
+	cases := []string{"", base + "\n", base, base + "\n" + offset + "\n", "broken\n" + long + "\n" + base + "\ntrailing", long + "\n" + base + "\r\n", "\n\n" + base + "\n"}
+	for i, data := range cases {
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("case-%d", i))
+		if err := os.WriteFile(path, []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prompts = sync.Map{}
+		want := lastPrompt(path, info)
+		got, err := rustGoLastPromptReuse(path)
+		if err != nil || !want.Equal(got) {
+			t.Fatalf("case %d: got %v, err %v, want %v", i, got, err, want)
+		}
+	}
+}
+
+func TestRustGoExportSnapshot(t *testing.T) {
+	path := os.Getenv("RUSTGO_SESSION")
+	if path == "" {
+		t.Skip("benchmark export only")
+	}
+	id := strings.TrimSuffix(filepath.Base(path), sessionSuffix)
+	tr, err := LoadSession(filepath.Dir(path), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(tr.Entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(os.Getenv("RUSTGO_OUTPUT"), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("exported %d public entries, %d JSON bytes; private fold state is excluded", len(tr.Entries), len(data))
+}
+
+func rustGoCloneEntries(source []*Entry) []*Entry {
+	cloned := make([]*Entry, len(source))
+	for i, e := range source {
+		cloned[i] = e.clone()
+	}
+	return cloned
+}
+
+func rustGoSummary(source []*Entry) [3]uint64 {
+	var out [3]uint64
+	out[0] = uint64(len(source))
+	for _, e := range source {
+		out[1] += uint64(len(e.ID) + len(e.Text))
+		if e.Tool != nil {
+			out[2] += uint64(len(e.Tool.Syntax) + len(e.Tool.Calls) + len(e.Tool.Output))
+		}
+	}
+	return out
+}
+
+func rustGoReadSnapshot(t *testing.T) []*Entry {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv("RUSTGO_INPUT"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source []*Entry
+	if err := json.Unmarshal(data, &source); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range source {
+		if e == nil {
+			t.Fatal("null entries are outside this probe's contract")
+		}
+	}
+	return source
+}
+
+func TestRustGoSnapshotCheck(t *testing.T) {
+	mode := os.Getenv("RUSTGO_MODE")
+	if mode != "clone-check" && mode != "clone-batch-check" {
+		t.Skip("benchmark check only")
+	}
+	source := rustGoReadSnapshot(t)
+	before, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := rustGoCloneEntries(source)
+	if mode == "clone-batch-check" {
+		cloned = rustGoBatchCloneEntries(source)
+	}
+	out, err := json.Marshal(cloned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, out) {
+		t.Fatal("clone changed public wire projection")
+	}
+	if len(cloned) > 0 {
+		cloned[0].Text = "mutated"
+	}
+	for _, e := range cloned {
+		if len(e.Images) > 0 {
+			e.Images[0].Width++
+		}
+		if len(e.Files) > 0 {
+			e.Files[0].Path = "mutated"
+		}
+		if e.Tool == nil {
+			continue
+		}
+		if e.Tool.ExitCode != nil {
+			*e.Tool.ExitCode = 99
+		}
+		if len(e.Tool.Syntax) > 0 {
+			e.Tool.Syntax[0] ^= 1
+		}
+		if len(e.Tool.Files) > 0 {
+			e.Tool.Files[0] = "mutated"
+		}
+		if len(e.Tool.Calls) > 0 && e.Tool.Calls[0].ExitCode != nil {
+			*e.Tool.Calls[0].ExitCode = 99
+		}
+		if e.Tool.Image != nil {
+			e.Tool.Image.Width++
+		}
+		if e.Tool.Change != nil {
+			e.Tool.Change.Line++
+			if len(e.Tool.Change.Syntax) > 0 {
+				e.Tool.Change.Syntax[0] ^= 1
+			}
+		}
+	}
+	after, err := json.Marshal(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("clone mutation changed source")
+	}
+	if err := os.WriteFile(os.Getenv("RUSTGO_OUTPUT"), out, 0600); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Printf("RUSTGO {\"mode\":%q,\"entries\":%d}\n", mode, len(source))
+}
+
+var rustGoEntrySink []*Entry
+var rustGoPromptSink time.Time
+
+func TestRustGoCockpitProbe(t *testing.T) {
+	mode := os.Getenv("RUSTGO_MODE")
+	if mode != "clone" && mode != "clone-batch" && mode != "scan" && mode != "scan-reuse" {
+		t.Skip("benchmark probe only")
+	}
+	iterations, err := strconv.Atoi(os.Getenv("RUSTGO_ITERATIONS"))
+	if err != nil || iterations < 1 {
+		t.Fatal("positive RUSTGO_ITERATIONS required")
+	}
+	path := os.Getenv("RUSTGO_INPUT")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var source []*Entry
+	var summary [3]uint64
+	var expected time.Time
+	if mode == "clone" || mode == "clone-batch" {
+		source = rustGoReadSnapshot(t)
+		summary = rustGoSummary(source)
+	} else {
+		prompts = sync.Map{}
+		expected = lastPrompt(path, info)
+	}
+	liveMiB := 0
+	if value := os.Getenv("RUSTGO_LIVE_MIB"); value != "" {
+		liveMiB, err = strconv.Atoi(value)
+		if err != nil || liveMiB < 0 || liveMiB > 128 {
+			t.Fatal("RUSTGO_LIVE_MIB must be between 0 and 128")
+		}
+	}
+	ballast := make([]byte, liveMiB<<20)
+	for i := 0; i < len(ballast); i += 4096 {
+		ballast[i] = byte(i / 4096)
+	}
+	runtime.GC()
+	var before, after runtime.MemStats
+	metric := []metrics.Sample{{Name: "/cpu/classes/gc/total:cpu-seconds"}, {Name: "/cpu/classes/gc/mark/assist:cpu-seconds"}}
+	metrics.Read(metric)
+	gcBefore, assistBefore := metric[0].Value.Float64(), metric[1].Value.Float64()
+	runtime.ReadMemStats(&before)
+	var cpuBefore, cpuAfter syscall.Rusage
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpuBefore); err != nil {
+		t.Fatal(err)
+	}
+	cpuBeforeNS := int64(cpuBefore.Utime.Sec+cpuBefore.Stime.Sec)*1e9 + int64(cpuBefore.Utime.Usec+cpuBefore.Stime.Usec)*1000
+	start := time.Now()
+	for i := 0; i < iterations; i++ {
+		switch mode {
+		case "clone", "clone-batch":
+			if mode == "clone-batch" {
+				rustGoEntrySink = rustGoBatchCloneEntries(source)
+			} else {
+				rustGoEntrySink = rustGoCloneEntries(source)
+			}
+			runtime.KeepAlive(rustGoEntrySink)
+			rustGoEntrySink = nil
+		case "scan":
+			prompts = sync.Map{}
+			rustGoPromptSink = lastPrompt(path, info)
+		case "scan-reuse":
+			rustGoPromptSink, err = rustGoLastPromptReuse(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	elapsed := time.Since(start)
+	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &cpuAfter); err != nil {
+		t.Fatal(err)
+	}
+	cpuElapsedNS := int64(cpuAfter.Utime.Sec+cpuAfter.Stime.Sec)*1e9 + int64(cpuAfter.Utime.Usec+cpuAfter.Stime.Usec)*1000 - cpuBeforeNS
+	runtime.ReadMemStats(&after)
+	metrics.Read(metric)
+	if mode != "clone" && mode != "clone-batch" && !rustGoPromptSink.Equal(expected) {
+		t.Fatal("last prompt changed")
+	}
+	row := map[string]any{"mode": mode, "iterations": iterations, "elapsed_ns": elapsed.Nanoseconds(), "process_cpu_ns": cpuElapsedNS, "bytes": info.Size(), "summary": summary,
+		"last_seconds": rustGoPromptSink.Unix(), "last_nanos": rustGoPromptSink.Nanosecond(),
+		"allocated_bytes": after.TotalAlloc - before.TotalAlloc, "allocations": after.Mallocs - before.Mallocs, "gc_cycles": after.NumGC - before.NumGC,
+		"gc_cpu_seconds": metric[0].Value.Float64() - gcBefore, "gc_assist_seconds": metric[1].Value.Float64() - assistBefore,
+		"heap_before": before.HeapAlloc, "heap_after": after.HeapAlloc, "ballast_bytes": len(ballast)}
+	data, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("RUSTGO " + string(data))
+	runtime.KeepAlive(source)
+	runtime.KeepAlive(ballast)
+}

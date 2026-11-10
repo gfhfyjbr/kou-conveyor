@@ -1,0 +1,350 @@
+# Rust migration compatibility harness
+
+The existing Go implementation is the oracle during the Rust migration. Rust
+production binaries must not depend on it. The current compatibility slice uses
+`harness/sessionstore/localfile/testdata` directly, without copying user data
+into tracked fixtures.
+
+Run native Rust checks from the repository root:
+
+```sh
+make rust-check rust-test
+make rust-build       # optional release binaries, no installation
+make rust-compat      # read and mixed-writer Go/Rust checks
+```
+
+Build output is in the already ignored `tmp/rust-rewrite-target/`. The isolated
+`benchmarks/rust-go` experiment remains outside this workspace.
+
+## First read-only vertical slice
+
+```sh
+python3 compat/inventory.py --check
+python3 compat/store_parity.py
+cargo run -p kou-session -- inspect path/to/ID.session.jsonl
+cargo run -p kou-session -- items path/to/ID.session.jsonl 0 20
+```
+
+The Go oracle is development-only (`cmd/kou-conveyor-oracle`). Archive parity
+checks all persisted items and resumed operations, not the consumer checkpoint
+codec or accelerated Resume boundary. `resume-full` explicitly performs the
+full replay fallback. The reader ignores an uncommitted final line and rejects
+stale indexes after append, truncate or inode replacement. It does not mmap or
+change the original log. The initial reader has a configurable 256 MiB record
+limit; arbitrary deeper/large-input compatibility needs the complete fuzz gate.
+
+Build/run the actual Rust/WASM client:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.130 --locked --root tmp/rust-tools
+python3 compat/build_web.py
+cargo run -p kou-conveyor-web-rs -- --session-dir path/to/sessions --assets tmp/rust-web-assets
+```
+
+The server binds loopback only (127.0.0.1:8091 by default). Its new migration API
+serves metadata pages, on-demand records capped at 1 MiB, and an untruncated
+streaming JSONL export. It is not yet a replacement for the old cockpit API.
+The browser keeps one 50-record page and one inline body; it displays durable
+records, not the complete folded chat transcript. Large records are available
+via export, not silently truncated. The LRU uses conservative allocation-size
+estimates, not an allocator-enforced hard RSS bound.
+
+HTTP/security tests are in `crates/kou-server/tests/http.rs`. Browser smoke:
+
+```sh
+cargo build -p kou-conveyor-web-rs
+npm install --prefix tmp/rust-browser playwright
+node compat/browser_smoke.mjs
+```
+
+The browser test uses a fresh headless Chrome profile, copies public fixtures
+into its own temporary directory, starts/stops only its own Rust server, and
+writes desktop/mobile screenshots to the repository root.
+
+## Writer compatibility
+
+`python3 compat/writer_parity.py` creates fixtures in private temporary directories.
+It checks Rust create/append/fork with Go replay, Go append with Rust replay,
+checkpoint envelopes and recovery tails in both directions, continuation of a Go
+fixture, and exclusion/recovery with the actual Go `cockpit.LockSession`.
+The native library writer uses atomic publication, per-record fsync, the shared
+`.locks/ID.lock` protocol, and rejects a changed source. It is not exposed as an
+HTTP write API. The failure-injection test also checks that an I/O failure poisons
+the writer rather than retrying an uncertain commit.
+
+`kou-session resume FILE` uses the latest valid version-1 checkpoint envelope,
+checks its SHA-256/offset/head, and replays only the suffix. Invalid/newer/torn
+checkpoints fall back to an earlier valid checkpoint or full replay. Forks in
+the suffix force full replay so inherited operations never become dispatchable.
+Archived operation bodies are loaded only when a saved-ID reference needs them.
+Consumer state is preserved as opaque JSON; its application-level codecs remain
+a separate runner migration gate. `resume-full` is the independent full-replay
+reference path. Real input logs are copied to mode-0600 private snapshots for
+read comparisons; a source mutation during copying fails the check.
+
+## Recovery resource measurements
+
+On macOS, `python3 compat/recovery_bench.py FILE...` builds release readers and
+runs interleaved fresh processes over mode-0600 private copies (five repetitions,
+warm file cache). Reports go to the workspace root. It measures the development
+Go oracle versus the Rust session CLI, including startup and JSON serialization;
+linking/startup are not normalized. This is not an E2E runner/server/browser
+benchmark. Keep the unoptimized report and any optimized report separately so
+memory gains do not hide CPU regressions. `/usr/bin/sample` can profile the Rust
+CLI without reading or logging session bodies. Optional
+`--synthetic-checkpoint-mib 64` creates a private giant-record fixture with a
+small opaque checkpoint. This is not a runner-state benchmark: compare fast
+recovery with full fallback and inspect its peak memory too (owned giant raw
+records currently cause a large fallback spike).
+
+## Code VM candidate
+
+`kou-runtime` hosts QuickJS with explicit host capabilities, promises, pending-call
+and call-count limits, a total pending-argument byte budget, parent cancellation,
+CPU interruption, memory/stack limits
+and bounded Unicode console/result/call output. `CodeHost` must enqueue without
+blocking, bound its native queues, honor `wait` deadlines and cancel all work.
+JS handles stay on one VM thread; only owned JSON messages may cross workers.
+QuickJS is a C engine with its own GC; this is not a hard OS sandbox or an all-safe
+Rust claim. The runtime has no Go/goja dependency. `NativeHost` now supplies
+Read/Write/Edit/ApplyPatch, ReadText/Skill, Bash and external command plugins through
+a per-execution worker pool. Reporting, image handles, transcript search, full
+option/error edge cases and runner integration remain open.
+
+```sh
+cargo test --locked -p kou-runtime
+python3 compat/codevm_parity.py
+```
+
+The differential corpus uses only fake plugin tools and rejected built-in
+arguments. The Go oracle still has the original native capabilities: never feed
+it untrusted or user-supplied code. Only engine stack frames and timestamps are
+excluded from comparisons, not call order or output bodies. The projection maps
+Go's PascalCase Result fields onto the experimental Rust Execution DTO; production
+Result wire casing/timestamps remain a separate integration gate.
+
+## Native tools and process host
+
+```sh
+cargo test --locked -p kou-tools -p kou-runtime
+python3 compat/fileops_parity.py
+python3 compat/patch_parity.py
+python3 compat/native_parity.py
+```
+
+The first two compare 183 Read/Write/Edit and 122 ApplyPatch fixtures, including
+exact final file bytes/modes/symlinks. The native VM corpus runs 29 trusted scripts
+against real temporary files, shell processes and command plugins; it compares
+values/logs/call outcomes plus file state. All writes stay in disposable fixture
+trees. Do not feed arbitrary user code to either Go VM oracle. The file-tool oracle
+uses a json/v1 rune-replacement display projection for invalid UTF-8, while byte
+preservation is checked separately; this is not a json/v2 wire-parity claim.
+
+Reads retain only the displayed prefix even on giant physical lines and check
+cancellation between input chunks. Edits preserve untouched non-UTF-8 bytes and
+follow live symlinks. Alias-aware sorted locks serialize Edit/Write/Patch, including
+new files under a symlinked directory whose descendants do not exist yet. Patch
+validation stages all changes before publication, but an I/O failure during a
+multi-file publication is **not** an atomic rollback, as in the Go implementation.
+
+Intentional resource policies need release compatibility review: Edit accepts at
+most 32 MiB of input and 64 MiB of expanded output; ApplyPatch accepts 4 MiB of
+patch text and 64 MiB of total staged content. ReadText has a 4 MiB cap (the Go Code
+helper was unbounded). The host defaults to four workers, 64 admitted jobs and a
+16 MiB aggregate argument budget. Completed results have a count bound; there is
+no claim that these are a hard whole-process RSS bound. Patch line metadata,
+transient JSON/edit buffers and filesystem blocking remain resource gates.
+
+Processes have a separate group and nonblocking stdin/stdout/stderr on one worker,
+with head/tail-bounded captures and no detached copying threads. Cancellation and
+normal leader exit terminate descendants with TERM then KILL after the grace
+period, reap the leader and close all owned pipes. Host cancellation joins its
+workers even if an external Rc retains the host. Tests cover a TERM-ignoring loop,
+blocked stdin, live descendants, bounded output, explicit empty environment and
+CLOEXEC file identity (not just whether a shell reused the descriptor number).
+This is not an OS sandbox: a child which escapes into another session is outside
+the process-group boundary. Persistent process status/attachment, durable output
+spools and the full primitives operation service are not yet ported.
+
+## Responses provider codec, SSE, HTTP and client wrappers
+
+```sh
+cargo test --locked -p kou-provider
+python3 compat/provider_parity.py
+```
+
+This runs 433 comparisons, including 161 actual Go/Rust loopback HTTP exchanges
+and 89 synthetic Codex credential/config cases.
+It compares request JSON, selected auth/cache headers, final DTOs/errors/API
+metadata, rate-limit waits, overflow sizes, delta/reset events, warnings, retries
+and traces. Both sides only contact their own fake server; the five provider
+clients use fixed synthetic credentials, never production ones or paid requests.
+Deterministic delay hints allow exact retry comparisons; jitter ranges are unit
+tested, not normalized away. The Rust example is named `responses_oracle` to
+avoid a shared Cargo output collision with the Code VM `oracle` example.
+
+The request wire view borrows history text/arguments/schemas instead of cloning
+an owned `serde::Value` conversation tree. Tests cover cross-model replay,
+reasoning/raw metadata, missing/late tool results, images, argument repair,
+function/hosted tools, cache keys and extension collisions. Response decoding
+preserves opaque usage/reasoning values and uses borrowed text unless JSON
+escapes need decoding.
+
+SSE framing handles LF/CRLF/CR and arbitrary chunk cuts; unfinished frames at EOF
+are not emitted. The streaming state buffers output-item objects by sparse index,
+uses observed items only when terminal output is absent/empty, and preserves the
+other terminal fields. Text/reasoning summary deltas and paragraph separators
+match the Go reporter. Tests exercise EOF, in-band errors, authoritative terminal
+output, duplicates, null/scalar items and single-byte chunks.
+
+The Rust HTTP adapter implements cancellation, optional absolute deadlines,
+30-minute network-idle deadlines that exclude reporter processing, retries and
+upstream delay hints, reset parsing, typed rate-limit/overflow errors and image
+fallback. OpenAI, Fireworks, OpenRouter, Ollama and Codex wrappers implement their
+actual cache/auth headers and usage semantics. Native tests cover headers/body/backoff/
+admission cancellation, dropped futures, early terminal return, slow callbacks,
+gzip and byte limits. No production credential files are read by these tests.
+
+Configurable defaults are 32 MiB encoded request, 1 MiB HTTP error, 16 MiB SSE
+frame, 32 MiB retained payload, 4096 items, eight admitted requests and 256/64 KiB
+text-only-model cache entries/bytes. These are release compatibility policies,
+not a hard global RSS bound. The Go SSE frame ceiling was 256 MiB. Rust's
+30-second connect deadline includes TLS; Go's separate 10-second TLS handshake
+deadline is not replicated. Live TLS/proxy compatibility and provider resource
+measurements remain open. Codex has synthetic credential/config parity, private
+constructor-snapshot files, literal-endpoint/redirect/header checks and no automatic
+login/refresh. Its explicit-token cap is 1 MiB, a new release policy. Typed provider
+objects reject positional arrays without cloning into a JSON value tree. Wider
+domain DTO shape fuzzing and runner credential/configuration integration remain
+open. See `rust-rewrite-provider-2026-11-09.md`.
+
+## Anthropic Messages
+
+```sh
+python3 compat/anthropic_parity.py
+```
+
+This adds 355 comparisons (222 codec, 56 SSE, 77 owned-loopback HTTP including
+model listings). The public Rust adapter implements borrowed requests, model and
+thinking policies, cache breakpoints, streaming prefix hashes, signed reasoning,
+exact streamed tool arguments, usage, retries and thinking/context/fallback
+recovery, context room/overflow, and model pagination. Comparisons include full
+endpoint queries, selected header values, prefix reports, errors and callbacks.
+Image validation uses fixed scratch rather than allocating a full decoded image.
+
+Anthropic framing deliberately differs from Responses: bare CR is not a line
+separator, no BOM is stripped, and message_stop is read through to EOF, so a later
+API error still wins. Its overload delay is linear with no 60-second cap and
+ignores Retry-After; it must not share the Responses overload policy. Native tests
+cover byte/depth caps, all stream chunk cuts, cancellation/deadline/drop/admission,
+ping activity, model pagination and page-cycle caps. The Go Anthropic package and
+race-enabled HTTP/recovery/pagination oracle fixtures also passed race checks.
+
+Anthropic defaults to a 10-minute per-await idle timeout, 100 model pages,
+100,000 model names and 8 MiB of aggregate name bytes. Request/error/frame/retention
+and admission limits otherwise match the table above; the schema sort depth is
+128. Go's SDK line ceiling is 32 MiB, not the Responses ceiling. These caps and
+refusing redirects by default are new release policies. Slow reporter processing
+is excluded from Rust's next network-idle interval; Go's watchdog can count that
+time. SDK malformed/duplicate/rare union shapes and real TLS/proxy/resource
+measurements remain release gates. No paid provider calls were made.
+
+## Context, compaction and consumer checkpoints
+
+```sh
+python3 compat/context_parity.py
+```
+
+`kou-engine::context::Builder` implements the actual pure committed/staged context
+state, running/progress results, settings and heartbeat messages, linked files,
+pruning/masking/thinking/image windows, provider usage estimates, compaction
+request fitting and summary extraction, prior user messages, notes/touched files,
+and context checkpoint version 1. Both provider adapters accept its shared
+history directly. Request snapshots share `Arc<LlmItem>` bodies; changed items are
+replaced rather than mutating an in-flight snapshot. The extra answered-prompt
+projection is bounded to 40 KB before compaction, not just when checkpointed.
+
+The corpus has **285 scenarios**, including 80 seeded histories and 82 valid,
+truncated or corrupted PNG/GIF/JPEG/WebP header probes. It compares exact model
+requests, reports, estimates, compacted text, notes and checkpoint continuations
+in both directions. Fourteen native tests cover ownership, durable versus live
+progress, prompt budgets, restoration, pruning counts and file failures, notes,
+images and usage. Go contextbuilder race tests and context-oracle vet passed.
+
+A dimensions-only image library was rejected after 27/29 controlled corrupted
+header samples disagreed with Go. The replacement streams the registered Go
+header/config policies and CRC checks, without buffering a decoded image or
+pixel data. Broader image and typed-field/array/checkpoint diagnostic fuzzing
+remain release gates. Context working bodies and in-flight snapshots are not a
+hard RSS budget; no CPU/RSS advantage for this slice has been measured.
+
+## Coordinator replay and recovery
+
+```sh
+python3 compat/replay_parity.py
+```
+
+`kou-engine::coordinator::History` restores recorded inputs, turns, model
+responses, tool results, controls and forks without dispatching effects. It saves
+and restores coordinator checkpoint version 1, shares active call bodies with
+context, and uses the real cold session store for accelerated recovery or full
+fallback when the consumer checkpoint is invalid. Recovery checks source
+freshness before and after reading, including a checkpoint-only restore.
+
+The oracle invokes the actual Go coordinator, stopping at Context.Resumed before
+scheduler/model/tool execution. **138 replay scenarios** (60 seeded histories)
+and **19 Rust-exported coordinator checkpoint import/fallback matrices** pass.
+The development oracle now probes scalar state and operation headers as well as
+built context: context-only comparisons had missed pending-input, compaction,
+verification and stop bookkeeping differences. Those mismatches were corrected
+from the current Go loop. A body-free `History::inspect` projection never builds
+or prunes context. This is not independently exported bidirectional coordinator
+checkpoint parity. Eleven native replay tests cover ordering, missing operations,
+transactional restore, shared ownership, real-store fast/full recovery, freshness,
+cross-session rejection and restored verification markers.
+
+## Live coordinator core
+
+`coordinator::Coordinator` is a single-owner Tokio loop around the same reducer.
+It schedules pure tool translations, commits response/status records before
+operation dispatch, persists operation updates before delivering results, and
+handles steering, hard/when-idle stop, cancellation, grace, after-tools input,
+verification, heartbeat/report timers, run budgets, quota backoff and overflow
+compaction retries. It owns one model future; steering cancels and drops that
+future rather than retaining a stale response task.
+
+`FileJournal` moves the real `SessionWriter` onto one bounded, dedicated writer
+thread. Drop closes the queue and joins the writer, including when a waiting
+future is dropped. Recovery dispatches the recorded operation with its original
+ID, not a newly translated call. This does not prove exactly-once external effects.
+Concrete provider adapters implement the model port without Go. Native tests drive
+an actual HTTP/SSE adapter against an owned loopback server and exercise a real
+private FileJournal restart through cold-store recovery.
+
+**33 native driver tests** cover these boundaries and policies. Queue admission
+bounds both count and estimated payload bytes, retaining permits for deferred
+input. Ordinary input and operation updates each default to 256 events / 32 MiB
+aggregate / 16 MiB per event. Controls have an independent reserved budget of 16
+events / 1 MiB aggregate / 64 KiB per event, so deferred prompts cannot prevent
+stop or the operation updates they await. These are new configurable queue
+policies, not a global RSS budget. Context, retained operation state, in-flight
+snapshots and serialized records require separate accounting.
+
+The latest complete local gate passed **210 native workspace tests**, including
+**58 in kou-engine**, all **ten compatibility suites**, fmt/clippy, WASM,
+Python/JS syntax and diff checks. Go coordinator/contextbuilder race tests and
+both development-oracle vet checks passed. Inventory pins **74 sources, 136 HTTP
+registrations and 31 built-in plugins**.
+
+The live core is not the production runner. Concrete operation runtime/result
+translators, complete Code wire/reporting/images/search, stream-event reporting,
+runner auth/CLI/detached lifecycle and independent live Go/Rust trace parity
+remain open. Default local-time notice formatting also needs timezone-abbreviation
+compatibility review. No whole-runner CPU/RSS advantage has been measured.
+
+The local root plan/status reports describe the remaining approved target.
+Do not replace the running Go installation or enable Rust writes to user sessions
+until mixed-version durability, execution and client compatibility gates pass.
+Full server API, WASM cockpit/plugins, accounts gateway, canvas/PTY/voice and relay
+remain outstanding. No GPUI.

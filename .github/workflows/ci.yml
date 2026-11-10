@@ -29,6 +29,31 @@ jobs:
           cache: false
       - run: make test check build
 
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - run: rustup toolchain install stable
+      - run: rustup component add rustfmt clippy
+      - run: rustup target add wasm32-unknown-unknown
+      - run: make rust-check rust-test rust-compat
+      - run: cargo check --locked -p kou-web --target wasm32-unknown-unknown
+
   fuzz:
     name: Fuzzing (${{ matrix.target }})
     runs-on: ubuntu-24.04

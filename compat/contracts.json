@@ -1,0 +1,1388 @@
+{
+  "version": 1,
+  "kind": "source-inventory-not-an-API-conformance-claim",
+  "sources": [
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "sha256": "c48ab1f1c2b43ecec440aefb5ae3aee816bfa74011eee01acc5834fd25475136"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "sha256": "06738aeb1423b68fc57e17f510b0d14dc9d78d02b7e7e7b82e13c9ab3df69065"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "sha256": "ad367292fc06787718c97b7d330c3855e33b1d275d59f07311eb5ca205afdcf2"
+    },
+    {
+      "file": "cmd/internal/tunnel/tunnel.go",
+      "sha256": "df73afed3fb7aa8e011b54f5b18ddf548ea45ce520b1aba0a87af6defff9a806"
+    },
+    {
+      "file": "cmd/internal/cockpit/detached.go",
+      "sha256": "a3c7318e5ed228b2537e25886ce2ef1c64a925abec9a934511797147320710d7"
+    },
+    {
+      "file": "cmd/internal/cockpit/process_unix.go",
+      "sha256": "da5d0bdbc792da5143bd2109085c8aed5fffd79fd484016a798e574a2af83252"
+    },
+    {
+      "file": "cmd/internal/agentrunner/run.go",
+      "sha256": "3c199a49576a4e29d52df3c386635321f833a140a1a57a6ff7177f1dcefafd08"
+    },
+    {
+      "file": "cmd/internal/agentrunner/providers.go",
+      "sha256": "644ae1fee1769091a8c6d652e6101f1af8883cf0e0085cdcb5997d6b75a923bd"
+    },
+    {
+      "file": "cmd/internal/accounts/accounts.go",
+      "sha256": "727437830042ad5f385ccb96a287d596178b5d2a8d4577158f164e5f876df10b"
+    },
+    {
+      "file": "harness/sessionstore/localfile/codec.go",
+      "sha256": "3db547389f0bb0edaac40c9e9584e54aae6d73c43190395642a8b549fab33ef9"
+    },
+    {
+      "file": "harness/sessionstore/localfile/checkpoint.go",
+      "sha256": "77e441bef9005c130e78de82dd677eebc5e447dce8e82e00ba2a4187491db3ce"
+    },
+    {
+      "file": "harness/codevm/codevm.go",
+      "sha256": "2337d98d5197c8fe2c008dbf78a6ad3604bec9b340a4fdb7a7526c1821cee6a6"
+    },
+    {
+      "file": "harness/codevm/exec.go",
+      "sha256": "5adc1e526600113f1cdc429379a6d48e74287098efca4dd04801cebe721736e0"
+    },
+    {
+      "file": "harness/codevm/tools.go",
+      "sha256": "6f90b055cc977a955fa0a1d516e6382b8870df3e15ba005f7e0b185fbbcb91ce"
+    },
+    {
+      "file": "harness/codevm/declarations.go",
+      "sha256": "2fcde87e80fb7805662122dd9fafe24688dbe377bc02f343241f18dbb13d2864"
+    },
+    {
+      "file": "harness/fileops/fileops.go",
+      "sha256": "32d5bd220d6895eeeeeb80ba1482a1f6120e4e34c32514e5a6126aa18af1bc12"
+    },
+    {
+      "file": "harness/fileops/patch.go",
+      "sha256": "c1a2da8671e3bd0326b53a1eceb38b89c3947e669b854577a90a40849cf97897"
+    },
+    {
+      "file": "harness/fileops/lock.go",
+      "sha256": "6f20da45e6ab17b9e20ba5b980500f3025a98bf4660483b14aee079486d01376"
+    },
+    {
+      "file": "harness/primitives/process.go",
+      "sha256": "64e2ba10e910e28d5582fb586ff4d0075b4d05664b873418894caee8b73f3a1a"
+    },
+    {
+      "file": "internal/spawn/spawn.go",
+      "sha256": "7dd847ed133122b7d90bf8019731dc91b72298379131912fe8b3bddbfff5073b"
+    },
+    {
+      "file": "harness/sessionstore/itemjson.go",
+      "sha256": "cf20e8b1ba4439e3f2fa052ff717aaab2d042eca786105a29d24739a9f15700a"
+    },
+    {
+      "file": "harness/llm/itemjson.go",
+      "sha256": "5a80e4c2cea21d67fd8bae2e4c942e4c1cf7586ba35f15cced04d2bd020c5f35"
+    },
+    {
+      "file": "harness/llm/model.go",
+      "sha256": "da0c97890aaa09fe77f4ddd8bb1e8717ad52ab24f73053ec1af82bd13a74183f"
+    },
+    {
+      "file": "harness/llm/stream.go",
+      "sha256": "3628b3234dbca7f8953be65c881b87480a1842d3b3a0c9b7111ca471bafde0a1"
+    },
+    {
+      "file": "harness/llm/responsesapi/adapter.go",
+      "sha256": "b5b573f050c5169dd54f20d0edbbcd595a230ce3c6c29465d25ff0d13d3493e0"
+    },
+    {
+      "file": "harness/llm/responsesapi/request.go",
+      "sha256": "24cdd3a24b1110de42bc7de035f789a2d8f3d06781b330f65ba3c08e9e0bb916"
+    },
+    {
+      "file": "harness/llm/responsesapi/response.go",
+      "sha256": "daa8a69806c1d45112a803e6649ecfc22aa245bccdda0d6deb208daf6fa59257"
+    },
+    {
+      "file": "harness/llm/responsesapi/stream.go",
+      "sha256": "f98382f046c508806244127f61a7a3d5a0e525db1ffe75e4e13a9f37186d5d60"
+    },
+    {
+      "file": "harness/llm/responsesapi/retry.go",
+      "sha256": "5187e59acc782777cbfc82b4f02a6fa88a2f4883fae5c7a4cd8f579c50a93513"
+    },
+    {
+      "file": "harness/llm/responsesapi/images.go",
+      "sha256": "2f9dbb978f4999e1372944f634ce3f58db1bf91d3136d7f7bdd66c5dd9c33acf"
+    },
+    {
+      "file": "harness/llm/overflow.go",
+      "sha256": "a7a9b6848b10f105d5f0af4f234ccefa028b7e06e13674eb1725259416b4482e"
+    },
+    {
+      "file": "harness/llm/ratelimit.go",
+      "sha256": "093ae7dbc17852e06aae653008d043294013d05d59764bc3fdd1a9f5f5108376"
+    },
+    {
+      "file": "harness/llm/retry.go",
+      "sha256": "c846601eeb6a0063c3c98e62664f353d7d949617ccac168e9ba3964df82a8824"
+    },
+    {
+      "file": "harness/llm/warn.go",
+      "sha256": "f3f89c7fb812c1cdd449ef695d21b0bc816a2ea512a0a9ab3d7f1c146318b52c"
+    },
+    {
+      "file": "harness/llm/clients/openai/client.go",
+      "sha256": "8828cfe9184a63a5b0bee35d044bd2dcc8e76d0613dfe5b1e7369d56a9fbb4de"
+    },
+    {
+      "file": "harness/llm/clients/fireworks/client.go",
+      "sha256": "d9dafd42f403cbc43a69f7fa7d2efc3f834e135cfbbb27ff619b94c9ae05cb74"
+    },
+    {
+      "file": "harness/llm/clients/openrouter/client.go",
+      "sha256": "218740e72697c6776a2baf971d98aecb57f425d2a68b49cad455c8526a2346ca"
+    },
+    {
+      "file": "harness/llm/clients/ollama/client.go",
+      "sha256": "3313e4ba87eb2e2663b9f231e16357cda94a55e8ac3828dc2eb2b8fa49ea32dc"
+    },
+    {
+      "file": "harness/llm/clients/openaicodex/client.go",
+      "sha256": "2bc623f64e21b84fcf6d47e568c17afe743035601def27b04bdb12ea708f1ab2"
+    },
+    {
+      "file": "harness/llm/clients/openaicodex/credentials.go",
+      "sha256": "9b5196b8cfaae0373b85eed6f70c9debbe095109a73abd287bcc55d63c92a404"
+    },
+    {
+      "file": "harness/llm/clients/anthropic/client.go",
+      "sha256": "4250959d8ed7882c12991770c87720070237ab2d8f686956be0cc404cc84a449"
+    },
+    {
+      "file": "harness/llm/clients/anthropic/request.go",
+      "sha256": "8873ee1db25c48abb12289fe3ba4089258eb9e3c5d7751d162ac1e9ae7ff73a2"
+    },
+    {
+      "file": "harness/llm/clients/anthropic/response.go",
+      "sha256": "e43e3c04bdee13af98d687751aa05e9085d3cb3f5451ea2e71a44b008ce53c90"
+    },
+    {
+      "file": "harness/llm/clients/anthropic/prefix.go",
+      "sha256": "77c71b542377cd2ace1a7732bdad4f9c99f1e95b09972c50f87855eae912e2b3"
+    },
+    {
+      "file": "harness/llm/prefix.go",
+      "sha256": "4f0f82ae8548a281fb3c714e5a11e5b2e955b4a2c94aba760a1550b0455db534"
+    },
+    {
+      "file": "harness/llm/model.go",
+      "sha256": "da0c97890aaa09fe77f4ddd8bb1e8717ad52ab24f73053ec1af82bd13a74183f"
+    },
+    {
+      "file": "harness/contextbuilder/contextbuilder.go",
+      "sha256": "bf3ac73c076f26d7224ed9e9849ca0204f26139e1dff7094681c50693ee8050c"
+    },
+    {
+      "file": "harness/contextbuilder/builder.go",
+      "sha256": "06cb6fdf7b57485929d070c16af4a26cb43e5d6b549f722a617fdb00e4dbdf92"
+    },
+    {
+      "file": "harness/contextbuilder/checkpoint.go",
+      "sha256": "711e121348e70f7bca9bbab9423afc64982b2a65174f9e6059bc45c152a4435a"
+    },
+    {
+      "file": "harness/contextbuilder/compaction.go",
+      "sha256": "4a4c766a9b8153e0023c0f932132433141198354f1374002c4bd9eefb68e13c5"
+    },
+    {
+      "file": "harness/contextbuilder/images.go",
+      "sha256": "0438d49e7c5725e7bda2555f5178bbaaf5bafeba329a55d6c2a4fbbcf220016e"
+    },
+    {
+      "file": "harness/contextbuilder/input.go",
+      "sha256": "6b047990232a13b3893658662ba0e1b2473a04aa13827cc3b993ae33f82e2d3a"
+    },
+    {
+      "file": "harness/contextbuilder/linked.go",
+      "sha256": "4ff08032862e8186c5708c7d08b8014eba99637109638bdcef366f50de0c1be9"
+    },
+    {
+      "file": "harness/contextbuilder/mask.go",
+      "sha256": "accbbc2865dd8cd85d2ab80a36c992dec36172bd6379bb63a2096f6b08473a37"
+    },
+    {
+      "file": "harness/contextbuilder/memory.go",
+      "sha256": "455740f8613afef0a529726ec47a2953739c34c2e92aa7289e3b0c240a2da677"
+    },
+    {
+      "file": "harness/contextbuilder/prune.go",
+      "sha256": "bd264054abdb7ccb8db1b6331f1db0b14ebf37ccbc4a3cd4833b582eb4f89536"
+    },
+    {
+      "file": "harness/contextbuilder/skills.go",
+      "sha256": "6f590fa336fffaffe8d7997ff2103add92e7e82c0d1e8e6a03c6bfcef3655383"
+    },
+    {
+      "file": "harness/contextbuilder/prompts/preamble.md",
+      "sha256": "aed205b2bf4886dd8c684b6811a18f2ba83569f7242de264170f8e2f2c76d094"
+    },
+    {
+      "file": "harness/contextbuilder/prompts/compaction.md",
+      "sha256": "f429337bfd0fde4c1cce9ff062814f587a3e24b5911574555d52dc9d5ae355ff"
+    },
+    {
+      "file": "harness/contextbuilder/prompts/compacted.md",
+      "sha256": "c62904a7cc38680e3b721a74f71d5e18312a13d4a3c8d493d8447ce85b926b90"
+    },
+    {
+      "file": "harness/contextbuilder/prompts/skill-preamble.md",
+      "sha256": "e8a86ec9be1f1aefd5218e2c28f046b3f5432d4f60f71726b47c1f21d45e1de9"
+    },
+    {
+      "file": "harness/inbox/inbox.go",
+      "sha256": "68eba6ffdbb8a60388544e9f3a16e949a601f317fc4214db190cbba78e6fa9d0"
+    },
+    {
+      "file": "harness/tool/registry.go",
+      "sha256": "02bc9a617eb443c2429dbcfe0c580149fb6ef317c70bc93a2cff91bf1956cacc"
+    },
+    {
+      "file": "harness/tool/tool.go",
+      "sha256": "b3b87c236a744e124d54c93e27d36786daec247da4a28125eb16c8ed75c5a799"
+    },
+    {
+      "file": "harness/coordinator/coordinator.go",
+      "sha256": "855e8ef632cfe4ea8094bb724b37bc615c6d04345e6ec07c152685216c14ffb3"
+    },
+    {
+      "file": "harness/coordinator/loop.go",
+      "sha256": "1a4f9a0b1034743d90c666efb91207e33cbead5c15b833bd662e685472fe5462"
+    },
+    {
+      "file": "harness/coordinator/checkpoint.go",
+      "sha256": "a320a194f35a1406ab5c55d7f6dee4c3806e408a389fa593a7a5de9399ebd45c"
+    },
+    {
+      "file": "harness/operation/operation.go",
+      "sha256": "01178473edea133532a530319ad1b536a177c6d598c8297cc4023b93f5726920"
+    },
+    {
+      "file": "harness/primitives/remote.go",
+      "sha256": "963f7ec9e6d86f587a8b394071b6a5673eb4935d58692272bdda694814f5c235"
+    },
+    {
+      "file": "harness/primitives/sse.go",
+      "sha256": "a24c88b4a614521ca4dcf597abdc8f7efafb3e63fa331a9064652fbda3bd7f3c"
+    },
+    {
+      "file": "harness/primitives/remote_sse.go",
+      "sha256": "5381376c7d48de6fba436caae1e48638d5ca82dcc49f24944f9f0c4c1fbfb116"
+    },
+    {
+      "file": "harness/plugin/plugin.go",
+      "sha256": "a9f2b68aaea4012150c6d5a961f59decbfdb33932c95da3f4432b95258e0939b"
+    },
+    {
+      "file": "docs/plugins.md",
+      "sha256": "36c9e7d0e788de81d3f814f8a6cd2cef0b4447750e54a5a94b3dc8382c2164df"
+    },
+    {
+      "file": "ios/KouConveyor/Core/RelayClient.swift",
+      "sha256": "95108ed71d5a4b0e6063c7226cc9943f30bef01bf1c74ea570974c64da1107e0"
+    }
+  ],
+  "http_registrations": [
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 158,
+      "registration": "mux.Handle(\"GET /\", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 162,
+      "registration": "mux.HandleFunc(\"GET /api/config\", s.handleConfig)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 163,
+      "registration": "mux.HandleFunc(\"GET /api/tunnel\", s.handleTunnel)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 164,
+      "registration": "mux.HandleFunc(\"POST /api/tunnel\", s.handleTunnelAction)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 165,
+      "registration": "mux.HandleFunc(\"GET /api/tunnel/qr\", s.handleTunnelQR)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 166,
+      "registration": "mux.HandleFunc(\"GET /api/settings\", s.handleSettings)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 167,
+      "registration": "mux.HandleFunc(\"PUT /api/settings\", s.handleSaveSettings)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 168,
+      "registration": "mux.HandleFunc(\"POST /api/settings/check\", s.handleCheckSettings)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 169,
+      "registration": "mux.HandleFunc(\"GET /api/workspaces\", s.handleWorkspaces)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 170,
+      "registration": "mux.HandleFunc(\"POST /api/workspaces\", s.handleAddWorkspace)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 171,
+      "registration": "mux.HandleFunc(\"DELETE /api/workspaces/{ws}\", s.handleRemoveWorkspace)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 172,
+      "registration": "mux.HandleFunc(\"GET /api/folders\", s.handleFolders)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 173,
+      "registration": "mux.HandleFunc(\"GET /api/preferences\", s.handlePreferences)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 174,
+      "registration": "mux.HandleFunc(\"PUT /api/preferences\", s.handleSavePreferences)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 177,
+      "registration": "mux.HandleFunc(\"GET /api/voice\", s.handleVoice)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 178,
+      "registration": "mux.HandleFunc(\"PUT /api/voice\", s.handleSaveVoice)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 179,
+      "registration": "mux.HandleFunc(\"DELETE /api/voice\", s.handleForgetVoice)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 181,
+      "registration": "mux.HandleFunc(\"GET /api/accounts\", s.handleAccounts)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 183,
+      "registration": "mux.HandleFunc(\"PUT /api/connection\", s.handleSaveConnection)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 184,
+      "registration": "mux.HandleFunc(\"POST /api/connection/adopt\", s.withGatewayHere(s.handleAdoptConnection))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 187,
+      "registration": "mux.HandleFunc(\"GET /api/gateway/update\", s.handleGatewayVersion)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 188,
+      "registration": "mux.HandleFunc(\"POST /api/gateway/update\", s.handleUpdateGateway)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 192,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions\", s.handleSessions)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 193,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}\", s.handleSession)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 194,
+      "registration": "mux.HandleFunc(\"PATCH \"+prefix+\"/sessions/{id}\", s.handleUpdateSession)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 195,
+      "registration": "mux.HandleFunc(\"DELETE \"+prefix+\"/sessions/{id}\", s.handleDeleteSession)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 196,
+      "registration": "mux.HandleFunc(\"PUT \"+prefix+\"/pins\", s.handleOrderPins)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 197,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/sessions/{id}/branch\", s.handleBranch)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 198,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/export\", s.handleExport)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 199,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/changes/{message}\", s.handleChanges)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 200,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/changes/{message}/diff\", s.handleChangeDiff)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 201,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/runs\", s.handleStart)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 202,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/models\", s.handleModels)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 203,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/queue\", s.handleQueue)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 204,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/sessions/{id}/queue\", s.handleEnqueue)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 205,
+      "registration": "mux.HandleFunc(\"DELETE \"+prefix+\"/sessions/{id}/queue\", s.handleClearQueue)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 206,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/sessions/{id}/queue/pause\", s.handlePauseQueue)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 207,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/sessions/{id}/queue/resume\", s.handleResumeQueue)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 208,
+      "registration": "mux.HandleFunc(\"PATCH \"+prefix+\"/sessions/{id}/queue/{item}\", s.handleUpdateQueued)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 209,
+      "registration": "mux.HandleFunc(\"DELETE \"+prefix+\"/sessions/{id}/queue/{item}\", s.handleDropQueued)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 211,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/images/{message}/{n}\", s.handlePromptImage)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 212,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/queue/{item}/images/{n}\", s.handleQueuedImage)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 213,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/tools/{call}/image\", s.handleToolImage)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 215,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/surfaces/{surface}/html/{component}\", s.handleSurfaceFrame)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 218,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/sessions/{id}/files/{message}\", s.handlePromptFiles)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 219,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/files\", s.handleFiles)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 220,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/links\", s.handleLinks)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 223,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/tree\", s.handleTree)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 224,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/file\", s.handleFile)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 225,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/raw\", s.handleRawFile)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 226,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/terminals\", s.handleTerminals)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 227,
+      "registration": "mux.HandleFunc(\"POST \"+prefix+\"/terminals\", s.handleStartTerminal)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 229,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/voice/socket\", s.handleVoiceSocket)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 232,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/plugins\", s.handlePlugins)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 233,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/plugins/events\", s.handlePluginEvents)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 234,
+      "registration": "mux.HandleFunc(\"PUT \"+prefix+\"/plugins/trust\", s.handleTrustPlugins)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 235,
+      "registration": "mux.HandleFunc(\"PUT \"+prefix+\"/plugins/{name}/enabled\", s.handleEnablePlugin)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 236,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/plugins/{name}/files/{path...}\", s.handlePluginFile)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 237,
+      "registration": "mux.HandleFunc(\"GET \"+prefix+\"/plugins/{name}/v/{version}/{path...}\", s.handlePluginFile)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 239,
+      "registration": "mux.HandleFunc(\"GET /api/runs/{id}/events\", s.handleEvents)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 242,
+      "registration": "mux.HandleFunc(\"GET \"+eventSocketProbe, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 243,
+      "registration": "mux.HandleFunc(\"POST /api/runs/{id}/cancel\", s.handleCancel)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 244,
+      "registration": "mux.HandleFunc(\"POST /api/runs/{id}/restart\", s.handleRestart)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 245,
+      "registration": "mux.HandleFunc(\"GET /api/terminals/{id}\", s.handleTerminal)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 246,
+      "registration": "mux.HandleFunc(\"DELETE /api/terminals/{id}\", s.handleKillTerminal)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 247,
+      "registration": "mux.HandleFunc(\"POST /api/terminals/{id}/keep\", s.handleKeepTerminal)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 248,
+      "registration": "mux.HandleFunc(\"GET /api/terminals/{id}/socket\", s.handleTerminalSocket)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 249,
+      "registration": "mux.HandleFunc(\"GET /api/terminal/settings\", s.handleTerminalSettings)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 250,
+      "registration": "mux.HandleFunc(\"PUT /api/terminal/settings\", s.handleSaveTerminalSettings)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/server.go",
+      "line": 256,
+      "registration": "mux.HandleFunc(method+\" /api/\", notFound)"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 206,
+      "registration": "mux.HandleFunc(\"GET /api/accounts/models\", s.withGateway(s.handleGatewayModels))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 207,
+      "registration": "mux.HandleFunc(\"POST /api/accounts/import\", s.withGateway(s.handleImportAccount))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 208,
+      "registration": "mux.HandleFunc(\"POST /api/endpoints\", s.withGateway(s.handleAddEndpoint))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 209,
+      "registration": "mux.HandleFunc(\"POST /api/endpoints/probe\", s.withGateway(s.handleProbeEndpoint))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 210,
+      "registration": "mux.HandleFunc(\"PUT /api/endpoints/{id}\", s.withGateway(s.handleUpdateEndpoint))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 211,
+      "registration": "mux.HandleFunc(\"PATCH /api/endpoints/{id}\", s.withGateway(s.handleSwitchEndpoint))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 212,
+      "registration": "mux.HandleFunc(\"DELETE /api/endpoints/{id}\", s.withGateway(s.handleRemoveEndpoint))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 213,
+      "registration": "mux.HandleFunc(\"GET /api/accounts/{name}/quota\", s.withGateway(s.handleAccountQuota))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 214,
+      "registration": "mux.HandleFunc(\"POST /api/accounts/{name}/refresh\", s.withGateway(s.handleRefreshAccount))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 215,
+      "registration": "mux.HandleFunc(\"PATCH /api/accounts/{name}\", s.withGateway(s.handleUpdateAccount))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 216,
+      "registration": "mux.HandleFunc(\"DELETE /api/accounts/{name}\", s.withGateway(s.handleRemoveAccount))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 217,
+      "registration": "mux.HandleFunc(\"POST /api/sign-ins\", s.withGateway(s.handleStartSignIn))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 218,
+      "registration": "mux.HandleFunc(\"GET /api/sign-ins/{state}\", s.withGateway(s.handleSignIn))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 219,
+      "registration": "mux.HandleFunc(\"POST /api/sign-ins/{state}/callback\", s.withGateway(s.handleFinishSignIn))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 220,
+      "registration": "mux.HandleFunc(\"DELETE /api/sign-ins/{state}\", s.withGateway(s.handleCancelSignIn))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 221,
+      "registration": "mux.HandleFunc(\"GET /api/usage\", s.withGateway(s.handleUsage))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 222,
+      "registration": "mux.HandleFunc(\"GET /api/usage/prices\", s.withGateway(s.handlePrices))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 223,
+      "registration": "mux.HandleFunc(\"GET /api/usage/price\", s.withGateway(s.handleModelPrices))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 224,
+      "registration": "mux.HandleFunc(\"POST /api/usage/prices\", s.withGateway(s.handleSetPrice))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 225,
+      "registration": "mux.HandleFunc(\"DELETE /api/usage/prices\", s.withGateway(s.handleRemovePrice))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 226,
+      "registration": "mux.HandleFunc(\"PUT /api/usage/unit\", s.withGateway(s.handleSetUnit))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 227,
+      "registration": "mux.HandleFunc(\"POST /api/usage/prices/refresh\", s.withGateway(s.handleRefreshPrices))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 228,
+      "registration": "mux.HandleFunc(\"GET /api/context-windows\", s.withGateway(s.handleContextWindows))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 229,
+      "registration": "mux.HandleFunc(\"POST /api/context-windows\", s.withGateway(s.handleSetContextWindow))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 230,
+      "registration": "mux.HandleFunc(\"DELETE /api/context-windows\", s.withGateway(s.handleRemoveContextWindow))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 231,
+      "registration": "mux.HandleFunc(\"GET /api/context-windows/openrouter\", s.withGateway(s.handleOpenRouterWindow))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 232,
+      "registration": "mux.HandleFunc(\"POST /api/cache-ttls\", s.withGateway(s.handleSetCacheTTL))"
+    },
+    {
+      "file": "cmd/kou-conveyor-web/gatewaypeer.go",
+      "line": 233,
+      "registration": "mux.HandleFunc(\"DELETE /api/cache-ttls\", s.withGateway(s.handleRemoveCacheTTL))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 81,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases\", e.handleList)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 82,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases\", e.handleCreate)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 83,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}\", e.handleGet)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 84,
+      "registration": "mux.HandleFunc(\"PATCH \"+p+\"/canvases/{id}\", e.handlePatch)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 85,
+      "registration": "mux.HandleFunc(\"DELETE \"+p+\"/canvases/{id}\", e.handleDelete)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 86,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/ops\", e.handleOps)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 87,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}/events\", e.handleEvents)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 88,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/nodes/{node}/send\", e.handleSend)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 89,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}/nodes/{node}/read\", e.handleRead)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 90,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}/nodes/{node}/transcript\", e.handleTranscript)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 91,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}/nodes/{node}/search\", e.handleSearch)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 92,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/nodes/{node}/restart\", e.handleRestart)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 93,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/nodes/{node}/stop\", e.handleStop)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 94,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/nodes/{node}/fire\", e.handleFire)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 95,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/nodes/{node}/token\", e.handleRotate)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 96,
+      "registration": "mux.HandleFunc(\"DELETE \"+p+\"/canvases/{id}/nodes/{node}/worktree\", e.handleRemoveWorktree)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 97,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvases/{id}/messages/{msg}\", e.handleMessage)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 98,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/messages/{msg}/approve\", e.handleApprove)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 99,
+      "registration": "mux.HandleFunc(\"DELETE \"+p+\"/canvases/{id}/messages/{msg}\", e.handleDrop)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 100,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/foreman\", e.handleForeman)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 101,
+      "registration": "mux.HandleFunc(\"POST \"+p+\"/canvases/{id}/template\", e.handleSaveTemplate)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 102,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvas/kinds\", e.handleKinds)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 103,
+      "registration": "mux.HandleFunc(\"GET \"+p+\"/canvas/templates\", e.handleTemplates)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 105,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/live\", e.handleLive)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 106,
+      "registration": "mux.HandleFunc(\"POST /api/canvas/pause\", e.handlePauseAll)"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 108,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/self\", e.agentRoute(\"\", e.handleSelf))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 109,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/self/launch\", e.agentRoute(\"\", e.handleLaunch))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 110,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/view\", e.agentRoute(ScopeObserve, e.handleView))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 111,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/models\", e.agentRoute(ScopeObserve, e.handleAgentModels))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 112,
+      "registration": "mux.HandleFunc(\"POST /api/canvas/ops\", e.agentRoute(ScopeBuild, e.handleAgentOps))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 113,
+      "registration": "mux.HandleFunc(\"POST /api/canvas/nodes/{node}/send\", e.agentRoute(ScopeTalk, e.handleAgentSend))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 114,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/nodes/{node}/read\", e.agentRoute(ScopeObserve, e.handleAgentRead))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 115,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/nodes/{node}/transcript\", e.agentRoute(ScopeObserve, e.handleAgentTranscript))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 116,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/nodes/{node}/search\", e.agentRoute(ScopeObserve, e.handleAgentSearch))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 117,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/nodes/{node}/wait\", e.agentRoute(ScopeObserve, e.handleAgentWait))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 118,
+      "registration": "mux.HandleFunc(\"GET /api/canvas/wait\", e.agentRoute(ScopeObserve, e.handleAgentWaitAny))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 119,
+      "registration": "mux.HandleFunc(\"POST /api/canvas/emit\", e.agentRoute(\"\", e.handleEmit))"
+    },
+    {
+      "file": "cmd/internal/canvas/http.go",
+      "line": 120,
+      "registration": "mux.HandleFunc(\"POST /api/canvas/hooks/{hook}\", e.handleHook)"
+    }
+  ],
+  "builtin_plugins": [
+    {
+      "id": "accounts",
+      "manifest": "cmd/kou-conveyor-web/plugins/accounts/plugin.json",
+      "web": {
+        "script": "web/accounts.js",
+        "style": "web/accounts.css",
+        "after": [
+          "layout",
+          "session",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "canvas",
+      "manifest": "cmd/kou-conveyor-web/plugins/canvas/plugin.json",
+      "web": {
+        "script": "web/canvas.js",
+        "style": "web/canvas.css",
+        "after": [
+          "layout",
+          "session",
+          "ui",
+          "terminal",
+          "markdown",
+          "files",
+          "models",
+          "session-list"
+        ]
+      }
+    },
+    {
+      "id": "changes",
+      "manifest": "cmd/kou-conveyor-web/plugins/changes/plugin.json",
+      "web": {
+        "script": "web/changes.js",
+        "style": "web/changes.css",
+        "after": [
+          "layout",
+          "timeline"
+        ]
+      }
+    },
+    {
+      "id": "commands",
+      "manifest": "cmd/kou-conveyor-web/plugins/commands/plugin.json",
+      "web": {
+        "script": "web/commands.js",
+        "style": "web/commands.css",
+        "after": [
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "composer",
+      "manifest": "cmd/kou-conveyor-web/plugins/composer/plugin.json",
+      "web": {
+        "script": "web/composer.js",
+        "style": "web/composer.css",
+        "after": [
+          "layout",
+          "session"
+        ]
+      }
+    },
+    {
+      "id": "connection",
+      "manifest": "cmd/kou-conveyor-web/plugins/connection/plugin.json",
+      "web": {
+        "script": "web/connection.js",
+        "style": "web/connection.css",
+        "after": [
+          "layout",
+          "ui",
+          "session"
+        ]
+      }
+    },
+    {
+      "id": "edit",
+      "manifest": "cmd/kou-conveyor-web/plugins/edit/plugin.json",
+      "web": {
+        "script": "web/edit.js",
+        "style": "web/edit.css",
+        "after": [
+          "timeline",
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "effort",
+      "manifest": "cmd/kou-conveyor-web/plugins/effort/plugin.json",
+      "web": {
+        "script": "web/effort.js",
+        "style": "web/effort.css",
+        "after": [
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "explorer",
+      "manifest": "cmd/kou-conveyor-web/plugins/explorer/plugin.json",
+      "web": {
+        "script": "web/explorer.js",
+        "style": "web/explorer.css",
+        "after": [
+          "sidebar",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "files",
+      "manifest": "cmd/kou-conveyor-web/plugins/files/plugin.json",
+      "web": {
+        "script": "web/files.js",
+        "style": "web/files.css",
+        "after": [
+          "composer",
+          "commands",
+          "timeline",
+          "edit"
+        ]
+      }
+    },
+    {
+      "id": "header",
+      "manifest": "cmd/kou-conveyor-web/plugins/header/plugin.json",
+      "web": {
+        "script": "web/header.js",
+        "style": "web/header.css",
+        "after": [
+          "layout",
+          "session"
+        ]
+      }
+    },
+    {
+      "id": "help",
+      "manifest": "cmd/kou-conveyor-web/plugins/help/plugin.json",
+      "web": {
+        "script": "web/help.js",
+        "style": "web/help.css",
+        "after": [
+          "layout",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "images",
+      "manifest": "cmd/kou-conveyor-web/plugins/images/plugin.json",
+      "web": {
+        "script": "web/images.js",
+        "style": "web/images.css",
+        "after": [
+          "composer",
+          "timeline"
+        ]
+      }
+    },
+    {
+      "id": "inspector",
+      "manifest": "cmd/kou-conveyor-web/plugins/inspector/plugin.json",
+      "web": {
+        "script": "web/inspector.js",
+        "style": "web/inspector.css",
+        "after": [
+          "layout",
+          "session",
+          "sidebar"
+        ]
+      }
+    },
+    {
+      "id": "layout",
+      "manifest": "cmd/kou-conveyor-web/plugins/layout/plugin.json",
+      "web": {
+        "script": "web/layout.js",
+        "style": "web/layout.css",
+        "after": [
+          "theme"
+        ]
+      }
+    },
+    {
+      "id": "markdown",
+      "manifest": "cmd/kou-conveyor-web/plugins/markdown/plugin.json",
+      "web": {
+        "script": "web/markdown.js",
+        "style": "web/markdown.css"
+      }
+    },
+    {
+      "id": "models",
+      "manifest": "cmd/kou-conveyor-web/plugins/models/plugin.json",
+      "web": {
+        "script": "web/models.js",
+        "style": "web/models.css",
+        "after": [
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "palette",
+      "manifest": "cmd/kou-conveyor-web/plugins/palette/plugin.json",
+      "web": {
+        "script": "web/palette.js",
+        "style": "web/palette.css",
+        "after": [
+          "layout",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "plugins",
+      "manifest": "cmd/kou-conveyor-web/plugins/plugins/plugin.json",
+      "web": {
+        "script": "web/plugins.js",
+        "style": "web/plugins.css",
+        "after": [
+          "inspector",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "queue",
+      "manifest": "cmd/kou-conveyor-web/plugins/queue/plugin.json",
+      "web": {
+        "script": "web/queue.js",
+        "style": "web/queue.css",
+        "after": [
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "session",
+      "manifest": "cmd/kou-conveyor-web/plugins/session/plugin.json",
+      "web": {
+        "script": "web/session.js",
+        "after": [
+          "layout",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "session-list",
+      "manifest": "cmd/kou-conveyor-web/plugins/session-list/plugin.json",
+      "web": {
+        "script": "web/session-list.js",
+        "style": "web/session-list.css",
+        "after": [
+          "layout",
+          "session"
+        ]
+      }
+    },
+    {
+      "id": "sidebar",
+      "manifest": "cmd/kou-conveyor-web/plugins/sidebar/plugin.json",
+      "web": {
+        "script": "web/sidebar.js",
+        "style": "web/sidebar.css",
+        "after": [
+          "layout",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "skills",
+      "manifest": "cmd/kou-conveyor-web/plugins/skills/plugin.json",
+      "web": {
+        "script": "web/skills.js",
+        "style": "web/skills.css",
+        "after": [
+          "inspector",
+          "ui",
+          "plugins"
+        ]
+      }
+    },
+    {
+      "id": "terminal",
+      "manifest": "cmd/kou-conveyor-web/plugins/terminal/plugin.json",
+      "web": {
+        "script": "web/terminal.js",
+        "style": "web/terminal.css",
+        "after": [
+          "sidebar",
+          "ui"
+        ]
+      }
+    },
+    {
+      "id": "theme",
+      "manifest": "cmd/kou-conveyor-web/plugins/theme/plugin.json",
+      "web": {
+        "script": "web/theme.js",
+        "style": "web/theme.css"
+      }
+    },
+    {
+      "id": "timeline",
+      "manifest": "cmd/kou-conveyor-web/plugins/timeline/plugin.json",
+      "web": {
+        "script": "web/timeline.js",
+        "style": "web/timeline.css",
+        "after": [
+          "layout",
+          "session",
+          "markdown"
+        ]
+      }
+    },
+    {
+      "id": "tunnel",
+      "manifest": "cmd/kou-conveyor-web/plugins/tunnel/plugin.json",
+      "web": {
+        "script": "web/tunnel.js",
+        "style": "web/tunnel.css",
+        "after": [
+          "layout",
+          "ui",
+          "session"
+        ]
+      }
+    },
+    {
+      "id": "ui",
+      "manifest": "cmd/kou-conveyor-web/plugins/ui/plugin.json",
+      "web": {
+        "script": "web/ui.js",
+        "style": "web/ui.css",
+        "after": [
+          "layout"
+        ]
+      }
+    },
+    {
+      "id": "voice",
+      "manifest": "cmd/kou-conveyor-web/plugins/voice/plugin.json",
+      "web": {
+        "script": "web/voice.js",
+        "style": "web/voice.css",
+        "after": [
+          "composer"
+        ]
+      }
+    },
+    {
+      "id": "workspaces",
+      "manifest": "cmd/kou-conveyor-web/plugins/workspaces/plugin.json",
+      "web": {
+        "script": "web/workspaces.js",
+        "style": "web/workspaces.css",
+        "after": [
+          "session-list",
+          "ui"
+        ]
+      }
+    }
+  ],
+  "storage": {
+    "format": 2,
+    "checkpoint_envelope": 1,
+    "record_types": [
+      "session",
+      "item",
+      "operation",
+      "checkpoint"
+    ]
+  },
+  "migration_gates": {
+    "store_archive_parity": "compat/store_parity.py",
+    "consumer_checkpoint_resume": "store envelope and context-builder checkpoints pass bidirectional Go/Rust checks; compat/replay_parity.py adds 138 actual Go coordinator replay scenarios with scalar-state/operation-header probes and 19 native coordinator checkpoint import/fallback matrices; native private store fast/full/invalid-consumer fallback and freshness/session guards pass; full runner integration remains open",
+    "async_coordinator": "33 native driver tests cover durable boundaries, steering/drop, stop/cancel, grace/deferred admission, verification, recovery/backoff and budgets; actual owned HTTP/SSE adapter and private FileJournal restart pass; no independent live Go/Rust trace corpus or production operation-runtime/runner wiring yet",
+    "context_builder": "compat/context_parity.py: 285 exact request/report/estimate/memory/compaction scenarios including bidirectional checkpoint import, 82 image-header cases, and 80 seeded histories; native Arc snapshots/prompt budgets tested; no providers",
+    "context_schema_fuzz": "malformed typed-field/array diagnostics and broader image/checkpoint shape fuzzing remain release gates",
+    "writer_append_fork_checkpoint_lock_parity": "compat/writer_parity.py (temporary fixtures only)",
+    "writer_partial_io_crash_matrix": "partial: poisoned-descriptor unit test, exhaustive crash points still open",
+    "code_vm_semantic_projection": "compat/codevm_parity.py (fake plugins; not full Result wire conformance)",
+    "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
+    "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
+    "native_process_lifecycle": "kou-tools process tests (groups/termination/escalation/pipes/CLOEXEC); not full persistent process/sandbox service",
+    "responses_codec_sse_http": "compat/provider_parity.py (433 cases, 161 real Go/Rust local HTTP exchanges, 89 synthetic Codex credential/config cases), plus cancellation/deadline/gzip/admission native tests; no paid calls",
+    "responses_provider_clients": "OpenAI/Fireworks/OpenRouter/Ollama/Codex implemented and compared; runner auth integration remains",
+    "anthropic_messages": "compat/anthropic_parity.py (355 codec/SSE/HTTP/listing cases); native byte/depth bounds, streaming prefix fingerprints, cancellation/deadline/drop/admission/ping/pagination tests; no paid calls",
+    "anthropic_sdk_edges": "full SDK malformed/duplicate/rare union shapes and resource-policy compatibility remain release gates; no provider RSS/CPU advantage measured",
+    "responses_resource_and_live_tls": "not measured end-to-end; configurable new request/frame/retention/cache caps and TLS handshake timeout differences require release review",
+    "runner_execution_parity": "not_implemented",
+    "browser_plugin_API_2": "not_implemented",
+    "gateway_support_matrix": "not_implemented",
+    "end_to_end_resource_baseline": "not_measured"
+  }
+}

@@ -33,3 +33,31 @@ notices:
 	@mkdir -p bin
 	scripts/third-party-notices.sh ./cmd/kou-conveyor-runner ./cmd/kou-conveyor-tui ./cmd/kou-conveyor-web ./cmd/kou-conveyor-canvas > bin/THIRD_PARTY_NOTICES.txt.new
 	mv bin/THIRD_PARTY_NOTICES.txt.new bin/THIRD_PARTY_NOTICES.txt
+
+.PHONY: rust-check rust-test rust-build rust-web rust-compat
+
+rust-check:
+	cargo fmt --all -- --check
+	cargo clippy --locked --workspace --all-targets -- -D warnings
+	python3 compat/inventory.py --check
+
+rust-test:
+	cargo test --locked --workspace
+
+rust-build:
+	cargo build --locked --release --workspace --bins
+
+rust-web:
+	python3 compat/build_web.py
+
+rust-compat:
+	python3 compat/store_parity.py
+	python3 compat/writer_parity.py
+	python3 compat/codevm_parity.py
+	python3 compat/fileops_parity.py
+	python3 compat/patch_parity.py
+	python3 compat/native_parity.py
+	python3 compat/provider_parity.py
+	python3 compat/anthropic_parity.py
+	python3 compat/context_parity.py
+	python3 compat/replay_parity.py

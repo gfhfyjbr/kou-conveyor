@@ -412,6 +412,109 @@ mod tests {
     use kou_domain::{Input, Json};
 
     #[test]
+    fn rejected_initial_status_preserves_go_diagnostics_and_durable_head() {
+        use kou_domain::{CallStatus, ToolCallStatus, Turn};
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path()).unwrap();
+        let at = Timestamp::parse("2026-11-10T02:00:00Z").unwrap();
+        let mut writer = store
+            .create_new(Session {
+                id: "status-errors".into(),
+                created_at: at,
+            })
+            .unwrap();
+        writer
+            .append_item(
+                ItemData::Turn(Turn {
+                    id: "turn".into(),
+                    previous_turn_id: String::new(),
+                    kind: "regular".into(),
+                    model: String::new(),
+                }),
+                at,
+            )
+            .unwrap();
+        let operation = |id: &str| Operation {
+            id: id.into(),
+            kind: "value".into(),
+            version: 1,
+            status: "ready".into(),
+            ..Operation::default()
+        };
+        let status = |error: &str, waiting: &[&str]| CallStatus {
+            error: error.into(),
+            waiting_for: Some(waiting.iter().map(|id| (*id).into()).collect()),
+            ..CallStatus::default()
+        };
+        let before = fs::read(&writer.path).unwrap();
+        for (status, operations, diagnostic) in [
+            (
+                status("", &[]),
+                vec![],
+                "successful status must initialize at least one operation",
+            ),
+            (
+                status("rejected", &["one"]),
+                vec![],
+                "error status cannot wait for operations",
+            ),
+            (
+                status("rejected", &[]),
+                vec![operation("one")],
+                "error status cannot initialize operations",
+            ),
+            (
+                status("", &[]),
+                vec![operation("one")],
+                "status waits for 0 operations, initialized 1",
+            ),
+            (
+                status("", &["missing"]),
+                vec![operation("one")],
+                "status waits for operation \"missing\" that was not initialized",
+            ),
+            (
+                status("", &["one", "one"]),
+                vec![operation("one"), operation("two")],
+                "status repeats operation \"one\"",
+            ),
+        ] {
+            let error = writer
+                .append_item(
+                    ItemData::ToolCallStatus(ToolCallStatus {
+                        turn_id: "turn".into(),
+                        call_id: "call".into(),
+                        status,
+                        operations,
+                    }),
+                    at,
+                )
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "append tool-call status for turn \"turn\" and call \"call\": {diagnostic}"
+                )
+            );
+            assert_eq!(writer.sequence(), 1);
+            assert_eq!(fs::read(&writer.path).unwrap(), before);
+        }
+        writer
+            .append_item(
+                ItemData::ToolCallStatus(ToolCallStatus {
+                    turn_id: "turn".into(),
+                    call_id: "call".into(),
+                    status: status("", &["one"]),
+                    operations: vec![operation("one")],
+                }),
+                at,
+            )
+            .unwrap();
+        assert_eq!(writer.sequence(), 2);
+        assert_eq!(SessionLog::open(&writer.path).unwrap().item_count(), 2);
+    }
+
+    #[test]
     fn an_io_failure_poisons_the_writer_instead_of_silently_retrying() {
         let directory = tempfile::tempdir().unwrap();
         let store = SessionStore::new(directory.path()).unwrap();

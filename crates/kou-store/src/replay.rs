@@ -206,7 +206,12 @@ impl Head {
             }
         }
         if !repeated {
-            validate_status(status, &initialized)?;
+            validate_status(status, &initialized).map_err(|error| {
+                Error::Invalid(format!(
+                    "append tool-call status for turn {:?} and call {:?}: {error}",
+                    status.turn_id, status.call_id
+                ))
+            })?;
         }
         Ok(())
     }
@@ -484,24 +489,39 @@ impl Head {
 fn validate_status(status: &ToolCallStatus, initialized: &HashSet<String>) -> Result<()> {
     let waiting = status.status.waiting();
     if !status.status.error.is_empty() {
-        if !waiting.is_empty() || !initialized.is_empty() {
+        if !waiting.is_empty() {
             return Err(Error::Invalid(
-                "error status cannot wait for or initialize operations".into(),
+                "error status cannot wait for operations".into(),
+            ));
+        }
+        if !initialized.is_empty() {
+            return Err(Error::Invalid(
+                "error status cannot initialize operations".into(),
             ));
         }
         return Ok(());
     }
-    if initialized.is_empty() || waiting.len() != initialized.len() {
+    if initialized.is_empty() {
         return Err(Error::Invalid(
-            "successful status must initialize exactly its waiting operations".into(),
+            "successful status must initialize at least one operation".into(),
         ));
+    }
+    if waiting.len() != initialized.len() {
+        return Err(Error::Invalid(format!(
+            "status waits for {} operations, initialized {}",
+            waiting.len(),
+            initialized.len()
+        )));
     }
     let mut seen = HashSet::new();
     for id in waiting {
-        if !initialized.contains(id) || !seen.insert(id) {
-            return Err(Error::Invalid(
-                "status references missing or duplicate operations".into(),
-            ));
+        if !seen.insert(id) {
+            return Err(Error::Invalid(format!("status repeats operation {id:?}")));
+        }
+        if !initialized.contains(id) {
+            return Err(Error::Invalid(format!(
+                "status waits for operation {id:?} that was not initialized"
+            )));
         }
     }
     Ok(())

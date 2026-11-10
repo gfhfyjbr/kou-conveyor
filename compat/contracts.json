@@ -279,6 +279,14 @@
       "sha256": "01178473edea133532a530319ad1b536a177c6d598c8297cc4023b93f5726920"
     },
     {
+      "file": "harness/operation/file.go",
+      "sha256": "5cd86d1990f8aeba746026fab422d7c7e21f4cf67aa03e85662e6d881e30390f"
+    },
+    {
+      "file": "harness/operation/value.go",
+      "sha256": "be12e53141f649f2aec53459432b23d2dc642c10f3501ac773a21b6d8e37376d"
+    },
+    {
       "file": "harness/primitives/remote.go",
       "sha256": "963f7ec9e6d86f587a8b394071b6a5673eb4935d58692272bdda694814f5c235"
     },
@@ -1379,6 +1387,7 @@
     "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
     "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
     "native_process_lifecycle": "kou-tools process tests (groups/termination/escalation/pipes/CLOEXEC); not full persistent process/sandbox service",
+    "file_value_operations": "compat/operation_parity.py compares 135 exact pure spec/decode/transition projections with actual Go handlers; five native tests exercise restart/cancel and explicit private read/write/edit dispatches; concrete manager, persistent process and transcript-search execution remain open",
     "responses_codec_sse_http": "compat/provider_parity.py (433 cases, 161 real Go/Rust local HTTP exchanges, 89 synthetic Codex credential/config cases), plus cancellation/deadline/gzip/admission native tests; no paid calls",
     "responses_provider_clients": "OpenAI/Fireworks/OpenRouter/Ollama/Codex implemented and compared; runner auth integration remains",
     "anthropic_messages": "compat/anthropic_parity.py (355 codec/SSE/HTTP/listing cases); native byte/depth bounds, streaming prefix fingerprints, cancellation/deadline/drop/admission/ping/pagination tests; no paid calls",

@@ -357,11 +357,34 @@ prevent stop or the operation updates they await. These are new configurable que
 policies, not a global RSS budget. Context, retained operation state, in-flight
 snapshots and serialized records require separate accounting.
 
-The latest complete local gate passed **215 native workspace tests**, including
-**62 in kou-engine**, all **eleven compatibility suites**, fmt/clippy, WASM,
-Python/JS syntax and diff checks. Go coordinator/contextbuilder/live-oracle race
-tests and development-oracle vet checks passed. Inventory pins **75 sources,
-136 HTTP registrations and 31 built-in plugins**.
+## File/value operation transitions
+
+```sh
+python3 compat/operation_parity.py
+```
+
+`kou-runtime::operation` implements the durable file/value specs, decoding and
+pure state transitions. **135 exact Go/Rust projections** cover initial and
+terminal states, source/result validation, cancellation, null/opaque values,
+metadata preservation and restart policy. The development oracles inspect
+compute dispatches but never execute them. Awaiting Read/Write may redispatch on
+recovery; awaiting Edit/Patch fail with the original read-before-retry warning.
+This does not prove exactly-once file effects around a crash.
+
+Five native tests additionally exercise explicit private Read/Write/Edit effects
+and completion transitions. A file task is moved into its dispatch and a finished
+result is moved into the next state, rather than deep-cloned at that boundary.
+Read/Write/Edit/Patch use the existing native file backends. Transcript-search
+execution, a concrete operation manager and coordinator/runner wiring remain open.
+Malformed typed-field diagnostics and wider event/state fuzzing are still gates.
+
+## Local validation and remaining work
+
+The latest complete local gate passed **220 native workspace tests**, including
+**62 in kou-engine**, all **twelve compatibility suites**, fmt/clippy, WASM,
+Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
+new oracles passed race tests; development-oracle vet checks passed. Inventory pins
+**77 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Concrete operation runtime/result
 translators, complete Code wire/reporting/images/search, stream-event reporting,

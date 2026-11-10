@@ -1,5 +1,6 @@
 mod codevm;
 mod native;
+pub mod operation;
 mod output;
 
 pub use native::{CommandTool, NativeConfig, NativeHost};

@@ -62,3 +62,4 @@ rust-compat:
 	python3 compat/context_parity.py
 	python3 compat/replay_parity.py
 	python3 compat/loop_parity.py
+	python3 compat/operation_parity.py

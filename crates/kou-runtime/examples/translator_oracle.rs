@@ -2,7 +2,7 @@
 use kou_domain::{CallStatus, Operation, ToolCall, ToolResult};
 use kou_runtime::{
     operation::Spec,
-    tool::{Bash, BashConfig, File, FileConfig, Translator},
+    tool::{Bash, BashConfig, Command, CommandConfig, File, FileConfig, Translator},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -18,6 +18,7 @@ struct Input {
     kind: String,
     bash: BashConfig,
     file: FileConfig,
+    command: CommandConfig,
     call: ToolCall,
     status: CallStatus,
     operations: Vec<Operation>,
@@ -40,18 +41,29 @@ struct Output {
     running: String,
     error: String,
     sequence: Vec<Output>,
+    waits: bool,
 }
 fn run(input: Input) -> Output {
     let mut output = Output::default();
-    let translator: Box<dyn Translator> = if input.name == "Bash" {
+    let translator: Box<dyn Translator> = if input.kind == "command" {
+        match Command::new(input.command) {
+            Ok(command) => Box::new(command),
+            Err(error) => {
+                output.error = error.to_string();
+                return output;
+            }
+        }
+    } else if input.name == "Bash" {
         Box::new(Bash::new(input.bash))
     } else {
         Box::new(File::new(input.kind, input.name, input.file))
     };
+    output.waits = translator.waits();
     let operations: Vec<Arc<Operation>> = input.operations.into_iter().map(Arc::new).collect();
     match input.action.as_str() {
+        "new" => {}
         "translate" => {
-            output.status = Some(translator.translate(&input.call.arguments, &mut |spec| {
+            output.status = Some(translator.translate_call(&input.call, &mut |spec| {
                 output.specs.push(spec);
                 format!("submitted-{}", output.specs.len())
             }))
@@ -63,7 +75,10 @@ fn run(input: Input) -> Output {
         "sequence" => {
             for step in input.steps {
                 let operations: Vec<_> = step.operations.into_iter().map(Arc::new).collect();
-                let mut part = Output::default();
+                let mut part = Output {
+                    waits: output.waits,
+                    ..Output::default()
+                };
                 match translator.result(&step.call_id, &step.status, &operations) {
                     Ok(value) => part.result = Some(value),
                     Err(error) => part.error = error.to_string(),

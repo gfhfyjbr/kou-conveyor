@@ -557,8 +557,27 @@ unbounded maps or a global RSS guarantee. Nine File/journal units cover these
 contracts, borrowing, source-order errors, large bodies, caps and 32 concurrent
 read results. The journal reuses the state decoded for result formatting.
 
-`compat/translator_parity.py` compares **1,337 pure Go/Rust projections**: 407 Bash
-and 930 File, the latter including **54 stateful sequences / 1,406 result steps**.
+`kou-runtime::tool::Command` translates model-visible plugin commands into the same
+shell v3 specs. It preserves argv, exact workspace/base paths, sorted exports,
+reserved tool/call-ID overrides, literal single-quote escaping and compact raw
+JSON on standard input. The here-document receives one JSON line even when a
+string contains escaped newlines or its delimiter. It borrows the raw JSON span
+and writes it into the script buffer without building an owned value tree or
+cloning the environment. Configured output limits and `waits` are preserved;
+result text reuses the Bash formatter, while the running description remains
+empty as in Go. `Translator::translate_call` carries the original call identity;
+the argument-only method remains available for calls without an ID.
+
+Four units cover constructors, scripts/identity/quoting, validation limits and
+result formatting. An actual private Command + LocalManager + FileJournal test
+runs success and refused-process cases. It verifies that refused durability
+cannot execute the command, reserved variables override supplied values, quoted
+arguments/call IDs cannot inject shell code, and stdin/cwd/captures/result text
+are exact. The capture base must already exist, as required by the native
+artifact backend. This is not the full plugin registry/loader or Code host path.
+
+`compat/translator_parity.py` compares **1,597 pure Go/Rust projections**: 407 Bash,
+930 File (including **54 stateful sequences / 1,406 result steps**) and 260 Command.
 It retains the 96 seeded hex values and 80 seeded Bash calls, and adds all five
 file kinds, aliases, strict roots/known-field types, source-order/count/path errors,
 result headers/status/text, nested result shapes and seeded Read histories. The Go
@@ -568,9 +587,10 @@ is Go JSON v2's source-proven `cannot`/`unable to` modal in known error fields,
 including sequence children. Full diagnostics otherwise match exactly; clipped
 Bash messages are reconstructed from the original token and independently bounded.
 Changed counts, context, pointers and opaque payloads are rejected by self-tests.
-All 1,337 translator projections, 151 operation projections, twelve translator
-units and six operation units passed twenty additional repetitions. Go
-Bash/File/toolarg passed three race-test repetitions plus vet.
+All 1,597 translator projections, 151 operation projections, sixteen translator
+units, six operation units and the actual Command/journal fixture passed twenty
+additional repetitions. Go Bash/Command/File/toolarg passed three race-test
+repetitions plus vet.
 
 This slice does not yet supply the full runtime registry or Code translator, all
 malformed typed-field/JSON/config/operation diagnostics or a whole-runner
@@ -579,11 +599,11 @@ No Go helper is required by the Rust production translators.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **295 native workspace tests**, including
+The latest complete local gate passed **300 native workspace tests**, including
 **68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
-and Bash/File/toolarg race tests passed; development-oracle vet checks passed.
-Inventory pins **92 sources, 136 HTTP registrations and 31 built-in plugins**.
+and Bash/Command/File/toolarg race tests passed; development-oracle vet checks passed.
+Inventory pins **93 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent process controls, the full
 Code runtime, remaining result translators, Code wire/reporting/images/search, stream-event reporting,

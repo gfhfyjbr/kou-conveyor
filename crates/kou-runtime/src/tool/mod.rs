@@ -1,19 +1,32 @@
 //! Pure model-call translation. Submission records specs; translators perform no I/O.
 mod arguments;
 mod bash;
+mod command;
 mod file;
 mod number;
 #[cfg(test)]
 mod tests;
 use crate::operation::{Error, Result, Spec};
 pub use bash::{Bash, BashConfig};
+pub use command::{Command, CommandConfig};
 pub use file::{File, FileConfig, ReadJournalLimits, format_file_result};
-use kou_domain::{CallStatus, Operation, ToolResult, ToolResultOutput};
+use kou_domain::{CallStatus, Operation, ToolCall, ToolResult, ToolResultOutput};
 use std::sync::Arc;
 
 pub const DEFAULT_MAX_OUTPUT_LENGTH: usize = 40_000;
 pub trait Translator: Send + Sync {
     fn translate(&self, arguments: &str, submit: &mut dyn FnMut(Spec) -> String) -> CallStatus;
+    /// Preserve call identity for translators that export it to a capability.
+    fn translate_call(
+        &self,
+        call: &ToolCall,
+        submit: &mut dyn FnMut(Spec) -> String,
+    ) -> CallStatus {
+        self.translate(&call.arguments, submit)
+    }
+    fn waits(&self) -> bool {
+        false
+    }
     fn result(
         &self,
         call_id: &str,

@@ -11,6 +11,7 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/bash"
+	toolcommand "github.com/gfhfyjbr/kou-conveyor/harness/tool/command"
 	filetool "github.com/gfhfyjbr/kou-conveyor/harness/tool/file"
 )
 
@@ -20,11 +21,22 @@ type input struct {
 	Kind       filetool.Kind
 	Bash       bash.Config
 	File       filetool.Config
+	Command    commandConfig
 	Call       llm.ToolCall
 	Status     tool.CallStatus
 	Operations []operation.Operation
 	Steps      []step
 }
+type commandConfig struct {
+	Name            string
+	Command         []string
+	Directory       string
+	BaseDirectory   string
+	Environment     map[string]string
+	MaxOutputLength int
+	Waits           bool
+}
+
 type step struct {
 	CallID     string
 	Status     tool.CallStatus
@@ -37,6 +49,7 @@ type output struct {
 	Running  string
 	Error    string
 	Sequence []output
+	Waits    bool
 }
 
 func blankOutput() output {
@@ -52,12 +65,26 @@ func (ctx *recording) Submit(spec operation.Spec) operation.ID {
 func run(value input) output {
 	result := blankOutput()
 	var translator tool.Translator
-	if value.Name == "Bash" {
+	if value.Kind == "command" {
+		var err error
+		translator, err = toolcommand.New(toolcommand.Config{
+			Tool: llm.Tool{Name: value.Command.Name}, Command: value.Command.Command,
+			Directory: value.Command.Directory, BaseDirectory: value.Command.BaseDirectory,
+			Environment: value.Command.Environment, MaxOutputLength: value.Command.MaxOutputLength,
+			Waits: value.Command.Waits,
+		})
+		if err != nil {
+			result.Error = err.Error()
+			return result
+		}
+	} else if value.Name == "Bash" {
 		translator = bash.New(value.Bash)
 	} else {
 		translator = filetool.New(value.Kind, value.Name, value.File)
 	}
+	result.Waits = tool.Waits(translator)
 	switch value.Action {
+	case "new":
 	case "translate":
 		ctx := recording{specs: []operation.Spec{}}
 		status := translator.Translate(&ctx, value.Call)
@@ -72,6 +99,7 @@ func run(value input) output {
 	case "sequence":
 		for _, step := range value.Steps {
 			part := blankOutput()
+			part.Waits = result.Waits
 			translated, err := translator.TranslateResult(step.CallID, step.Status, step.Operations)
 			if err != nil {
 				part.Error = err.Error()

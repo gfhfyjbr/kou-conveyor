@@ -248,6 +248,62 @@ def file_cases():
     return rows
 
 
+def command_case(arguments="{}", config=None, action="translate", call_id="call", operations=(), status=None):
+    defaults = {"Name": "Echo", "Command": ["/inert/plugin", "it's", "$HOME `quoted`", ""],
+                "Directory": "/inert/work//", "BaseDirectory": "/inert/captures"}
+    return {"Action": action, "Kind": "command", "Name": "Echo", "Command": {**defaults, **(config or {})},
+            "Call": {"CallID": call_id, "Name": "mcp__plugin_Echo", "Arguments": arguments},
+            "Operations": list(operations), "Status": status or {}}
+
+
+def command_cases():
+    rows = []
+    for argv in [[], [""], ["", "arg"], [" "]]:
+        rows.append(command_case(config={"Command": argv}, action="new"))
+    for name in ["", "9X", "A B", "A=", "-X", "Ü", "X\n"]:
+        rows.append(command_case(config={"Environment": {name: "value"}}, action="new"))
+    for name in ["", "Echo", "Plugin_界", "A\"B"]:
+        for waits in [False, True]:
+            rows.append(command_case(config={"Name": name, "Waits": waits}, action="new"))
+    for limit in [-1, 0, 1, 3, 17, 40_000, 1_000_000, 1_000_001]:
+        for raw in ["", "{}", "[]", "{", '{"x":1,"x":2}']:
+            rows.append(command_case(raw, {"MaxOutputLength": limit}))
+    for raw in ["", " \n\t", "{}", "[]", "null", '"text"', "true", "42", "{", "{} x",
+                '{"x":1,"x":2}', '{"unknown":{"y":1,"y":2}}', '{"unknown":"\\ud800"}',
+                '{"unknown":1e999}', '{"n":1.00,"z":1E+0003,"tiny":-0.00e-12}',
+                '{ "z": 1, "a": 2 }', '{"unicode":"\\u00e9","slash":"\\/"}',
+                '{"control":"\\b\\f\\n\\r\\t\\u0000","literal":"界é"}',
+                '{"delimiter":"line\\nKOU_CONVEYOR_TOOL_ARGUMENTS\\nend","quote":"it\'s"}',
+                '{"max_output_length":false,"timeout":1e999}', '{"nested":[{"number":1e999},null,true]}']:
+        rows.append(command_case(raw))
+    for call_id in ["", "call", "界", "call'7", "'\nexec bad\n'", "$(command); `not-executed`", "a\0b"]:
+        rows.append(command_case('{"value":"quoted"}', {"Environment": {"KOU_CONVEYOR_TOOL_NAME": "wrong", "KOU_CONVEYOR_TOOL_CALL_ID": "wrong"}}, call_id=call_id))
+    for argv in [["/inert/plugin"], ["it's", "", "'", "a\nline"], ["$(command)", "`quoted`", "A=B", "a\0b"], ["界/工具", "é"]]:
+        rows.append(command_case(config={"Command": argv}))
+    for environment in [{}, {"_": "", "A9": "one", "z": "two"}, {"NOTE": "it's $HOME `quoted`\nnext\0end"},
+                        {"ZZ": "last", "AAA": "first", "KOU_CONVEYOR_TOOL_NAME": "wrong", "KOU_CONVEYOR_TOOL_CALL_ID": "wrong"}]:
+        rows.append(command_case(config={"Environment": environment, "Waits": True}))
+    for base in ["", "/", "relative", "/inert/../work//"]:
+        for directory in ["", "relative//", "/inert/work//"]:
+            rows.append(command_case(config={"BaseDirectory": base, "Directory": directory}))
+    for waits in [False, True]:
+        rows += [command_case(action="result", config={"Waits": waits}),
+                 command_case(action="result", config={"Waits": waits}, status={"Error": "validation"}),
+                 command_case(action="result", config={"Waits": waits}, status={"Error": "validation"}, operations=[operation()]),
+                 command_case(action="result", config={"Waits": waits}, operations=[operation(), operation()])]
+    # These exercise the shared Bash formatter, not a second plugin formatter.
+    for source in cases():
+        if source["Action"] in ["result", "running"]:
+            rows.append(command_case(action=source["Action"], operations=source.get("Operations", []), status=source.get("Status")))
+    rng = random.Random(20261112)
+    for index in range(80):
+        payload = {"index": index, "text": rng.choice(["it's", "界", "line\nend", "\0", "KOU_CONVEYOR_TOOL_ARGUMENTS"]),
+                   "nested": [{"value": rng.random()}, True, None]}
+        rows.append(command_case(json.dumps(payload, ensure_ascii=bool(index % 2), indent=2),
+                                 {"Environment": {"VALUE": rng.choice(["'", "\n", "$HOME", "界", ""])}, "Waits": bool(index % 2)}, call_id=f"call'{index}"))
+    return rows
+
+
 MODAL = re.compile(
     r'^(?:decode Bash arguments: |decode Bash argument "(?:command|timeout)": |bash argument: decode max_output_length: )'
     r'json: (?:cannot|unable to) unmarshal JSON (?:array|object|string|number|boolean) into Go '
@@ -432,8 +488,8 @@ def self_test():
 
 def main():
     self_test()
-    bash_rows, file_rows = cases(), file_cases()
-    rows = bash_rows + file_rows
+    bash_rows, file_rows, command_rows = cases(), file_cases(), command_cases()
+    rows = bash_rows + file_rows + command_rows
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "tmp/rust-rewrite-target"))
     subprocess.run(["go", "build", "-o", "tmp/kou-translator-oracle", "./cmd/kou-translator-oracle"], cwd=ROOT, check=True)
     subprocess.run(["cargo", "build", "--locked", "-q", "-p", "kou-runtime", "--example", "translator_oracle"], cwd=ROOT, check=True)
@@ -454,7 +510,7 @@ def main():
     assert failures == 0, f"{failures} translator projections differ"
     sequences = [row for row in file_rows if row["Action"] == "sequence"]
     steps = sum(len(row["Steps"]) for row in sequences)
-    print(f"translator parity: {len(rows)} pure Go/Rust projections ({len(bash_rows)} Bash, {len(file_rows)} File including {len(sequences)} sequences / {steps} result steps); no operations executed")
+    print(f"translator parity: {len(rows)} pure Go/Rust projections ({len(bash_rows)} Bash, {len(file_rows)} File including {len(sequences)} sequences / {steps} result steps, {len(command_rows)} Command); no operations executed")
 
 
 if __name__ == "__main__":

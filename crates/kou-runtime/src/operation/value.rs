@@ -11,6 +11,7 @@ pub fn value_spec(value: Json) -> Result<Spec> {
         return Err(Error("value operation result must be valid JSON".into()));
     }
     Ok(Spec {
+        max_output_length: 0,
         kind: "value".into(),
         version: 1,
         state: encode(&ValueState { value })?,

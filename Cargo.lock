@@ -1181,7 +1181,10 @@ dependencies = [
 name = "kou-runtime"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
+ "chrono",
  "kou-domain",
+ "kou-store",
  "kou-tools",
  "rquickjs",
  "serde",

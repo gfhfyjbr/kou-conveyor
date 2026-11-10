@@ -96,6 +96,7 @@ impl FileState {
 pub fn file_spec(state: FileState) -> Result<Spec> {
     state.validate()?;
     Ok(Spec {
+        max_output_length: 0,
         kind: "file".into(),
         version: 1,
         state: encode(&state)?,

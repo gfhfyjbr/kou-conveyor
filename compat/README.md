@@ -179,7 +179,7 @@ output bytes, modes, raw exit/signal, stdin/environment/cwd, normal descendant
 cleanup and cancellation-time final output. Each oracle has private temporary
 artifacts and runs only trusted fixtures; the projection is not full primitive
 control/event or diagnostic conformance. Persistent process status/attachment,
-the shell v3 handler and the full primitives operation service remain open.
+native shell execution and the full primitives operation service remain open.
 
 ## Responses provider codec, SSE, HTTP and client wrappers
 
@@ -417,13 +417,45 @@ awaiting/completed updates are durable before the next model request. Completed,
 delivered operations stay cold on recovery. This integration is test wiring, not
 the production runner or an independent full Go/Rust manager trace corpus.
 
+## Shell v3 transitions
+
+```sh
+python3 compat/shell_parity.py
+```
+
+`operation::shell::Shell` owns decoded durable state and a bounded ephemeral read
+accumulator. Returned checkpoints precede artifact creation, process start and
+read dispatches; chunks alone do not create journal records. Resume of an unknown
+or interrupted process fails closed without relaunching or signaling a saved PID.
+Read-only phases can redispatch. Completion frees inline buffer capacities and
+retains bounded rune-based head/tail text, original byte counts and spool paths.
+
+**354 Go/Rust transition projections** compare every phase, malformed sources and
+results, restart/cancel behavior, prefix/tail assembly, binary UTF-8 repair,
+base64/null fields and output/error clipping. Only Go's deliberate `cannot` /
+`unable to` JSON modal variants are accepted; all remaining diagnostic bytes and
+opaque data stay exact. Go's JSON byte decoder rejects CR/LF although its base64
+package alone permits them. This distinction is reproduced, not normalized away.
+
+The Go shell reducer can send a signal itself when a timer fires. The oracle
+rejects every fired-timer fixture with an unowned process group before invoking
+it; returned dispatches are never executed. The Rust reducer instead returns a
+signal dispatch. Its future executor must resolve this against a currently owned
+invocation, never a recovered numeric PID. Six native tests verify pure signal
+requests, explicit nanosecond clocks/deadlines/duration, bounded chunk recovery,
+typed-object guards and a real private session journal preceding a 200 KB native
+process capture and prefix/tail reads. That fixture executes dispatches **only in
+test code**. Clock-dependent branches are tested natively, not presented as exact
+Go comparisons by stripping their timestamps. Production shell execution and
+manager wiring remain open.
+
 ## Local validation and remaining work
 
-The latest complete local gate passed **240 native workspace tests**, including
-**63 in kou-engine**, all **thirteen compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **246 native workspace tests**, including
+**63 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
-**81 sources, 136 HTTP registrations and 31 built-in plugins**.
+**84 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent shell/Code runtime, production
 result translators, complete Code wire/reporting/images/search, stream-event reporting,

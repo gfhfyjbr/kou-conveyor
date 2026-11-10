@@ -108,9 +108,10 @@ def projections_match(left, right):
     # Go 1.27 encoding/json/v2/errors.go errorModalVerb deliberately chooses
     # either rendering once per process. Permit only that token in these exact
     # top-level decode diagnostics; payloads, context and every other byte stay.
-    pattern = (r'(decode (?:value|file) operation "(?:\\.|[^"\\])*" state: json: )'
+    pattern = (r'(decode (?:value|file|shell) operation "(?:\\.|[^"\\])*" state: json: )'
                r'(?:cannot|unable to)'
-               r'( unmarshal JSON (?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState))')
+               r'( unmarshal JSON (?:(?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState|ShellState)'
+               r'|string into Go \[\]uint8 within "/Inline(?:Out|Err)(?:Tail)?": illegal character .+ at offset [0-9]+))')
     a = re.fullmatch(pattern, left.get("Error", ""))
     b = re.fullmatch(pattern, right.get("Error", ""))
     return bool(a and b and a.groups() == b.groups()
@@ -130,6 +131,13 @@ def comparator_self_test():
         {**right, "Dispatches": [2, 1]},
     ]:
         assert not projections_match(left, changed)
+    text = ('decode shell operation "owned" state: json: cannot unmarshal JSON string into Go []uint8 '
+            'within "/InlineOut": illegal character ' + repr('\r') + ' at offset 4')
+    left = {"Error": text, "State": None}
+    right = {**left, "Error": text.replace("json: cannot", "json: unable to")}
+    assert projections_match(left, right)
+    assert not projections_match(left, {**right, "Error": right["Error"].replace("offset 4", "offset 5")})
+    assert not projections_match(left, {**right, "Error": right["Error"].replace("/InlineOut", "/InlineErr")})
     assert not projections_match({"Error": "opaque cannot"}, {"Error": "opaque unable to"})
 
 

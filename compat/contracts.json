@@ -287,6 +287,18 @@
       "sha256": "be12e53141f649f2aec53459432b23d2dc642c10f3501ac773a21b6d8e37376d"
     },
     {
+      "file": "harness/operation/shell.go",
+      "sha256": "4a8203a9fcc6528aa093c47e7c4137bc961693424e7ad3ab8d43d9e91aad9e9b"
+    },
+    {
+      "file": "harness/operation/output.go",
+      "sha256": "d818874f6bc7449099324922347921520e28875501bc399ee53b84df4d9c1e36"
+    },
+    {
+      "file": "harness/primitives/file.go",
+      "sha256": "095258d38f35c70e2957fc0b2526bfb9c739ae84127902f380b2deffd1ff39e5"
+    },
+    {
       "file": "harness/operation/local_manager.go",
       "sha256": "97eb2b1943a7c9bdb34f4cc158c166db7c69e52eb29852cab43e8781ffe321ee"
     },
@@ -1402,7 +1414,8 @@
     "code_vm_semantic_projection": "compat/codevm_parity.py (fake plugins; not full Result wire conformance)",
     "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
     "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
-    "native_process_lifecycle": "kou-tools tests cover groups/termination/escalation/pipes/CLOEXEC plus eight direct-file capture cases; compat/capture_parity.py compares 19 owned Go/Rust captures, exact bytes/modes/raw exit/signal/cancellation and cleanup; output bodies stay on disk, spool disk is uncapped; not full primitive controls, shell handler, persistent process or sandbox service",
+    "native_process_lifecycle": "kou-tools tests cover groups/termination/escalation/pipes/CLOEXEC plus eight direct-file capture cases; compat/capture_parity.py compares 19 owned Go/Rust captures, exact bytes/modes/raw exit/signal/cancellation and cleanup; output bodies stay on disk, spool disk is uncapped; not full primitive controls, native shell executor, persistent process or sandbox service",
+    "shell_operations": "compat/shell_parity.py compares 354 pure shell v3 transitions including bounded head/tail, invalid UTF-8, base64/null, restart and diagnostics; six native tests cover explicit clocks/pure timeout-signal requests and real private journal-before-capture/read effects; Go oracle rejects timer signals to unowned PIDs, clock branches are not normalized into fake parity; production executor/manager integration and persistent process controls remain open",
     "file_value_operations": "compat/operation_parity.py compares 135 exact pure transitions with Go handlers; five native effect/transition tests plus eleven local-manager tests (20 extra repeats), fixed workers, estimated count/byte/ID bounds, cancel, immutable updates, panic recovery and joined shutdown; actual coordinator/journal fixture prevents effects across failed response/status writes; production runner, persistent process, transcript search and independent full manager traces remain open",
     "responses_codec_sse_http": "compat/provider_parity.py (433 cases, 161 real Go/Rust local HTTP exchanges, 89 synthetic Codex credential/config cases), plus cancellation/deadline/gzip/admission native tests; no paid calls",
     "responses_provider_clients": "OpenAI/Fireworks/OpenRouter/Ollama/Codex implemented and compared; runner auth integration remains",

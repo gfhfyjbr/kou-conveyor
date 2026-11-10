@@ -2,6 +2,7 @@
 //! executing its dispatch; awaiting Edit/Patch operations fail closed on recovery.
 mod file;
 mod manager;
+pub mod shell;
 mod value;
 
 pub use file::{FileResult, FileState, advance_file, decode_file, file_spec, run_file};
@@ -25,6 +26,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Spec {
+    #[serde(skip_serializing_if = "zero")]
+    pub max_output_length: i64,
     #[serde(rename = "Type")]
     pub kind: String,
     pub version: u32,
@@ -36,12 +39,12 @@ impl Spec {
     pub fn operation(self, id: String) -> Operation {
         Operation {
             id,
+            max_output_length: self.max_output_length,
             kind: self.kind,
             version: self.version,
             status: "ready".into(),
             state: self.state,
             idempotency: self.idempotency,
-            ..Operation::default()
         }
     }
 }

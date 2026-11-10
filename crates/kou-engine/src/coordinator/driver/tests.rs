@@ -8,6 +8,7 @@ mod admission;
 mod cases;
 mod clock;
 mod http;
+mod operations;
 mod storage;
 
 #[derive(Default)]

@@ -322,7 +322,7 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**37 native driver tests** cover these boundaries and policies. A real FileJournal
+**38 native driver tests** cover these boundaries and policies. A real FileJournal
 matrix checks that empty/review-only summaries do not write a consumer checkpoint,
 that successful summaries do, and that cold recovery preserves the right context.
 Durable errors retain Go's input/turn/response/call/operation context.
@@ -375,19 +375,44 @@ Five native tests additionally exercise explicit private Read/Write/Edit effects
 and completion transitions. A file task is moved into its dispatch and a finished
 result is moved into the next state, rather than deep-cloned at that boundary.
 Read/Write/Edit/Patch use the existing native file backends. Transcript-search
-execution, a concrete operation manager and coordinator/runner wiring remain open.
-Malformed typed-field diagnostics and wider event/state fuzzing are still gates.
+execution remains unconnected. Malformed typed-field diagnostics and wider
+state/event fuzzing are still gates.
+
+### File/value local manager
+
+`LocalManager` runs those handlers through a fixed worker pool (default four,
+maximum eight). It deduplicates accepted IDs, preserves FIFO snapshots, cancels
+queued tasks before effects and discards a late result after cancellation. Drop
+closes admission and joins all workers, even with a retained update receiver.
+Blocking filesystem calls are not forcibly preemptible.
+
+New policies cap admitted tasks at 64, estimated retained reservations at 128 MiB,
+input operations at 16 MiB and completion growth at 256 KiB. Seen IDs are compact
+boxed strings, limited to 100,000 IDs and 8 MiB of ID payload. Reservations are not
+preallocated buffers. A task lease remains with its immutable update until the
+next queue admits it. Oversized completions become an explicit failure warning
+that the effect may already have happened; data is not silently truncated. These
+bounds do not cover all filesystem/JSON scratch or caller-retained snapshots and
+are **not a global RSS guarantee** or Go-default compatibility claim.
+
+Eleven manager tests cover deduplication, count/byte/ID caps, cancellation at
+capacity, queued effects, immutable snapshots, panic recovery and joined shutdown;
+20 extra repetitions passed. A real coordinator/FileJournal/manager fixture proves
+that response/status write failures prevent a private file effect, and that
+awaiting/completed updates are durable before the next model request. Completed,
+delivered operations stay cold on recovery. This integration is test wiring, not
+the production runner or an independent full Go/Rust manager trace corpus.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **220 native workspace tests**, including
-**62 in kou-engine**, all **twelve compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **232 native workspace tests**, including
+**63 in kou-engine**, all **twelve compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
-**77 sources, 136 HTTP registrations and 31 built-in plugins**.
+**81 sources, 136 HTTP registrations and 31 built-in plugins**.
 
-The live core is not the production runner. Concrete operation runtime/result
-translators, complete Code wire/reporting/images/search, stream-event reporting,
+The live core is not the production runner. Persistent shell/Code runtime, production
+result translators, complete Code wire/reporting/images/search, stream-event reporting,
 runner auth/CLI/detached lifecycle and wider live timing/crash compatibility
 remain open. Default local-time notice formatting also needs timezone-abbreviation
 compatibility review. No whole-runner CPU/RSS advantage has been measured.

@@ -1142,6 +1142,7 @@ dependencies = [
  "crc32fast",
  "kou-domain",
  "kou-provider",
+ "kou-runtime",
  "kou-store",
  "regex",
  "serde",
@@ -1186,6 +1187,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

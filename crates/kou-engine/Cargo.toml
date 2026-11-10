@@ -21,6 +21,7 @@ uuid = { version = "1.26.1", features = ["v4"] }
 chrono = { workspace = true, features = ["clock"] }
 
 [dev-dependencies]
+kou-runtime = { path = "../kou-runtime" }
 tempfile.workspace = true
 tokio = { version = "1.54.1", features = ["test-util", "net", "io-util"] }
 

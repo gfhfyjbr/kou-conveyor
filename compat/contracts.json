@@ -287,6 +287,22 @@
       "sha256": "be12e53141f649f2aec53459432b23d2dc642c10f3501ac773a21b6d8e37376d"
     },
     {
+      "file": "harness/operation/local_manager.go",
+      "sha256": "97eb2b1943a7c9bdb34f4cc158c166db7c69e52eb29852cab43e8781ffe321ee"
+    },
+    {
+      "file": "harness/primitives/compute.go",
+      "sha256": "6efc0065ad6e950d4740fd5363190f86a7e90f97db027ab28002c1d9113cef36"
+    },
+    {
+      "file": "harness/primitives/primitive_dispatch.go",
+      "sha256": "ff24bd4bc4c665fd153ac16e81e987ce93aaefe32d493bb637b50dbc326d4c7d"
+    },
+    {
+      "file": "harness/primitives/primitive_event.go",
+      "sha256": "a60dd4ef782f326dacd3b8bf90bcedc6d9b13c1efee80adb225337324765cd44"
+    },
+    {
       "file": "harness/primitives/remote.go",
       "sha256": "963f7ec9e6d86f587a8b394071b6a5673eb4935d58692272bdda694814f5c235"
     },
@@ -1378,7 +1394,7 @@
   "migration_gates": {
     "store_archive_parity": "compat/store_parity.py",
     "consumer_checkpoint_resume": "store envelope and context-builder checkpoints pass bidirectional Go/Rust checks; compat/replay_parity.py adds 138 actual Go coordinator replay scenarios with scalar-state/operation-header probes and 19 native coordinator checkpoint import/fallback matrices; native private store fast/full/invalid-consumer fallback and freshness/session guards pass; full runner integration remains open",
-    "async_coordinator": "37 native driver tests cover durable boundaries/errors, ordered operation reconciliation and deferred prompts, non-steering controls, stop/cancel, grace/admission, verification, backoff and budgets; compat/loop_parity.py compares 44 actual Go/Rust live traces with private real journals and inert model/operation ports; actual owned HTTP/SSE adapter and private FileJournal restart/summary-checkpoint matrix pass; production operation-runtime/runner wiring and exhaustive live timing/crash coverage remain open",
+    "async_coordinator": "38 native driver tests cover durable boundaries/errors, ordered reconciliation/deferred prompts, non-steering controls, stop/cancel, grace/admission, verification, backoff and budgets; compat/loop_parity.py compares 44 actual Go/Rust live traces with private real journals and inert ports; actual HTTP/SSE, private FileJournal restart/summary matrix and real native file-manager durable-boundary fixture pass; production runner wiring and exhaustive live timing/crash coverage remain open",
     "context_builder": "compat/context_parity.py: 285 exact request/report/estimate/memory/compaction scenarios including bidirectional checkpoint import, 82 image-header cases, and 80 seeded histories; native Arc snapshots/prompt budgets tested; no providers",
     "context_schema_fuzz": "malformed typed-field/array diagnostics and broader image/checkpoint shape fuzzing remain release gates",
     "writer_append_fork_checkpoint_lock_parity": "compat/writer_parity.py (temporary fixtures only)",
@@ -1387,7 +1403,7 @@
     "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
     "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
     "native_process_lifecycle": "kou-tools process tests (groups/termination/escalation/pipes/CLOEXEC); not full persistent process/sandbox service",
-    "file_value_operations": "compat/operation_parity.py compares 135 exact pure spec/decode/transition projections with actual Go handlers; five native tests exercise restart/cancel and explicit private read/write/edit dispatches; concrete manager, persistent process and transcript-search execution remain open",
+    "file_value_operations": "compat/operation_parity.py compares 135 exact pure transitions with Go handlers; five native effect/transition tests plus eleven local-manager tests (20 extra repeats), fixed workers, estimated count/byte/ID bounds, cancel, immutable updates, panic recovery and joined shutdown; actual coordinator/journal fixture prevents effects across failed response/status writes; production runner, persistent process, transcript search and independent full manager traces remain open",
     "responses_codec_sse_http": "compat/provider_parity.py (433 cases, 161 real Go/Rust local HTTP exchanges, 89 synthetic Codex credential/config cases), plus cancellation/deadline/gzip/admission native tests; no paid calls",
     "responses_provider_clients": "OpenAI/Fireworks/OpenRouter/Ollama/Codex implemented and compared; runner auth integration remains",
     "anthropic_messages": "compat/anthropic_parity.py (355 codec/SSE/HTTP/listing cases); native byte/depth bounds, streaming prefix fingerprints, cancellation/deadline/drop/admission/ping/pagination tests; no paid calls",

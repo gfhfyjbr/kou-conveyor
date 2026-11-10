@@ -1,9 +1,11 @@
 //! Durable operation transitions are pure. Publish the returned state before
 //! executing its dispatch; awaiting Edit/Patch operations fail closed on recovery.
 mod file;
+mod manager;
 mod value;
 
 pub use file::{FileResult, FileState, advance_file, decode_file, file_spec, run_file};
+pub use manager::{Executor, Limits, LocalManager, NativeFiles, Stats, Update, Updates};
 pub use value::{advance_value, decode_value, value_spec};
 
 use kou_domain::{Json, Operation};

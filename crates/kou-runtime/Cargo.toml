@@ -11,9 +11,11 @@ kou-tools = { path = "../kou-tools" }
 rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true
+tokio = { version = "1.54.1", features = ["sync"] }
 
 [dev-dependencies]
 tempfile.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "rt", "time"] }
 
 [lints]
 workspace = true

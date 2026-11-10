@@ -2,7 +2,7 @@
 use kou_domain::{CallStatus, Operation, ToolCall, ToolResult};
 use kou_runtime::{
     operation::Spec,
-    tool::{Bash, BashConfig, Translator},
+    tool::{Bash, BashConfig, File, FileConfig, Translator},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -15,8 +15,19 @@ use std::{
 struct Input {
     action: String,
     name: String,
+    kind: String,
     bash: BashConfig,
+    file: FileConfig,
     call: ToolCall,
+    status: CallStatus,
+    operations: Vec<Operation>,
+    steps: Vec<Step>,
+}
+#[derive(Default, Deserialize)]
+#[serde(default, rename_all = "PascalCase")]
+struct Step {
+    #[serde(rename = "CallID")]
+    call_id: String,
     status: CallStatus,
     operations: Vec<Operation>,
 }
@@ -28,27 +39,39 @@ struct Output {
     result: Option<ToolResult>,
     running: String,
     error: String,
+    sequence: Vec<Output>,
 }
 fn run(input: Input) -> Output {
     let mut output = Output::default();
-    if input.name != "Bash" {
-        output.error = format!("unknown translator {:?}", input.name);
-        return output;
-    }
-    let bash = Bash::new(input.bash);
+    let translator: Box<dyn Translator> = if input.name == "Bash" {
+        Box::new(Bash::new(input.bash))
+    } else {
+        Box::new(File::new(input.kind, input.name, input.file))
+    };
     let operations: Vec<Arc<Operation>> = input.operations.into_iter().map(Arc::new).collect();
     match input.action.as_str() {
         "translate" => {
-            output.status = Some(bash.translate(&input.call.arguments, &mut |spec| {
+            output.status = Some(translator.translate(&input.call.arguments, &mut |spec| {
                 output.specs.push(spec);
                 format!("submitted-{}", output.specs.len())
             }))
         }
-        "result" => match bash.result(&input.call.call_id, &input.status, &operations) {
+        "result" => match translator.result(&input.call.call_id, &input.status, &operations) {
             Ok(value) => output.result = Some(value),
             Err(error) => output.error = error.to_string(),
         },
-        "running" => output.running = bash.running(&operations),
+        "sequence" => {
+            for step in input.steps {
+                let operations: Vec<_> = step.operations.into_iter().map(Arc::new).collect();
+                let mut part = Output::default();
+                match translator.result(&step.call_id, &step.status, &operations) {
+                    Ok(value) => part.result = Some(value),
+                    Err(error) => part.error = error.to_string(),
+                }
+                output.sequence.push(part);
+            }
+        }
+        "running" => output.running = translator.running(&operations),
         _ => output.error = format!("unknown oracle action {:?}", input.action),
     }
     output

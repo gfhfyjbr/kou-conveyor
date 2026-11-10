@@ -11,23 +11,38 @@ import (
 	"github.com/gfhfyjbr/kou-conveyor/harness/operation"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool"
 	"github.com/gfhfyjbr/kou-conveyor/harness/tool/bash"
+	filetool "github.com/gfhfyjbr/kou-conveyor/harness/tool/file"
 )
 
 type input struct {
 	Action     string
 	Name       string
+	Kind       filetool.Kind
 	Bash       bash.Config
+	File       filetool.Config
 	Call       llm.ToolCall
+	Status     tool.CallStatus
+	Operations []operation.Operation
+	Steps      []step
+}
+type step struct {
+	CallID     string
 	Status     tool.CallStatus
 	Operations []operation.Operation
 }
 type output struct {
-	Status  *tool.CallStatus
-	Specs   []operation.Spec
-	Result  *llm.ToolResult
-	Running string
-	Error   string
+	Status   *tool.CallStatus
+	Specs    []operation.Spec
+	Result   *llm.ToolResult
+	Running  string
+	Error    string
+	Sequence []output
 }
+
+func blankOutput() output {
+	return output{Specs: []operation.Spec{}, Sequence: []output{}}
+}
+
 type recording struct{ specs []operation.Spec }
 
 func (ctx *recording) Submit(spec operation.Spec) operation.ID {
@@ -35,12 +50,13 @@ func (ctx *recording) Submit(spec operation.Spec) operation.ID {
 	return operation.ID(fmt.Sprintf("submitted-%d", len(ctx.specs)))
 }
 func run(value input) output {
-	result := output{Specs: []operation.Spec{}}
-	if value.Name != "Bash" {
-		result.Error = fmt.Sprintf("unknown translator %q", value.Name)
-		return result
+	result := blankOutput()
+	var translator tool.Translator
+	if value.Name == "Bash" {
+		translator = bash.New(value.Bash)
+	} else {
+		translator = filetool.New(value.Kind, value.Name, value.File)
 	}
-	translator := bash.New(value.Bash)
 	switch value.Action {
 	case "translate":
 		ctx := recording{specs: []operation.Spec{}}
@@ -52,6 +68,17 @@ func run(value input) output {
 			result.Error = err.Error()
 		} else {
 			result.Result = &translated
+		}
+	case "sequence":
+		for _, step := range value.Steps {
+			part := blankOutput()
+			translated, err := translator.TranslateResult(step.CallID, step.Status, step.Operations)
+			if err != nil {
+				part.Error = err.Error()
+			} else {
+				part.Result = &translated
+			}
+			result.Sequence = append(result.Sequence, part)
 		}
 	case "running":
 		if describer, ok := translator.(tool.RunningDescriber); ok {

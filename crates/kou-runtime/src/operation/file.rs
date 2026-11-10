@@ -47,7 +47,10 @@ pub struct FileState {
         deserialize_with = "null_default"
     )]
     pub query: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "object_result"
+    )]
     pub result: Option<FileResult>,
     #[serde(
         skip_serializing_if = "String::is_empty",
@@ -71,6 +74,41 @@ pub struct FileResult {
     pub to: i64,
     #[serde(skip_serializing_if = "no", deserialize_with = "null_default")]
     pub truncated: bool,
+}
+
+fn result_shape_error(shape: &str) -> String {
+    format!("json: cannot unmarshal JSON {shape} into Go operation.FileResult within \"/Result\"")
+}
+fn object_result<'de, D: serde::Deserializer<'de>>(
+    de: D,
+) -> std::result::Result<Option<FileResult>, D::Error> {
+    // Borrow the raw span: an owned Json would copy the complete result body.
+    let raw = <&serde_json::value::RawValue>::deserialize(de)?;
+    let shape = match raw.get().as_bytes()[0] {
+        b'n' => return Ok(None),
+        b'{' => {
+            return serde_json::from_str(raw.get())
+                .map(Some)
+                .map_err(serde::de::Error::custom);
+        }
+        b'[' => "array",
+        b'\"' => "string",
+        b't' | b'f' => "boolean",
+        _ => "number",
+    };
+    Err(serde::de::Error::custom(result_shape_error(shape)))
+}
+fn decode_error(error: Error) -> String {
+    // serde_json attaches its own position to custom errors. Only our fixed
+    // Result-shape diagnostic has Go's pointer already and omits that position.
+    if let Some((detail, _)) = error.0.split_once(" at line ")
+        && ["array", "string", "boolean", "number"]
+            .iter()
+            .any(|shape| detail == result_shape_error(shape))
+    {
+        return detail.to_owned();
+    }
+    error.0
 }
 
 impl FileState {
@@ -113,8 +151,9 @@ pub fn decode_file(current: &Operation) -> Result<FileState> {
     }
     let state: FileState = decode_state(&current.state, "FileState").map_err(|error| {
         Error(format!(
-            "decode file operation {:?} state: {error}",
-            current.id
+            "decode file operation {:?} state: {}",
+            current.id,
+            decode_error(error)
         ))
     })?;
     state.validate().map_err(|error| {

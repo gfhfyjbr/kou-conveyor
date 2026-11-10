@@ -386,16 +386,18 @@ python3 compat/operation_parity.py
 ```
 
 `kou-runtime::operation` implements the durable file/value specs, decoding and
-pure state transitions. **135 exact Go/Rust projections** cover initial and
+pure state transitions. **151 exact Go/Rust projections** cover initial and
 terminal states, source/result validation, cancellation, null/opaque values,
 metadata preservation and restart policy. The development oracles inspect
 compute dispatches but never execute them. Awaiting Read/Write may redispatch on
 recovery; awaiting Edit/Patch fail with the original read-before-retry warning.
 This does not prove exactly-once file effects around a crash.
 
-Five native tests additionally exercise explicit private Read/Write/Edit effects
-and completion transitions. A file task is moved into its dispatch and a finished
-result is moved into the next state, rather than deep-cloned at that boundary.
+Six native tests additionally exercise explicit private Read/Write/Edit effects,
+completion transitions and nested result shape guards. Positional arrays and
+scalar FileResults are rejected with their exact JSON pointer; null remains unset.
+A file task is moved into its dispatch and a finished result is moved into the
+next state, rather than deep-cloned at that boundary.
 Read/Write/Edit/Patch use the existing native file backends. Transcript-search
 execution remains unconnected. Malformed typed-field diagnostics and wider
 state/event fuzzing are still gates.
@@ -536,29 +538,52 @@ this is a small safe streaming-significand decoder, not an allocator dependency.
 Three native tests cover its edge rounding, clipped validation errors, unchanged
 command/fractional timeout, explicit running clocks and preserved output newlines.
 
-`compat/translator_parity.py` adds **401 pure Go/Rust projections**, including
-96 seeded hex values, 80 seeded calls, validation-order/error clipping, submitted
-specs, terminal result states, running details and duration thresholds. The Go
+`kou-runtime::tool::File` supplies Read/Edit/Write/Patch/transcript-search call
+and result translation, including aliases. It decodes every known typed argument
+in source order, even fields unused by that kind. Unescaped strings borrow the
+input and only fields used by the spec become owned. Relative paths use the exact
+workspace + slash + path spelling, preserving doubled slashes and `..`. Numeric
+counts follow Go's exact-whole-number range through 2^53 before negative checks;
+the same boundary now preserves Bash output-limit diagnostics too. Completed file
+text is moved into the result, without trimming or an extra full-text clone.
+
+Read's per-instance repetition journal keeps keyed text digests, not read bodies.
+Defaults cap it at **1,024 parts, 4,096 call IDs and 1 MiB of key payload**. Shared
+Arc keys and a FIFO bound retained entries; zero disables tracking and oversized
+keys are not cached. Repeated call IDs retain their saved count. Changed text
+resets a part's count; raw path/offset/limit identify distinct parts. Eviction
+forgets old history, an explicit new policy rather than equivalence to Go's
+unbounded maps or a global RSS guarantee. Nine File/journal units cover these
+contracts, borrowing, source-order errors, large bodies, caps and 32 concurrent
+read results. The journal reuses the state decoded for result formatting.
+
+`compat/translator_parity.py` compares **1,337 pure Go/Rust projections**: 407 Bash
+and 930 File, the latter including **54 stateful sequences / 1,406 result steps**.
+It retains the 96 seeded hex values and 80 seeded Bash calls, and adds all five
+file kinds, aliases, strict roots/known-field types, source-order/count/path errors,
+result headers/status/text, nested result shapes and seeded Read histories. The Go
 oracle records specs and executes none. Real-time elapsed branches use explicit
 native clocks, not stripped Go timestamps. The only accepted diagnostic variation
-is Go JSON v2's source-proven `cannot`/`unable to` modal: full diagnostics must
-match exactly, or both complete messages are reconstructed from the original raw
-token and independently rune/byte-clipped. Changed counts, context and opaque
-payloads are rejected by comparator self-tests. All 401 projections and three
-native units passed twenty additional repetitions; Go Bash/toolarg passed three
-race-test repetitions plus vet.
+is Go JSON v2's source-proven `cannot`/`unable to` modal in known error fields,
+including sequence children. Full diagnostics otherwise match exactly; clipped
+Bash messages are reconstructed from the original token and independently bounded.
+Changed counts, context, pointers and opaque payloads are rejected by self-tests.
+All 1,337 translator projections, 151 operation projections, twelve translator
+units and six operation units passed twenty additional repetitions. Go
+Bash/File/toolarg passed three race-test repetitions plus vet.
 
-This slice does not yet supply the full runtime registry, file/Code translators,
-all malformed-JSON/config/operation diagnostics or a whole-runner performance
-measurement. No Go helper is required by the Rust production translator.
+This slice does not yet supply the full runtime registry or Code translator, all
+malformed typed-field/JSON/config/operation diagnostics or a whole-runner
+performance measurement. Transcript-search execution is still unconnected.
+No Go helper is required by the Rust production translators.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **285 native workspace tests**, including
+The latest complete local gate passed **295 native workspace tests**, including
 **68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
-and Bash/toolarg race tests passed; development-oracle vet checks passed. Inventory
-pins **90 sources, 136 HTTP registrations and 31 built-in plugins**.
+and Bash/File/toolarg race tests passed; development-oracle vet checks passed.
+Inventory pins **92 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent process controls, the full
 Code runtime, remaining result translators, Code wire/reporting/images/search, stream-event reporting,

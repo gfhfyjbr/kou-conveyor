@@ -5,6 +5,7 @@ use serde::{
 };
 use serde_json::value::RawValue;
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     fmt,
 };
@@ -24,14 +25,48 @@ pub(super) fn object(text: &str) -> Result<HashMap<String, &RawValue>> {
     }
     serde_json::from_str(text).map_err(|error| Error(error.to_string()))
 }
+pub(super) fn ordered(text: &str) -> Result<Vec<(String, &RawValue)>> {
+    serde_json::from_str::<Members<'_>>(text)
+        .map(|members| members.0)
+        .map_err(|error| Error(error.to_string()))
+}
 pub(super) fn string(raw: &RawValue) -> Result<Option<String>> {
+    borrowed_string(raw).map(|value| value.map(Cow::into_owned))
+}
+pub(super) fn borrowed_string(raw: &RawValue) -> Result<Option<Cow<'_, str>>> {
     if raw.get() == "null" {
         return Ok(None);
     }
     if !raw.get().starts_with('"') {
         return Err(Error(type_error(raw.get(), "string")));
     }
-    serde_json::from_str(raw.get())
+    struct Text;
+    impl<'de> Visitor<'de> for Text {
+        type Value = Cow<'de, str>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string")
+        }
+        fn visit_borrowed_str<E: serde::de::Error>(
+            self,
+            value: &'de str,
+        ) -> std::result::Result<Self::Value, E> {
+            Ok(Cow::Borrowed(value))
+        }
+        fn visit_str<E: serde::de::Error>(
+            self,
+            value: &str,
+        ) -> std::result::Result<Self::Value, E> {
+            Ok(Cow::Owned(value.into()))
+        }
+        fn visit_string<E: serde::de::Error>(
+            self,
+            value: String,
+        ) -> std::result::Result<Self::Value, E> {
+            Ok(Cow::Owned(value))
+        }
+    }
+    serde_json::Deserializer::from_str(raw.get())
+        .deserialize_str(Text)
         .map(Some)
         .map_err(|error| Error(error.to_string()))
 }
@@ -41,7 +76,7 @@ pub(super) fn output_limit(values: &HashMap<String, &RawValue>) -> Result<usize>
     };
     let number = number::number(value)
         .map_err(|error| Error(format!("decode max_output_length: {error}")))?;
-    let Some(value) = number.filter(|n| *n > 0.0 && *n < (1u64 << 63) as f64 && n.fract() == 0.0)
+    let Some(value) = number.filter(|n| *n > 0.0 && *n <= (1u64 << 53) as f64 && n.fract() == 0.0)
     else {
         return Err(Error("max_output_length must be a positive integer".into()));
     };

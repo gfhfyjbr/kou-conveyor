@@ -46,6 +46,8 @@ def cases():
         rows.append(translate({"command": "true", "timeout": value}))
     for value in [None, 0, -1, 1.5, 1, 40000, "100", "1e3", "0x1p4", "", "NaN", True, [], {}, 1_000_001, 1e100, "9223372036854775808"]:
         rows.append(translate({"command": "true", "max_output_length": value}))
+    for value in [9007199254740992, 9007199254740993, 9007199254740994, "9007199254740994", 1e18, -9007199254740994]:
+        rows.append(translate({"command": "true", "max_output_length": value}))
     for raw in ['{"command":"true","timeout":1e999}', '{"command":"true","max_output_length":1e999}']:
         rows.append(translate(raw))
     for limit in [1, 2, 3, 7, 20, 40]:
@@ -94,6 +96,155 @@ def cases():
         split = rng.randrange(len(digits) + 1)
         value = f"0x{digits[:split]}.{digits[split:]}p{rng.randrange(-1100, 10)}"
         rows.append(translate({"command": "true", "timeout": value}))
+    return rows
+
+
+FILE_TOOLS = [
+    ("read", "Read", {"path": "file"}),
+    ("edit", "Edit", {"path": "file", "old_string": "old", "new_string": "new"}),
+    ("write", "Write", {"path": "file", "content": "body\n"}),
+    ("apply_patch", "apply_patch", {"input": " raw patch \n"}),
+    ("transcript_search", "TranscriptSearch", {"query": " needle "}),
+]
+
+
+def file_translate(kind, name, arguments, config=None):
+    return {
+        "Action": "translate", "Kind": kind, "Name": name,
+        "File": config if config is not None else {"Directory": "/inert/work/", "Transcript": "/inert/transcript"},
+        "Call": {"CallID": "call", "Name": name, "Arguments": arguments if isinstance(arguments, str) else json.dumps(arguments, ensure_ascii=False)},
+    }
+
+
+def file_operation(status="completed", **state):
+    return {"ID": "owned", "Type": "file", "Version": 1, "Status": status,
+            "State": {"Action": "read", "Path": "/inert/file", "Result": {"Text": "same\r\n"}, **state}}
+
+
+def file_result(operations=(), status=None, kind="read", name="Read", action="result"):
+    return {"Action": action, "Kind": kind, "Name": name, "Call": {"CallID": "call"},
+            "Status": status or {}, "Operations": list(operations)}
+
+
+def read_step(call_id, current=None, status=None):
+    return {"CallID": call_id, "Status": status or {}, "Operations": [current if current is not None else file_operation()]}
+
+
+def file_sequence(steps, kind="read", name="Read"):
+    return {"Action": "sequence", "Kind": kind, "Name": name, "Steps": steps}
+
+
+def file_cases():
+    rows = []
+    invalid_roots = ["", " \n\t", "{", "null", "[]", "true", "42", '"text"', '{} x',
+                     '{"path":"a","path":"b"}', '{"unknown":{"x":1,"x":2}}',
+                     '{"path":"a","p\\u0061th":"b"}', '{"unknown":"\\ud800"}',
+                     '{"path":"a",}', '{"unknown":[1,]}']
+    for kind, name, valid in FILE_TOOLS:
+        rows += [file_translate(kind, name, raw) for raw in invalid_roots]
+        rows.append(file_translate(kind, name, valid))
+        rows.append(file_translate(kind, "Alias-界", valid))
+        rows.append(file_translate(kind, name, {**valid, "max_output_length": False, "Unknown": {"nested": [None, 1]}}))
+        for key in ["path", "file_path", "content", "input", "patch", "query", "old_string", "new_string", "replace_all"]:
+            for value in [None, "", " \n", 42, True, [], {}]:
+                rows.append(file_translate(kind, name, {**valid, key: value}))
+        # All typed decoding precedes count/path/kind validation, in source order.
+        for invalid in [
+            {"path": 42, "offset": "soon"}, {"offset": "soon", "path": 42},
+            {"offset": 1.5, "path": 42}, {"replace_all": "true", "new_string": []},
+            {"new_string": [], "replace_all": "true"}, {"limit": -1, "offset": -2},
+            {"offset": 1.5, "limit": "soon"}, {"offset": -1, "path": "a\0b"},
+            {"path": "a\0b", "query": "x", "input": "patch"},
+        ]:
+            rows.append(file_translate(kind, name, invalid))
+        for config in [{}, {"Directory": "relative/", "Transcript": "raw/../log"},
+                       {"Directory": "/", "Transcript": " "}, {"Directory": "/inert/../work//", "Transcript": "/inert//log"}]:
+            rows.append(file_translate(kind, name, valid, config))
+    for kind, name, valid in FILE_TOOLS[:3]:
+        for path in [None, "", " \n", " a/../b ", "/absolute/../file", "//absolute//file", "界/../é", "a\0b"]:
+            for fallback in [None, " fallback/../name "]:
+                rows.append(file_translate(kind, name, {**valid, "path": path, "file_path": fallback}))
+    for kind, name, valid in FILE_TOOLS:
+        rows.append(file_translate(kind, name, '{"unknown":1e999,' + json.dumps(valid, ensure_ascii=False)[1:]))
+        rows.append(file_translate(kind, name, {**valid, "Path": 42, "OFFSET": "bad", "Replace_All": []}))
+    numbers = [None, "", " ", 0, -0.0, "0", -1, -0.5, 1.5, 1e-5, 1e-4, 1e6 + 0.5,
+               1e100, -1e100, 9007199254740991, 9007199254740992, 9007199254740993, 9007199254740994,
+               -9007199254740992, -9007199254740994, "9007199254740994", 9223372036854774784, 9223372036854775807, -9223372036854775808,
+               -9223372036854777856, "9223372036854774784", "9223372036854775808", " 12 ",
+               "1_000", "0X_1.fp+2", "0x1p-1074", "0x1p-1075", "0x1p9999", "+1.", ".5",
+               "NaN", "Inf", "soon", "界" * 30, True, [], {}]
+    for field in ["offset", "limit"]:
+        for value in numbers:
+            rows.append(file_translate("read", "Read", {"path": "file", field: value}))
+        rows.append(file_translate("read", "Read", '{"path":"file","' + field + '":1e999}'))
+    for name in ["Alias", "Files.Read", "界"]:
+        rows += [file_translate("unknown", name, {"path": "file"}), file_translate("unknown", name, {"path": 42})]
+    for args in [{"input": " \n", "patch": " fallback\n"}, {"input": " first\n", "patch": " second\n"},
+                 {"input": None, "patch": " fallback"}, {"input": "", "patch": " \t"}]:
+        rows.append(file_translate("apply_patch", "PatchAlias", args))
+    for query in [None, "", " \n", " needle ", "\\[regex\\]", "\0"]:
+        for transcript in ["", " ", "/inert//log"]:
+            rows.append(file_translate("transcript_search", "SearchAlias", {"query": query, "limit": "3"}, {"Transcript": transcript}))
+
+    for kind, name, _ in FILE_TOOLS:
+        rows += [file_result(kind=kind, name=name), file_result([file_operation(), file_operation()], kind=kind, name=name),
+                 file_result(status={"Error": "validation\n", "ErrorTruncated": True}, kind=kind, name=name),
+                 file_result([file_operation()], {"Error": "validation"}, kind, name),
+                 file_result([file_operation()], {"WaitingFor": ["ignored"], "Success": True}, kind, name)]
+        for status in ["ready", "awaiting", "canceling", "completed", "failed", "canceled", "invalid"]:
+            for fields in [{"Result": None}, {"Result": {}}, {"Result": {"Text": "exact\r\n\n"}},
+                           {"TerminalError": "owned failure"}, {"Result": {"Text": None, "Files": [], "Lines": None, "Truncated": None}}]:
+                rows.append(file_result([file_operation(status, **fields)], kind=kind, name=name))
+        rows.append(file_result([file_operation()], kind=kind, name=name, action="running"))
+    for changes in [{"Type": "shell"}, {"Version": 0}, {"Version": 99}, {"State": None},
+                    {"State": []}, {"State": True}, {"State": 12}, {"State": "text"}, {"State": {}},
+                    {"State": {"Action": "read"}}, {"State": {"Action": "patch", "Patch": " "}},
+                    {"State": {"Action": "unknown"}},
+                    {"State": {"Action": "read", "Path": "x", "Offset": -1}}]:
+        rows.append(file_result([{**file_operation(), **changes}]))
+    missing_state = file_operation()
+    del missing_state["State"]
+    rows.append(file_result([missing_state]))
+    # A derived Serde struct must not accept positional arrays as FileResult.
+    for value in [[], ["positional"], ["positional", [], 1, 2, 3, False], "text", 42, True]:
+        rows.append(file_result([file_operation(Result=value)]))
+    for fields in [{"Text": "界" * 40001}, {"Text": "\0raw\r\n", "Files": ["raw/../file"], "Lines": 2, "From": 1, "To": 2, "Truncated": True}]:
+        rows.append(file_result([file_operation(Result=fields)]))
+    for action, fields in [("write", {}), ("edit", {}), ("patch", {"Patch": "patch"}),
+                           ("transcript_search", {"Query": "needle"})]:
+        rows.append(file_result([file_operation(Action=action, **fields)]))
+    for call_id in ["", 'call"quoted', "界-call"]:
+        row = file_result([file_operation("failed", TerminalError="owned error")])
+        row["Call"]["CallID"] = call_id
+        rows.append(row)
+
+    rows.append(file_sequence([read_step(value) for value in ["one", "two", "three", "three", "four", "one"]]))
+    rows.append(file_sequence([read_step(str(i), file_operation(Result={"Text": text}))
+                               for i, text in enumerate(["same", "same", "same", "changed", "changed", "changed", "same", "same", "same"])]))
+    rows.append(file_sequence([read_step("one"), read_step("two"), read_step("three"),
+                               read_step("three", file_operation(Path="/other/path", Result={"Text": "new current text"})),
+                               read_step("four"), read_step("two", file_operation(Result={"Text": "changed"}))]))
+    for field, values in [("Path", ["/inert/file", "/inert/./file", "/inert//file", "/inert/file"]),
+                          ("Offset", [0, 1, 2, 0]), ("Limit", [0, 1, 2, 0])]:
+        rows.append(file_sequence([read_step(f"{index}-{repeat}", file_operation(**{field: value}))
+                                   for index, value in enumerate(values) for repeat in range(3)]))
+    for kind, name, _ in FILE_TOOLS:
+        rows.append(file_sequence([read_step(str(i)) for i in range(5)], kind, name))
+    for status in ["ready", "awaiting", "canceling", "failed", "canceled", "invalid"]:
+        rows.append(file_sequence([read_step("retry", file_operation(status, TerminalError="failed")),
+                                   *[read_step(value) for value in ["retry", "two", "three"]]]))
+    rows.append(file_sequence([read_step("retry", file_operation(Result=[])),
+                               *[read_step(value) for value in ["retry", "two", "three"]]]))
+    for action, fields in [("write", {}), ("edit", {}), ("patch", {"Patch": "patch"}),
+                           ("transcript_search", {"Query": "needle"})]:
+        rows.append(file_sequence([read_step("retry", file_operation(Action=action, **fields)),
+                                   *[read_step(value) for value in ["retry", "two", "three"]]]))
+    rng = random.Random(20261111)
+    for _ in range(32):
+        steps = [read_step(str(rng.randrange(8)), file_operation(Path=rng.choice(["/inert/file", "/inert/./file"]),
+                  Offset=rng.randrange(2), Limit=rng.randrange(2), Result={"Text": rng.choice(["same", "other", "界\n"])}))
+                 for _ in range(40)]
+        rows.append(file_sequence(steps))
     return rows
 
 
@@ -174,20 +325,52 @@ def clipped_modal_variants(request):
         yield bounded(message, limit), bounded(message.replace("json: cannot unmarshal", "json: unable to unmarshal", 1), limit)
 
 
+def file_diagnostic(value, request):
+    if not isinstance(value, str) or not request.get("Kind"):
+        return False
+    name = re.escape(request["Name"])
+    modal = r'json: (?:cannot|unable to) unmarshal JSON (?:array|object|string|number|boolean) into Go '
+    if request.get("Action") == "translate":
+        fields = (r'(?:string within "/(?:path|file_path|content|input|patch|query|old_string|new_string)"'
+                  r'|bool within "/replace_all"'
+                  r'|toolarg\.Number within "/(?:offset|limit)": want a number, such as 100, not .*)')
+        return re.fullmatch(f'decode {name} arguments: ' + modal + fields, value, re.DOTALL) is not None
+    operations = request.get("Operations", [])
+    if request.get("Action") != "result" or len(operations) != 1:
+        return False
+    call_id = re.escape(json.dumps(request["Call"]["CallID"], ensure_ascii=False))
+    operation_id = re.escape(json.dumps(operations[0]["ID"], ensure_ascii=False))
+    prefix = f'decode {name} call {call_id} result: decode file operation {operation_id} state: '
+    fields = r'(?:operation\.FileState|operation\.FileResult within "/Result")'
+    return re.fullmatch(prefix + modal + fields, value) is not None
+
+
 def equivalent(go, rust, request=None):
     if go == rust:
         return True
+    request = request or {}
     candidate = copy.deepcopy(rust)
-    paths = [(candidate.get("Status") or {}, "Error"), (candidate, "Error")]
-    changed = False
-    for container, key in paths:
-        value = container.get(key, "")
-        if isinstance(value, str) and MODAL.fullmatch(value):
-            container[key] = value.replace("json: cannot unmarshal", "json: unable to unmarshal", 1)
-            changed = True
-    if changed and go == candidate:
+    if request.get("Action") == "sequence":
+        expected, actual, steps = go.get("Sequence", []), rust.get("Sequence", []), request.get("Steps", [])
+        if len(expected) != len(actual) or len(actual) != len(steps):
+            return False
+        for left, right, step in zip(expected, actual, steps, strict=True):
+            part = {**request, "Action": "result", "Call": {"CallID": step["CallID"]},
+                    "Status": step.get("Status", {}), "Operations": step.get("Operations", [])}
+            if not equivalent(left, right, part):
+                return False
+        candidate["Sequence"] = copy.deepcopy(expected)
+    for actual, expected, key in [(candidate.get("Status") or {}, go.get("Status") or {}, "Error"), (candidate, go, "Error")]:
+        value, other = actual.get(key, ""), expected.get(key, "")
+        if (isinstance(value, str) and isinstance(other, str)
+                and (MODAL.fullmatch(value) or file_diagnostic(value, request))
+                and (MODAL.fullmatch(other) or file_diagnostic(other, request))
+                and value.replace("json: unable to unmarshal", "json: cannot unmarshal", 1)
+                == other.replace("json: unable to unmarshal", "json: cannot unmarshal", 1)):
+            actual[key] = other
+    if go == candidate:
         return True
-    for canonical, alternate in clipped_modal_variants(request or {}):
+    for canonical, alternate in clipped_modal_variants(request):
         if rust.get("Status") == canonical:
             candidate = {**rust, "Status": alternate}
             if go == candidate:
@@ -221,11 +404,36 @@ def self_test():
     corrupted["Error"] = corrupted["Error"].replace("bytes", "byte")
     assert not equivalent({"Status": corrupted, "Specs": []}, {"Status": original, "Specs": []}, request)
     assert not equivalent({"Status": other, "Specs": ["altered"]}, {"Status": original, "Specs": []}, request)
+    request = file_translate("read", "Alias-界", {"path": 42})
+    message = 'decode Alias-界 arguments: json: cannot unmarshal JSON number into Go string within "/path"'
+    canonical = {"Status": {"Error": message}, "Specs": [], "Sequence": []}
+    alternate = copy.deepcopy(canonical)
+    alternate["Status"]["Error"] = message.replace("json: cannot", "json: unable to")
+    assert equivalent(alternate, canonical, request)
+    for before, after in [("Alias-界", "Read"), ("/path", "/file_path"), ("JSON number", "JSON array"), ("Go string", "Go bool")]:
+        bad = copy.deepcopy(alternate)
+        bad["Status"]["Error"] = bad["Status"]["Error"].replace(before, after)
+        assert not equivalent(bad, canonical, request)
+    message = 'decode Read call "retry" result: decode file operation "owned" state: json: cannot unmarshal JSON array into Go operation.FileResult within "/Result"'
+    canonical = {"Status": None, "Specs": [], "Error": message, "Sequence": []}
+    alternate = {**canonical, "Error": message.replace("json: cannot", "json: unable to")}
+    request = file_sequence([read_step("retry", file_operation(Result=[]))])
+    left, right = {"Sequence": [alternate]}, {"Sequence": [canonical]}
+    assert equivalent(left, right, request)
+    for before, after in [('call "retry"', 'call "other"'), ('operation "owned"', 'operation "other"'), ("/Result", "/Other")]:
+        bad = copy.deepcopy(left)
+        bad["Sequence"][0]["Error"] = bad["Sequence"][0]["Error"].replace(before, after)
+        assert not equivalent(bad, right, request)
+    assert not equivalent({"Sequence": [alternate, alternate]}, right, request)
+    assert not equivalent({"Sequence": [{**alternate, "Result": {"opaque": message}}]}, right, request)
+    opaque = {"Result": {"Output": [{"Value": message}]}, "Sequence": []}
+    assert not equivalent({"Result": {"Output": [{"Value": alternate["Error"]}]}, "Sequence": []}, opaque, request)
 
 
 def main():
     self_test()
-    rows = cases()
+    bash_rows, file_rows = cases(), file_cases()
+    rows = bash_rows + file_rows
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "tmp/rust-rewrite-target"))
     subprocess.run(["go", "build", "-o", "tmp/kou-translator-oracle", "./cmd/kou-translator-oracle"], cwd=ROOT, check=True)
     subprocess.run(["cargo", "build", "--locked", "-q", "-p", "kou-runtime", "--example", "translator_oracle"], cwd=ROOT, check=True)
@@ -244,7 +452,9 @@ def main():
             if failures >= 12:
                 break
     assert failures == 0, f"{failures} translator projections differ"
-    print(f"translator parity: {len(rows)} pure Bash argument/result/running projections passed; no operations executed")
+    sequences = [row for row in file_rows if row["Action"] == "sequence"]
+    steps = sum(len(row["Steps"]) for row in sequences)
+    print(f"translator parity: {len(rows)} pure Go/Rust projections ({len(bash_rows)} Bash, {len(file_rows)} File including {len(sequences)} sequences / {steps} result steps); no operations executed")
 
 
 if __name__ == "__main__":

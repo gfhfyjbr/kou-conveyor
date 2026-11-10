@@ -81,6 +81,27 @@ fn bash_translation_preserves_command_and_bounds_errors_before_submission() {
     assert!(status.error_truncated);
     assert!(status.error.starts_with('d') && status.error.ends_with("ng"));
     assert!(status.error.contains("bytes truncated"));
+    for (value, expected) in [
+        (
+            "9007199254740992",
+            "max_output_length must not exceed 1000000",
+        ),
+        (
+            "9007199254740993",
+            "max_output_length must not exceed 1000000",
+        ),
+        (
+            "9007199254740994",
+            "max_output_length must be a positive integer",
+        ),
+        ("1e18", "max_output_length must be a positive integer"),
+    ] {
+        let arguments = format!(r#"{{"command":"true","max_output_length":{value}}}"#);
+        let status = bash.translate(&arguments, &mut |_| {
+            panic!("invalid arguments submitted work")
+        });
+        assert_eq!(status.error, format!("bash argument: {expected}"));
+    }
     for args in [
         "[]",
         "{}",

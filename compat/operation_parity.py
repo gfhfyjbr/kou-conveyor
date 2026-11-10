@@ -90,6 +90,9 @@ def fixtures():
     yield "preserve-operation-metadata", {"Action": "file_advance", "Operation": current}
     nulls = {key: None for key in ["Root", "Offset", "Limit", "Content", "OldString", "NewString", "ReplaceAll", "Patch", "Query", "Result", "TerminalError"]}
     yield "null-file-fields", {"Action": "file_decode", "Operation": operation(state={**valid[0], **nulls})}
+    for index, result in enumerate([[], ["positional"], ["positional", [], 1, 2, 3, False], "text", 42, True, None, {"Text": None}]):
+        for action in ["file_decode", "file_advance"]:
+            yield f"file-result-shape-{index}-{action}", {"Action": action, "Operation": operation(state={**valid[0], "Result": result})}
 
 
 def invoke(binary, rows):
@@ -110,7 +113,7 @@ def projections_match(left, right):
     # top-level decode diagnostics; payloads, context and every other byte stay.
     pattern = (r'(decode (?:value|file|shell) operation "(?:\\.|[^"\\])*" state: json: )'
                r'(?:cannot|unable to)'
-               r'( unmarshal JSON (?:(?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState|ShellState)'
+               r'( unmarshal JSON (?:(?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState|ShellState|FileResult within "/Result")'
                r'|string into Go \[\]uint8 within "/Inline(?:Out|Err)(?:Tail)?": illegal character .+ at offset [0-9]+))')
     a = re.fullmatch(pattern, left.get("Error", ""))
     b = re.fullmatch(pattern, right.get("Error", ""))
@@ -139,6 +142,11 @@ def comparator_self_test():
     assert not projections_match(left, {**right, "Error": right["Error"].replace("offset 4", "offset 5")})
     assert not projections_match(left, {**right, "Error": right["Error"].replace("/InlineOut", "/InlineErr")})
     assert not projections_match({"Error": "opaque cannot"}, {"Error": "opaque unable to"})
+    text = 'decode file operation "owned" state: json: cannot unmarshal JSON array into Go operation.FileResult within "/Result"'
+    left = {"Error": text, "State": None}
+    right = {**left, "Error": text.replace("json: cannot", "json: unable to")}
+    assert projections_match(left, right)
+    assert not projections_match(left, {**right, "Error": right["Error"].replace("/Result", "/Other")})
 
 
 def main():

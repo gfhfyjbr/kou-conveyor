@@ -1,11 +1,13 @@
 //! Pure model-call translation. Submission records specs; translators perform no I/O.
 mod arguments;
 mod bash;
+mod file;
 mod number;
 #[cfg(test)]
 mod tests;
 use crate::operation::{Error, Result, Spec};
 pub use bash::{Bash, BashConfig};
+pub use file::{File, FileConfig, ReadJournalLimits, format_file_result};
 use kou_domain::{CallStatus, Operation, ToolResult, ToolResultOutput};
 use std::sync::Arc;
 

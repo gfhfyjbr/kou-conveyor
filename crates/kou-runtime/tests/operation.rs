@@ -170,6 +170,41 @@ fn file_effects_require_explicit_dispatch_and_complete_through_a_transition() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), "one\n2\n");
 }
 #[test]
+fn nested_file_results_reject_positional_arrays_and_scalar_shapes() {
+    for (raw, shape) in [
+        ("[]", "array"),
+        (r#"["positional",[],1,2,3,false]"#, "array"),
+        (r#""text""#, "string"),
+        ("42", "number"),
+        ("true", "boolean"),
+    ] {
+        let mut current = file("read", "/inert-fixture");
+        current.state = Json::parse(&format!(
+            r#"{{"Action":"read","Path":"/inert-fixture","Result":{raw}}}"#
+        ))
+        .unwrap();
+        assert_eq!(
+            decode_file(&current).unwrap_err().to_string(),
+            format!(
+                "decode file operation \"file\" state: json: cannot unmarshal JSON {shape} into Go operation.FileResult within \"/Result\""
+            )
+        );
+        assert!(advance_file(current, None).is_err());
+    }
+    for (raw, present) in [("null", false), (r#"{"Text":"unchanged\r\n"}"#, true)] {
+        let mut current = file("read", "/inert-fixture");
+        current.state = Json::parse(&format!(
+            r#"{{"Action":"read","Path":"/inert-fixture","Result":{raw}}}"#
+        ))
+        .unwrap();
+        let result = decode_file(&current).unwrap().result;
+        assert_eq!(result.is_some(), present);
+        if let Some(result) = result {
+            assert_eq!(result.text, "unchanged\r\n");
+        }
+    }
+}
+#[test]
 fn cancellation_before_execution_does_not_create_the_file() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("absent.txt");

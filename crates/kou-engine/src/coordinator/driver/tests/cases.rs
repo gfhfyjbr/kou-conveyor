@@ -364,6 +364,18 @@ async fn steering_flushes_deferred_input_but_hard_stop_does_not() {
             assert!(current.cancellation.is_cancelled());
             assert!(has_text(&next.request, "follow up"));
             assert!(has_text(&next.request, "change course"));
+            {
+                let saved = run.saved.0.lock().unwrap();
+                let ids: Vec<_> = saved
+                    .items
+                    .iter()
+                    .filter_map(|item| match item {
+                        ItemData::Input(input) => Some(input.id.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(ids, ["one", "deferred", "steer"]);
+            }
             run.abort().await;
         }
     }

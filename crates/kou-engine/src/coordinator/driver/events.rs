@@ -44,18 +44,22 @@ impl Coordinator {
                 && self.live.grace_calls.is_empty());
         if !self.live.deferred.is_empty() && !self.hard_stop() && !self.compacting() {
             if due || !self.mid_step() || (self.live.waited_long && self.flight.is_none()) {
-                while let Some(input) = self.live.deferred.pop_front() {
-                    self.record_input(input.value).await?;
-                    self.live.call_model = true;
-                }
-                self.live.tool_wait = None;
-                self.live.waited_long = false;
+                self.deliver_deferred().await?;
                 due = true;
             } else if self.flight.is_none() && self.live.tool_wait.is_none() {
                 self.live.tool_wait = after(self.config.tool_wait_limit);
             }
         }
         Ok(due && self.live.quota_wait.is_none())
+    }
+    async fn deliver_deferred(&mut self) -> Result<()> {
+        while let Some(input) = self.live.deferred.pop_front() {
+            self.record_input(input.value).await?;
+            self.live.call_model = true;
+        }
+        self.live.tool_wait = None;
+        self.live.waited_long = false;
+        Ok(())
     }
     pub(super) async fn input(&mut self, input: Queued<Input>) -> Result<()> {
         if !self.seen_inputs.insert(input.value.id.clone()) {
@@ -69,6 +73,9 @@ impl Coordinator {
                 self.live.deferred.push_back(input);
                 return Ok(());
             }
+        }
+        if input.value.kind == "external" {
+            self.deliver_deferred().await?;
         }
         self.record_input(input.value).await
     }

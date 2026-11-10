@@ -263,6 +263,18 @@
       "sha256": "b3b87c236a744e124d54c93e27d36786daec247da4a28125eb16c8ed75c5a799"
     },
     {
+      "file": "harness/tool/output.go",
+      "sha256": "5404247675b536a22921331ffe183ddeb947350f386635036e042495ef3c5bac"
+    },
+    {
+      "file": "harness/tool/bash/bash.go",
+      "sha256": "48d0c030d8ebc1375966f7d652b4515d881565a20fc433c86768305233c067f4"
+    },
+    {
+      "file": "harness/tool/toolarg/number.go",
+      "sha256": "e2fd6408b7997b2999b7224f8b7a0fc864a3b262c372d003f52ba7a546c0ca3e"
+    },
+    {
       "file": "harness/coordinator/coordinator.go",
       "sha256": "855e8ef632cfe4ea8094bb724b37bc615c6d04345e6ec07c152685216c14ffb3"
     },
@@ -1424,6 +1436,7 @@
     "writer_append_fork_checkpoint_lock_parity": "compat/writer_parity.py (temporary fixtures only)",
     "writer_partial_io_crash_matrix": "partial: poisoned-descriptor unit test, exhaustive crash points still open",
     "code_vm_semantic_projection": "compat/codevm_parity.py (fake plugins; not full Result wire conformance)",
+    "builtin_translators": "compat/translator_parity.py compares 401 pure Bash argument/spec/result/running projections including 96 seeded hex and 80 seeded calls; three native units test IEEE/subnormal numeric rounding, error clipping and explicit running clocks/output newlines; borrowed raw arguments and safe numeric-string coercion, no translator I/O; exact Go JSON modal variants include independently clipped messages with strict comparator self-tests; full registry, file/Code translators, malformed JSON/config/header diagnostics and whole-runner performance remain open",
     "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
     "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
     "native_process_lifecycle": "kou-tools tests cover groups/termination/escalation/pipes/CLOEXEC plus eight direct-file capture cases and five lifecycle callback cases including slow timeout publication preserving physical TERM grace; compat/capture_parity.py compares 19 owned Go/Rust captures, exact bytes/modes/raw exit/signal/cancellation and cleanup; output bodies stay on disk, spool disk is uncapped; not full primitive controls, persistent process or sandbox service",

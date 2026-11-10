@@ -1,0 +1,140 @@
+use super::*;
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, Visitor},
+};
+use serde_json::value::RawValue;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
+
+pub(super) fn object(text: &str) -> Result<HashMap<String, &RawValue>> {
+    if let Err(error) = kou_domain::validate_json(text.as_bytes()) {
+        return Err(Error(
+            syntax_error(text).unwrap_or_else(|| format!("jsontext: {error}")),
+        ));
+    }
+    let text = text.trim();
+    if text == "null" {
+        return Ok(HashMap::new());
+    }
+    if !text.starts_with('{') {
+        return Err(Error(type_error(text, "map[string]jsontext.Value")));
+    }
+    serde_json::from_str(text).map_err(|error| Error(error.to_string()))
+}
+pub(super) fn string(raw: &RawValue) -> Result<Option<String>> {
+    if raw.get() == "null" {
+        return Ok(None);
+    }
+    if !raw.get().starts_with('"') {
+        return Err(Error(type_error(raw.get(), "string")));
+    }
+    serde_json::from_str(raw.get())
+        .map(Some)
+        .map_err(|error| Error(error.to_string()))
+}
+pub(super) fn output_limit(values: &HashMap<String, &RawValue>) -> Result<usize> {
+    let Some(value) = values.get("max_output_length") else {
+        return Ok(DEFAULT_MAX_OUTPUT_LENGTH);
+    };
+    let number = number::number(value)
+        .map_err(|error| Error(format!("decode max_output_length: {error}")))?;
+    let Some(value) = number.filter(|n| *n > 0.0 && *n < (1u64 << 63) as f64 && n.fract() == 0.0)
+    else {
+        return Err(Error("max_output_length must be a positive integer".into()));
+    };
+    if value > 1_000_000.0 {
+        return Err(Error("max_output_length must not exceed 1000000".into()));
+    }
+    Ok(value as usize)
+}
+fn syntax_error(text: &str) -> Option<String> {
+    if let Some(error) = duplicate(text) {
+        return Some(error);
+    }
+    let error = serde_json::from_str::<&RawValue>(text).err()?;
+    if error.is_eof() {
+        return Some(if text.is_empty() {
+            "jsontext: unexpected EOF".into()
+        } else {
+            format!("jsontext: unexpected EOF after offset {}", text.len())
+        });
+    }
+    if error.to_string().starts_with("trailing characters") {
+        let before = text
+            .split_inclusive('\n')
+            .take(error.line().saturating_sub(1))
+            .map(str::len)
+            .sum::<usize>();
+        let offset = before + error.column().saturating_sub(1);
+        let character = text.get(offset..)?.chars().next()?;
+        return Some(format!(
+            "jsontext: invalid character {character:?} after top-level value after offset {offset}"
+        ));
+    }
+    None
+}
+
+struct Members<'a>(Vec<(String, &'a RawValue)>);
+impl<'de> Deserialize<'de> for Members<'de> {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> std::result::Result<Self, D::Error> {
+        struct Entries;
+        impl<'de> Visitor<'de> for Entries {
+            type Value = Members<'de>;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("an object")
+            }
+            fn visit_map<M: MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> std::result::Result<Self::Value, M::Error> {
+                let mut values = Vec::new();
+                while let Some(entry) = map.next_entry()? {
+                    values.push(entry);
+                }
+                Ok(Members(values))
+            }
+        }
+        de.deserialize_map(Entries)
+    }
+}
+// Failure-only walk: retain borrowed raw values rather than a complete JSON tree.
+// Choosing the earliest raw-value offset preserves nested-before-parent failures.
+fn duplicate(text: &str) -> Option<String> {
+    let root: &RawValue = serde_json::from_str(text).ok()?;
+    let mut stack = vec![(root, String::new())];
+    let mut found: Option<(usize, String, String)> = None;
+    while let Some((value, pointer)) = stack.pop() {
+        match value.get().as_bytes().first()? {
+            b'{' => {
+                let Members(entries) = serde_json::from_str(value.get()).ok()?;
+                let mut names = HashSet::new();
+                for (name, value) in entries {
+                    if !names.insert(name.clone()) {
+                        let offset = value.get().as_ptr() as usize;
+                        if found.as_ref().is_none_or(|previous| offset < previous.0) {
+                            found = Some((offset, name.clone(), pointer.clone()));
+                        }
+                    }
+                    let name = name.replace('~', "~0").replace('/', "~1");
+                    stack.push((value, format!("{pointer}/{name}")));
+                }
+            }
+            b'[' => {
+                let entries: Vec<&RawValue> = serde_json::from_str(value.get()).ok()?;
+                for (index, value) in entries.into_iter().enumerate() {
+                    stack.push((value, format!("{pointer}/{index}")));
+                }
+            }
+            _ => {}
+        }
+    }
+    let (_, name, pointer) = found?;
+    Some(if pointer.is_empty() {
+        format!("jsontext: duplicate object member name {name:?}")
+    } else {
+        format!("jsontext: duplicate object member name {name:?} within {pointer:?}")
+    })
+}

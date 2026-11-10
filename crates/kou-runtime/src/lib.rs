@@ -2,6 +2,7 @@ mod codevm;
 mod native;
 pub mod operation;
 mod output;
+pub mod tool;
 
 pub use native::{CommandTool, NativeConfig, NativeHost};
 

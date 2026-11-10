@@ -519,16 +519,49 @@ The bounded local manager now uses the concrete executor and explicit durable
 receipts. Production runner wiring and persistent process status/attachment/control
 remain open.
 
+## Model-call translators
+
+`kou-runtime::tool::Bash` is a pure production translator from model arguments to
+shell v3 specs and from immutable operation snapshots to tool results. It preserves
+Go's output-limit/timeout/command validation order, default/null timeout semantics,
+NUL byte offsets, original command whitespace, stdout/stderr separators, nonzero
+exits, timeout/duration notices, capture paths and running/failed/canceled states.
+Translation records specs; it never executes a command or reads a capture.
+
+Arguments borrow raw JSON values rather than retaining an owned arguments tree.
+The shared numeric decoder accepts Go-style decimal, underscore and hexadecimal
+numeric strings, rejects blank/non-finite values and performs one ties-to-even
+IEEE rounding including subnormals. An exact-only hex parser was unsuitable, so
+this is a small safe streaming-significand decoder, not an allocator dependency.
+Three native tests cover its edge rounding, clipped validation errors, unchanged
+command/fractional timeout, explicit running clocks and preserved output newlines.
+
+`compat/translator_parity.py` adds **401 pure Go/Rust projections**, including
+96 seeded hex values, 80 seeded calls, validation-order/error clipping, submitted
+specs, terminal result states, running details and duration thresholds. The Go
+oracle records specs and executes none. Real-time elapsed branches use explicit
+native clocks, not stripped Go timestamps. The only accepted diagnostic variation
+is Go JSON v2's source-proven `cannot`/`unable to` modal: full diagnostics must
+match exactly, or both complete messages are reconstructed from the original raw
+token and independently rune/byte-clipped. Changed counts, context and opaque
+payloads are rejected by comparator self-tests. All 401 projections and three
+native units passed twenty additional repetitions; Go Bash/toolarg passed three
+race-test repetitions plus vet.
+
+This slice does not yet supply the full runtime registry, file/Code translators,
+all malformed-JSON/config/operation diagnostics or a whole-runner performance
+measurement. No Go helper is required by the Rust production translator.
+
 ## Local validation and remaining work
 
-The latest complete local gate passed **282 native workspace tests**, including
-**68 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
-Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
-new oracles passed race tests; development-oracle vet checks passed. Inventory pins
-**87 sources, 136 HTTP registrations and 31 built-in plugins**.
+The latest complete local gate passed **285 native workspace tests**, including
+**68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
+Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
+and Bash/toolarg race tests passed; development-oracle vet checks passed. Inventory
+pins **90 sources, 136 HTTP registrations and 31 built-in plugins**.
 
-The live core is not the production runner. Persistent shell/Code runtime, production
-result translators, complete Code wire/reporting/images/search, stream-event reporting,
+The live core is not the production runner. Persistent process controls, the full
+Code runtime, remaining result translators, Code wire/reporting/images/search, stream-event reporting,
 runner auth/CLI/detached lifecycle and wider live timing/crash compatibility
 remain open. Default local-time notice formatting also needs timezone-abbreviation
 compatibility review. No whole-runner CPU/RSS advantage has been measured.

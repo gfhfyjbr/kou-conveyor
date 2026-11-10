@@ -1,0 +1,19 @@
+[package]
+name = "kou-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kou-domain.workspace = true
+kou-tools = { path = "../kou-tools" }
+rquickjs = { version = "=0.14.0", default-features = false, features = ["std"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

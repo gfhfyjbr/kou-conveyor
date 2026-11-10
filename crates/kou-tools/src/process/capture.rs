@@ -102,6 +102,17 @@ fn open(path: &Path, stream: &str) -> io::Result<File> {
     Ok(file)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CapturedEvent {
+    Started {
+        pid: u32,
+    },
+    /// Emitted before TERM; the backend still owns termination and escalation.
+    TimedOut {
+        pid: u32,
+    },
+}
+
 /// Capture directly into existing regular files, preserving the child's stdout
 /// descriptor type. No output body is retained in RAM; spool disk is not capped.
 /// A failed/panicking start callback kills and reaps the owned process invocation.
@@ -110,6 +121,21 @@ pub fn run_captured_process(
     paths: &CapturePaths,
     cancel: &CancelToken,
     on_started: impl FnOnce(u32) -> io::Result<()>,
+) -> io::Result<CapturedProcessResult> {
+    let mut on_started = Some(on_started);
+    run_captured_process_events(request, paths, cancel, |event| match event {
+        CapturedEvent::Started { pid } => on_started.take().expect("one process start")(pid),
+        CapturedEvent::TimedOut { .. } => Ok(()),
+    })
+}
+
+/// Callbacks run on the owned worker, are not preemptible and must return.
+/// Callback failure/panic kills and reaps the invocation before unwinding out.
+pub fn run_captured_process_events(
+    request: &ProcessRequest,
+    paths: &CapturePaths,
+    cancel: &CancelToken,
+    mut on_event: impl FnMut(CapturedEvent) -> io::Result<()>,
 ) -> io::Result<CapturedProcessResult> {
     if !request.executable.is_absolute() {
         return Err(io::Error::new(
@@ -130,6 +156,15 @@ pub fn run_captured_process(
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "invalid process timeout",
+        ));
+    }
+    if Instant::now()
+        .checked_add(request.termination_grace)
+        .is_none()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid termination grace",
         ));
     }
     let captures = Captures::open(paths)?;
@@ -168,7 +203,6 @@ pub fn run_captured_process(
     if let Some(pipe) = &stdin {
         nonblocking(pipe)?;
     }
-    on_started(process_id)?;
     let deadline = request
         .timeout
         .map(|timeout| {
@@ -177,6 +211,7 @@ pub fn run_captured_process(
             })
         })
         .transpose()?;
+    on_event(CapturedEvent::Started { pid: process_id })?;
     let input = request.input.as_deref().unwrap_or_default();
     let mut input_at = 0;
     let mut status = None;
@@ -192,6 +227,9 @@ pub fn run_captured_process(
             timed_out =
                 status.is_none() && !canceled && deadline.is_some_and(|at| Instant::now() >= at);
             if status.is_some() || canceled || timed_out {
+                if timed_out {
+                    on_event(CapturedEvent::TimedOut { pid: process_id })?;
+                }
                 stdin.take();
                 signal(group, Signal::TERM)?;
                 stopping = Some(

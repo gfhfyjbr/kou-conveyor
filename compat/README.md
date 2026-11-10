@@ -178,8 +178,8 @@ descendants and CLOEXEC identity. **Spool disk is not capped.**
 output bytes, modes, raw exit/signal, stdin/environment/cwd, normal descendant
 cleanup and cancellation-time final output. Each oracle has private temporary
 artifacts and runs only trusted fixtures; the projection is not full primitive
-control/event or diagnostic conformance. Persistent process status/attachment,
-native shell execution and the full primitives operation service remain open.
+control/event or diagnostic conformance. Persistent process status/attachment/
+control and the full primitives operation service remain open.
 
 ## Responses provider codec, SSE, HTTP and client wrappers
 
@@ -437,9 +437,9 @@ Eight private native tests cover idempotent creation, unchanged contents/modes,
 restrictive permissions, symlink/FIFO/wrong-kind refusal, exact path resolution,
 24-way creation races, bounded reads, cancellation and callback errors/panics.
 Non-UTF-8 filename behavior is compared with the host filesystem itself: APFS
-rejects those names rather than silently repairing them. This helper slice is not
-yet wired into production shell execution and has no independent Go/Rust artifact
-I/O trace corpus or exhaustive filesystem-failure matrix.
+rejects those names rather than silently repairing them. The native shell executor
+uses these helpers. Independent Go/Rust artifact I/O traces and an exhaustive
+filesystem-failure matrix remain open.
 
 ## Shell v3 transitions
 
@@ -464,18 +464,40 @@ package alone permits them. This distinction is reproduced, not normalized away.
 The Go shell reducer can send a signal itself when a timer fires. The oracle
 rejects every fired-timer fixture with an unowned process group before invoking
 it; returned dispatches are never executed. The Rust reducer instead returns a
-signal dispatch. Its future executor must resolve this against a currently owned
+signal dispatch. The native executor validates it against its currently owned
 invocation, never a recovered numeric PID. Six native tests verify pure signal
 requests, explicit nanosecond clocks/deadlines/duration, bounded chunk recovery,
 typed-object guards and a real private session journal preceding a 200 KB native
 process capture and prefix/tail reads. That fixture executes dispatches **only in
 test code**. Clock-dependent branches are tested natively, not presented as exact
-Go comparisons by stripping their timestamps. Production shell execution and
-manager wiring remain open.
+Go comparisons by stripping their timestamps.
+
+### Native shell executor
+
+`run_shell` runs the typed actor and native artifact/capture backends on its
+caller-owned worker, without creating threads. It emits each checkpoint before
+its dispatch, and treats a publisher error as a refusal to cross that boundary.
+This is a durable acknowledgement only when the publisher actually journals and
+acknowledges the write; queue admission alone is not durability. The executor
+limits an invocation to twelve checkpoints. Native failures become failed states;
+cancellation before an effect or after native completion wins over late success.
+
+Seven actual-journal tests cover complete 380 KB output on disk with bounded
+inline results, refused create/start boundaries, refused/panicking started
+publication and owned cleanup, timeout publication before TERM, cancellation,
+spawn/read failures and post-exit read recovery. Two units verify monotonic
+in-flight duration across a backwards wall-clock jump and Go-compatible
+nanosecond truncation of fractional timeouts. Five capture-event tests cover
+callback refusal/panic, cancellation, invalid timer configurations, timeout-before-
+TERM ordering and a slow timeout publisher that must not consume physical TERM
+grace. Callbacks are synchronous and non-preemptible; spool disk is uncapped.
+
+The concrete executor is not yet connected to the bounded local manager or the
+production runner. Persistent process status/attachment/control remains open.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **254 native workspace tests**, including
+The latest complete local gate passed **268 native workspace tests**, including
 **63 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins

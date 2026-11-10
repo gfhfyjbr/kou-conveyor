@@ -1,9 +1,11 @@
 //! Shell v3 owns typed durable state and a bounded, non-durable read accumulator.
 //! Handle is pure: commit its checkpoint before executing returned dispatches.
+mod execute;
 mod output;
 mod wire;
 use super::{Error, Result, Spec, decode_state, encode, null_default};
 use chrono::{DateTime, TimeDelta};
+pub use execute::run_shell;
 use kou_domain::{Json, Operation, Timestamp};
 use serde::{Deserialize, Serialize};
 use std::path::{Component, Path, PathBuf};
@@ -97,6 +99,8 @@ pub struct Shell {
     current: Operation,
     state: ShellState,
     read: Vec<u8>,
+    // Supplied by an owned native invocation; never serialized or recovered.
+    elapsed_seconds: Option<f64>,
 }
 impl Shell {
     pub fn new(mut current: Operation) -> Result<Self> {
@@ -128,6 +132,7 @@ impl Shell {
             current,
             state,
             read: Vec::new(),
+            elapsed_seconds: None,
         })
     }
     pub fn state(&self) -> &ShellState {
@@ -528,6 +533,8 @@ impl Shell {
         )?;
         let duration = if self.state.started_at.is_zero() {
             0.0
+        } else if let Some(duration) = self.elapsed_seconds {
+            duration
         } else {
             elapsed(at, self.state.started_at)?
         };

@@ -1,5 +1,8 @@
 mod capture;
-pub use capture::{CapturePaths, CapturedProcessResult, run_captured_process};
+pub use capture::{
+    CapturePaths, CapturedEvent, CapturedProcessResult, run_captured_process,
+    run_captured_process_events,
+};
 
 use rustix::{
     event::{PollFd, PollFlags, Timespec, poll},

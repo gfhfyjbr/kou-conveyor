@@ -17,6 +17,7 @@ tokio = { version = "1.54.1", features = ["sync"] }
 
 [dev-dependencies]
 kou-store.workspace = true
+rustix = { version = "1.1.6", features = ["process"] }
 tempfile.workspace = true
 tokio = { version = "1.54.1", features = ["macros", "rt", "time"] }
 

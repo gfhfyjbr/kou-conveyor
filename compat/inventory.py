@@ -17,6 +17,7 @@ SOURCES = [
     "cmd/internal/agentrunner/providers.go",
     "cmd/internal/accounts/accounts.go",
     "harness/sessionstore/localfile/codec.go",
+    "harness/sessionstore/localfile/state.go",
     "harness/sessionstore/localfile/checkpoint.go",
     "harness/codevm/codevm.go",
     "harness/codevm/exec.go",
@@ -107,7 +108,7 @@ def inventory():
         "migration_gates": {
             "store_archive_parity": "compat/store_parity.py",
             "consumer_checkpoint_resume": "store envelope and context-builder checkpoints pass bidirectional Go/Rust checks; compat/replay_parity.py adds 138 actual Go coordinator replay scenarios with scalar-state/operation-header probes and 19 native coordinator checkpoint import/fallback matrices; native private store fast/full/invalid-consumer fallback and freshness/session guards pass; full runner integration remains open",
-            "async_coordinator": "35 native driver tests cover durable boundaries/errors, steering/drop, stop/cancel, grace/deferred admission, verification, recovery/backoff and budgets; actual owned HTTP/SSE adapter, private FileJournal restart and failed/successful summary checkpoint/recovery matrix pass; no independent live Go/Rust trace corpus or production operation-runtime/runner wiring yet",
+            "async_coordinator": "37 native driver tests cover durable boundaries/errors, ordered operation reconciliation and deferred prompts, non-steering controls, stop/cancel, grace/admission, verification, backoff and budgets; compat/loop_parity.py compares 44 actual Go/Rust live traces with private real journals and inert model/operation ports; actual owned HTTP/SSE adapter and private FileJournal restart/summary-checkpoint matrix pass; production operation-runtime/runner wiring and exhaustive live timing/crash coverage remain open",
             "context_builder": "compat/context_parity.py: 285 exact request/report/estimate/memory/compaction scenarios including bidirectional checkpoint import, 82 image-header cases, and 80 seeded histories; native Arc snapshots/prompt budgets tested; no providers",
             "context_schema_fuzz": "malformed typed-field/array diagnostics and broader image/checkpoint shape fuzzing remain release gates",
             "writer_append_fork_checkpoint_lock_parity": "compat/writer_parity.py (temporary fixtures only)",

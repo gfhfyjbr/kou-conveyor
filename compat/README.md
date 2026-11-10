@@ -322,10 +322,32 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**35 native driver tests** cover these boundaries and policies. A real FileJournal
+**37 native driver tests** cover these boundaries and policies. A real FileJournal
 matrix checks that empty/review-only summaries do not write a consumer checkpoint,
 that successful summaries do, and that cold recovery preserves the right context.
 Durable errors retain Go's input/turn/response/call/operation context.
+
+```sh
+python3 compat/loop_parity.py
+```
+
+The independent live corpus runs the actual Go and Rust coordinators through
+**44 scripted scenarios**. Both use owned temporary real session journals, inert
+operation managers and scripted model replies: no provider or tool effects run.
+It compares ordered commits, complete model requests, dispatches, updates,
+cancellations, checkpoint presence and errors. Only generated identity fields
+and their quoted diagnostic references are remapped; opaque payloads and provider
+values are left untouched. Checkpoint bodies are not compared by this suite.
+
+Coverage includes steering/stale replies, ordered multi-operation completion,
+deferred-input ordering, hard/idle stop, duplicate input, in-flight settings and
+heartbeat controls, compaction, verification, quota retries, run budgets and
+injected durable failures. Barriers synchronize observable actions, not sleeps.
+The corpus exposed operation-order, deferred-prompt-order and non-steering-control
+bugs missed by native tests; regression tests now cover those fixes. A successful
+initial status without an operation is rejected by both real stores, rather than
+accepted by an in-memory journal. This is a bounded corpus, not exhaustive live
+scheduler, crash or independent checkpoint-body parity.
 
 Queue admission bounds both count and estimated payload bytes, retaining permits
 for deferred input. Ordinary input and operation updates each default to 256
@@ -335,15 +357,15 @@ prevent stop or the operation updates they await. These are new configurable que
 policies, not a global RSS budget. Context, retained operation state, in-flight
 snapshots and serialized records require separate accounting.
 
-The latest complete local gate passed **212 native workspace tests**, including
-**60 in kou-engine**, all **ten compatibility suites**, fmt/clippy, WASM,
-Python/JS syntax and diff checks. Go coordinator/contextbuilder race tests and
-both development-oracle vet checks passed. Inventory pins **74 sources, 136 HTTP
-registrations and 31 built-in plugins**.
+The latest complete local gate passed **215 native workspace tests**, including
+**62 in kou-engine**, all **eleven compatibility suites**, fmt/clippy, WASM,
+Python/JS syntax and diff checks. Go coordinator/contextbuilder/live-oracle race
+tests and development-oracle vet checks passed. Inventory pins **75 sources,
+136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Concrete operation runtime/result
 translators, complete Code wire/reporting/images/search, stream-event reporting,
-runner auth/CLI/detached lifecycle and independent live Go/Rust trace parity
+runner auth/CLI/detached lifecycle and wider live timing/crash compatibility
 remain open. Default local-time notice formatting also needs timezone-abbreviation
 compatibility review. No whole-runner CPU/RSS advantage has been measured.
 

@@ -164,8 +164,22 @@ workers even if an external Rc retains the host. Tests cover a TERM-ignoring loo
 blocked stdin, live descendants, bounded output, explicit empty environment and
 CLOEXEC file identity (not just whether a shell reused the descriptor number).
 This is not an OS sandbox: a child which escapes into another session is outside
-the process-group boundary. Persistent process status/attachment, durable output
-spools and the full primitives operation service are not yet ported.
+the process-group boundary.
+
+`run_captured_process` instead directs the child to existing regular capture files,
+not pipes. Both descriptors are validated, including inode aliases, before either
+file is truncated. It keeps no output body in RAM, syncs captures after owned
+process completion and exposes the raw exit code and signal separately. Start
+callback errors/panics kill and reap the invocation. Eight native tests include
+invalid/symlink/FIFO/aliased paths, callback cleanup, blocked stdin, timeout/cancel,
+descendants and CLOEXEC identity. **Spool disk is not capped.**
+
+`python3 compat/capture_parity.py` adds **19 owned Go/Rust comparisons** of exact
+output bytes, modes, raw exit/signal, stdin/environment/cwd, normal descendant
+cleanup and cancellation-time final output. Each oracle has private temporary
+artifacts and runs only trusted fixtures; the projection is not full primitive
+control/event or diagnostic conformance. Persistent process status/attachment,
+the shell v3 handler and the full primitives operation service remain open.
 
 ## Responses provider codec, SSE, HTTP and client wrappers
 
@@ -405,8 +419,8 @@ the production runner or an independent full Go/Rust manager trace corpus.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **232 native workspace tests**, including
-**63 in kou-engine**, all **twelve compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **240 native workspace tests**, including
+**63 in kou-engine**, all **thirteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
 **81 sources, 136 HTTP registrations and 31 built-in plugins**.

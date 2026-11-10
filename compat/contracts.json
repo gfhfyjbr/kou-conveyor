@@ -1402,7 +1402,7 @@
     "code_vm_semantic_projection": "compat/codevm_parity.py (fake plugins; not full Result wire conformance)",
     "native_file_tools": "compat/fileops_parity.py and compat/patch_parity.py (temporary fixtures, bounded inputs)",
     "native_vm_tools": "compat/native_parity.py (real temporary file/process/plugin capabilities, no providers)",
-    "native_process_lifecycle": "kou-tools process tests (groups/termination/escalation/pipes/CLOEXEC); not full persistent process/sandbox service",
+    "native_process_lifecycle": "kou-tools tests cover groups/termination/escalation/pipes/CLOEXEC plus eight direct-file capture cases; compat/capture_parity.py compares 19 owned Go/Rust captures, exact bytes/modes/raw exit/signal/cancellation and cleanup; output bodies stay on disk, spool disk is uncapped; not full primitive controls, shell handler, persistent process or sandbox service",
     "file_value_operations": "compat/operation_parity.py compares 135 exact pure transitions with Go handlers; five native effect/transition tests plus eleven local-manager tests (20 extra repeats), fixed workers, estimated count/byte/ID bounds, cancel, immutable updates, panic recovery and joined shutdown; actual coordinator/journal fixture prevents effects across failed response/status writes; production runner, persistent process, transcript search and independent full manager traces remain open",
     "responses_codec_sse_http": "compat/provider_parity.py (433 cases, 161 real Go/Rust local HTTP exchanges, 89 synthetic Codex credential/config cases), plus cancellation/deadline/gzip/admission native tests; no paid calls",
     "responses_provider_clients": "OpenAI/Fireworks/OpenRouter/Ollama/Codex implemented and compared; runner auth integration remains",

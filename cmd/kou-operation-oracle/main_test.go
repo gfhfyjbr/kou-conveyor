@@ -69,7 +69,10 @@ func TestValueProjectionAndMalformedState(t *testing.T) {
 		t.Fatalf("result = %#v", completed)
 	}
 	current.State = jsontext.Value(`[]`)
-	if result := run(spec{Action: "value_decode", Operation: current}); !strings.Contains(result.Error, "cannot unmarshal JSON array") {
+	result := run(spec{Action: "value_decode", Operation: current})
+	// encoding/json/v2 deliberately randomizes this modal once per process.
+	if result.Error != `decode value operation "value" state: json: cannot unmarshal JSON array into Go operation.ValueState` &&
+		result.Error != `decode value operation "value" state: json: unable to unmarshal JSON array into Go operation.ValueState` {
 		t.Fatalf("result = %#v", result)
 	}
 }

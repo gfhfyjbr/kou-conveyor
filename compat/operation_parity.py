@@ -4,6 +4,7 @@ from decimal import Decimal
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -101,7 +102,39 @@ def invoke(binary, rows):
     return [json.loads(line, parse_float=Decimal) for line in lines]
 
 
+def projections_match(left, right):
+    if left == right:
+        return True
+    # Go 1.27 encoding/json/v2/errors.go errorModalVerb deliberately chooses
+    # either rendering once per process. Permit only that token in these exact
+    # top-level decode diagnostics; payloads, context and every other byte stay.
+    pattern = (r'(decode (?:value|file) operation "(?:\\.|[^"\\])*" state: json: )'
+               r'(?:cannot|unable to)'
+               r'( unmarshal JSON (?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState))')
+    a = re.fullmatch(pattern, left.get("Error", ""))
+    b = re.fullmatch(pattern, right.get("Error", ""))
+    return bool(a and b and a.groups() == b.groups()
+                and {**left, "Error": right["Error"]} == right)
+
+
+def comparator_self_test():
+    text = 'decode value operation "owned" state: json: cannot unmarshal JSON array into Go operation.ValueState'
+    left = {"Error": text, "Value": {"Error": text}, "Dispatches": [1, 2]}
+    right = {**left, "Error": text.replace("json: cannot", "json: unable to")}
+    assert projections_match(left, right)
+    for changed in [
+        {**right, "Error": right["Error"].replace('"owned"', '"other"')},
+        {**right, "Error": right["Error"].replace("JSON array", "JSON number")},
+        {**right, "Error": right["Error"].replace("unable to", "could not")},
+        {**right, "Value": {"Error": right["Error"]}},
+        {**right, "Dispatches": [2, 1]},
+    ]:
+        assert not projections_match(left, changed)
+    assert not projections_match({"Error": "opaque cannot"}, {"Error": "opaque unable to"})
+
+
 def main():
+    comparator_self_test()
     directory = ROOT / "tmp/rust-operation-oracle"
     directory.mkdir(parents=True, exist_ok=True)
     go = directory / "go-operation-oracle"
@@ -111,7 +144,7 @@ def main():
     rows = list(fixtures())
     expected, actual = invoke(go, rows), invoke(rust, rows)
     for (name, spec), left, right in zip(rows, expected, actual):
-        if left != right:
+        if not projections_match(left, right):
             output = directory / "failure.json"
             output.write_text(json.dumps({"Case": name, "Spec": spec, "Go": left, "Rust": right}, ensure_ascii=False, indent=2, default=str))
             print("FAIL:", name, "\nFull synthetic diff:", output)

@@ -119,6 +119,73 @@ async fn immediate_and_unavailable_calls_request_an_answer_without_dispatch() {
     }
 }
 
+#[tokio::test]
+async fn reconciled_status_preserves_waiting_order_and_duplicates() {
+    let (_, _, ports) = channels(QueueLimits::default()).unwrap();
+    let (send, _receive) = mpsc::unbounded_channel();
+    let saved = Memory::default();
+    let mut driver = Coordinator::new(
+        Builder::default(),
+        Arc::new(Tools),
+        Box::new(saved.clone()),
+        Arc::new(FakeModel {
+            requests: send,
+            saved: saved.clone(),
+        }),
+        Box::new(saved.clone()),
+        ports,
+        Config::default(),
+    );
+    driver
+        .record(ItemData::Turn(Turn {
+            id: "turn".into(),
+            previous_turn_id: String::new(),
+            kind: "regular".into(),
+            model: String::new(),
+        }))
+        .await
+        .unwrap();
+    driver
+        .record(ItemData::ModelResponse(ModelResponse {
+            turn_id: "turn".into(),
+            response: calls(&[("call", "Bash")]),
+            compacted: None,
+        }))
+        .await
+        .unwrap();
+    driver
+        .record_status(ToolCallStatus {
+            turn_id: "turn".into(),
+            call_id: "call".into(),
+            status: CallStatus {
+                waiting_for: Some(vec!["z".into(), "a".into(), "z".into()]),
+                ..CallStatus::default()
+            },
+            operations: vec![spec().operation("a".into()), spec().operation("z".into())],
+        })
+        .await
+        .unwrap();
+    for (id, status) in [("a", "failed"), ("z", "completed")] {
+        let mut operation = spec().operation(id.into());
+        operation.status = status.into();
+        driver.history.apply_operation(operation);
+    }
+    driver.reconcile().await.unwrap();
+    assert!(driver.history.state.calls.is_empty());
+    let saved = saved.0.lock().unwrap();
+    let Some(ItemData::ToolCallStatus(recorded)) = saved.items.last() else {
+        panic!("reconciliation did not record a status");
+    };
+    assert_eq!(
+        recorded
+            .operations
+            .iter()
+            .map(|value| value.id.as_str())
+            .collect::<Vec<_>>(),
+        ["z", "a", "z"]
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn hard_stop_cancels_all_operations_and_waits_for_terminal_updates() {
     let mut run = Rig::new(Config::default());

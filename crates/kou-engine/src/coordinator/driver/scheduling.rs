@@ -62,7 +62,7 @@ impl Coordinator {
             };
             let mut operations = Vec::new();
             let mut complete = true;
-            for id in &call.operations {
+            for id in status.waiting() {
                 match self.history.state.operations.get(id) {
                     Some(operation) => operations.push(operation.clone()),
                     None => {

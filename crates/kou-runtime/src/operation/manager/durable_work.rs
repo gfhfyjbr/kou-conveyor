@@ -2,6 +2,56 @@ use super::*;
 use kou_tools::process::CancelToken;
 use std::io;
 
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    Shell,
+    Skill,
+}
+impl Kind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Shell => "shell",
+            Self::Skill => "skill-use",
+        }
+    }
+    fn terminate(self, operation: Operation, canceled: bool, error: String) -> Result<Operation> {
+        match self {
+            Self::Shell => shell::terminate(operation, canceled, error),
+            Self::Skill => skill::terminate(operation, canceled, error),
+        }
+    }
+    pub(super) fn budget(
+        self,
+        bytes: usize,
+        output: i64,
+        limits: Limits,
+    ) -> Result<(usize, usize, usize)> {
+        let (extra, checkpoints) = match self {
+            Self::Shell => ((output as usize).checked_mul(16), shell::MAX_CHECKPOINTS),
+            Self::Skill => (
+                limits.skill_read.content_bytes.checked_mul(2),
+                limits
+                    .skill_read
+                    .max_checkpoints()
+                    .map_err(|error| Error(error.to_string()))?,
+            ),
+        };
+        // Reserve every bounded snapshot, a fallback, the input and hot state.
+        // Scratch allocations and caller-retained clones are outside this estimate.
+        let snapshot = bytes
+            .checked_mul(8)
+            .and_then(|n| n.checked_add(extra?))
+            .and_then(|n| n.checked_add(limits.completion_extra_bytes))
+            .and_then(|n| n.checked_add(4096))
+            .ok_or_else(|| Error("operation reservation overflow".into()))?;
+        let reservation = checkpoints
+            .checked_add(4)
+            .and_then(|slots| snapshot.checked_mul(slots))
+            .ok_or_else(|| Error("operation reservation overflow".into()))?;
+        Ok((reservation, snapshot, checkpoints))
+    }
+}
+
 #[derive(Default)]
 enum Outcome {
     #[default]
@@ -9,12 +59,19 @@ enum Outcome {
     Acknowledged(Result<()>),
     Canceled,
 }
-#[derive(Default)]
 pub(super) struct Checkpoint {
+    kind: Kind,
     outcome: Mutex<Outcome>,
     ready: Condvar,
 }
 impl Checkpoint {
+    fn new(kind: Kind) -> Self {
+        Self {
+            kind,
+            outcome: Mutex::new(Outcome::Pending),
+            ready: Condvar::new(),
+        }
+    }
     fn acknowledge(&self, result: Result<()>) {
         let mut outcome = self.outcome.lock().unwrap();
         if matches!(*outcome, Outcome::Pending) {
@@ -35,8 +92,8 @@ impl Checkpoint {
             match &*outcome {
                 Outcome::Pending => outcome = self.ready.wait(outcome).unwrap(),
                 Outcome::Acknowledged(result) => return result.clone(),
-                // The shared cancel flag is already set. Returning lets the
-                // native backend perform TERM/cleanup instead of a callback KILL.
+                // The shared cancel flag is already set. The backend now stops
+                // reading or performs shell TERM/cleanup instead of callback KILL.
                 Outcome::Canceled => return Ok(()),
             }
         }
@@ -46,7 +103,7 @@ impl Update {
     pub fn requires_acknowledgement(&self) -> bool {
         self.checkpoint.is_some()
     }
-    /// For shell, call only after durable publication (or its refusal), not
+    /// For shell/skill, call only after durable publication (or its refusal), not
     /// after enqueueing. This consumes the update and releases its task lease.
     pub fn acknowledge(mut self, result: Result<()>) {
         if let Some(checkpoint) = self.checkpoint.take() {
@@ -57,41 +114,29 @@ impl Update {
 impl Drop for Update {
     fn drop(&mut self) {
         if let Some(checkpoint) = &self.checkpoint {
-            checkpoint.acknowledge(Err(Error(
-                "shell checkpoint was dropped without acknowledgement".into(),
-            )));
+            checkpoint.acknowledge(Err(Error(format!(
+                "{} checkpoint was dropped without acknowledgement",
+                checkpoint.kind.label()
+            ))));
         }
     }
 }
 
-pub(super) fn budget(bytes: usize, output: i64, limits: Limits) -> Result<(usize, usize)> {
-    // Every published shell snapshot is checked against this cap. Sixteen slots
-    // cover twelve normal checkpoints, one failure, the input and typed state;
-    // filesystem/JSON scratch and caller-retained clones are not a global RSS cap.
-    let snapshot = bytes
-        .checked_mul(8)
-        .and_then(|n| n.checked_add((output as usize).checked_mul(16)?))
-        .and_then(|n| n.checked_add(limits.completion_extra_bytes))
-        .and_then(|n| n.checked_add(4096))
-        .ok_or_else(|| Error("operation reservation overflow".into()))?;
-    let reservation = snapshot
-        .checked_mul(shell::MAX_CHECKPOINTS + 4)
-        .ok_or_else(|| Error("operation reservation overflow".into()))?;
-    Ok((reservation, snapshot))
-}
 impl Shared {
-    fn shell_checkpoint(
+    fn durable_checkpoint(
         &self,
+        kind: Kind,
         id: &str,
         mut operation: Operation,
         lease: Arc<Lease>,
     ) -> io::Result<()> {
         let mut state = self.state.lock().unwrap();
         let closed = state.closed;
+        let label = kind.label();
         let active = state
             .active
             .get_mut(id)
-            .ok_or_else(|| io::Error::other("shell operation is no longer active"))?;
+            .ok_or_else(|| io::Error::other(format!("{label} operation is no longer active")))?;
         let current = &active.current;
         if operation.id != current.id
             || operation.kind != current.kind
@@ -100,26 +145,27 @@ impl Shared {
             || operation.idempotency != current.idempotency
             || current.terminal()
         {
-            return Err(io::Error::other(
-                "shell executor changed immutable metadata or a terminal operation",
-            ));
+            return Err(io::Error::other(format!(
+                "{label} executor changed immutable metadata or a terminal operation"
+            )));
         }
         operation.validate().map_err(io::Error::other)?;
         if active.canceled.load(Ordering::Acquire) && operation.terminal() {
-            operation =
-                shell::terminate(operation, true, String::new()).map_err(io::Error::other)?;
+            operation = kind
+                .terminate(operation, true, String::new())
+                .map_err(io::Error::other)?;
         }
         if operation_bytes(&operation) > active.snapshot_bytes {
-            return Err(io::Error::other(
-                "shell checkpoint exceeds runtime snapshot byte limit; the effect may already have occurred",
-            ));
+            return Err(io::Error::other(format!(
+                "{label} checkpoint exceeds runtime snapshot byte limit; the effect may already have occurred"
+            )));
         }
-        if active.checkpoints >= shell::MAX_CHECKPOINTS {
-            return Err(io::Error::other(
-                "shell executor exceeded its checkpoint limit",
-            ));
+        if active.checkpoints >= active.checkpoint_limit {
+            return Err(io::Error::other(format!(
+                "{label} executor exceeded its checkpoint limit"
+            )));
         }
-        let checkpoint = Arc::new(Checkpoint::default());
+        let checkpoint = Arc::new(Checkpoint::new(kind));
         if closed || active.canceled.load(Ordering::Acquire) {
             checkpoint.cancel();
         }
@@ -145,19 +191,29 @@ impl Shared {
 
 pub(super) fn run(
     shared: &Shared,
+    kind: Kind,
     operation: &Operation,
     canceled: &Arc<AtomicBool>,
     lease: &Arc<Lease>,
 ) {
     let token = CancelToken::from(canceled.clone());
+    let label = kind.label();
     let result = catch_unwind(AssertUnwindSafe(|| {
-        shared
-            .executor
-            .run_shell(operation.clone(), &token, &mut |next| {
-                shared.shell_checkpoint(&operation.id, next, lease.clone())
-            })
+        let mut publish =
+            |next| shared.durable_checkpoint(kind, &operation.id, next, lease.clone());
+        match kind {
+            Kind::Shell => shared
+                .executor
+                .run_shell(operation.clone(), &token, &mut publish),
+            Kind::Skill => shared.executor.run_skill(
+                operation.clone(),
+                &token,
+                shared.budget.limits.skill_read,
+                &mut publish,
+            ),
+        }
     }))
-    .map_err(|_| io::Error::other("shell execution panicked"))
+    .map_err(|_| io::Error::other(format!("{label} execution panicked")))
     .and_then(|result| result);
     let mut state = shared.state.lock().unwrap();
     let Some(active) = state.active.remove(&operation.id) else {
@@ -165,17 +221,20 @@ pub(super) fn run(
     };
     let error = match result {
         Ok(()) if active.current.terminal() => None,
-        Ok(()) => Some("shell executor returned without a terminal checkpoint".into()),
+        Ok(()) => Some(format!(
+            "{label} executor returned without a terminal checkpoint"
+        )),
         Err(error) => Some(error.to_string()),
     };
     if let Some(error) = error {
         let canceled = active.canceled.load(Ordering::Acquire);
-        let failed = shell::terminate((*active.current).clone(), canceled, error.clone())
+        let failed = kind
+            .terminate((*active.current).clone(), canceled, error.clone())
             .or_else(|invalid| {
-                shell::terminate(
+                kind.terminate(
                     operation.clone(),
                     canceled,
-                    format!("{error}; invalid shell checkpoint: {invalid}"),
+                    format!("{error}; invalid {label} checkpoint: {invalid}"),
                 )
             })
             .unwrap_or_else(|_| {

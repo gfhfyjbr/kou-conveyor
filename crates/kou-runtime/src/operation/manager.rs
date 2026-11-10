@@ -10,8 +10,8 @@ use std::{
 };
 use tokio::sync::Notify;
 
-mod shell_work;
-use shell_work::Checkpoint;
+mod durable_work;
+use durable_work::{Checkpoint, Kind};
 #[cfg(test)]
 mod tests;
 
@@ -24,6 +24,7 @@ pub struct Limits {
     pub completion_extra_bytes: usize,
     pub seen_ids: usize,
     pub seen_bytes: usize,
+    pub skill_read: SkillReadLimits,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -35,6 +36,7 @@ impl Default for Limits {
             completion_extra_bytes: 256 << 10,
             seen_ids: 100_000,
             seen_bytes: 8 << 20,
+            skill_read: SkillReadLimits::default(),
         }
     }
 }
@@ -47,6 +49,7 @@ impl Limits {
             || self.completion_extra_bytes < 256
             || self.seen_ids < self.operations
             || self.seen_bytes == 0
+            || self.skill_read.max_checkpoints().is_err()
         {
             return Err(Error("invalid operation runtime limits".into()));
         }
@@ -63,6 +66,15 @@ pub trait Executor: Send + Sync + 'static {
         publish: &mut dyn FnMut(Operation) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
         shell::run_shell(current, canceled, publish)
+    }
+    fn run_skill(
+        &self,
+        current: Operation,
+        canceled: &kou_tools::process::CancelToken,
+        limits: SkillReadLimits,
+        publish: &mut dyn FnMut(Operation) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        run_skill(current, canceled, limits, publish)
     }
 }
 pub struct NativeFiles;
@@ -119,7 +131,7 @@ impl Budget {
     }
 }
 
-/// Keep this handle through forwarding; shell checkpoints additionally require
+/// Keep this handle through forwarding; shell/skill checkpoints also require
 /// explicit durable acknowledgement. Its lease covers all snapshots of the task.
 pub struct Update {
     pub operation: Arc<Operation>,
@@ -132,12 +144,13 @@ struct Active {
     canceled: Arc<AtomicBool>,
     input_state_bytes: usize,
     snapshot_bytes: usize,
+    checkpoint_limit: usize,
     checkpoints: usize,
     pending: Option<Arc<Checkpoint>>,
 }
 enum Task {
     File(ComputeDispatch),
-    Shell(Arc<Operation>),
+    Durable(Kind, Arc<Operation>),
 }
 struct Job {
     task: Task,
@@ -184,8 +197,8 @@ impl Shared {
     }
 }
 
-/// File/value v1 and shell v3 share a fixed worker pool. Journal initial statuses
-/// before Add, then acknowledge shell updates after durable publication.
+/// File/value/skill-use v1 and shell v3 share a fixed worker pool. Journal initial
+/// statuses before Add, then acknowledge shell/skill updates after durable publication.
 /// Shutdown joins owned work; blocking filesystem calls cannot be preempted.
 pub struct LocalManager {
     shared: Arc<Shared>,
@@ -252,7 +265,7 @@ impl LocalManager {
             .map_err(|error| Error(format!("add operation {:?}: {error}", current.id)))?;
         if !matches!(
             (current.kind.as_str(), current.version),
-            ("file" | "value", 1) | ("shell", 3)
+            ("file" | "value" | "skill_use", 1) | ("shell", 3)
         ) {
             return Err(Error(format!(
                 "add operation {:?}: type {:?} version {}: unsupported operation",
@@ -277,11 +290,24 @@ impl LocalManager {
         if bytes > limits.operation_bytes {
             return Err(Error("operation exceeds runtime byte limit".into()));
         }
-        let is_shell = current.kind == "shell";
-        let (reserved, snapshot_bytes) = if is_shell {
-            let validated = shell::Shell::new(current.clone())?;
-            shell::paths(&validated.state().base_directory, &current.id)?;
-            shell_work::budget(bytes, current.max_output_length, limits)?
+        let durable = match current.kind.as_str() {
+            "shell" => {
+                let validated = shell::Shell::new(current.clone())?;
+                shell::paths(&validated.state().base_directory, &current.id)?;
+                Some(Kind::Shell)
+            }
+            "skill_use" => {
+                if decode_skill(&current)?.content.len() > limits.skill_read.content_bytes {
+                    return Err(Error(
+                        "recovered skill content exceeds runtime byte limit".into(),
+                    ));
+                }
+                Some(Kind::Skill)
+            }
+            _ => None,
+        };
+        let (reserved, snapshot_bytes, checkpoint_limit) = if let Some(kind) = durable {
+            kind.budget(bytes, current.max_output_length, limits)?
         } else {
             let reserved = bytes
                 .checked_mul(4)
@@ -293,12 +319,12 @@ impl LocalManager {
                 })
                 .and_then(|n| n.checked_add(4096))
                 .ok_or_else(|| Error("operation runtime reservation overflow".into()))?;
-            (reserved, 0)
+            (reserved, 0, 0)
         };
         let lease = self.shared.budget.reserve(reserved)?;
         let id = current.id.clone();
         let input_state_bytes = current.state.as_str().map_or(0, str::len);
-        let step = if is_shell || terminal(&current) {
+        let step = if durable.is_some() || terminal(&current) {
             Step {
                 operation: current,
                 dispatches: Vec::new(),
@@ -314,7 +340,7 @@ impl LocalManager {
         state.seen_bytes += id.len();
         state.seen.insert(id.clone().into_boxed_str());
         let operation = Arc::new(step.operation);
-        if !is_shell || terminal(&operation) {
+        if durable.is_none() || terminal(&operation) {
             self.shared
                 .publish(&mut state, operation.clone(), lease.clone());
         }
@@ -330,13 +356,14 @@ impl LocalManager {
                 canceled: canceled.clone(),
                 input_state_bytes,
                 snapshot_bytes,
+                checkpoint_limit,
                 checkpoints: 0,
                 pending: None,
             },
         );
-        if is_shell {
+        if let Some(kind) = durable {
             state.jobs.push_back(Job {
-                task: Task::Shell(operation),
+                task: Task::Durable(kind, operation),
                 canceled: canceled.clone(),
                 _lease: lease.clone(),
             });
@@ -433,8 +460,8 @@ fn work(shared: Arc<Shared>) {
             job
         };
         let dispatch = match &job.task {
-            Task::Shell(operation) => {
-                shell_work::run(&shared, operation, &job.canceled, &job._lease);
+            Task::Durable(kind, operation) => {
+                durable_work::run(&shared, *kind, operation, &job.canceled, &job._lease);
                 continue;
             }
             Task::File(dispatch) => dispatch,

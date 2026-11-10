@@ -336,7 +336,7 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**43 native driver tests** cover these boundaries and policies. A real FileJournal
+**44 native driver tests** cover these boundaries and policies. A real FileJournal
 matrix checks that empty/review-only summaries do not write a consumer checkpoint,
 that successful summaries do, and that cold recovery preserves the right context.
 Durable errors retain Go's input/turn/response/call/operation context.
@@ -402,20 +402,22 @@ Read/Write/Edit/Patch use the existing native file backends. Transcript-search
 execution remains unconnected. Malformed typed-field diagnostics and wider
 state/event fuzzing are still gates.
 
-### File/value/shell local manager
+### File/value/shell/skill local manager
 
-`LocalManager` runs file/value v1 and shell v3 through the same fixed worker pool
-(default four, maximum eight). It deduplicates accepted IDs, preserves FIFO
-snapshots, cancels queued tasks before effects and discards a late result after
-cancellation. Drop closes admission and joins all workers, even with a retained
-update receiver. Blocking filesystem calls are not forcibly preemptible.
+`LocalManager` runs file/value/skill-use v1 and shell v3 through the same fixed
+worker pool (default four, maximum eight). It deduplicates accepted IDs, preserves
+FIFO snapshots, cancels queued tasks before effects and overrides a late success
+after cancellation. Skill cancellation/failure retains the observed byte prefix.
+Drop closes admission and joins all workers, even with a retained update receiver
+or checkpoint. Blocking filesystem calls are not forcibly preemptible.
 
-Shell workers wait for each `Update::acknowledge` before crossing the next effect
-boundary. The consumer must durably publish the snapshot, for example through
-`OperationHandle::submit_committed`, before acknowledging success. Refusal or a
-dropped unacknowledged update fails the task and cleans up its owned invocation.
-Cancel/shutdown wake pending receipts and share the native cancellation flag;
-there is no per-process watcher thread. They cannot authorize a subsequent effect.
+Shell and skill workers wait for each `Update::acknowledge` before crossing the
+next effect/read boundary. The consumer must durably publish the snapshot, for
+example through `OperationHandle::submit_committed`, before acknowledging success.
+Refusal or a dropped unacknowledged update fails the task and stops later reads
+or cleans up its owned invocation. Cancel/shutdown wake pending receipts and share
+the native cancellation flag; there is no per-operation watcher thread. They
+cannot authorize a subsequent effect.
 
 New policies cap admitted tasks at 64, estimated retained reservations at 128 MiB,
 and input operations at 16 MiB. File completion growth is capped at 256 KiB. Shell
@@ -430,17 +432,25 @@ completions fail explicitly, warning that an effect may already have happened.
 These bounds exclude filesystem/JSON scratch and caller-retained clones; they
 are **not a global RSS guarantee** or Go-default compatibility claim.
 
-Eleven file/value manager tests and eight shell manager tests cover admission,
-shared workers, immutable snapshots, durable-receipt refusal/drop, queued/active
-cancel, late success, panic recovery, count/byte/metadata guards and joined shutdown.
+Skill snapshots have a separate checked cap of `input_bytes*8 + content_bytes*2 +
+completion_extra_bytes + 4096`, reserving `max_checkpoints + 4` slots. The two-times
+content allowance covers base64 snapshot bytes; the native reader enforces the raw
+content cap, while the manager guards encoded snapshot bytes and publication count
+without decoding each base64 body again. Default admission supports all four workers
+in parallel, but retained receipts exhaust the byte budget before the 64-task cap.
+
+Eleven file/value, eight shell and ten skill manager tests cover admission, shared
+workers, immutable snapshots, durable-receipt refusal/drop, queued/active cancel,
+late success, panic recovery, count/byte/metadata guards and joined shutdown.
 A real coordinator/FileJournal/manager fixture prevents file effects across failed
 response/status writes. The shell fixture covers success plus response/status,
 create-directory/out/err, pre-start and started-write refusal. Restoring the
 recorded process/PID-zero state fails with unknown outcome without relaunching or
-truncating captures. Completed delivered operations stay cold on recovery. These
-are actual private fixtures, not production runner wiring or independent full
-Go/Rust manager trace parity. All nineteen manager tests and the eight-case
-coordinator shell fixture also passed twenty extra repetitions.
+truncating captures. The six-case Skill fixture covers success, response/status and
+initial/chunk/completion-write refusal, then recovers the last durable prefix even
+when that prefix changes on disk. Completed delivered operations stay cold on
+recovery. These are actual private fixtures, not production runner wiring or
+independent full Go/Rust manager trace parity.
 
 ## Skill-use operation transitions
 
@@ -488,9 +498,11 @@ native skill-I/O trace or exhaustive filesystem-failure matrix is claimed.
 
 All seven pure units, seven actual native executor tests, 642 operation
 projections, 354 Shell projections and 1,597 translator projections passed twenty
-additional repetitions. LocalManager integration, the SkillUse translator and
-registry remain open. Go's Skill tests passed three race repetitions and the
-development oracle passed vet. Whole-runner CPU/RSS has not been measured.
+additional repetitions. LocalManager now runs Skill through the shared fixed pool
+and durable receipts described above. The SkillUse translator, registry and
+production runner wiring remain open. Go's Skill tests passed three race
+repetitions and the development oracle passed vet. Whole-runner CPU/RSS has not
+been measured.
 
 ## Native artifact I/O
 
@@ -649,10 +661,12 @@ No Go helper is required by the Rust production translators.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **314 native workspace tests**, including
-**68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
-Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
-and Bash/Command/File/toolarg race tests passed; development-oracle vet checks passed.
+The latest complete local gate passed **325 native workspace tests**, including
+**69 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
+Python/JS syntax and diff checks. All 29 manager tests, the six-case coordinator
+Skill fixture and eight-case coordinator Shell fixture passed twenty extra repeats.
+Go operation/tool passed three race repetitions plus vet; earlier coordinator,
+contextbuilder, primitive and Bash/Command/File/toolarg checks also passed.
 Inventory pins **94 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent process controls, the full

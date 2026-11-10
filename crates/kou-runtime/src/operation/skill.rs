@@ -100,6 +100,18 @@ pub fn advance_skill(current: Operation, event: Option<SkillEvent>) -> Result<Sk
     SkillReader::new(current)?.handle(event)
 }
 
+pub(super) fn terminate(current: Operation, canceled: bool, error: String) -> Result<Operation> {
+    let mut reader = SkillReader::new(current)?;
+    let error = if canceled {
+        "skill-use operation canceled".into()
+    } else {
+        error
+    };
+    terminal(reader.current, &mut reader.state, canceled, error)?
+        .operation
+        .ok_or_else(|| Error("skill terminal transition has no checkpoint".into()))
+}
+
 struct SkillReader {
     current: Operation,
     state: SkillState,

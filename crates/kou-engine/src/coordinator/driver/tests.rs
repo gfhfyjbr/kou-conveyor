@@ -11,6 +11,7 @@ mod commit;
 mod http;
 mod operations;
 mod shells;
+mod skills;
 mod storage;
 
 #[derive(Default)]

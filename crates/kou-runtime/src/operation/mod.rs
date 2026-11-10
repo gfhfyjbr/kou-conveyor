@@ -9,7 +9,8 @@ mod value;
 pub use file::{FileResult, FileState, advance_file, decode_file, file_spec, run_file};
 pub use manager::{Executor, Limits, LocalManager, NativeFiles, Stats, Update, Updates};
 pub use skill::{
-    SkillEvent, SkillEventResult, SkillState, SkillStep, advance_skill, decode_skill, skill_spec,
+    SkillEvent, SkillEventResult, SkillReadLimits, SkillState, SkillStep, advance_skill,
+    decode_skill, run_skill, skill_spec,
 };
 pub use value::{advance_value, decode_value, value_spec};
 

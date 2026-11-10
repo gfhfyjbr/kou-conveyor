@@ -462,15 +462,35 @@ are preserved: the Go spec rejects only the empty string.
 `compat/operation_parity.py` now compares **642 projections**: the existing 151
 file/value cases and **491 skill-use cases**, including 80 seeded byte histories
 across decode/recovery/append/completion. Dispatch path, offset and count are
-compared, not just their presence. Six Rust units cover metadata, wire types,
-ordered errors, recovery, byte checkpoints and failure/cancel precedence. These
-fixtures execute no read dispatch. Native skill I/O, LocalManager integration,
-resource limits, the SkillUse translator and registry are still open. In
-particular, preserving an unbounded pure Content/error contract is not a claim
-that the runner's memory is bounded. All 642 operation projections, 354 Shell
-projections, 1,597 translator projections, six skill units and sixteen translator
-units passed twenty additional repetitions. Go's Skill tests passed three race
-repetitions, and the development operation oracle passed vet.
+compared, not just their presence. Seven Rust units cover metadata, wire types,
+ordered errors, recovery, byte checkpoints, failure/cancel precedence and the hot
+actor: it decodes bytes once, drops its encoded header body, and does not cache
+serialized checkpoint bodies between publications. These pure fixtures execute
+no read dispatch.
+
+`run_skill` adds native reads on the caller's worker, without creating threads.
+Its synchronous publisher must complete the durable write before returning Ok.
+Initial publication precedes opening the file; refusal stops later reads and
+publications. Seven private native tests use actual journals, binary content over
+512 KiB, uncertain receipts after a durable prefix, restart with a changed on-disk
+prefix, staged rename before open, cancellation, growth/truncation, symlinks,
+resource errors and publisher panic/reuse. The retained prefix is not reread or
+silently replaced on recovery.
+
+`SkillReadLimits` defaults to **1 MiB of content / 256 KiB chunks**. Chunks cannot
+exceed 256 KiB, and a policy requesting more than 4,096 checkpoints is rejected.
+Oversized content fails rather than being truncated. Nonblocking open follows
+skill symlinks but rejects nonregular files. These are new policies, not Go's
+unbounded primitive contract. Caller-retained snapshots, initial raw input
+ownership, filesystem scratch, synchronous callback/FS latency and RAII close
+errors are not a global RSS/preemption guarantee. No independent full Go/Rust
+native skill-I/O trace or exhaustive filesystem-failure matrix is claimed.
+
+All seven pure units, seven actual native executor tests, 642 operation
+projections, 354 Shell projections and 1,597 translator projections passed twenty
+additional repetitions. LocalManager integration, the SkillUse translator and
+registry remain open. Go's Skill tests passed three race repetitions and the
+development oracle passed vet. Whole-runner CPU/RSS has not been measured.
 
 ## Native artifact I/O
 
@@ -629,7 +649,7 @@ No Go helper is required by the Rust production translators.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **306 native workspace tests**, including
+The latest complete local gate passed **314 native workspace tests**, including
 **68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
 and Bash/Command/File/toolarg race tests passed; development-oracle vet checks passed.

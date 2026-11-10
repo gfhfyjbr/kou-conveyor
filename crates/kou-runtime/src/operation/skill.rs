@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::value::RawValue;
 
+mod execute;
+pub use execute::{SkillReadLimits, run_skill};
 #[cfg(test)]
 mod tests;
 
@@ -95,7 +97,33 @@ fn validate(state: &SkillState) -> Result<()> {
     }
 }
 pub fn advance_skill(current: Operation, event: Option<SkillEvent>) -> Result<SkillStep> {
-    let state = decode_skill(&current)?;
+    SkillReader::new(current)?.handle(event)
+}
+
+struct SkillReader {
+    current: Operation,
+    state: SkillState,
+}
+impl SkillReader {
+    fn new(mut current: Operation) -> Result<Self> {
+        let state = decode_skill(&current)?;
+        // Keep hot bytes, not a second encoded copy between publication boundaries.
+        current.state = Json::default();
+        Ok(Self { current, state })
+    }
+    fn handle(&mut self, event: Option<SkillEvent>) -> Result<SkillStep> {
+        let step = advance_parts(self.current.clone(), &mut self.state, event)?;
+        if let Some(operation) = &step.operation {
+            self.current.status.clone_from(&operation.status);
+        }
+        Ok(step)
+    }
+}
+fn advance_parts(
+    current: Operation,
+    state: &mut SkillState,
+    event: Option<SkillEvent>,
+) -> Result<SkillStep> {
     match current.status.as_str() {
         "ready" => {
             if event.is_some() {
@@ -141,7 +169,7 @@ pub fn advance_skill(current: Operation, event: Option<SkillEvent>) -> Result<Sk
 }
 fn awaiting_event(
     mut current: Operation,
-    mut state: SkillState,
+    state: &mut SkillState,
     event: SkillEvent,
 ) -> Result<SkillStep> {
     if event.source != current.id {
@@ -225,7 +253,7 @@ fn awaiting_event(
         ),
     }
 }
-fn await_read(mut current: Operation, state: SkillState) -> Result<SkillStep> {
+fn await_read(mut current: Operation, state: &mut SkillState) -> Result<SkillStep> {
     let request = shell::ReadRequest {
         source: current.id.clone(),
         correlation_id: CORRELATION.into(),
@@ -240,7 +268,7 @@ fn await_read(mut current: Operation, state: SkillState) -> Result<SkillStep> {
 }
 fn terminal(
     mut current: Operation,
-    mut state: SkillState,
+    state: &mut SkillState,
     canceled: bool,
     error: String,
 ) -> Result<SkillStep> {
@@ -248,8 +276,8 @@ fn terminal(
     current.status = if canceled { "canceled" } else { "failed" }.into();
     checkpoint(current, state)
 }
-fn checkpoint(mut current: Operation, state: SkillState) -> Result<SkillStep> {
-    current.state = encode(&state).map_err(|error| {
+fn checkpoint(mut current: Operation, state: &SkillState) -> Result<SkillStep> {
+    current.state = encode(state).map_err(|error| {
         Error(format!(
             "encode skill-use operation {:?} state: {error}",
             current.id

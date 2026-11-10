@@ -258,6 +258,36 @@ fn skill_cancellation_and_failure_precede_correlation_but_not_source_checks() {
 }
 
 #[test]
+fn skill_hot_actor_keeps_bytes_without_retaining_encoded_checkpoint_bodies() {
+    let mut reader = SkillReader::new(operation("awaiting", b"prefix")).unwrap();
+    assert!(reader.current.state.is_missing());
+    let step = reader
+        .handle(Some(event(
+            "io.read_output",
+            SkillEventResult::Output {
+                offset: 6,
+                data: vec![0xff],
+            },
+        )))
+        .unwrap();
+    assert_eq!(state(&step.operation.unwrap()).content, b"prefix\xff");
+    assert_eq!(reader.state.content, b"prefix\xff");
+    assert!(reader.current.state.is_missing());
+    assert_eq!(reader.current.status, "awaiting");
+    let completed = reader
+        .handle(Some(event(
+            "io.read_completed",
+            SkillEventResult::Completed { size: 7 },
+        )))
+        .unwrap()
+        .operation
+        .unwrap();
+    assert_eq!(completed.status, "completed");
+    assert_eq!(state(&completed).content, b"prefix\xff");
+    assert!(reader.current.state.is_missing());
+}
+
+#[test]
 fn skill_wire_rejects_positional_byte_arrays_and_keeps_typed_error_order() {
     for (raw, expected) in [
         (

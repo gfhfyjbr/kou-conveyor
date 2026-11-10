@@ -322,17 +322,21 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**33 native driver tests** cover these boundaries and policies. Queue admission
-bounds both count and estimated payload bytes, retaining permits for deferred
-input. Ordinary input and operation updates each default to 256 events / 32 MiB
-aggregate / 16 MiB per event. Controls have an independent reserved budget of 16
-events / 1 MiB aggregate / 64 KiB per event, so deferred prompts cannot prevent
-stop or the operation updates they await. These are new configurable queue
+**35 native driver tests** cover these boundaries and policies. A real FileJournal
+matrix checks that empty/review-only summaries do not write a consumer checkpoint,
+that successful summaries do, and that cold recovery preserves the right context.
+Durable errors retain Go's input/turn/response/call/operation context.
+
+Queue admission bounds both count and estimated payload bytes, retaining permits
+for deferred input. Ordinary input and operation updates each default to 256
+events / 32 MiB aggregate / 16 MiB per event. Controls have an independent reserved
+budget of 16 events / 1 MiB aggregate / 64 KiB per event, so deferred prompts cannot
+prevent stop or the operation updates they await. These are new configurable queue
 policies, not a global RSS budget. Context, retained operation state, in-flight
 snapshots and serialized records require separate accounting.
 
-The latest complete local gate passed **210 native workspace tests**, including
-**58 in kou-engine**, all **ten compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **212 native workspace tests**, including
+**60 in kou-engine**, all **ten compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder race tests and
 both development-oracle vet checks passed. Inventory pins **74 sources, 136 HTTP
 registrations and 31 built-in plugins**.

@@ -160,6 +160,7 @@ impl Coordinator {
         }))
         .await?;
         if compaction
+            && !summary.is_empty()
             && self.journal.supports_checkpoints()
             && let Some(state) = self.history.checkpoint()?
         {

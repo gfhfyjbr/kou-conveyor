@@ -137,7 +137,10 @@ impl Coordinator {
                 "received new nonterminal operation after stop cancellation was requested".into(),
             ));
         }
-        self.journal.save_operation(operation.clone()).await?;
+        self.journal
+            .save_operation(operation.clone())
+            .await
+            .map_err(|error| Error(format!("store operation {:?}: {error}", operation.id)))?;
         self.history.apply_operation(operation.clone());
         self.reconcile().await?;
         if self.history.state.verifying.as_deref() == Some(operation.id.as_str())

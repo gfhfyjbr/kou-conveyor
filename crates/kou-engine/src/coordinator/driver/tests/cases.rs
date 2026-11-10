@@ -10,8 +10,36 @@ async fn no_dispatch_crosses_a_failed_durable_boundary() {
             reply(run.request().await, calls(&[("call", "Bash")]));
         }
         let error = run.task.await.unwrap().unwrap_err().to_string();
-        assert!(error.contains(failure), "{error}");
         let saved = run.saved.0.lock().unwrap();
+        match failure {
+            "turn" => {
+                let quoted = error
+                    .strip_prefix("store turn ")
+                    .unwrap()
+                    .strip_suffix(": turn failed")
+                    .unwrap();
+                let id: String = serde_json::from_str(quoted).unwrap();
+                assert!(uuid::Uuid::parse_str(&id).is_ok());
+                assert_eq!(error, format!("store turn {id:?}: turn failed"));
+            }
+            "response" => {
+                let id = saved
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        ItemData::Turn(turn) => Some(&turn.id),
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(
+                    error,
+                    format!("store turn {id:?} response: response failed")
+                );
+            }
+            "status" => assert_eq!(error, "store tool call \"call\" status: status failed"),
+            "dispatch" => assert_eq!(error, "dispatch failed"),
+            _ => unreachable!(),
+        }
         assert_eq!(saved.adds.len(), usize::from(failure == "dispatch"));
         assert_eq!(
             saved
@@ -22,6 +50,18 @@ async fn no_dispatch_crosses_a_failed_durable_boundary() {
             usize::from(failure == "dispatch")
         );
     }
+}
+
+#[tokio::test(start_paused = true)]
+async fn failed_input_keeps_the_input_id_in_the_durable_error() {
+    let run = Rig::new(Config::default());
+    run.saved.0.lock().unwrap().fail = Some("input");
+    run.send("one", "work").await;
+    assert_eq!(
+        run.task.await.unwrap().unwrap_err().to_string(),
+        "store input \"one\": input failed"
+    );
+    assert!(run.saved.0.lock().unwrap().items.is_empty());
 }
 
 #[tokio::test(start_paused = true)]
@@ -289,14 +329,11 @@ async fn failed_completion_write_never_delivers_the_result() {
     reply(run.request().await, calls(&[("a", "Bash")]));
     settle().await;
     run.saved.0.lock().unwrap().fail = Some("update");
+    let id = run.saved.0.lock().unwrap().adds[0].id.clone();
     run.complete(0, "completed").await;
-    assert!(
-        run.task
-            .await
-            .unwrap()
-            .unwrap_err()
-            .to_string()
-            .contains("update failed")
+    assert_eq!(
+        run.task.await.unwrap().unwrap_err().to_string(),
+        format!("store operation {id:?}: update failed")
     );
     assert!(run.requests.try_recv().is_err());
 }

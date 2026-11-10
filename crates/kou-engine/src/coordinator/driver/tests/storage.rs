@@ -93,3 +93,54 @@ async fn live_file_journal_recovery_resubmits_the_same_operation_not_the_call() 
     assert_eq!(statuses[0].operations[0].id, statuses[1].operations[0].id);
     assert_eq!(statuses[1].operations[0].status, "completed");
 }
+
+#[tokio::test]
+async fn file_journal_checkpoints_only_a_successfully_compacted_conversation() {
+    for (answer, kept) in [
+        ("<summary></summary>", false),
+        ("<review>only</review>", false),
+        ("<review>unfinished", false),
+        ("<summary>kept task</summary>", true),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let store = SessionStore::new(directory.path()).unwrap();
+        let writer = store
+            .create_new(Session {
+                id: "live-fixture".into(),
+                created_at: Timestamp::parse("2026-11-10T02:00:00Z").unwrap(),
+            })
+            .unwrap();
+        let path = directory.path().join("live-fixture.session.jsonl");
+        let mut run = Rig::custom(Config::default(), |mut driver| {
+            driver.journal = Box::new(FileJournal::new(writer).unwrap());
+            driver
+        });
+        run.send("one", "original task").await;
+        reply(run.request().await, text("original answer"));
+        run.control("compact").await;
+        let compact = run.request().await;
+        run.control("when_idle").await;
+        reply(compact, text(answer));
+        run.task.await.unwrap().unwrap();
+        let recovery = SessionRecovery::open(&path).unwrap();
+        assert_eq!(recovery.checkpoint_after().is_some(), kept, "{answer}");
+        let restored = recovery.into_resume().unwrap();
+        let log = SessionLog::open(&path).unwrap();
+        let mut context = History::new(Builder::default(), Arc::new(Tools));
+        let result = context.recover(&log, restored).unwrap();
+        assert_eq!(result.used_checkpoint, kept, "{answer}");
+        let built = context.context.build();
+        assert!(has_text(
+            &built.request,
+            if kept { "kept task" } else { "original answer" }
+        ));
+        let responses: Vec<_> = (1..=log.item_count() as u64)
+            .filter_map(|sequence| match log.item(sequence).unwrap().data {
+                ItemData::ModelResponse(response) => Some(response),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[1].compacted.is_some(), kept);
+    }
+}

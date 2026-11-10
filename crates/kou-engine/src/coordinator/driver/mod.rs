@@ -383,7 +383,17 @@ impl Coordinator {
             data,
         };
         self.history.apply(&mut item, false)?;
-        self.journal.append(item.data, self.hooks.now()).await?;
+        let (kind, id, part) = match &item.data {
+            ItemData::Input(input) => ("input", input.id.clone(), ""),
+            ItemData::Turn(turn) => ("turn", turn.id.clone(), ""),
+            ItemData::ModelResponse(response) => ("turn", response.turn_id.clone(), " response"),
+            ItemData::ToolCallStatus(status) => ("tool call", status.call_id.clone(), " status"),
+            ItemData::Fork(_) => return Err(Error("unsupported local item kind \"fork\"".into())),
+        };
+        self.journal
+            .append(item.data, self.hooks.now())
+            .await
+            .map_err(|error| Error(format!("store {kind} {id:?}{part}: {error}")))?;
         Ok(())
     }
 }

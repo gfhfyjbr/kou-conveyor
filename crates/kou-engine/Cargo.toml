@@ -1,0 +1,28 @@
+[package]
+name = "kou-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64 = "0.22.1"
+crc32fast = "1.5.4"
+kou-domain.workspace = true
+kou-provider = { path = "../kou-provider" }
+kou-store = { path = "../kou-store" }
+regex = "1.13.1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1.54.1", features = ["macros", "rt", "sync", "time"] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+uuid = { version = "1.26.1", features = ["v4"] }
+chrono = { workspace = true, features = ["clock"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { version = "1.54.1", features = ["test-util", "net", "io-util"] }
+
+[lints]
+workspace = true

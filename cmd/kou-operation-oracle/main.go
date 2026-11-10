@@ -25,6 +25,7 @@ type spec struct {
 	Action    string
 	Operation operation.Operation
 	File      operation.FileState
+	Path      string
 	Value     jsontext.Value
 	Event     *eventSpec
 }
@@ -33,6 +34,9 @@ type dispatch struct {
 	Type          primitives.PrimitiveDispatchType
 	Source        primitives.SourceID
 	CorrelationID primitives.CorrelationID
+	Path          string
+	Offset        int64
+	Count         int64
 }
 
 type output struct {
@@ -56,6 +60,18 @@ func (input *eventSpec) event() (*primitives.PrimitiveEvent, error) {
 		result = primitives.ComputeResult{Value: value}
 	case "compute":
 		result = primitives.ComputeResult{Value: input.Result}
+	case "read_output":
+		var value primitives.IOReadOutputResult
+		if err := json.Unmarshal(input.Result, &value); err != nil {
+			return nil, err
+		}
+		result = value
+	case "read_completed":
+		var value primitives.IOReadCompletedResult
+		if err := json.Unmarshal(input.Result, &value); err != nil {
+			return nil, err
+		}
+		result = value
 	case "failure":
 		var value primitives.PrimitiveFailureResult
 		if err := json.Unmarshal(input.Result, &value); err != nil {
@@ -87,26 +103,37 @@ func run(input spec) output {
 		result.Value, err = operation.NewFileSpec(input.File)
 	case "file_decode":
 		result.Value, err = operation.DecodeFileState(input.Operation)
-	case "value_advance", "file_advance":
+	case "skill_spec":
+		result.Value, err = operation.NewSkillUseSpec(input.Path)
+	case "skill_decode":
+		result.Value, err = operation.DecodeSkillUse(input.Operation)
+	case "value_advance", "file_advance", "skill_advance":
 		var event *primitives.PrimitiveEvent
 		event, err = input.Event.event()
 		if err != nil {
 			break
 		}
-		if input.Action == "value_advance" {
+		switch input.Action {
+		case "value_advance":
 			step, err = operation.AdvanceValue(input.Operation, event)
-		} else {
+		case "file_advance":
 			step, err = operation.AdvanceFile(input.Operation, event)
+		case "skill_advance":
+			step, err = operation.AdvanceSkillUse(input.Operation, event)
 		}
 		result.Operation = step.Operation
 		for _, value := range step.Dispatches {
-			request, ok := value.Data.(primitives.ComputeRequest)
-			if !ok {
+			projected := dispatch{Type: value.Type}
+			switch request := value.Data.(type) {
+			case primitives.ComputeRequest:
+				projected.Source, projected.CorrelationID = request.Source, request.CorrelationID
+			case primitives.IOReadRequest:
+				projected.Source, projected.CorrelationID = request.Source, request.CorrelationID
+				projected.Path, projected.Offset, projected.Count = request.Path, request.Offset, request.Count
+			default:
 				panic(fmt.Sprintf("unexpected dispatch %s: %T", value.Type, value.Data))
 			}
-			result.Dispatches = append(result.Dispatches, dispatch{
-				Type: value.Type, Source: request.Source, CorrelationID: request.CorrelationID,
-			})
+			result.Dispatches = append(result.Dispatches, projected)
 		}
 	default:
 		err = fmt.Errorf("unknown oracle action %q", input.Action)

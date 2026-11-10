@@ -1,4 +1,5 @@
-//! Pure file/value transition fixture. Compute dispatches are never executed.
+//! Pure file/value/skill transition fixture. Dispatches are never executed.
+use base64::Engine;
 use kou_domain::{Json, Operation};
 use kou_runtime::operation::{self, Event, EventResult, FileResult, FileState};
 use serde::{Deserialize, Serialize};
@@ -10,10 +11,81 @@ struct EventSpec {
     #[serde(rename = "Type")]
     kind: String,
     source: String,
+    #[serde(rename = "CorrelationID")]
+    correlation_id: String,
     result_kind: String,
     result: Json,
 }
 impl EventSpec {
+    fn skill(self) -> operation::Result<operation::SkillEvent> {
+        use operation::SkillEventResult as Result;
+        let result = match self.result_kind.as_str() {
+            "read_output" => {
+                #[derive(Default, Deserialize)]
+                #[serde(default, rename_all = "PascalCase")]
+                struct Output {
+                    offset: i64,
+                    data: Option<String>,
+                }
+                let output: Output = self
+                    .result
+                    .decode()
+                    .map_err(|error| operation::Error(error.to_string()))?;
+                let data = base64::engine::GeneralPurpose::new(
+                    &base64::alphabet::STANDARD,
+                    base64::engine::GeneralPurposeConfig::new()
+                        .with_decode_allow_trailing_bits(true),
+                )
+                .decode(output.data.unwrap_or_default())
+                .map_err(|error| operation::Error(error.to_string()))?;
+                Result::Output {
+                    offset: output.offset,
+                    data,
+                }
+            }
+            "read_completed" => {
+                #[derive(Default, Deserialize)]
+                #[serde(default, rename_all = "PascalCase")]
+                struct Completed {
+                    size: i64,
+                }
+                let completed: Completed = self
+                    .result
+                    .decode()
+                    .map_err(|error| operation::Error(error.to_string()))?;
+                Result::Completed {
+                    size: completed.size,
+                }
+            }
+            "failure" => {
+                #[derive(Default, Deserialize)]
+                #[serde(default, rename_all = "PascalCase")]
+                struct Failure {
+                    error: String,
+                }
+                let failure: Failure = self
+                    .result
+                    .decode()
+                    .map_err(|error| operation::Error(error.to_string()))?;
+                Result::Failure(failure.error)
+            }
+            "compute" | "file" => Result::Raw(self.result),
+            "" | "raw" if self.result.is_missing() => Result::Empty,
+            "" | "raw" => Result::Raw(self.result),
+            _ => {
+                return Err(operation::Error(format!(
+                    "unknown oracle result kind {:?}",
+                    self.result_kind
+                )));
+            }
+        };
+        Ok(operation::SkillEvent {
+            kind: self.kind,
+            source: self.source,
+            correlation_id: self.correlation_id,
+            result,
+        })
+    }
     fn event(self) -> operation::Result<Event> {
         let result = match self.result_kind.as_str() {
             "file" => EventResult::File(if self.result.as_str() == Some("null") {
@@ -58,17 +130,21 @@ struct Spec {
     action: String,
     operation: Operation,
     file: FileState,
+    path: String,
     value: Json,
     event: Option<EventSpec>,
 }
-#[derive(Serialize)]
+#[derive(Default, Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Dispatch {
     #[serde(rename = "Type")]
     kind: &'static str,
     source: String,
     #[serde(rename = "CorrelationID")]
-    correlation_id: &'static str,
+    correlation_id: String,
+    path: String,
+    offset: i64,
+    count: i64,
 }
 #[derive(Default, Serialize)]
 #[serde(rename_all = "PascalCase")]
@@ -90,6 +166,27 @@ fn run(spec: Spec) -> Output {
             "value_decode" => output.value = Some(operation::decode_value(&spec.operation)?),
             "file_spec" => output.value = Some(raw(&operation::file_spec(spec.file)?)?),
             "file_decode" => output.value = Some(raw(&operation::decode_file(&spec.operation)?)?),
+            "skill_spec" => output.value = Some(raw(&operation::skill_spec(spec.path)?)?),
+            "skill_decode" => output.value = Some(raw(&operation::decode_skill(&spec.operation)?)?),
+            "skill_advance" => {
+                let step = operation::advance_skill(
+                    spec.operation,
+                    spec.event.map(EventSpec::skill).transpose()?,
+                )?;
+                output.operation = step.operation;
+                output.dispatches = step
+                    .dispatches
+                    .into_iter()
+                    .map(|request| Dispatch {
+                        kind: "io.read",
+                        source: request.source,
+                        correlation_id: request.correlation_id,
+                        path: request.path,
+                        offset: request.offset,
+                        count: request.count,
+                    })
+                    .collect();
+            }
             "value_advance" | "file_advance" => {
                 let event = spec.event.map(EventSpec::event).transpose()?;
                 let step = if spec.action == "value_advance" {
@@ -104,7 +201,8 @@ fn run(spec: Spec) -> Output {
                     .map(|dispatch| Dispatch {
                         kind: "compute",
                         source: dispatch.source,
-                        correlation_id: dispatch.correlation_id,
+                        correlation_id: dispatch.correlation_id.into(),
+                        ..Dispatch::default()
                     })
                     .collect();
             }

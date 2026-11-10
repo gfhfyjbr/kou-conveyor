@@ -2,7 +2,7 @@
 //! Handle is pure: commit its checkpoint before executing returned dispatches.
 mod execute;
 mod output;
-mod wire;
+pub(super) mod wire;
 use super::{Error, Result, Spec, decode_state, encode, null_default};
 use chrono::{DateTime, TimeDelta};
 pub use execute::run_shell;

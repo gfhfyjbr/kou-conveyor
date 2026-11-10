@@ -120,7 +120,7 @@ fn object_result<'de, D: serde::Deserializer<'de>>(
         .map_err(serde::de::Error::custom)
 }
 
-pub(super) mod bytes {
+pub(crate) mod bytes {
     use super::*;
     pub fn serialize<S: serde::Serializer>(
         value: &[u8],
@@ -131,10 +131,25 @@ pub(super) mod bytes {
     pub fn deserialize<'de, D: serde::Deserializer<'de>>(
         deserializer: D,
     ) -> std::result::Result<Vec<u8>, D::Error> {
-        let text = Option::<String>::deserialize(deserializer)?.unwrap_or_default();
-        decode(&text).map_err(serde::de::Error::custom)
+        struct Bytes;
+        impl<'de> serde::de::Visitor<'de> for Bytes {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a string")
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> std::result::Result<Self::Value, E> {
+                Ok(Vec::new())
+            }
+            fn visit_str<E: serde::de::Error>(
+                self,
+                text: &str,
+            ) -> std::result::Result<Self::Value, E> {
+                decode(text).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_any(Bytes)
     }
-    pub(super) fn decode(text: &str) -> std::result::Result<Vec<u8>, String> {
+    pub(crate) fn decode(text: &str) -> std::result::Result<Vec<u8>, String> {
         let cleaned;
         let value = if text.contains(['\r', '\n']) {
             cleaned = text.replace(['\r', '\n'], "");

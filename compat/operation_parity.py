@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Compare pure durable transitions. No returned compute dispatch is executed."""
 from decimal import Decimal
+import base64
+import random
 import json
 import os
 from pathlib import Path
@@ -95,6 +97,81 @@ def fixtures():
             yield f"file-result-shape-{index}-{action}", {"Action": action, "Operation": operation(state={**valid[0], "Result": result})}
 
 
+def skill_operation(status="awaiting", content=b"", **fields):
+    return {"ID": "owned", "Type": "skill_use", "Version": 1, "Status": status,
+            "State": {"Path": "/inert/raw/../SKILL.md", "Content": base64.b64encode(content).decode(), **fields}}
+
+
+def skill_event(kind, result_kind="raw", result=None, source="owned", correlation="skill-use-read"):
+    value = {"Type": kind, "Source": source, "CorrelationID": correlation, "ResultKind": result_kind}
+    if result is not None:
+        value["Result"] = result
+    return value
+
+
+def skill_fixtures():
+    for path in ["", " \n\t", "raw/../SKILL.md", " /inert//SKILL.md ", "\0", "界/SKILL.md"]:
+        yield "skill-spec-" + repr(path), {"Action": "skill_spec", "Path": path}
+    for raw in [None, [], "text", 42, True, {}, {"Path": ""}, {"Path": None}, {"Path": "\n"}]:
+        for action in ["skill_decode", "skill_advance"]:
+            current = skill_operation(); current["State"] = raw
+            yield "skill-shape-" + action + repr(raw), {"Action": action, "Operation": current}
+    current = skill_operation(); del current["State"]
+    yield "skill-missing-state", {"Action": "skill_decode", "Operation": current}
+    for changes in [{"Type": "file"}, {"Type": ""}, {"Version": 0}, {"Version": 2}]:
+        yield "skill-header-" + repr(changes), {"Action": "skill_advance", "Operation": {**skill_operation(), **changes}}
+    for field, value in [("Path", 42), ("Path", []), ("Path", {}), ("TerminalError", False),
+                         ("Content", []), ("Content", [1, 2]), ("Content", {}), ("Content", True), ("Content", 42),
+                         ("Content", None), ("Content", ""), ("Content", "YR=="), ("Content", "YQ==\r\n"), ("TerminalError", None)]:
+        yield "skill-field-" + field + repr(value), {"Action": "skill_decode", "Operation": skill_operation(**{field: value})}
+    for fields in [{"Path": 42, "Content": []}, {"Content": [], "Path": 42},
+                   {"TerminalError": [], "Content": []}, {"Content": [], "TerminalError": []}]:
+        current = skill_operation(); current["State"] = fields
+        yield "skill-error-order-" + repr(fields), {"Action": "skill_decode", "Operation": current}
+    for status in ["ready", "awaiting", "canceling", "completed", "failed", "canceled", "invalid"]:
+        for body in [b"", b"saved\xff\x00"]:
+            for error in ["", "stale"]:
+                current = skill_operation(status, body, TerminalError=error)
+                yield "skill-resume-" + repr((status, body, error)), {"Action": "skill_advance", "Operation": current}
+                yield "skill-event-status-" + repr((status, body, error)), {"Action": "skill_advance", "Operation": current, "Event": skill_event("unknown")}
+    for evt in [skill_event("io.read_output"), skill_event("io.read_output", "raw", {}),
+                skill_event("io.read_completed"), skill_event("io.read_completed", "read_output", {"Offset": 0, "Data": ""}),
+                skill_event("io.read_output", "read_completed", {"Size": 0}),
+                skill_event("io.read_output", "compute", {"opaque": "payload"}),
+                skill_event("primitive.failed"), skill_event("primitive.failed", "compute", {}),
+                skill_event("primitive.failed", "failure", {"Error": ""}),
+                skill_event("primitive.failed", "failure", {"Error": "owned failure\n"}),
+                skill_event("primitive.canceled", "raw", 42), skill_event("unknown"),
+                skill_event("primitive.failed", "failure", {"Error": "foreign"}, source="other"),
+                skill_event("io.read_completed", "read_completed", {"Size": 0}, correlation="wrong"),
+                skill_event("primitive.canceled", correlation="wrong")]:
+        yield "skill-event-" + repr(evt), {"Action": "skill_advance", "Operation": skill_operation(), "Event": evt}
+    for body in [b"", b"saved", b"\xff\x00\xe4\xb8\xad"]:
+        current = skill_operation(content=body)
+        for offset in [-1, 0, len(body), len(body) + 1]:
+            for suffix in [b"", b"new", b"\x80\x00"]:
+                evt = skill_event("io.read_output", "read_output", {"Offset": offset, "Data": base64.b64encode(suffix).decode()})
+                yield "skill-offset-" + repr((body, offset, suffix)), {"Action": "skill_advance", "Operation": current, "Event": evt}
+        for size in [-1, 0, len(body), len(body) + 1, 9223372036854775807]:
+            yield "skill-completed-" + repr((body, size)), {"Action": "skill_advance", "Operation": current, "Event": skill_event("io.read_completed", "read_completed", {"Size": size})}
+    current = skill_operation("ready", b"old", TerminalError="old")
+    current["MaxOutputLength"] = 1
+    current["Idempotency"] = {"opaque": "preserved"}
+    yield "skill-metadata", {"Action": "skill_advance", "Operation": current}
+    yield "skill-error-not-clipped", {"Action": "skill_advance", "Operation": {**skill_operation(), "MaxOutputLength": 1},
+                                      "Event": skill_event("primitive.failed", "failure", {"Error": "界" * 40001})}
+    rng = random.Random(20261113)
+    for index in range(80):
+        prefix, suffix = rng.randbytes(rng.randrange(0, 200)), rng.randbytes(rng.randrange(0, 200))
+        current = skill_operation(content=prefix)
+        yield f"skill-random-decode-{index}", {"Action": "skill_decode", "Operation": current}
+        yield f"skill-random-resume-{index}", {"Action": "skill_advance", "Operation": current}
+        yield f"skill-random-append-{index}", {"Action": "skill_advance", "Operation": current,
+                "Event": skill_event("io.read_output", "read_output", {"Offset": len(prefix), "Data": base64.b64encode(suffix).decode()})}
+        yield f"skill-random-complete-{index}", {"Action": "skill_advance", "Operation": current,
+                "Event": skill_event("io.read_completed", "read_completed", {"Size": len(prefix)})}
+
+
 def invoke(binary, rows):
     text = "\n".join(spec if isinstance(spec, str) else json.dumps(spec, ensure_ascii=False) for _, spec in rows) + "\n"
     completed = subprocess.run([str(binary)], input=text, text=True, capture_output=True, timeout=30, cwd=ROOT)
@@ -111,10 +188,11 @@ def projections_match(left, right):
     # Go 1.27 encoding/json/v2/errors.go errorModalVerb deliberately chooses
     # either rendering once per process. Permit only that token in these exact
     # top-level decode diagnostics; payloads, context and every other byte stay.
-    pattern = (r'(decode (?:value|file|shell) operation "(?:\\.|[^"\\])*" state: json: )'
+    pattern = (r'(decode (?:value|file|shell|skill-use) operation "(?:\\.|[^"\\])*" state: json: )'
                r'(?:cannot|unable to)'
-               r'( unmarshal JSON (?:(?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState|ShellState|FileResult within "/Result")'
-               r'|string into Go \[\]uint8 within "/Inline(?:Out|Err)(?:Tail)?": illegal character .+ at offset [0-9]+))')
+               r'( unmarshal JSON (?:(?:array|string|boolean|number) into Go operation\.(?:ValueState|FileState|ShellState|SkillUseState|FileResult within "/Result")'
+               r'|string into Go \[\]uint8 within "/(?:Inline(?:Out|Err)(?:Tail)?|Content)": illegal character .+ at offset [0-9]+'
+               r'|(?:array|object|boolean|number) into Go (?:\[\]uint8 within "/Content"|string within "/(?:Path|TerminalError)")))')
     a = re.fullmatch(pattern, left.get("Error", ""))
     b = re.fullmatch(pattern, right.get("Error", ""))
     return bool(a and b and a.groups() == b.groups()
@@ -147,6 +225,13 @@ def comparator_self_test():
     right = {**left, "Error": text.replace("json: cannot", "json: unable to")}
     assert projections_match(left, right)
     assert not projections_match(left, {**right, "Error": right["Error"].replace("/Result", "/Other")})
+    text = 'decode skill-use operation "owned" state: json: cannot unmarshal JSON array into Go []uint8 within "/Content"'
+    left = {"Error": text, "Dispatches": [], "Value": {"Content": "opaque"}}
+    right = {**left, "Error": text.replace("json: cannot", "json: unable to")}
+    assert projections_match(left, right)
+    for before, after in [("/Content", "/Path"), ("JSON array", "JSON object"), ('"owned"', '"other"')]:
+        assert not projections_match(left, {**right, "Error": right["Error"].replace(before, after)})
+    assert not projections_match(left, {**right, "Value": {"Content": right["Error"]}})
 
 
 def main():
@@ -157,7 +242,8 @@ def main():
     subprocess.run(["go", "build", "-o", str(go), "./cmd/kou-operation-oracle"], cwd=ROOT, check=True)
     subprocess.run(["cargo", "build", "--locked", "-p", "kou-runtime", "--example", "operation_oracle"], cwd=ROOT, env={**os.environ, "CARGO_INCREMENTAL": "0"}, check=True)
     rust = ROOT / "tmp/rust-rewrite-target/debug/examples/operation_oracle"
-    rows = list(fixtures())
+    file_value, skills = list(fixtures()), list(skill_fixtures())
+    rows = file_value + skills
     expected, actual = invoke(go, rows), invoke(rust, rows)
     for (name, spec), left, right in zip(rows, expected, actual):
         if not projections_match(left, right):
@@ -165,7 +251,7 @@ def main():
             output.write_text(json.dumps({"Case": name, "Spec": spec, "Go": left, "Rust": right}, ensure_ascii=False, indent=2, default=str))
             print("FAIL:", name, "\nFull synthetic diff:", output)
             raise SystemExit(1)
-    print(f"PASS: {len(rows)} exact pure Go/Rust file/value transitions; dispatches never executed")
+    print(f"PASS: {len(rows)} exact pure Go/Rust transitions ({len(file_value)} file/value, {len(skills)} skill-use); dispatches never executed")
 
 
 if __name__ == "__main__":

@@ -442,6 +442,36 @@ are actual private fixtures, not production runner wiring or independent full
 Go/Rust manager trace parity. All nineteen manager tests and the eight-case
 coordinator shell fixture also passed twenty extra repetitions.
 
+## Skill-use operation transitions
+
+`kou-runtime::operation::{skill_spec, decode_skill, advance_skill}` implements
+skill-use v1 as pure transitions. The read dispatch preserves the raw path,
+`skill-use-read` correlation, saved byte offset and `i64::MAX` count. Content
+stays bytes/base64, including invalid UTF-8 and split multibyte sequences, rather
+than being prematurely converted to text. The first read chunk can be moved into
+state. The shared Shell/Skill base64 decoder now accepts borrowed string data,
+without an intermediate owned copy of the encoded string.
+
+Ready requires initial state; it does not discard stale content. Awaiting recovery
+resumes saved bytes but rejects a terminal error. Source mismatches fail the
+operation. Failure/cancellation precede correlation checks; wrong read payloads,
+offsets or completion sizes fail with Go's exact terminal diagnostics. Canceling
+rejects an event, and terminal operations cannot advance. Whitespace-only paths
+are preserved: the Go spec rejects only the empty string.
+
+`compat/operation_parity.py` now compares **642 projections**: the existing 151
+file/value cases and **491 skill-use cases**, including 80 seeded byte histories
+across decode/recovery/append/completion. Dispatch path, offset and count are
+compared, not just their presence. Six Rust units cover metadata, wire types,
+ordered errors, recovery, byte checkpoints and failure/cancel precedence. These
+fixtures execute no read dispatch. Native skill I/O, LocalManager integration,
+resource limits, the SkillUse translator and registry are still open. In
+particular, preserving an unbounded pure Content/error contract is not a claim
+that the runner's memory is bounded. All 642 operation projections, 354 Shell
+projections, 1,597 translator projections, six skill units and sixteen translator
+units passed twenty additional repetitions. Go's Skill tests passed three race
+repetitions, and the development operation oracle passed vet.
+
 ## Native artifact I/O
 
 `kou-tools::artifact::create` pins the parent directory descriptor, creates a file
@@ -599,11 +629,11 @@ No Go helper is required by the Rust production translators.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **300 native workspace tests**, including
+The latest complete local gate passed **306 native workspace tests**, including
 **68 in kou-engine**, all **fifteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation, primitive
 and Bash/Command/File/toolarg race tests passed; development-oracle vet checks passed.
-Inventory pins **93 sources, 136 HTTP registrations and 31 built-in plugins**.
+Inventory pins **94 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent process controls, the full
 Code runtime, remaining result translators, Code wire/reporting/images/search, stream-event reporting,

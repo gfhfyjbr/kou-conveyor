@@ -417,6 +417,30 @@ awaiting/completed updates are durable before the next model request. Completed,
 delivered operations stay cold on recovery. This integration is test wiring, not
 the production runner or an independent full Go/Rust manager trace corpus.
 
+## Native artifact I/O
+
+`kou-tools::artifact::create` pins the parent directory descriptor, creates a file
+with `openat(EXCL)` or a directory with `mkdirat`, and validates existing leaf
+entries without following symlinks. Replay neither truncates contents nor changes
+permissions, including mode-000 artifacts. The parent is synced on creation and
+reuse; new files are synced first. Apple platforms also use `F_FULLFSYNC` on the
+parent, ignoring only `ENOTSUP`, as the existing Go helper does. Descriptor cleanup
+is RAII; unlike the Go helper, individual close-system-call errors are not exposed.
+
+`read_capture` is deliberately narrower than the general Go read primitive: a
+regular file, no leaf symlink, nonnegative offset and count no greater than
+4,000,000 bytes. It borrows at most 8 KiB per callback and retains no output body.
+Cancellation or callback failure stops delivery. These are explicit capture
+policies, not a claim of full Go I/O/error conformance or a global RSS limit.
+
+Eight private native tests cover idempotent creation, unchanged contents/modes,
+restrictive permissions, symlink/FIFO/wrong-kind refusal, exact path resolution,
+24-way creation races, bounded reads, cancellation and callback errors/panics.
+Non-UTF-8 filename behavior is compared with the host filesystem itself: APFS
+rejects those names rather than silently repairing them. This helper slice is not
+yet wired into production shell execution and has no independent Go/Rust artifact
+I/O trace corpus or exhaustive filesystem-failure matrix.
+
 ## Shell v3 transitions
 
 ```sh
@@ -451,11 +475,11 @@ manager wiring remain open.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **246 native workspace tests**, including
+The latest complete local gate passed **254 native workspace tests**, including
 **63 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
-**84 sources, 136 HTTP registrations and 31 built-in plugins**.
+**87 sources, 136 HTTP registrations and 31 built-in plugins**.
 
 The live core is not the production runner. Persistent shell/Code runtime, production
 result translators, complete Code wire/reporting/images/search, stream-event reporting,

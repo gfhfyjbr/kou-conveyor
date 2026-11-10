@@ -336,7 +336,7 @@ Concrete provider adapters implement the model port without Go. Native tests dri
 an actual HTTP/SSE adapter against an owned loopback server and exercise a real
 private FileJournal restart through cold-store recovery.
 
-**38 native driver tests** cover these boundaries and policies. A real FileJournal
+**42 native driver tests** cover these boundaries and policies. A real FileJournal
 matrix checks that empty/review-only summaries do not write a consumer checkpoint,
 that successful summaries do, and that cold recovery preserves the right context.
 Durable errors retain Go's input/turn/response/call/operation context.
@@ -370,6 +370,14 @@ budget of 16 events / 1 MiB aggregate / 64 KiB per event, so deferred prompts ca
 prevent stop or the operation updates they await. These are new configurable queue
 policies, not a global RSS budget. Context, retained operation state, in-flight
 snapshots and serialized records require separate accounting.
+
+`OperationHandle::submit` acknowledges admission only. The opt-in
+`submit_committed` waits until the operation has been journaled and processed by
+the coordinator, forwarding contextual journal/processing failures. Discarded
+updates and driver teardown close the receipt rather than inventing success.
+Dropping a sender's future does not withdraw an admitted update or prove that it
+was not committed. Four native tests exercise delayed/refused writes, discarded
+receipts, driver/sender aborts and retention of admission through processing.
 
 ## File/value operation transitions
 
@@ -497,8 +505,8 @@ production runner. Persistent process status/attachment/control remains open.
 
 ## Local validation and remaining work
 
-The latest complete local gate passed **268 native workspace tests**, including
-**63 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
+The latest complete local gate passed **272 native workspace tests**, including
+**67 in kou-engine**, all **fourteen compatibility suites**, fmt/clippy, WASM,
 Python/JS syntax and diff checks. Go coordinator/contextbuilder/operation and both
 new oracles passed race tests; development-oracle vet checks passed. Inventory pins
 **87 sources, 136 HTTP registrations and 31 built-in plugins**.

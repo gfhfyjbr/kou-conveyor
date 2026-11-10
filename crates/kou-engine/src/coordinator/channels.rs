@@ -1,6 +1,6 @@
 use super::*;
 use kou_domain::{Input, Json};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 #[derive(Clone, Copy, Debug)]
 pub struct QueueLimits {
@@ -51,6 +51,7 @@ impl Admission {
             .map_err(closed)?;
         Ok(Queued {
             value,
+            committed: None,
             _count: count,
             _bytes: bytes,
         })
@@ -65,6 +66,7 @@ fn closed(_: impl std::fmt::Display) -> Error {
 }
 pub(super) struct Queued<T> {
     pub(super) value: T,
+    pub(super) committed: Option<oneshot::Sender<Result<()>>>,
     _count: OwnedSemaphorePermit,
     _bytes: OwnedSemaphorePermit,
 }
@@ -99,15 +101,33 @@ pub struct OperationHandle {
     admission: Arc<Admission>,
 }
 impl OperationHandle {
+    /// Success acknowledges queue admission, not a journal write.
     pub async fn submit(&self, operation: Operation) -> Result<()> {
+        self.enqueue(operation, None).await
+    }
+    /// Wait for the journal write and coordinator update processing. Dropping
+    /// this future does not withdraw an admitted update or prove it uncommitted.
+    pub async fn submit_committed(&self, operation: Operation) -> Result<()> {
+        let (committed, receipt) = oneshot::channel();
+        self.enqueue(operation, Some(committed)).await?;
+        receipt
+            .await
+            .map_err(|_| Error("coordinator operation acknowledgement was dropped".into()))?
+    }
+    async fn enqueue(
+        &self,
+        operation: Operation,
+        committed: Option<oneshot::Sender<Result<()>>>,
+    ) -> Result<()> {
         operation.validate().map_err(Error)?;
-        let size = std::mem::size_of::<Operation>()
+        let size = std::mem::size_of::<Queued<Operation>>()
             + operation.id.len()
             + operation.kind.len()
             + operation.status.len()
             + json_bytes(&operation.state)
             + json_bytes(&operation.idempotency);
-        let queued = self.admission.admit(operation, size).await?;
+        let mut queued = self.admission.admit(operation, size).await?;
+        queued.committed = committed;
         self.sender.send(queued).await.map_err(closed)
     }
 }

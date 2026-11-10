@@ -7,6 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 mod admission;
 mod cases;
 mod clock;
+mod commit;
 mod http;
 mod operations;
 mod storage;

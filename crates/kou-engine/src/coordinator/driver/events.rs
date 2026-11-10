@@ -35,7 +35,7 @@ impl Coordinator {
             .await
             .map_err(|error| Error(format!("slurp operation updates: {error}")))?;
         for update in updates {
-            self.update(update.value).await?;
+            self.update_queued(update).await?;
         }
         self.reconcile().await?;
         let mut due = self.live.call_model
@@ -126,7 +126,19 @@ impl Coordinator {
         })
         .await
     }
-    pub(super) async fn update(&mut self, operation: Operation) -> Result<()> {
+    pub(super) async fn update_queued(&mut self, mut update: Queued<Operation>) -> Result<()> {
+        let result = self.update(update.value).await;
+        if let Some(committed) = update.committed.take() {
+            let _ = committed.send(
+                result
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|error| Error(error.to_string())),
+            );
+        }
+        result
+    }
+    async fn update(&mut self, operation: Operation) -> Result<()> {
         if self.live.cancellation_requested
             && !operation.terminal()
             && !self.history.state.operations.contains_key(&operation.id)

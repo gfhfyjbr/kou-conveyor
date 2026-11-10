@@ -88,6 +88,62 @@ async fn canceling_byte_admission_releases_its_count_permit() {
 }
 
 #[tokio::test]
+async fn committed_admission_keeps_the_lease_until_processing_finishes() {
+    let (_, handle, mut channels) = channels(QueueLimits {
+        events: 1,
+        ..QueueLimits::default()
+    })
+    .unwrap();
+    let sender = handle.clone();
+    let first = tokio::spawn(async move {
+        sender
+            .submit_committed(spec().operation("one".into()))
+            .await
+    });
+    let mut queued = channels.operations.recv().await.unwrap();
+    assert!(!first.is_finished());
+    let second = tokio::spawn(async move { handle.submit(spec().operation("two".into())).await });
+    tokio::task::yield_now().await;
+    assert!(!second.is_finished());
+    queued.committed.take().unwrap().send(Ok(())).unwrap();
+    first.await.unwrap().unwrap();
+    assert!(
+        !second.is_finished(),
+        "in-process update lost its admission lease"
+    );
+    drop(queued);
+    second.await.unwrap().unwrap();
+    assert_eq!(channels.operations.recv().await.unwrap().value.id, "two");
+}
+
+#[tokio::test]
+async fn discarded_committed_update_and_closed_admission_never_report_success() {
+    for receive_first in [false, true] {
+        let (_, handle, mut channels) = channels(QueueLimits::default()).unwrap();
+        let sender = handle.clone();
+        let task =
+            tokio::spawn(
+                async move { sender.submit_committed(spec().operation("op".into())).await },
+            );
+        if receive_first {
+            drop(channels.operations.recv().await.unwrap());
+        } else {
+            tokio::task::yield_now().await;
+            drop(channels);
+        }
+        assert!(task.await.unwrap().is_err());
+        if !receive_first {
+            assert!(
+                handle
+                    .submit_committed(spec().operation("next".into()))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn queue_limits_reject_invalid_config_and_oversized_events() {
     for limits in [
         QueueLimits {

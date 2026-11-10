@@ -275,7 +275,7 @@ impl Coordinator {
                 Event::Canceled => return Err(Error("context canceled".into())),
                 Event::Input(Some(input)) => self.input(input).await?,
                 Event::Input(None) => return Err(closed_error(cancellation, "inbox output")),
-                Event::Operation(Some(operation)) => self.update(operation.value).await?,
+                Event::Operation(Some(operation)) => self.update_queued(operation).await?,
                 Event::Operation(None) => {
                     return Err(closed_error(cancellation, "operation updates"));
                 }

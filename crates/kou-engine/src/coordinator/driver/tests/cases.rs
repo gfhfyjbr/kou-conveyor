@@ -88,6 +88,48 @@ async fn result_translation_failure_never_dispatches() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn controls_preserve_the_inflight_response_and_apply_to_the_next_request() {
+    for mode in ["heartbeat", "settings"] {
+        let mut run = Rig::new(Config::default());
+        run.send("one", "work").await;
+        let current = run.request().await;
+        run.input
+            .submit(Input {
+                id: "control".into(),
+                kind: "control".into(),
+                payload: Json::parse(if mode == "settings" {
+                    r#"{"Mode":"settings","Parameters":{"ReasoningEffort":"high"}}"#
+                } else {
+                    r#"{"Mode":"heartbeat","Reason":"owned notice"}"#
+                })
+                .unwrap(),
+                delivery: String::new(),
+            })
+            .await
+            .unwrap();
+        settle().await;
+        assert!(!current.cancellation.is_cancelled());
+        assert!(run.requests.try_recv().is_err());
+        reply(current, text("first answer"));
+        if mode == "settings" {
+            settle().await;
+            assert!(run.requests.try_recv().is_err());
+            run.send("two", "next task").await;
+        }
+        let next = run.request().await;
+        assert!(has_text(&next.request, "first answer"));
+        if mode == "settings" {
+            assert_eq!(next.request.model.reasoning_effort, "high");
+        } else {
+            assert!(has_text(&next.request, "owned notice"));
+        }
+        run.control("when_idle").await;
+        reply(next, text("done"));
+        run.task.await.unwrap().unwrap();
+    }
+}
+
+#[tokio::test(start_paused = true)]
 async fn input_ids_are_deduplicated_without_canceling_the_request() {
     let mut run = Rig::new(Config::default());
     run.send("same", "first").await;

@@ -104,17 +104,8 @@ impl Coordinator {
         if let Some(control) = control {
             match control.mode.as_str() {
                 "hard" | "when_idle" => self.accept_stop(control),
-                "heartbeat" => {
-                    if !self.hard_stop() {
-                        self.live.call_model = true;
-                        self.clear_grace();
-                    }
-                }
+                "heartbeat" => self.clear_grace(),
                 "compact" => self.live.compact_request = Some(control.reason),
-                "settings" if !self.hard_stop() && self.flight.is_some() => {
-                    self.live.call_model = true;
-                    self.clear_grace();
-                }
                 _ => {}
             }
         }

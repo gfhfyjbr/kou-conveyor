@@ -2,8 +2,12 @@
 mod arguments;
 mod bash;
 mod command;
+mod definitions;
 mod file;
 mod number;
+mod output;
+mod profile;
+mod registry;
 mod skill_use;
 mod skills;
 #[cfg(test)]
@@ -15,6 +19,16 @@ pub use file::{File, FileConfig, ReadJournalLimits, format_file_result};
 use kou_domain::{CallStatus, Operation, ToolCall, ToolResult, ToolResultOutput};
 pub use skill_use::{SKILL_USE_NAME, SkillUse};
 pub use skills::{RegistrationId, Skill, SkillCatalog};
+// The production registry: definitions, profiles and name resolution.
+pub use definitions::{
+    APPLY_PATCH_DESCRIPTION, APPLY_PATCH_NAME, BASH_NAME, CODE_DESCRIPTION, CODE_NAME,
+    DEFAULT_SHELL_TIMEOUT, Definition, EDIT_DESCRIPTION, EDIT_NAME, READ_DESCRIPTION, READ_NAME,
+    STATIC_NAMES, TOOL_FUNCTION, TRANSCRIPT_SEARCH_DESCRIPTION, TRANSCRIPT_SEARCH_NAME, Tool,
+    VIEW_IMAGE_NAME, WRITE_DESCRIPTION, WRITE_NAME,
+};
+pub use output::parse_max_output_length;
+pub use profile::{PROFILES, Profile, all_profile_tools, profile_names};
+pub use registry::{Registry, StaticTranslators, aliases, unavailable};
 use std::sync::Arc;
 
 pub const DEFAULT_MAX_OUTPUT_LENGTH: usize = 40_000;
@@ -50,7 +64,9 @@ fn text_result(call_id: &str, text: String) -> ToolResult {
         }],
     }
 }
-fn error_status(message: String, limit: usize) -> CallStatus {
+/// An error the model reads in place of a call's result, bounded to `limit`
+/// characters; zero is the default limit (Go `tool.ErrorStatus`).
+pub fn error_status(message: String, limit: usize) -> CallStatus {
     let limit = if limit == 0 {
         DEFAULT_MAX_OUTPUT_LENGTH
     } else {

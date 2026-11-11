@@ -71,19 +71,7 @@ pub(super) fn borrowed_string(raw: &RawValue) -> Result<Option<Cow<'_, str>>> {
         .map_err(|error| Error(error.to_string()))
 }
 pub(super) fn output_limit(values: &HashMap<String, &RawValue>) -> Result<usize> {
-    let Some(value) = values.get("max_output_length") else {
-        return Ok(DEFAULT_MAX_OUTPUT_LENGTH);
-    };
-    let number = number::number(value)
-        .map_err(|error| Error(format!("decode max_output_length: {error}")))?;
-    let Some(value) = number.filter(|n| *n > 0.0 && *n <= (1u64 << 53) as f64 && n.fract() == 0.0)
-    else {
-        return Err(Error("max_output_length must be a positive integer".into()));
-    };
-    if value > 1_000_000.0 {
-        return Err(Error("max_output_length must not exceed 1000000".into()));
-    }
-    Ok(value as usize)
+    parse_max_output_length(values.get("max_output_length").copied())
 }
 fn syntax_error(text: &str) -> Option<String> {
     if let Some(error) = duplicate(text) {

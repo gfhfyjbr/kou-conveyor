@@ -21,7 +21,13 @@ pub(super) fn number(raw: &RawValue) -> Result<Option<f64>> {
     let clipped = if bytes.len() <= 40 {
         encoded.to_owned()
     } else {
-        format!("{}…", String::from_utf8_lossy(&bytes[..40]))
+        // Go cuts at 40 bytes and reports the text a character at a time: each
+        // byte of a character cut in two reads as U+FFFD.
+        let whole = match std::str::from_utf8(&bytes[..40]) {
+            Ok(text) => text.len(),
+            Err(error) => error.valid_up_to(),
+        };
+        format!("{}{}…", &encoded[..whole], "\u{fffd}".repeat(40 - whole))
     };
     Err(Error(format!(
         "{}: want a number, such as 100, not {clipped}",

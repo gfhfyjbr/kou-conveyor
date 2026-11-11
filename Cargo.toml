@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/kou-domain", "crates/kou-store", "crates/kou-runtime", "crates/kou-tools", "crates/kou-provider", "crates/kou-engine", "crates/kou-view", "crates/kou-server", "crates/kou-web", "apps/session", "apps/server"]
+members = ["crates/*", "apps/*"]
 exclude = ["benchmarks/rust-go"]
 resolver = "3"
 

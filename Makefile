@@ -51,18 +51,4 @@ rust-web:
 	python3 compat/build_web.py
 
 rust-compat:
-	python3 compat/store_parity.py
-	python3 compat/writer_parity.py
-	python3 compat/codevm_parity.py
-	python3 compat/fileops_parity.py
-	python3 compat/patch_parity.py
-	python3 compat/native_parity.py
-	python3 compat/provider_parity.py
-	python3 compat/anthropic_parity.py
-	python3 compat/context_parity.py
-	python3 compat/replay_parity.py
-	python3 compat/loop_parity.py
-	python3 compat/operation_parity.py
-	python3 compat/capture_parity.py
-	python3 compat/shell_parity.py
-	python3 compat/translator_parity.py
+	@set -e; for script in compat/*_parity.py; do echo "python3 $$script"; python3 $$script; done

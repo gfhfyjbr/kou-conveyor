@@ -1,10 +1,13 @@
 mod json;
 mod model;
+mod printable;
+mod quote;
 mod record;
 mod time;
 
 pub use json::{Json, validate_json, write_compact_json};
 pub use model::*;
+pub use quote::{go_quote, go_quote_bytes};
 pub use record::*;
 pub use time::Timestamp;
 

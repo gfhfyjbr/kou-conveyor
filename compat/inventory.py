@@ -71,6 +71,7 @@ SOURCES = [
     "harness/contextbuilder/prompts/skill-preamble.md",
     "harness/inbox/inbox.go",
     "harness/tool/registry.go",
+    "harness/tool/skill_use.go",
     "harness/tool/tool.go",
     "harness/tool/output.go",
     "harness/tool/bash/bash.go",

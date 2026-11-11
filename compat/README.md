@@ -504,6 +504,29 @@ production runner wiring remain open. Go's Skill tests passed three race
 repetitions and the development oracle passed vet. Whole-runner CPU/RSS has not
 been measured.
 
+## SkillUse translator and skill catalog
+
+`kou-runtime::tool::{SkillCatalog, Skill, SkillUse}` port the registry's skill
+registration and the `SkillUse` translator. The catalog holds metadata only (no
+file contents), keeps registration order, rejects an exact duplicate path or name
+and validates path, name and description in Go's order. The translator accepts an
+empty call name or exactly `SkillUse`, reads typed fields in input order so an
+earlier typed error precedes a later duplicate or malformed member, looks the raw
+name up exactly, and submits one `skill_use` v1 spec without any I/O. Results map
+completed content through Go's `ToValidUTF8` run collapsing; errors are unbounded,
+as in Go.
+
+`kou-domain::{go_quote, go_quote_bytes}` render Go's `%q` exactly, using the
+printable ranges generated from `strconv.IsPrint` (`kou-translator-oracle
+--printable` regenerates `crates/kou-domain/src/printable.rs`).
+
+`compat/translator_parity.py` compares **310 SkillUse projections** (1,907 in all)
+with the Go registry's own translator. One documented deviation: for a lone
+surrogate escape in the arguments both sides reject the call, but only Go's
+message names the pair and its offset; the comparator accepts exactly that case.
+The actual six-case coordinator fixture now translates through `SkillUse` and the
+catalog rather than a test stub.
+
 ## Native artifact I/O
 
 `kou-tools::artifact::create` pins the parent directory descriptor, creates a file

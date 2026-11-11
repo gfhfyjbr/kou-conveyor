@@ -259,6 +259,10 @@
       "sha256": "02bc9a617eb443c2429dbcfe0c580149fb6ef317c70bc93a2cff91bf1956cacc"
     },
     {
+      "file": "harness/tool/skill_use.go",
+      "sha256": "d9319e0549f3ae7d9f63aa39b0c610c318708f66616717ef76ca3cc42e24baf1"
+    },
+    {
       "file": "harness/tool/tool.go",
       "sha256": "b3b87c236a744e124d54c93e27d36786daec247da4a28125eb16c8ed75c5a799"
     },

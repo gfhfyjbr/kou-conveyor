@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Pure model-call translation; submitted specs are recorded and never executed."""
+import base64
 import copy
 import json
 import os
@@ -304,6 +305,73 @@ def command_cases():
     return rows
 
 
+def skill_case(arguments="{}", action="translate", skills=None, call_name="SkillUse", call_id="call", operations=(), status=None):
+    if skills is None:
+        skills = [{"Name": "review", "Path": "/inert//SKILL.md", "Description": "Review code.", "Manual": True}]
+    return {"Action": action, "Kind": "skill_use", "Name": "SkillUse", "Skills": skills,
+            "Call": {"CallID": call_id, "Name": call_name, "Arguments": arguments},
+            "Operations": list(operations), "Status": status or {}}
+
+
+def skill_operation(status="completed", content=b"owned instructions", **state):
+    return {"ID": "owned", "Type": "skill_use", "Version": 1, "Status": status,
+            "State": {"Path": "/inert/SKILL.md", "Content": base64.b64encode(content).decode(), "TerminalError": "", **state}}
+
+
+def skill_cases():
+    rows = []
+    for raw in ["", " \n\t", "{}", "null", "[]", '"text"', "true", "42", "{", "{} x",
+                '{"name":"review"}', '{"Name":"review"}', '{"name":null}', '{"name":" review"}',
+                '{"name":"Review"}', '{"name":" \\t "}', '{"name":1}', '{"name":false}', '{"name":[]}', '{"name":{}}',
+                '{"name":"review","unknown":1e999}', '{"name":"rev\\u0069ew"}',
+                '{"name":"review","name":"review"}', '{"unknown":{"x":1,"x":2}}',
+                '{"name":1,"name":"review"}', '{"name":1,"unknown":{"x":1,"x":2}}',
+                '{"unknown":{"x":1,"x":2},"name":1}', '{"name":1,"x":}',
+                '{"name":"\\ud800"}', '{"unknown":"\\ud800"}',
+                '{"name":1,"unknown":"\\ud800"}', '{"unknown":"\\ud800","name":1}']:
+        rows.append(skill_case(raw))
+    for call_name in ["", "SkillUse", "skilluse", "mcp__gateway_SkillUse", "Other", "a\0b\n\t", "界é\u0301"]:
+        for raw in ['{"name":"review"}', "{", "{}"]:
+            rows.append(skill_case(raw, call_name=call_name))
+    for name in ["", " ", "missing", "review\0", 'a"b', "a\x07\x0b", "\x01\x7f", "\u0085", "\u00a0", "\u0301", "\u200b\u2028", "\ue000", "\U000e0001", "界é😃"]:
+        rows.append(skill_case(json.dumps({"name": name}, ensure_ascii=False)))
+    for changes in [{"Path": ""}, {"Path": " \n"}, {"Name": ""}, {"Name": "\t"}, {"Description": ""},
+                    {"Description": " "}, {"Name": None}, {"Path": None}, {"Description": None}, {"Manual": None},
+                    {"Name": " review "}, {"Path": "relative//../SKILL.md"}, {"Path": "a\0b"}]:
+        entry = {"Name": "review", "Path": "/inert/SKILL.md", "Description": "metadata", **changes}
+        rows.append(skill_case(action="new", skills=[entry]))
+    original = {"Name": "review", "Path": "/inert/SKILL.md", "Description": "metadata"}
+    for other in [original, {**original, "Name": "other"}, {**original, "Path": "/inert/other"},
+                  {**original, "Name": "Review", "Path": "/inert/other"}]:
+        rows.append(skill_case(action="new", skills=[original, other]))
+    for operations in [[], [skill_operation()], [skill_operation(), skill_operation()]]:
+        for status in [{}, {"Error": "raw validation"}, {"Error": "界" * 50000, "ErrorTruncated": True}]:
+            rows.append(skill_case(action="result", operations=operations, status=status))
+    for current_status in ["ready", "awaiting", "canceling", "completed", "canceled", "failed", "", "unknown"]:
+        for error in ["", "owned error", "界\nerror"]:
+            rows.append(skill_case(action="result", operations=[skill_operation(current_status, TerminalError=error)]))
+        rows.append(skill_case(action="running", operations=[skill_operation(current_status)]))
+    for body in [b"", b"\xff\xff", b"a\xff\xffb\xc0\x80c", b"\xe4\xb8\x96\xe7\x95\x8c\xff\xfe\xe2\x82",
+                 b"\xef\xbf\xbd\xff\xff\xef\xbf\xbd", bytes(range(256)), b"\xff" * 100000, b"owned\n" * 12000]:
+        rows.append(skill_case(action="result", operations=[skill_operation(content=body)]))
+    for call_id in ["", 'call"7', "a\0b\n\t", "\u0301界"]:
+        rows += [skill_case(action="result", call_id=call_id),
+                 skill_case(action="result", call_id=call_id, operations=[skill_operation("failed")])]
+    for patch in [{"Type": "file"}, {"Version": 2}, {"State": []}, {"State": "bad"}, {"State": None},
+                  {"State": {}}, {"State": {"Path": ""}}, {"State": {"Path": 42}}, {"State": {"Path": "/x", "Content": []}}]:
+        current = {**skill_operation(), **patch}
+        rows.append(skill_case(action="result", operations=[current]))
+    rng = random.Random(20261113)
+    for index in range(80):
+        body = bytes(rng.randrange(256) for _ in range(rng.randrange(512)))
+        current_status = rng.choice(["ready", "awaiting", "canceling", "completed", "failed", "canceled", "unknown"])
+        rows.append(skill_case(action="result", operations=[skill_operation(current_status, body, TerminalError=rng.choice(["", "terminal", "界"]))]))
+        name = rng.choice(["review", "missing", "Review", "review ", "界", "a\0b"])
+        raw = json.dumps({"name": name, "unknown": [index, True, None]}, ensure_ascii=bool(index % 2))
+        rows.append(skill_case(raw))
+    return rows
+
+
 MODAL = re.compile(
     r'^(?:decode Bash arguments: |decode Bash argument "(?:command|timeout)": |bash argument: decode max_output_length: )'
     r'json: (?:cannot|unable to) unmarshal JSON (?:array|object|string|number|boolean) into Go '
@@ -401,6 +469,25 @@ def file_diagnostic(value, request):
     return re.fullmatch(prefix + modal + fields, value) is not None
 
 
+def skill_diagnostic(value, request):
+    if not isinstance(value, str) or request.get("Kind") != "skill_use":
+        return False
+    modal = r'json: (?:cannot|unable to) unmarshal JSON (?:array|object|string|number|boolean) into Go '
+    if request.get("Action") == "translate":
+        return re.fullmatch(r'decode skill-use arguments: ' + modal + r'(?:tool\.skillUseArguments|string within "/name")', value) is not None
+    operations = request.get("Operations", [])
+    if request.get("Action") != "result" or len(operations) != 1:
+        return False
+    call_id = re.escape(json.dumps(request["Call"]["CallID"], ensure_ascii=False))
+    operation_id = re.escape(json.dumps(operations[0]["ID"], ensure_ascii=False))
+    prefix = f'decode skill-use call {call_id} result: decode skill-use operation {operation_id} state: '
+    fields = r'(?:operation\.SkillUseState|string within "/(?:Path|TerminalError)"|\[\]uint8 within "/Content")'
+    return re.fullmatch(prefix + modal + fields, value) is not None
+
+
+SURROGATE = re.compile(r'decode skill-use arguments: jsontext: invalid surrogate pair `[^`]*` in string within "/[a-z]+" after offset \d+')
+
+
 def equivalent(go, rust, request=None):
     if go == rust:
         return True
@@ -419,10 +506,16 @@ def equivalent(go, rust, request=None):
     for actual, expected, key in [(candidate.get("Status") or {}, go.get("Status") or {}, "Error"), (candidate, go, "Error")]:
         value, other = actual.get(key, ""), expected.get(key, "")
         if (isinstance(value, str) and isinstance(other, str)
-                and (MODAL.fullmatch(value) or file_diagnostic(value, request))
-                and (MODAL.fullmatch(other) or file_diagnostic(other, request))
+                and (MODAL.fullmatch(value) or file_diagnostic(value, request) or skill_diagnostic(value, request))
+                and (MODAL.fullmatch(other) or file_diagnostic(other, request) or skill_diagnostic(other, request))
                 and value.replace("json: unable to unmarshal", "json: cannot unmarshal", 1)
                 == other.replace("json: unable to unmarshal", "json: cannot unmarshal", 1)):
+            actual[key] = other
+        # Documented deviation: both reject a lone surrogate escape; only Go names the pair and offset.
+        elif (key == "Error" and actual is not candidate and isinstance(value, str) and isinstance(other, str)
+              and request.get("Kind") == "skill_use" and request.get("Action") == "translate"
+              and SURROGATE.fullmatch(other) and value.startswith("decode skill-use arguments: jsontext: ")
+              and "\\ud800" in request["Call"]["Arguments"]):
             actual[key] = other
     if go == candidate:
         return True
@@ -484,12 +577,23 @@ def self_test():
     assert not equivalent({"Sequence": [{**alternate, "Result": {"opaque": message}}]}, right, request)
     opaque = {"Result": {"Output": [{"Value": message}]}, "Sequence": []}
     assert not equivalent({"Result": {"Output": [{"Value": alternate["Error"]}]}, "Sequence": []}, opaque, request)
+    request = skill_case('{"name":1}')
+    message = 'decode skill-use arguments: json: cannot unmarshal JSON number into Go string within "/name"'
+    canonical = {"Status": {"Error": message}, "Specs": []}
+    alternate = {"Status": {"Error": message.replace("json: cannot", "json: unable to")}, "Specs": []}
+    assert equivalent(alternate, canonical, request)
+    for before, after in [("skill-use", "Other"), ("/name", "/path"), ("Go string", "Go bool"), ("JSON number", "JSON array")]:
+        wrong = copy.deepcopy(alternate)
+        wrong["Status"]["Error"] = wrong["Status"]["Error"].replace(before, after)
+        assert not equivalent(wrong, canonical, request)
+    opaque = {"Result": {"Output": [{"Value": message}]}}
+    assert not equivalent({"Result": {"Output": [{"Value": alternate["Status"]["Error"]}]}}, opaque, request)
 
 
 def main():
     self_test()
-    bash_rows, file_rows, command_rows = cases(), file_cases(), command_cases()
-    rows = bash_rows + file_rows + command_rows
+    bash_rows, file_rows, command_rows, skill_rows = cases(), file_cases(), command_cases(), skill_cases()
+    rows = bash_rows + file_rows + command_rows + skill_rows
     target = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "tmp/rust-rewrite-target"))
     subprocess.run(["go", "build", "-o", "tmp/kou-translator-oracle", "./cmd/kou-translator-oracle"], cwd=ROOT, check=True)
     subprocess.run(["cargo", "build", "--locked", "-q", "-p", "kou-runtime", "--example", "translator_oracle"], cwd=ROOT, check=True)
@@ -510,7 +614,7 @@ def main():
     assert failures == 0, f"{failures} translator projections differ"
     sequences = [row for row in file_rows if row["Action"] == "sequence"]
     steps = sum(len(row["Steps"]) for row in sequences)
-    print(f"translator parity: {len(rows)} pure Go/Rust projections ({len(bash_rows)} Bash, {len(file_rows)} File including {len(sequences)} sequences / {steps} result steps, {len(command_rows)} Command); no operations executed")
+    print(f"translator parity: {len(rows)} pure Go/Rust projections ({len(bash_rows)} Bash, {len(file_rows)} File including {len(sequences)} sequences / {steps} result steps, {len(command_rows)} Command, {len(skill_rows)} SkillUse); no operations executed")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,8 @@ mod bash;
 mod command;
 mod file;
 mod number;
+mod skill_use;
+mod skills;
 #[cfg(test)]
 mod tests;
 use crate::operation::{Error, Result, Spec};
@@ -11,6 +13,8 @@ pub use bash::{Bash, BashConfig};
 pub use command::{Command, CommandConfig};
 pub use file::{File, FileConfig, ReadJournalLimits, format_file_result};
 use kou_domain::{CallStatus, Operation, ToolCall, ToolResult, ToolResultOutput};
+pub use skill_use::{SKILL_USE_NAME, SkillUse};
+pub use skills::{RegistrationId, Skill, SkillCatalog};
 use std::sync::Arc;
 
 pub const DEFAULT_MAX_OUTPUT_LENGTH: usize = 40_000;

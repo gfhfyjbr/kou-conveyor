@@ -22,6 +22,7 @@ type input struct {
 	Bash       bash.Config
 	File       filetool.Config
 	Command    commandConfig
+	Skills     []tool.Skill
 	Call       llm.ToolCall
 	Status     tool.CallStatus
 	Operations []operation.Operation
@@ -65,7 +66,16 @@ func (ctx *recording) Submit(spec operation.Spec) operation.ID {
 func run(value input) output {
 	result := blankOutput()
 	var translator tool.Translator
-	if value.Kind == "command" {
+	if value.Kind == "skill_use" {
+		registry := tool.NewRegistry(tool.StaticTranslators{}, tool.SkillUseName)
+		for _, skill := range value.Skills {
+			if _, err := registry.RegisterSkill(skill); err != nil {
+				result.Error = err.Error()
+				return result
+			}
+		}
+		translator, _ = registry.Resolve(tool.SkillUseName)
+	} else if value.Kind == "command" {
 		var err error
 		translator, err = toolcommand.New(toolcommand.Config{
 			Tool: llm.Tool{Name: value.Command.Name}, Command: value.Command.Command,
@@ -118,6 +128,10 @@ func run(value input) output {
 	return result
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--printable" {
+		writePrintable()
+		return
+	}
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 64<<10), 8<<20)
 	output := bufio.NewWriter(os.Stdout)

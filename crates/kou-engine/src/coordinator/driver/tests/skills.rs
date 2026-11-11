@@ -1,6 +1,9 @@
 use super::*;
 use kou_domain::Session;
-use kou_runtime::operation::{self as runtime, SkillReadLimits, decode_skill, skill_spec};
+use kou_runtime::{
+    operation::{self as runtime, SkillReadLimits, decode_skill},
+    tool::{Skill, SkillCatalog, SkillUse, Translator},
+};
 use kou_store::{SessionRecovery, SessionStore};
 use std::{
     fs,
@@ -9,7 +12,7 @@ use std::{
 };
 
 struct Skills {
-    path: String,
+    translator: SkillUse,
 }
 impl ReplayTools for Skills {
     fn available(&self, name: &str) -> bool {
@@ -17,40 +20,27 @@ impl ReplayTools for Skills {
     }
     fn result(
         &self,
-        _: &ToolCall,
+        call: &ToolCall,
         status: &CallStatus,
         operations: &[Arc<Operation>],
     ) -> Result<Vec<ToolResultOutput>> {
-        let value = if !status.error.is_empty() {
-            status.error.clone()
-        } else {
-            let state = decode_skill(&operations[0]).map_err(|error| Error(error.to_string()))?;
-            if state.terminal_error.is_empty() {
-                String::from_utf8(state.content).unwrap()
-            } else {
-                state.terminal_error
-            }
-        };
-        Ok(vec![ToolResultOutput {
-            kind: "text".into(),
-            value,
-        }])
+        self.translator
+            .result(&call.call_id, status, operations)
+            .map(|result| result.output)
+            .map_err(|error| Error(error.to_string()))
     }
 }
 impl LiveTools for Skills {
-    fn translate(&self, _: &ToolCall, submission: &mut Submission) -> CallStatus {
-        let spec = skill_spec(self.path.clone()).unwrap();
-        let id = submission.submit(OperationSpec {
-            kind: spec.kind,
-            version: spec.version,
-            state: spec.state,
-            idempotency: spec.idempotency,
-            max_output_length: spec.max_output_length,
-        });
-        CallStatus {
-            waiting_for: Some(vec![id]),
-            ..CallStatus::default()
-        }
+    fn translate(&self, call: &ToolCall, submission: &mut Submission) -> CallStatus {
+        self.translator.translate_call(call, &mut |spec| {
+            submission.submit(OperationSpec {
+                kind: spec.kind,
+                version: spec.version,
+                state: spec.state,
+                idempotency: spec.idempotency,
+                max_output_length: spec.max_output_length,
+            })
+        })
     }
 }
 struct Native {
@@ -139,8 +129,21 @@ async fn native_skills_use_real_coordinator_receipts_and_recover_last_durable_pr
         fs::write(&staged, data).unwrap();
         let adds = Arc::new(AtomicUsize::new(0));
         let (manager, mut updates) = runtime::LocalManager::new(limits()).unwrap();
+        let catalog = SkillCatalog::default();
+        catalog
+            .register(Skill {
+                name: "review".into(),
+                path: path.to_string_lossy().into(),
+                description: "private fixture".into(),
+                manual: true,
+            })
+            .unwrap();
+        assert!(
+            !path.exists(),
+            "registration read or created the skill file"
+        );
         let registry = Arc::new(Skills {
-            path: path.to_string_lossy().into(),
+            translator: SkillUse::new(catalog),
         });
         let mut run = Rig::custom(Config::default(), |mut driver| {
             driver.registry = registry.clone();
@@ -179,7 +182,13 @@ async fn native_skills_use_real_coordinator_receipts_and_recover_last_durable_pr
             }
         });
         run.send("one", "read the private skill fixture").await;
-        reply(run.request().await, calls(&[("skill", "SkillUse")]));
+        let mut response = calls(&[("skill", "SkillUse")]);
+        let kou_domain::LlmData::ToolCall(call) = &mut response.output.as_mut().unwrap()[0].data
+        else {
+            panic!("fixture reply must be a tool call");
+        };
+        call.arguments = r#"{"name":"review"}"#.into();
+        reply(run.request().await, response);
         if failure.is_empty() {
             let answer = run.request().await;
             assert_eq!(result(&answer.request, "skill").unwrap().as_bytes(), data);

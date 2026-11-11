@@ -15,6 +15,7 @@ serde_json.workspace = true
 chrono.workspace = true
 base64 = "0.22.1"
 tokio = { version = "1.54.1", features = ["sync"] }
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [dev-dependencies]
 kou-store.workspace = true

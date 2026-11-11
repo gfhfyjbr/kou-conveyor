@@ -2,7 +2,10 @@
 use kou_domain::{CallStatus, Operation, ToolCall, ToolResult};
 use kou_runtime::{
     operation::Spec,
-    tool::{Bash, BashConfig, Command, CommandConfig, File, FileConfig, Translator},
+    tool::{
+        Bash, BashConfig, Command, CommandConfig, File, FileConfig, Skill, SkillCatalog, SkillUse,
+        Translator,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -19,6 +22,7 @@ struct Input {
     bash: BashConfig,
     file: FileConfig,
     command: CommandConfig,
+    skills: Vec<Skill>,
     call: ToolCall,
     status: CallStatus,
     operations: Vec<Operation>,
@@ -45,7 +49,16 @@ struct Output {
 }
 fn run(input: Input) -> Output {
     let mut output = Output::default();
-    let translator: Box<dyn Translator> = if input.kind == "command" {
+    let translator: Box<dyn Translator> = if input.kind == "skill_use" {
+        let catalog = SkillCatalog::default();
+        for skill in input.skills {
+            if let Err(error) = catalog.register(skill) {
+                output.error = error.to_string();
+                return output;
+            }
+        }
+        Box::new(SkillUse::new(catalog))
+    } else if input.kind == "command" {
         match Command::new(input.command) {
             Ok(command) => Box::new(command),
             Err(error) => {

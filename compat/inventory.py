@@ -74,6 +74,8 @@ SOURCES = [
     "harness/tool/skill_use.go",
     "harness/tool/tool.go",
     "harness/tool/output.go",
+    "harness/tool/static.go",
+    "harness/tool/profile.go",
     "harness/tool/bash/bash.go",
     "harness/tool/command/command.go",
     "harness/tool/file/file.go",

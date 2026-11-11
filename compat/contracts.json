@@ -271,6 +271,14 @@
       "sha256": "5404247675b536a22921331ffe183ddeb947350f386635036e042495ef3c5bac"
     },
     {
+      "file": "harness/tool/static.go",
+      "sha256": "f5c655be32477a309a77ed86630b26e98d7813922937d2e315b2513dec7872c6"
+    },
+    {
+      "file": "harness/tool/profile.go",
+      "sha256": "1e0a26f98c11c681c90e22dac6d43ecc83979d960454b61bd3d7aad8f6319ce7"
+    },
+    {
       "file": "harness/tool/bash/bash.go",
       "sha256": "48d0c030d8ebc1375966f7d652b4515d881565a20fc433c86768305233c067f4"
     },

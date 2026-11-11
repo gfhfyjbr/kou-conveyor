@@ -527,6 +527,24 @@ message names the pair and its offset; the comparator accepts exactly that case.
 The actual six-case coordinator fixture now translates through `SkillUse` and the
 catalog rather than a test stub.
 
+## Production tool registry
+
+`kou-runtime::tool::{Registry, StaticTranslators, Definition, Tool, Profile}` port
+`harness/tool/{registry,static,profile,output}.go`: the nine built-in slots in Go's
+order, the exact enabled set, dynamic registration, exact-then-alias resolution,
+the unavailable-tool text and the profiles. Built-in definitions are embedded from a
+golden file generated from Go, because their serialized form is part of every
+provider request and of the prompt-cache prefix.
+
+`compat/registry_parity.py` compares 6,661 projections as raw text (all 512
+enabled subsets, alias/resolution cases, registration sequences, profile parsing
+over every Unicode scalar value, output bounds) and checks the golden against Go.
+Open items: the engine stores the unavailable-tool error unbounded where Go bounds
+it to 40,000 characters; registered tool schemas are kept as given rather than
+re-encoded with sorted names as Go does; one Bash `timeout` error corner with a
+cut multi-byte character and a tiny `max_output_length` reports a different
+truncated-byte count.
+
 ## Native artifact I/O
 
 `kou-tools::artifact::create` pins the parent directory descriptor, creates a file

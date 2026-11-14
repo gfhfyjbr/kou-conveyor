@@ -12,7 +12,10 @@ names another):
     Windows   kou-desktop-<label>-windows-<arch>.zip     kou-desktop.exe
 
 <label> is the app's version, with --suffix after it when one is given (the
-commit, for a build that is not a release). The file lands in `dist/` unless
+commit, for a build that is not a release). The Linux program is packaged
+without its debugging sections: a release build keeps them inside the program
+there, several times the size of the program itself; the names a backtrace
+shows stay. The file lands in `dist/` unless
 --out says otherwise, and its path is printed. --skip-build packages
 the release build that is already there. This is what the `Desktop` workflow
 runs; it needs Python and what the build needs, nothing else.
@@ -127,12 +130,28 @@ def macos(program, name, version, out, identifier, sign):
     return package
 
 
+def without_debugging(program):
+    """Take the debugging sections out of a Linux program, where it is.
+
+    GNU strip where the package is made on Linux; LLVM's elsewhere, since
+    macOS's own strip does not read such a program.
+    """
+    tool = "strip" if sys.platform == "linux" else "llvm-strip"
+    try:
+        done = subprocess.run([tool, "--strip-debug", str(program)], capture_output=True, text=True)
+    except FileNotFoundError:
+        sys.exit(f"{tool} was not found: the package would carry the program's debugging sections")
+    if done.returncode != 0:
+        sys.exit(f"{tool} could not strip {program}:\n{done.stderr}")
+
+
 def linux(program, name, out):
     stage = out / f"{name}.stage"
     shutil.rmtree(stage, ignore_errors=True)
     root = stage / name
     (root / "bin").mkdir(parents=True)
     shutil.copy(program, root / "bin" / PROGRAM)
+    without_debugging(root / "bin" / PROGRAM)
     (root / "share" / "applications").mkdir(parents=True)
     shutil.copy(RESOURCES / "linux" / f"{PROGRAM}.desktop", root / "share" / "applications")
     shutil.copytree(RESOURCES / "linux" / "icons", root / "share" / "icons")

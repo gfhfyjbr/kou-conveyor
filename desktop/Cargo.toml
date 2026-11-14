@@ -9,10 +9,11 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# GPUI comes from the gpuimm fork (github.com/gfhfyjbr/gpuimm), checked out next to
-# this repository's parent: ~/Projects/Rust/gpuimm. Glimm lives only in that fork.
-gpui = { path = "../../../Rust/gpuimm/crates/gpui" }
-gpui_platform = { path = "../../../Rust/gpuimm/crates/gpui_platform", features = ["font-kit", "wayland", "x11"] }
+# GPUI comes from the gpuimm fork, at the commit named here; Glimm lives only in
+# that fork. `script/gpuimm link` builds against a checkout of the fork on this
+# machine instead, and `script/gpuimm pin` moves the commit: see the README.
+gpui = { git = "https://github.com/gfhfyjbr/gpuimm", rev = "a1df96e0c05ed826d4bdc5c72432addcac5b9da8" }
+gpui_platform = { git = "https://github.com/gfhfyjbr/gpuimm", rev = "a1df96e0c05ed826d4bdc5c72432addcac5b9da8", features = ["font-kit", "wayland", "x11"] }
 
 kou-acp = { path = "crates/kou-acp" }
 kou-agents = { path = "crates/kou-agents" }

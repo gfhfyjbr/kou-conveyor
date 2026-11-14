@@ -26,10 +26,9 @@ concurrency:
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  # The app draws with GPUI from the gpuimm fork, a path dependency three folders
-  # up from desktop/. This is the branch, tag or commit of it to build against.
-  GPUIMM_REPOSITORY: https://github.com/gfhfyjbr/gpuimm.git
-  GPUIMM_REF: master
+  # The Rust the gpuimm fork's rust-toolchain.toml names: what GPUI, which cargo
+  # fetches at the commit desktop/Cargo.toml pins, is known to build with.
+  RUST_TOOLCHAIN: 1.98.1
   # libghostty-vt is built with Zig 0.17, which desktop/vendor/ is searched for.
   ZIG_VERSION: 0.17.1
   CARGO_TERM_COLOR: always
@@ -72,21 +71,21 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch the GPUI fork
+      - name: Install Rust
         shell: bash
         run: |
-          fork="$GITHUB_WORKSPACE/../../Rust/gpuimm"
-          mkdir -p "$fork"
-          git -C "$fork" init --quiet
-          git -C "$fork" remote add origin "$GPUIMM_REPOSITORY"
-          git -C "$fork" fetch --quiet --depth 1 origin "$GPUIMM_REF"
-          git -C "$fork" checkout --quiet --detach FETCH_HEAD
-          echo "gpuimm at $(git -C "$fork" rev-parse HEAD)"
-          # The toolchain the fork pins is the one GPUI is known to build with.
-          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$fork/rust-toolchain.toml")"
-          [[ -n "$channel" ]]
-          rustup toolchain install "$channel" --profile minimal
-          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+
+      # Before the long build: a lock file that is behind fails here, by name.
+      - name: Check the lock file
+        working-directory: desktop
+        shell: bash
+        run: |
+          if ! cargo metadata --locked --format-version 1 > /dev/null; then
+            echo "::error file=desktop/Cargo.lock::desktop/Cargo.lock is behind desktop/Cargo.toml or the pinned gpuimm commit: run desktop/script/gpuimm lock on a linked checkout (plain cargo on one that is not) and commit it"
+            exit 1
+          fi
 
       - name: Install Linux packages
         if: runner.os == 'Linux'

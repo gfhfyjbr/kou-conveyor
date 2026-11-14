@@ -1,3 +1,7 @@
+# What `script/gpuimm link` writes for this checkout alone: where a checkout of
+# the GPUI fork is, to build against it instead of the commit Cargo.toml pins.
+include = [{ path = "gpuimm.local.toml", optional = true }]
+
 # Same flags as the GPUI fork this workspace builds against.
 [build]
 rustflags = ["-C", "symbol-mangling-version=v0"]

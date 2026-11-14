@@ -133,9 +133,29 @@ agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around 
   handed to it (`pane send`) is over when the shell says so, not when the
   screen falls quiet.
 
-GPUI comes from the gpuimm fork (`github.com/gfhfyjbr/gpuimm`), expected at
-`~/Projects/Rust/gpuimm`. The fork has Glimm, its distortion effects; the app
-uses none of them at present, and makes no sound.
+GPUI comes from the gpuimm fork (`github.com/gfhfyjbr/gpuimm`) as a git
+dependency: `Cargo.toml` names the commit and cargo fetches it, so a clone, a
+worktree and the build service build with nothing set up. The fork has Glimm,
+its distortion effects; the app uses none of them at present, and makes no
+sound.
+
+To work on the fork and the app at once, `script/gpuimm link` builds this
+checkout of the repository against a checkout of the fork on the machine
+(`~/Projects/Rust/gpuimm` unless another is given), uncommitted changes
+included. It writes a cargo config that git ignores, `.cargo/gpuimm.local.toml`:
+a `[patch]` taking the fork's crates from the checkout, and a lock file of its
+own for such builds. `Cargo.toml` and `Cargo.lock` stay as committed.
+`script/gpuimm` alone says which of the two the app is built against. Two
+things follow from building linked:
+
+- A dependency added or changed while linked lands in the linked lock file
+  only. `script/gpuimm lock` writes it into `Cargo.lock`; `script/gpuimm
+  status` says when that is due, and the build service refuses a `Cargo.lock`
+  that is behind.
+- What the app comes to need from the fork is nobody else's until it is
+  pinned: commit it in the fork, push it, and run `script/gpuimm pin`, which
+  moves the commit in `Cargo.toml` and `Cargo.lock` and refuses one GitHub
+  does not have.
 
 The terminal is Ghostty's: `libghostty-vt` 1.0.0 (terminal state, parsing and
 the kitty graphics protocol), drawn by the app itself so that a terminal can
@@ -471,9 +491,9 @@ macOS (Apple silicon) and on Linux (x86-64) for every push to `main` or
 `rust-rewrite` and every pull request that touches `desktop/`, and keeps the
 packages with the run for two weeks. A tag `desktop-v<version>`, where the
 version is the one in `Cargo.toml`, also publishes them as a release with
-their checksums. It fetches the GPUI fork (`GPUIMM_REF` in the workflow: a
-branch, a tag or a commit) and Zig itself, and builds with the toolchain the
-fork pins.
+their checksums. Cargo fetches the GPUI fork at the commit `Cargo.toml` pins;
+the workflow fetches Zig, and builds with the Rust the fork's
+`rust-toolchain.toml` names (`RUST_TOOLCHAIN` in the workflow).
 
 There is no Windows package: the app does not build there yet. The terminal
 (`kou-term`) has a pty on unix only, and the build script of

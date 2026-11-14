@@ -3,3 +3,5 @@
 /.tools/
 /vendor/zig-*
 /dist/
+/.cargo/gpuimm.local.toml
+/.cargo/linked/

@@ -141,7 +141,7 @@ def status(_options):
             print(f"         at {head[:12]}, {ahead} commit(s) from the pin")
         if changed:
             print(f"         {len(changed)} file(s) changed and not committed")
-        print("         what the app needs of this is not pinned: nobody else builds against it yet")
+        print("         the pin does not have this: what the app uses of it builds here only, until it is pinned")
     if behind(url, commit):
         print("lock     Cargo.lock is behind what this checkout builds with: script/gpuimm lock")
 

@@ -112,13 +112,17 @@ jobs:
           "desktop/vendor/$ZIG_NAME/zig" version
 
       - name: Build and package
+        env:
+          # A pull request is built as merged; its packages are named by the
+          # commit that was pushed, which is the one anybody can find.
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
         shell: bash
         run: |
           # A release is named by its version alone; any other build by its commit too.
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             python3 desktop/script/package
           else
-            python3 desktop/script/package --suffix "${GITHUB_SHA::7}"
+            python3 desktop/script/package --suffix "${COMMIT::7}"
           fi
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

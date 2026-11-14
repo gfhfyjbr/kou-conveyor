@@ -481,6 +481,13 @@ Linux a `.tar.gz` with the program, its desktop entry, its icons and an
 `install.sh` that copies them under `~/.local` or a prefix given to it.
 `--skip-build` packages the release build already there.
 
+The Linux program goes into its package without its debugging sections: a
+release build keeps them inside the program there, 245 MB of a 297 MB file
+when this was written, and the package is a quarter of the size without
+them. The names a backtrace shows stay. The build service makes it on
+Ubuntu 24.04, so it needs glibc 2.39 or later, and `libxkbcommon`,
+`libxkbcommon-x11` and `libxcb` installed.
+
 The macOS app is signed without a certificate unless `--sign` or
 `KOU_SIGN_IDENTITY` names one. macOS refuses to open such an app once it
 has been downloaded, until the mark the download left on it is removed:

@@ -1,0 +1,175 @@
+#!/bin/bash
+# Drives the real app the way an agent in a pane does: a hidden window, a
+# temporary home and socket, plain shells for panes. No agent is started and no
+# model is called. Run from desktop/ after `cargo build -p kou-desktop`.
+#
+#   script/e2e [--keep] [PICTURE.png]
+#
+# Prints one line per check and exits 1 on the first that fails. With a picture
+# path, the window is captured in the canvas layout, 25 seconds after it opened.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+keep=0
+picture=""
+for arg in "$@"; do
+    case "$arg" in
+        --keep) keep=1 ;;
+        *) picture="$arg" ;;
+    esac
+done
+
+target="$(cargo metadata --format-version 1 --no-deps 2>/dev/null \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+bin="$target/debug/kou-desktop"
+[ -x "$bin" ] || { echo "build first: cargo build -p kou-desktop"; exit 1; }
+
+# A socket path has to fit in about a hundred bytes, so the scratch directory is short.
+work="$(mktemp -d /tmp/kou-e2e.XXXXXX)"
+mkdir -p "$work/home" "$work/project"
+export KOU_SOCKET="$work/s"
+# Run from inside a pane of the real app, these would name that pane.
+unset KOU_PANE KOU_SESSION
+# The panes' shells read the user's own profile. Oh My Zsh's stops a new
+# shell at a question when its update check is due ("Would you like to
+# update?"), which is not what is checked here: these shells skip the check.
+export DISABLE_AUTO_UPDATE=true
+log="$work/app.log"
+
+# The picture is taken on a timer, after the checks have had time to run.
+if [ -n "$picture" ]; then
+    "$bin" --home "$work/home" --open "$work/project" --layout canvas \
+        --capture "$picture" --after 25000 >"$log" 2>&1 &
+else
+    "$bin" --home "$work/home" --open "$work/project" --layout canvas --hidden >"$log" 2>&1 &
+fi
+app=$!
+
+finish() {
+    kill "$app" 2>/dev/null
+    wait "$app" 2>/dev/null
+    [ "$keep" = 1 ] && echo "kept $work" || rm -rf "$work"
+}
+trap finish EXIT
+
+fail() {
+    echo "FAIL  $1"
+    sed 's/^/      /' "$log" | tail -5
+    exit 1
+}
+pass() { echo "ok    $1"; }
+field() { python3 -c "import json,sys; print(json.load(sys.stdin)['$1'])"; }
+seconds() { python3 -c "import time; print('%.1f' % (time.time() - $1))"; }
+now() { python3 -c "import time; print(time.time())"; }
+
+for _ in $(seq 1 40); do "$bin" ping >/dev/null 2>&1 && break; sleep 0.25; done
+[ "$("$bin" ping)" = "pong (protocol 1)" ] || fail "the app answers a ping"
+pass "the app answers a ping"
+
+# Detection runs off the main thread; give it a moment before asking what it found.
+for _ in $(seq 1 40); do "$bin" harness list | grep -q "^shell" && break; sleep 0.25; done
+"$bin" harness list | grep -q "^shell	ready" || fail "a shell is among the detected harnesses"
+pass "a shell is among the detected harnesses"
+
+lead="$("$bin" pane spawn shell --title lead --json | field id)" || fail "a pane can be started"
+[ -n "$lead" ] || fail "a pane can be started"
+pass "a pane can be started ($lead)"
+
+"$bin" pane wait "$lead" --timeout 10 >/dev/null || fail "a fresh shell becomes free"
+"$bin" pane send "$lead" 'echo marker-$((40+2))' >/dev/null || fail "text can be sent to a pane"
+started=$(now)
+"$bin" pane wait "$lead" --timeout 10 >/dev/null || fail "the pane becomes free after a quick command"
+"$bin" pane read "$lead" --lines 6 | grep -q "^marker-42" || fail "the pane shows the command's output"
+pass "send, wait and read on a quick command ($(seconds "$started")s)"
+
+"$bin" pane send "$lead" 'sleep 2' >/dev/null
+started=$(now)
+[ "$("$bin" pane info "$lead" | cut -f2)" = "working" ] || fail "a silent command counts as working"
+"$bin" pane wait "$lead" --timeout 10 >/dev/null || fail "the wait ends when the silent command does"
+took=$(seconds "$started")
+python3 -c "import sys; sys.exit(0 if 1.5 <= $took <= 4 else 1)" || fail "the wait lasted as long as the command ($took s)"
+pass "a silent two second command is busy for its length ($took s)"
+
+child="$(KOU_PANE="$lead" "$bin" pane spawn shell --title worker \
+    --prompt 'echo child-start; sleep 1; echo child-end' --json | field id)"
+[ "$("$bin" pane info "$child" | cut -f2)" = "working" ] || fail "a pane given a first prompt is busy from the start"
+"$bin" pane wait "$child" --timeout 15 >/dev/null || fail "the child becomes free"
+"$bin" pane read "$child" --lines 6 | grep -q "^child-end" || fail "the child ran its prompt"
+pass "a child pane runs its first prompt before it reads as free"
+
+"$bin" pane list --json | python3 -c "
+import json, sys
+panes = {pane['id']: pane for pane in json.load(sys.stdin)['panes']}
+assert panes['$child']['parent'] == '$lead', panes
+assert panes['$lead']['parent'] is None, panes
+assert panes['$child']['title'] == 'worker', panes
+" || fail "the list knows who started whom"
+pass "the list knows who started whom"
+
+# Started from a pane on a canvas, the child is on the same canvas: one tab, two panes.
+"$bin" tab list --json | python3 -c "
+import json, sys
+tabs = json.load(sys.stdin)['tabs']
+assert len(tabs) == 1, tabs
+assert tabs[0]['panes'] == ['$lead', '$child'] and tabs[0]['layout'] == 'canvas', tabs
+assert tabs[0]['name'] == 'lead' and not tabs[0]['named'] and tabs[0]['front'], tabs
+" || fail "a tab lists its panes and its layout"
+pass "a tab lists its panes and its layout"
+
+# A pane names its tab, its session and its space, as the user does with a double click.
+KOU_PANE="$lead" "$bin" tab rename api server | grep -q "api server$" || fail "a pane names its tab"
+KOU_PANE="$lead" "$bin" tab icon server >/dev/null || fail "a pane gives its tab an icon"
+"$bin" tab icons | grep -qx "server" || fail "the icons are listed"
+KOU_PANE="$lead" "$bin" tab icon nonsense >/dev/null 2>"$work/err"; [ $? = 1 ] || fail "an unknown icon is refused"
+grep -q "the icons are auto, terminal" "$work/err" || fail "a refused icon says which there are"
+tab="$("$bin" tab list --json | python3 -c "import json,sys; print(json.load(sys.stdin)['tabs'][0]['id'])")"
+"$bin" tab list --json | python3 -c "
+import json, sys
+tab = json.load(sys.stdin)['tabs'][0]
+assert (tab['name'], tab['named'], tab['icon']) == ('api server', True, 'server'), tab
+" || fail "the tab keeps its name and its icon"
+"$bin" tab rename --tab "$tab" --clear --json | python3 -c "
+import json, sys
+tab = json.load(sys.stdin)
+assert (tab['name'], tab['named'], tab['icon']) == ('lead', False, 'server'), tab
+" || fail "a cleared name is the pane's again"
+"$bin" tab rename --tab nope x >/dev/null 2>&1; [ $? = 1 ] || fail "an unknown tab is an error"
+KOU_PANE="$lead" "$bin" tab rename api server >/dev/null
+pass "a tab is named, given an icon, and cleared"
+
+KOU_PANE="$lead" "$bin" session rename parser   rewrite | grep -q "parser rewrite$" || fail "a pane renames its session"
+"$bin" session list | grep -q "selected.*parser rewrite$" || fail "the session list shows the name"
+KOU_PANE="$lead" "$bin" space rename client work | grep -q "client work$" || fail "a pane renames its space"
+"$bin" space list | grep -q "client work$" || fail "the space list shows the name"
+"$bin" space rename --space nope x >/dev/null 2>&1; [ $? = 1 ] || fail "an unknown space is an error"
+pass "a session and a space are renamed"
+
+"$bin" pane wait "$lead" --exit --timeout 1 >/dev/null 2>&1; [ $? = 4 ] || fail "a wait that runs out exits 4"
+"$bin" pane read nope >/dev/null 2>&1; [ $? = 1 ] || fail "an unknown pane is an error"
+pass "a wait that runs out exits 4 and an unknown pane exits 1"
+
+"$bin" pane close "$child" >/dev/null || fail "a pane can be closed"
+"$bin" pane info "$child" >/dev/null 2>&1 && fail "a closed pane is gone"
+pass "a closed pane is gone"
+
+python3 - "$work/home/state.json" "$lead" <<'PY' || fail "the state on disk matches"
+import json, sys
+state = json.load(open(sys.argv[1]))
+assert [pane["id"] for pane in state["panes"]] == [sys.argv[2]], state["panes"]
+session = state["sessions"][0]
+assert "board" not in session and "layout" not in session, session.keys()
+(tab,) = session["tabs"]
+assert tab["layout"] == "canvas" and len(tab["board"]["nodes"]) == 1, tab
+assert (tab["name"], tab["icon"]) == ("api server", "server"), tab
+assert session["name"] == "parser rewrite" and state["spaces"][0]["name"] == "client work"
+PY
+pass "the state on disk matches"
+
+echo "all checks passed"
+if [ -n "$picture" ]; then
+    KOU_PANE="$lead" "$bin" pane spawn shell --title second >/dev/null
+    echo "waiting for the picture"
+    wait "$app"
+    grep -q "^saved" "$log" || fail "the picture was written"
+    echo "wrote $picture"
+fi

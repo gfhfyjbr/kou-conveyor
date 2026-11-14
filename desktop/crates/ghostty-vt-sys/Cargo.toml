@@ -1,0 +1,17 @@
+[package]
+name = "ghostty-vt-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Raw bindings to libghostty-vt, built from the vendored release with Zig"
+build = "build.rs"
+links = "ghostty-vt"
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+serde_json.workspace = true

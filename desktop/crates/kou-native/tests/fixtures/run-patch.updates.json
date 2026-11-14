@@ -1,0 +1,14 @@
+[
+  "TurnStarted",
+  {"Usage":{"context_used":1000,"context_limit":null,"input_tokens":7700,"output_tokens":140,"cost_usd":null}},
+  {"Tool":{"id":"call_patch_1","title":"Patch added.txt, notes/hello.txt","kind":"edit","status":"pending","content":[{"Diff":{"path":"/workspace/added.txt","old":null,"new":"first\nsecond\n"}},{"Diff":{"path":"/workspace/notes/hello.txt","old":"alpha\nBETA\ngamma\n","new":"alpha\nbeta again\ngamma\n"}}],"locations":[{"path":"/workspace/added.txt","line":null},{"path":"/workspace/notes/hello.txt","line":null}],"raw_input":{"input":"*** Begin Patch\n*** Add File: added.txt\n+first\n+second\n*** Update File: notes/hello.txt\n@@\n alpha\n-BETA\n+beta again\n gamma\n*** End Patch"},"raw_output":null}},
+  {"ToolPatch":{"id":"call_patch_1","title":null,"kind":null,"status":"running","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_patch_1","title":null,"kind":null,"status":"done","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"Usage":{"context_used":1100,"context_limit":null,"input_tokens":8800,"output_tokens":160,"cost_usd":null}},
+  {"Tool":{"id":"call_search_1","title":"Search the transcript for BETA","kind":"search","status":"pending","content":[],"locations":[],"raw_input":{"query":"BETA"},"raw_output":null}},
+  {"ToolPatch":{"id":"call_search_1","title":null,"kind":null,"status":"running","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_search_1","title":null,"kind":null,"status":"done","content":[{"Text":"```\n6 matches for \"BETA\" in the transcript:\n\n[tool call Write · record 14, line 1]\n> {\"path\": \"notes/hello.txt\", \"content\": \"alpha\\nbeta\\ngamma\\n\"}\n\n[tool call Edit · record 18, line 1]\n> {\"path\": \"notes/hello.txt\", \"old_string\": \"beta\", \"new_string\": \"BETA\"}\n\n[tool result file, line 2]\n  1\talpha\n>      2\tbeta\n       3\tgamma\n\n[tool result file, line 3]\n  Edited /workspace/notes/hello.txt: replaced 1 occurrence at line 2. The file now reads around the first change:\n       1\talpha\n>      2\tBETA\n       3\tgamma\n\n[assistant · record 30, line 1]\n> Done: the file says BETA.\n\n[tool call apply_patch · record 35, line 1]\n> {\"input\": \"*** Begin Patch\\n*** Add File: added.txt\\n+first\\n+second\\n*** Update File: notes/hello.txt\\n@@\\n alpha\\n-BETA\\n+beta again\\n gamma\\n*** End Patch\"}\n```"}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"AssistantChunk":"Patched."},
+  {"Usage":{"context_used":1200,"context_limit":null,"input_tokens":10000,"output_tokens":180,"cost_usd":null}},
+  {"TurnEnded":"Finished"}
+]

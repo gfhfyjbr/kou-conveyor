@@ -1,0 +1,5 @@
+/target/
+/artifacts/
+/.tools/
+/vendor/zig-*
+/dist/

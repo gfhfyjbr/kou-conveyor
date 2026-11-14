@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Build the app for release and put it into the file people download.
+
+    script/package [--target TRIPLE] [--suffix TEXT] [--out DIR] [--skip-build]
+                   [--identifier ID] [--sign IDENTITY]
+
+What comes out depends on the system built for (this one, unless --target
+names another):
+
+    macOS     kou-desktop-<label>-macos-<arch>.dmg       KouDesktop.app, to drag into Applications
+    Linux     kou-desktop-<label>-linux-<arch>.tar.gz    the program, its desktop entry and icons, install.sh
+    Windows   kou-desktop-<label>-windows-<arch>.zip     kou-desktop.exe
+
+<label> is the app's version, with --suffix after it when one is given (the
+commit, for a build that is not a release). The file lands in `dist/` unless
+--out says otherwise, and its path is printed. --skip-build packages
+the release build that is already there. This is what the `Desktop` workflow
+runs; it needs Python and what the build needs, nothing else.
+
+The macOS bundle is the one the app makes for itself when it is run as a bare
+file (`crates/kou-desktop/src/bundle.rs`), from the same `Info.plist` and the
+same icon. It is signed to run on the machine it is on, with no certificate,
+unless --sign (or KOU_SIGN_IDENTITY) names one: macOS will not open such an
+app downloaded from the internet until its quarantine mark is taken off
+(`xattr -dr com.apple.quarantine KouDesktop.app`). --identifier gives the
+bundle another identifier than the app's, for a bundle made to look at.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import zipfile
+from pathlib import Path
+
+DESKTOP = Path(__file__).resolve().parent.parent
+CRATE = DESKTOP / "crates" / "kou-desktop"
+RESOURCES = CRATE / "resources"
+LICENSE = DESKTOP.parent / "LICENSE"
+PROGRAM = "kou-desktop"
+IDENTIFIER = "dev.kou-conveyor.desktop"
+
+INSTALL = """\
+#!/bin/sh
+# Puts kou under a prefix (~/.local unless one is given): the program, its
+# desktop entry and its icons. Running it again replaces them.
+#
+#   ./install.sh [PREFIX]
+set -eu
+prefix="${1:-$HOME/.local}"
+here="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$prefix/bin" "$prefix/share/applications" "$prefix/share/icons"
+cp "$here/bin/kou-desktop" "$prefix/bin/kou-desktop"
+cp -R "$here/share/icons/hicolor" "$prefix/share/icons/"
+# The entry starts the program where it was put, on the path or not.
+sed "s|^Exec=.*|Exec=$prefix/bin/kou-desktop|" \\
+    "$here/share/applications/kou-desktop.desktop" > "$prefix/share/applications/kou-desktop.desktop"
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$prefix/share/applications" || true
+fi
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" || true
+fi
+echo "kou is in $prefix/bin/kou-desktop"
+"""
+
+
+def run(*command, **options):
+    command = [str(part) for part in command]
+    print("+", " ".join(command), file=sys.stderr, flush=True)
+    subprocess.run(command, check=True, **options)
+
+
+def metadata():
+    out = subprocess.run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+        cwd=DESKTOP, check=True, capture_output=True, text=True,
+    ).stdout
+    data = json.loads(out)
+    version = next(package["version"] for package in data["packages"] if package["name"] == PROGRAM)
+    return Path(data["target_directory"]), version
+
+
+def host_triple():
+    out = subprocess.run(["rustc", "-vV"], check=True, capture_output=True, text=True).stdout
+    return next(line.split(": ", 1)[1] for line in out.splitlines() if line.startswith("host: "))
+
+
+def platform_of(triple):
+    """A target triple as the names in a package's file name."""
+    arch = triple.split("-", 1)[0]
+    arch = {"aarch64": "arm64"}.get(arch, arch)
+    for mark, system in (("apple-darwin", "macos"), ("linux", "linux"), ("windows", "windows")):
+        if mark in triple:
+            return system, arch
+    sys.exit(f"no package is made for {triple}")
+
+
+def macos(program, name, version, out, identifier, sign):
+    stage = out / f"{name}.stage"
+    shutil.rmtree(stage, ignore_errors=True)
+    bundle = stage / "KouDesktop.app"
+    (bundle / "Contents" / "MacOS").mkdir(parents=True)
+    (bundle / "Contents" / "Resources").mkdir()
+    shutil.copy(program, bundle / "Contents" / "MacOS" / PROGRAM)
+    info = (RESOURCES / "Info.plist").read_text()
+    for place, value in (("{identifier}", identifier), ("{program}", PROGRAM), ("{version}", version)):
+        info = info.replace(place, value)
+    (bundle / "Contents" / "Info.plist").write_text(info)
+    for icon in ("Assets.car", "AppIcon.icns"):
+        shutil.copy(RESOURCES / "macos" / icon, bundle / "Contents" / "Resources" / icon)
+    signing = ["codesign", "--force", "--sign", sign]
+    if sign != "-":
+        # What a notary asks of a program signed with a certificate.
+        signing += ["--options", "runtime", "--timestamp"]
+    run(*signing, bundle)
+    run("codesign", "--verify", "--strict", bundle)
+    (stage / "Applications").symlink_to("/Applications")
+    package = out / f"{name}.dmg"
+    package.unlink(missing_ok=True)
+    run("hdiutil", "create", "-quiet", "-volname", "kou", "-srcfolder", stage, "-format", "UDZO", "-ov", package)
+    shutil.rmtree(stage)
+    return package
+
+
+def linux(program, name, out):
+    stage = out / f"{name}.stage"
+    shutil.rmtree(stage, ignore_errors=True)
+    root = stage / name
+    (root / "bin").mkdir(parents=True)
+    shutil.copy(program, root / "bin" / PROGRAM)
+    (root / "share" / "applications").mkdir(parents=True)
+    shutil.copy(RESOURCES / "linux" / f"{PROGRAM}.desktop", root / "share" / "applications")
+    shutil.copytree(RESOURCES / "linux" / "icons", root / "share" / "icons")
+    (root / "install.sh").write_text(INSTALL)
+    shutil.copy(LICENSE, root / "LICENSE")
+    package = out / f"{name}.tar.gz"
+
+    def owned_by_nobody(entry):
+        # Whoever built it is no business of whoever unpacks it.
+        entry.uid = entry.gid = 0
+        entry.uname = entry.gname = ""
+        runs = entry.isdir() or entry.name.endswith((f"bin/{PROGRAM}", "install.sh"))
+        entry.mode = 0o755 if runs else 0o644
+        return entry
+
+    with tarfile.open(package, "w:gz") as archive:
+        archive.add(root, arcname=name, filter=owned_by_nobody)
+    shutil.rmtree(stage)
+    return package
+
+
+def windows(program, name, out):
+    package = out / f"{name}.zip"
+    with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        archive.write(program, f"{name}/{PROGRAM}.exe")
+        archive.write(LICENSE, f"{name}/LICENSE.txt")
+    return package
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--target", help="the target triple to build for; this machine's unless given")
+    parser.add_argument("--suffix", help="what the file name says after the version")
+    parser.add_argument("--out", type=Path, default=DESKTOP / "dist")
+    parser.add_argument("--skip-build", action="store_true", help="package the release build already there")
+    parser.add_argument("--identifier", default=IDENTIFIER, help="the macOS bundle's identifier")
+    parser.add_argument("--sign", default=os.environ.get("KOU_SIGN_IDENTITY") or "-",
+                        help="the macOS signing identity; none unless given")
+    options = parser.parse_args()
+
+    target_directory, version = metadata()
+    triple = options.target or host_triple()
+    system, arch = platform_of(triple)
+    if not options.skip_build:
+        build = ["cargo", "build", "--release", "--locked", "-p", PROGRAM]
+        if options.target:
+            build += ["--target", options.target]
+        run(*build, cwd=DESKTOP)
+    built = target_directory / (options.target or "") / "release"
+    program = built / (f"{PROGRAM}.exe" if system == "windows" else PROGRAM)
+    if not program.is_file():
+        sys.exit(f"there is no release build at {program}")
+    if system != "windows":
+        program.chmod(program.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    out = options.out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+    label = f"{version}-{options.suffix}" if options.suffix else version
+    name = f"{PROGRAM}-{label}-{system}-{arch}"
+    if system == "macos":
+        if sys.platform != "darwin":
+            sys.exit("a macOS package is signed and made into a disk image by macOS's own tools")
+        package = macos(program, name, version, out, options.identifier, options.sign)
+    elif system == "linux":
+        package = linux(program, name, out)
+    else:
+        package = windows(program, name, out)
+    print(package)
+
+
+if __name__ == "__main__":
+    main()

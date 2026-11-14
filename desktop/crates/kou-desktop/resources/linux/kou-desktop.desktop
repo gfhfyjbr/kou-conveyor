@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=kou
+GenericName=Agent workspace
+Comment=Sessions, agent panes and the canvas of kou-conveyor
+Exec=kou-desktop
+Icon=kou-desktop
+Terminal=false
+Categories=Development;
+StartupWMClass=kou-desktop
+StartupNotify=true

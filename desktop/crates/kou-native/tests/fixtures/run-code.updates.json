@@ -1,0 +1,11 @@
+[
+  "TurnStarted",
+  {"Model":"other-model"},
+  {"Usage":{"context_used":1000,"context_limit":null,"input_tokens":11000,"output_tokens":200,"cost_usd":null}},
+  {"Tool":{"id":"call_code_1","title":"Run code","kind":"execute","status":"pending","content":[{"Text":"```js\nconst out = await bash('echo from-code');\nconsole.log(out.stdout.trim());\nconst text = await readText('notes/hello.txt');\nreturn text.split('\\n').length;\n```"}],"locations":[],"raw_input":{"code":"const out = await bash('echo from-code');\nconsole.log(out.stdout.trim());\nconst text = await readText('notes/hello.txt');\nreturn text.split('\\n').length;"},"raw_output":null}},
+  {"ToolPatch":{"id":"call_code_1","title":null,"kind":null,"status":"running","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_code_1","title":"Run code: 2 tool calls","kind":null,"status":"done","content":[{"Text":"```js\nconst out = await bash('echo from-code');\nconsole.log(out.stdout.trim());\nconst text = await readText('notes/hello.txt');\nreturn text.split('\\n').length;\n```"},{"Text":"1. `bash` echo from-code (0.0s)\n2. `readText` notes/hello.txt (0.0s)"},{"Text":"Logged:\n\n```\nfrom-code\n```"},{"Text":"Returned:\n\n```\n4\n```"}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"AssistantChunk":"The script ran."},
+  {"Usage":{"context_used":1100,"context_limit":null,"input_tokens":12100,"output_tokens":220,"cost_usd":null}},
+  {"TurnEnded":"Finished"}
+]

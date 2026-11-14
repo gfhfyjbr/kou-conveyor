@@ -1,0 +1,1 @@
+{"id":"broken","message":"prompt","next":"","session":"{\"type\":\"operation\",\"data\":{\"Operation\":{\"ID\":\"x\"}}}\n","before":{},"error":"read session record 1: the session header must come first, and only once","gone":false,"keep":0,"tail":"","after":{}}

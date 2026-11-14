@@ -1,0 +1,310 @@
+#!/usr/bin/env python3
+"""Make the app's icon files from the drawings in `assets/icon/`.
+
+    script/icons [--check]
+
+Two drawings, one sign (a glass frame lit by the core inside it):
+
+  * `assets/icon/AppIcon.icon` is an Icon Composer document, for macOS. The
+    system draws the glass itself, in every appearance; edit the document in
+    Icon Composer (it comes with Xcode: Xcode > Open Developer Tool).
+  * `assets/icon/kou.svg` is the icon for Windows and Linux, where an icon is
+    shown as it is given, so the light is painted in the drawing.
+
+What the app and its packages carry is made from them and kept in the
+repository, under `crates/kou-desktop/resources/`, so that building the app
+needs none of the tools this script does:
+
+    macos/Assets.car      the document, compiled; what macOS 26 and later draw
+    macos/AppIcon.icns    pictures of it, for older systems
+    windows/kou.ico       16 to 256 pixels; `build.rs` puts it into the program
+    linux/                a hicolor icon theme folder and the desktop entry
+
+From 64 pixels up the pictures are the drawing, scaled. Below that they are
+drawn here, on whole pixels: a frame two pixels thick does not survive being
+scaled to one and a half.
+
+Needs `rsvg-convert` (librsvg) and Pillow; on macOS also Xcode 26 or later,
+for `actool` and Icon Composer's `ictool`. On another system the macOS files
+are left as they are. `--check` makes everything in a scratch folder and
+says which of the kept files differ, without changing any.
+"""
+
+import argparse
+import filecmp
+import io
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+from PIL import Image
+
+DESKTOP = Path(__file__).resolve().parent.parent
+DRAWINGS = DESKTOP / "assets" / "icon"
+DOCUMENT = DRAWINGS / "AppIcon.icon"
+MASTER = DRAWINGS / "kou.svg"
+RESOURCES = DESKTOP / "crates" / "kou-desktop" / "resources"
+
+# The name a Linux desktop knows the app by: its desktop entry, its icon and
+# what its windows call themselves (`APP_ID` in the app's `main.rs`).
+LINUX_ID = "kou-desktop"
+ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256]
+HICOLOR_SIZES = [16, 24, 32, 48, 64, 128, 256, 512]
+# In points, each at one and two pixels to the point: up to 512 pixels. The two
+# larger pictures an .icns can hold would be four megabytes of the app.
+ICNS_SIZES = [16, 32, 128, 256]
+
+# The sign on whole pixels, per size: the tile's inset and corner; the frame's
+# first edge, thickness and corner; the core's first edge, side and corner.
+# Everything is square and the frame is centred, so one number gives an edge.
+SMALL = {
+    16: dict(inset=0, tile=3.0, frame=2, stroke=2, corner=2.0, core=7, side=4, round=0.5),
+    20: dict(inset=0, tile=3.5, frame=3, stroke=2, corner=2.5, core=9, side=5, round=0.5),
+    24: dict(inset=0, tile=4.5, frame=3, stroke=2, corner=3.0, core=11, side=7, round=1.0),
+    32: dict(inset=1, tile=5.5, frame=4, stroke=3, corner=4.5, core=15, side=9, round=1.0),
+    40: dict(inset=1, tile=7.0, frame=5, stroke=4, corner=5.5, core=17, side=12, round=1.5),
+    48: dict(inset=1, tile=8.5, frame=6, stroke=5, corner=6.5, core=21, side=14, round=1.5),
+}
+
+DESKTOP_ENTRY = f"""\
+[Desktop Entry]
+Type=Application
+Name=kou
+GenericName=Agent workspace
+Comment=Sessions, agent panes and the canvas of kou-conveyor
+Exec={LINUX_ID}
+Icon={LINUX_ID}
+Terminal=false
+Categories=Development;
+StartupWMClass={LINUX_ID}
+StartupNotify=true
+"""
+
+
+def run(*command, **options):
+    done = subprocess.run([str(part) for part in command], capture_output=True, text=True, **options)
+    if done.returncode != 0:
+        sys.exit(f"{command[0]} failed:\n{done.stdout}{done.stderr}")
+    return done.stdout
+
+
+def small_svg(size):
+    """The sign at `size` pixels, flat: what is left of the light is the frame
+    fading downward and the core's glow on the ground."""
+    at = SMALL[size]
+    first, last = at["frame"], size - at["frame"]
+    inner_first, inner_last = first + at["stroke"], last - at["stroke"]
+    inner_corner = max(at["corner"] - at["stroke"], 0)
+    core, side = at["core"], at["side"]
+    middle = core + side / 2
+    tile = size - 2 * at["inset"]
+
+    def square(a, b, r):
+        if r <= 0:
+            return f"M{a} {a}H{b}V{b}H{a}Z"
+        return (
+            f"M{a + r} {a}H{b - r}A{r} {r} 0 0 1 {b} {a + r}V{b - r}A{r} {r} 0 0 1 {b - r} {b}"
+            f"H{a + r}A{r} {r} 0 0 1 {a} {b - r}V{a + r}A{r} {r} 0 0 1 {a + r} {a}Z"
+        )
+
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}">
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#201f1c"/><stop offset="1" stop-color="#090908"/>
+    </linearGradient>
+    <radialGradient id="ember" cx="{middle}" cy="{middle}" r="{size * 0.44}" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff5b1f" stop-opacity="0.8"/>
+      <stop offset="0.45" stop-color="#ff5b1f" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#ff5b1f" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="glass" x1="0" y1="{first}" x2="0" y2="{last}" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.62"/>
+    </linearGradient>
+    <linearGradient id="lit" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff7d42"/><stop offset="1" stop-color="#f6500f"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="{at['inset']}" y="{at['inset']}" width="{tile}" height="{tile}" rx="{at['tile']}"/></clipPath>
+  </defs>
+  <rect x="{at['inset']}" y="{at['inset']}" width="{tile}" height="{tile}" rx="{at['tile']}" fill="url(#ground)"/>
+  <rect width="{size}" height="{size}" fill="url(#ember)" clip-path="url(#tile)"/>
+  <path fill="url(#glass)" fill-rule="evenodd" d="{square(first, last, at['corner'])}{square(inner_first, inner_last, inner_corner)}"/>
+  <rect x="{core}" y="{core}" width="{side}" height="{side}" rx="{at['round']}" fill="url(#lit)"/>
+</svg>
+"""
+
+
+def picture(size, scratch):
+    """The Windows and Linux icon at `size` pixels, as a PNG file."""
+    out = scratch / f"kou-{size}.png"
+    if out.exists():
+        return out
+    source = MASTER
+    if size in SMALL:
+        source = scratch / f"kou-{size}.svg"
+        source.write_text(small_svg(size))
+    run("rsvg-convert", "--width", size, "--height", size, "--output", out, source)
+    return out
+
+
+def ico(pictures):
+    """A Windows icon file holding these pictures: bitmaps below 256 pixels,
+    which everything that reads the format takes, and a PNG at 256."""
+    entries = []
+    for path in pictures:
+        image = Image.open(path).convert("RGBA")
+        size = image.width
+        if size >= 256:
+            data = Path(path).read_bytes()
+        else:
+            # Bottom row first, blue first; then the one-bit mask, a row padded
+            # to four bytes, set where the pixel is clear.
+            rows = [image.crop((0, y, size, y + 1)) for y in reversed(range(size))]
+            colour = b"".join(row.tobytes("raw", "BGRA") for row in rows)
+            mask = b""
+            for row in rows:
+                bits = bytearray((size + 31) // 32 * 4)
+                for x, alpha in enumerate(row.getchannel("A").tobytes()):
+                    if alpha == 0:
+                        bits[x // 8] |= 0x80 >> (x % 8)
+                mask += bytes(bits)
+            header = struct.pack("<IiiHHIIiiII", 40, size, size * 2, 1, 32, 0, len(colour) + len(mask), 0, 0, 0, 0)
+            data = header + colour + mask
+        entries.append((size, data))
+    out = io.BytesIO()
+    out.write(struct.pack("<HHH", 0, 1, len(entries)))
+    offset = 6 + 16 * len(entries)
+    for size, data in entries:
+        out.write(struct.pack("<BBBBHHII", size % 256, size % 256, 0, 0, 1, 32, len(data), offset))
+        offset += len(data)
+    for _, data in entries:
+        out.write(data)
+    return out.getvalue()
+
+
+def draw(ictool, points, scale, out):
+    """A picture of the document as macOS shows it by default. Icon Composer
+    1.0, the one inside Xcode 26.0, takes the same request in another form
+    than the later ones."""
+    forms = (
+        ["--export-image", "--output-file", out, "--platform", "macOS", "--rendition", "Default",
+         "--width", points, "--height", points, "--scale", scale],
+        ["--export-preview", "macOS", "Default", points, points, scale, out],
+    )
+    said = ""
+    for form in forms:
+        done = subprocess.run([str(part) for part in (ictool, DOCUMENT, *form)], capture_output=True, text=True)
+        if done.returncode == 0 and Path(out).is_file():
+            return
+        said += done.stdout + done.stderr
+    sys.exit(f"{ictool} drew nothing:\n{said}")
+
+
+def macos(into, scratch):
+    """Compile the Icon Composer document, and take pictures of it for the
+    systems that cannot draw it."""
+    if sys.platform != "darwin":
+        return False
+    ictool = None
+    for candidate in (
+        Path(run("xcode-select", "-p").strip()).parent / "Applications/Icon Composer.app/Contents/Executables/ictool",
+        Path("/Applications/Icon Composer.app/Contents/Executables/ictool"),
+    ):
+        if candidate.is_file():
+            ictool = candidate
+            break
+    if ictool is None:
+        sys.exit("Icon Composer was not found; it comes with Xcode 26 and later.")
+    compiled = scratch / "compiled"
+    compiled.mkdir()
+    run(
+        "xcrun", "actool", DOCUMENT, "--compile", compiled,
+        "--app-icon", DOCUMENT.stem, "--include-all-app-icons",
+        "--output-partial-info-plist", scratch / "partial.plist",
+        "--platform", "macosx", "--target-device", "mac", "--minimum-deployment-target", "12.0",
+        "--enable-on-demand-resources", "NO", "--development-region", "en",
+        "--output-format", "human-readable-text", "--errors", "--warnings",
+    )
+    if not (compiled / "Assets.car").is_file():
+        sys.exit("actool compiled no Assets.car; a document like this needs Xcode 26 or later.")
+    into.mkdir(parents=True)
+    shutil.copy(compiled / "Assets.car", into / "Assets.car")
+    # actool's own .icns stops at 256 pixels. Icon Composer draws the document
+    # at any size, as the system would in its default appearance.
+    iconset = scratch / "AppIcon.iconset"
+    iconset.mkdir()
+    for points in ICNS_SIZES:
+        for scale in (1, 2):
+            name = f"icon_{points}x{points}{'@2x' if scale == 2 else ''}.png"
+            draw(ictool, points, scale, iconset / name)
+    run("iconutil", "--convert", "icns", "--output", into / "AppIcon.icns", iconset)
+    return True
+
+
+def make(into, scratch):
+    """Everything, under `into`. Returns the folders made."""
+    made = []
+    if macos(into / "macos", scratch):
+        made.append("macos")
+    windows = into / "windows"
+    windows.mkdir(parents=True)
+    (windows / "kou.ico").write_bytes(ico([picture(size, scratch) for size in ICO_SIZES]))
+    made.append("windows")
+    linux = into / "linux"
+    hicolor = linux / "icons" / "hicolor"
+    for size in HICOLOR_SIZES:
+        apps = hicolor / f"{size}x{size}" / "apps"
+        apps.mkdir(parents=True)
+        shutil.copy(picture(size, scratch), apps / f"{LINUX_ID}.png")
+    scalable = hicolor / "scalable" / "apps"
+    scalable.mkdir(parents=True)
+    shutil.copy(MASTER, scalable / f"{LINUX_ID}.svg")
+    (linux / f"{LINUX_ID}.desktop").write_text(DESKTOP_ENTRY)
+    made.append("linux")
+    return made
+
+
+def files(root):
+    return sorted(path.relative_to(root) for path in root.rglob("*") if path.is_file())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--check", action="store_true", help="say which kept files differ, change none")
+    options = parser.parse_args()
+    if shutil.which("rsvg-convert") is None:
+        sys.exit("rsvg-convert was not found; it comes with librsvg (brew install librsvg).")
+    with tempfile.TemporaryDirectory(prefix="kou-icons-") as temporary:
+        scratch = Path(temporary)
+        fresh = scratch / "resources"
+        made = make(fresh, scratch)
+        if "macos" not in made:
+            print("not on macOS: resources/macos left as it is", file=sys.stderr)
+        differing = []
+        for folder in made:
+            kept, new = RESOURCES / folder, fresh / folder
+            names = set(files(new)) | (set(files(kept)) if kept.is_dir() else set())
+            for name in sorted(names):
+                same = (kept / name).is_file() and (new / name).is_file() and filecmp.cmp(kept / name, new / name, shallow=False)
+                # A compiled catalogue is stamped with when it was made: it
+                # never repeats, and says nothing about the drawing.
+                if not same and name.name != "Assets.car":
+                    differing.append(Path(folder) / name)
+        if options.check:
+            for name in differing:
+                print(f"differs: {name}")
+            sys.exit(1 if differing else 0)
+        for folder in made:
+            shutil.rmtree(RESOURCES / folder, ignore_errors=True)
+            shutil.copytree(fresh / folder, RESOURCES / folder)
+        for folder in made:
+            for name in files(RESOURCES / folder):
+                print(f"{(RESOURCES / folder / name).relative_to(DESKTOP)}")
+
+
+if __name__ == "__main__":
+    main()

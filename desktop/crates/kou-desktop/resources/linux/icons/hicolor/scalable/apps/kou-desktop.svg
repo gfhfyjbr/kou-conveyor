@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- The app's icon where the system draws an icon as it is given (Windows, Linux):
+       the same sign as AppIcon.icon, a glass frame lit by the core inside it, with
+       the light painted here instead of by the system. Every edge of the tile, the
+       frame and the core sits on a grid of 16, so that they fall on whole pixels at
+       64 and above; script/icons draws the smaller sizes separately. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#201f1c"/>
+      <stop offset="1" stop-color="#090908"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.26"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.12"/>
+    </linearGradient>
+    <radialGradient id="ember" cx="584" cy="584" r="430" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff5b1f" stop-opacity="0.95"/>
+      <stop offset="0.42" stop-color="#ff5b1f" stop-opacity="0.36"/>
+      <stop offset="1" stop-color="#ff5b1f" stop-opacity="0"/>
+    </radialGradient>
+    <!-- The frame is glass: white where the light falls on it, clear enough lower
+         down for the ember behind it to colour it. -->
+    <linearGradient id="glass" x1="0" y1="160" x2="0" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="1"/>
+      <stop offset="0.3" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="0.74" stop-color="#ffffff" stop-opacity="0.52"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.34"/>
+    </linearGradient>
+    <linearGradient id="edge" x1="0" y1="160" x2="0" y2="864" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0.3"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.95"/>
+    </linearGradient>
+    <linearGradient id="lip" x1="0" y1="256" x2="0" y2="768" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.34"/>
+      <stop offset="0.5" stop-color="#000000" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.5"/>
+    </linearGradient>
+    <linearGradient id="lit" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff8c52"/>
+      <stop offset="0.5" stop-color="#ff5b1f"/>
+      <stop offset="1" stop-color="#ee430a"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.16"/>
+    </linearGradient>
+    <clipPath id="tile"><rect x="32" y="32" width="960" height="960" rx="176"/></clipPath>
+    <path id="frame" fill-rule="evenodd" d="M288 160H736A128 128 0 0 1 864 288V736A128 128 0 0 1 736 864H288A128 128 0 0 1 160 736V288A128 128 0 0 1 288 160ZM288 256H736A32 32 0 0 1 768 288V736A32 32 0 0 1 736 768H288A32 32 0 0 1 256 736V288A32 32 0 0 1 288 256Z"/>
+    <clipPath id="within"><use href="#frame" clip-rule="evenodd"/></clipPath>
+    <filter id="under" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+    <filter id="halo" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="38"/>
+    </filter>
+    <filter id="contact" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+  </defs>
+
+  <rect x="32" y="32" width="960" height="960" rx="176" fill="url(#ground)"/>
+  <g clip-path="url(#tile)">
+    <rect width="1024" height="1024" fill="url(#ember)"/>
+    <!-- The frame's shadow on the ground. -->
+    <use href="#frame" transform="translate(0 14)" fill="#000000" fill-opacity="0.55" filter="url(#under)"/>
+  </g>
+  <rect x="34" y="34" width="956" height="956" rx="174" fill="none" stroke="url(#rim)" stroke-width="4"/>
+
+  <use href="#frame" fill="url(#glass)"/>
+  <!-- Its edges: lit along the outside, darker inside the top, bright on the lower lip. -->
+  <g clip-path="url(#within)" fill="none">
+    <rect x="160" y="160" width="704" height="704" rx="128" stroke="#ffffff" stroke-opacity="0.9" stroke-width="10"/>
+    <rect x="160" y="160" width="704" height="704" rx="128" stroke="url(#edge)" stroke-width="22"/>
+    <rect x="256" y="256" width="512" height="512" rx="32" stroke="url(#lip)" stroke-width="16"/>
+  </g>
+
+  <!-- The core: its light, its shadow, itself. -->
+  <rect x="448" y="448" width="272" height="272" rx="34" fill="#ff5b1f" fill-opacity="0.75" filter="url(#halo)"/>
+  <rect x="448" y="460" width="272" height="272" rx="34" fill="#3a0d00" fill-opacity="0.6" filter="url(#contact)"/>
+  <rect x="448" y="448" width="272" height="272" rx="34" fill="url(#lit)"/>
+  <rect x="451" y="451" width="266" height="266" rx="31" fill="none" stroke="url(#shine)" stroke-width="6"/>
+</svg>

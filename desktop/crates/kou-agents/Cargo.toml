@@ -1,0 +1,21 @@
+[package]
+name = "kou-agents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Which agent harnesses are installed, how to launch them, and whether each is busy"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+dirs.workspace = true
+kou-ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

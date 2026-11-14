@@ -1,0 +1,7 @@
+[
+  "TurnStarted",
+  {"Notice":["Info","Compacting context"]},
+  {"Usage":{"context_used":16,"context_limit":null,"input_tokens":13100,"output_tokens":240,"cost_usd":null}},
+  {"Notice":["Info","Context compacted from 1k tokens"]},
+  {"TurnEnded":"Finished"}
+]

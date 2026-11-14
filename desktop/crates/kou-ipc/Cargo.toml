@@ -1,0 +1,21 @@
+[package]
+name = "kou-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The desktop app's local socket: orchestration requests from agents and hook events from harnesses"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+dirs.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

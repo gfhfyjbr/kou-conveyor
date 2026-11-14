@@ -1,0 +1,29 @@
+[package]
+name = "kou-acp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "An Agent Client Protocol client that drives a kou-thread backend"
+
+[lints]
+workspace = true
+
+[dependencies]
+# The official wire types, without the JSON Schema generator they default to.
+# The unstable parts taken are the token usage a prompt's answer may carry and
+# `session/fork`, which an edited prompt runs in.
+agent-client-protocol-schema = { version = "1.17.0", default-features = false, features = ["unstable_end_turn_token_usage", "unstable_session_fork"] }
+anyhow.workspace = true
+async-channel.workspace = true
+base64 = "0.22.1"
+kou-thread.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

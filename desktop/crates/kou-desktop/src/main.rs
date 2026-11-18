@@ -4,6 +4,8 @@ mod appearance;
 #[cfg(all(target_os = "macos", not(feature = "hot")))]
 mod bundle;
 mod chat_faces;
+#[cfg(target_os = "macos")]
+mod finder_env;
 mod foreground;
 mod hot;
 mod integration;
@@ -657,6 +659,10 @@ fn main() {
     if let Some(code) = kou_ipc::cli::run(&arguments) {
         // Not a return: a hook may have left a thread reading a stdin its harness never closes.
         std::process::exit(code);
+    }
+    #[cfg(target_os = "macos")]
+    if let Err(error) = finder_env::prepare() {
+        eprintln!("kou-desktop: could not apply the Finder launch environment: {error}");
     }
     let args = args(&arguments);
     // On macOS the app proper runs from a bundle of its own, so that the

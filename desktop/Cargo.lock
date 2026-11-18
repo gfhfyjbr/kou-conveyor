@@ -3367,6 +3367,7 @@ dependencies = [
  "kou-usage",
  "libc",
  "log",
+ "nix",
  "objc2 0.6.3",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications",

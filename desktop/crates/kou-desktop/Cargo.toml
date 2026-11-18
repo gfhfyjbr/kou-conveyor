@@ -56,6 +56,7 @@ quote = { version = "1", optional = true }
 
 # The system's own notifications, posted in the app's name.
 [target.'cfg(target_os = "macos")'.dependencies]
+nix = { version = "0.30", features = ["signal", "user"] }
 objc2 = "0.6"
 block2 = "0.6"
 objc2-foundation = "0.3"

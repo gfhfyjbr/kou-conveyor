@@ -731,6 +731,12 @@ failed.
 
 ## Notifications on macOS
 
+Opening `KouDesktop.app` from Finder or the Dock loads the exported environment
+from your login and interactive shell before Kou looks for agents. Homebrew,
+Node version managers and tools in `~/.local/bin` are available to the
+launcher and to programs started in a pane. Starting Kou from a terminal uses
+that terminal's environment.
+
 macOS posts notifications only for an app it knows by its bundle. So a
 window started from a bare program (`cargo run`, the build directory) first
 puts itself into a bundle under its home, `KouDesktop.app` (a copy of the

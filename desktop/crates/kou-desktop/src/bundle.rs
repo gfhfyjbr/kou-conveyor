@@ -14,6 +14,7 @@
 //! `script/package` puts a release build into the same bundle, from the same
 //! files in `resources/`, to hand out.
 
+use crate::finder_env::inside_a_bundle;
 use std::{
     ffi::OsString,
     io,
@@ -92,10 +93,6 @@ pub fn enter(home: &Path, arguments: &[String]) -> io::Result<()> {
         let _ = register.spawn();
     }
     Err(Command::new(inside).args(arguments).env(INSIDE, "1").exec())
-}
-
-fn inside_a_bundle(program: &Path) -> bool {
-    program.to_string_lossy().contains(".app/Contents/MacOS/")
 }
 
 // Make `bundle` hold this program. Returns the program inside it, and

@@ -464,6 +464,8 @@ func TestChangesPanelResizes(t *testing.T) {
 	m.opt.preferences = filepath.Join(t.TempDir(), "preferences.json")
 	saved := func() int { return cockpit.LoadPreferences(m.opt.preferences).ChangesWidth }
 	width := func() int {
+		t.Helper()
+		d.until("the transcript to finish resizing", func() bool { return !m.reflow.pending })
 		pw, covers := m.panelColumns()
 		if covers || m.view.Width != m.width-margin-2-pw {
 			t.Fatalf("a panel of %d (covering %v) beside a transcript of %d", pw, covers, m.view.Width)
@@ -506,12 +508,12 @@ func TestChangesPanelResizes(t *testing.T) {
 	mustShow(t, m, "CHANGES · PROMPT 01", "A touched.txt", "1 + touch one")
 	// While it drags, the status line says how wide it is.
 	at = edge()
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: at.col, Y: at.row})
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col + 2, Y: at.row + 3})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: at.col, Y: at.row})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col + 2, Y: at.row + 3})
 	if hint := m.hoverHint(m.hover()); hint != "the changes take 85 columns · letting go keeps them" || m.pointerShape(m.hover()) != "ew-resize" {
 		t.Fatalf("hint %q", hint)
 	}
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: at.col + 2, Y: at.row + 3})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: at.col + 2, Y: at.row + 3})
 
 	// However far it goes, the transcript keeps 40 columns and the panel 36.
 	at = edge()
@@ -561,10 +563,10 @@ func TestChangesPanelResizes(t *testing.T) {
 	}
 	d.send(runes("="))
 	m.changes.edgeClick = time.Time{}
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: at.col, Y: at.row})
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col - 1, Y: at.row})
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col, Y: at.row})
-	m.Update(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: at.col, Y: at.row})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionPress, X: at.col, Y: at.row})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col - 1, Y: at.row})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion, X: at.col, Y: at.row})
+	d.send(tea.MouseMsg{Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease, X: at.col, Y: at.row})
 	if m.changes.width != 0 || saved() != 0 {
 		t.Fatalf("a drag back and forth chose %d, saved %d", m.changes.width, saved())
 	}

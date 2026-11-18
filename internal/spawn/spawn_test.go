@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // With KOU_SPAWN_HELPER set, the test binary is a command for the tests
@@ -42,11 +44,15 @@ func TestMain(m *testing.M) {
 }
 
 var helpers = map[string]func(){
-	// fds prints each open descriptor and the file at it, as fileID
-	// names it.
+	// exec closes FD_CLOEXEC descriptors. Any with that flag now, such as
+	// the Go runtime's cpu.max on Linux, were opened inside the helper.
 	"fds": func() {
 		var lines []string
 		for fd := range 1024 {
+			flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0)
+			if err != nil || flags&unix.FD_CLOEXEC != 0 {
+				continue
+			}
 			if id, ok := fileID(fd); ok {
 				lines = append(lines, strconv.Itoa(fd)+" "+id)
 			}

@@ -300,9 +300,18 @@ func TestACommandThatShowsNothingRunsOnQuietly(t *testing.T) {
 func TestAHarnessWithoutHooksAnswersWithItsScreen(t *testing.T) {
 	t.Setenv("SHELL", "/bin/sh")
 	host := newHost(t, nil)
+	const program = `#!/bin/sh
+printf 'ready %s\n' "$ECHO_NODE"
+while IFS= read -r line; do
+	printf 'reply %s\n' "$line"
+done
+`
+	if err := os.WriteFile(filepath.Join(host.ws.Path, "echo-harness"), []byte(program), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	host.plugins = []plugin.Plugin{{
 		Manifest: plugin.Manifest{Name: "tuis", Canvas: &plugin.Canvas{Harnesses: []plugin.CanvasHarness{{
-			ID: "echo", Title: "Echo", Command: []string{"cat"}, Launch: "type",
+			ID: "echo", Title: "Echo", Command: []string{"./echo-harness"}, Launch: "type",
 			Env:    map[string]string{"ECHO_NODE": "{{node.id}}"},
 			Status: []string{"idle"}, IdleMS: 300, Output: "screen",
 		}}}},
@@ -317,11 +326,17 @@ func TestAHarnessWithoutHooksAnswersWithItsScreen(t *testing.T) {
 	]`)
 	echo, reader := res.IDs["0"], res.IDs["1"]
 
-	// The line typed at the first prompt sets the preset's variables; the
-	// shell has the canvas's, and no token shows.
-	eventually(t, 20*time.Second, "the program typed", func() bool { return strings.Contains(tail(c, echo), "env ECHO_NODE="+echo+" cat") })
-	if screen := tail(c, echo); strings.Contains(screen, "KOU_CANVAS") {
-		t.Fatalf("the canvas's variables on the line:\n%s", screen)
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		screen := tail(c, echo)
+		if strings.Contains(screen, "KOU_CANVAS") {
+			t.Fatal("the launch line exposed the canvas environment")
+		}
+		if strings.Contains(screen, "ready "+echo) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waiting for the harness to start, status %+v, terminal %q", c.status(echo), screen)
+		}
 	}
 	eventually(t, 20*time.Second, "it waits", func() bool { return c.status(echo).State == StateIdle })
 
@@ -332,7 +347,7 @@ func TestAHarnessWithoutHooksAnswersWithItsScreen(t *testing.T) {
 	session := sessionOf(t, c, reader)
 	eventually(t, 20*time.Second, "its screen delivered", func() bool {
 		prompts := te.host.promptsOf(session)
-		return len(prompts) == 1 && strings.Count(prompts[0].text, "hello screen") == 2
+		return len(prompts) == 1 && strings.Contains(prompts[0].text, "reply hello screen")
 	})
 	time.Sleep(200 * time.Millisecond)
 	if prompts := te.host.promptsOf(session); len(prompts) != 1 || !strings.Contains(prompts[0].text, "[canvas] from «Echo» ("+echo+"):\n") {

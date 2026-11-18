@@ -1,0 +1,5 @@
+{
+  "name": "usage",
+  "description": "The Usage page: what each provider's accounts have left of their plans, and what the open chats have spent.",
+  "desktop": {"script": "desktop/usage.js"}
+}

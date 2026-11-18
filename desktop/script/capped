@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Run a command with a ceiling on its memory and its time, out of the way
+of whoever is using the machine.
+
+    script/capped [--mem GB] [--total GB] [--time SECONDS]
+                  [--jobs N] [--nice N] [--eager] -- command [args...]
+
+macOS puts no memory limit of its own on a process (`ulimit -v` and
+`ulimit -m` are accepted and ignored), so a test that allocates in a loop
+takes the machine with it: the system swaps until the disk is full. This
+starts the command with a watcher beside it, and the watcher ends the
+command and everything it started when
+
+  * one of its processes holds more than --mem (8 GB unless given),
+  * all of them together hold more than --total (24 GB unless given),
+  * it has run for longer than --time (1800 s unless given),
+  * the system's swap has grown by more than 8 GB since the start, or the
+    disk has under 3 GB free,
+  * the command has finished and left processes behind,
+  * or this script has died and left the command behind.
+
+The watcher is a session of its own, so it outlives a shell that was killed
+under it; that is what it is for. The exit status is the command's, or 137
+when it was ended.
+
+The command also runs out of the way: at a low priority (--nice, 15 unless
+given), so that what the user is doing comes first, and on half the cores
+(--jobs: how many compilers cargo runs at once and how many tests a test
+binary runs at once, through CARGO_BUILD_JOBS and RUST_TEST_THREADS, unless
+those are set already). A build takes longer and the machine stays usable.
+--eager gives it the whole machine, for when nobody is at it.
+"""
+
+import argparse
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+POLL = 0.5
+SWAP_GROWTH_GB = 8.0
+DISK_FLOOR_GB = 3.0
+KIB_PER_GB = 1024.0 * 1024.0
+
+
+def processes():
+    """Every process as pid -> (parent, group, resident kilobytes, started).
+
+    `started` is when the process began, as `ps` writes it: with the pid it
+    names one process for good, where a pid alone is given out again.
+    """
+    try:
+        out = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,ppid=,pgid=,rss=,lstart="],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = {}
+    for line in out.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) != 5:
+            continue
+        try:
+            rows[int(parts[0])] = (int(parts[1]), int(parts[2]), int(parts[3]), parts[4].strip())
+        except ValueError:
+            continue
+    return rows
+
+
+def swap_used_gb():
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "vm.swapusage"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    words = out.split()
+    for at, word in enumerate(words):
+        if word == "used" and at + 2 < len(words):
+            amount = words[at + 2]
+            scale = {"K": 1.0 / KIB_PER_GB, "M": 1.0 / 1024.0, "G": 1.0}.get(amount[-1:])
+            try:
+                return float(amount[:-1]) * scale if scale else None
+            except ValueError:
+                return None
+    return None
+
+
+def disk_free_gb():
+    try:
+        return shutil.disk_usage(os.path.expanduser("~")).free / (1024.0**3)
+    except OSError:
+        return None
+
+
+def say(text):
+    try:
+        sys.stderr.write("capped: " + text + "\n")
+        sys.stderr.flush()
+    except (OSError, ValueError):
+        pass
+
+
+def family(rows, root, root_started, known):
+    """The command, what it started, and what those started, as pid -> started.
+
+    A process seen before is the same one only while it began when it did: a
+    pid that now names some other program is not the command's.
+    """
+    members = {
+        pid: began for pid, began in known.items() if pid in rows and rows[pid][3] == began
+    }
+    # The root's pid, and the group it leads, are the command's unless that
+    # pid has been given to another program since.
+    ours = root not in rows or root_started is None or rows[root][3] == root_started
+    if ours:
+        for pid, (_, group, _, began) in rows.items():
+            if pid == root or group == root:
+                members.setdefault(pid, began)
+    grew = True
+    while grew:
+        grew = False
+        for pid, (parent, _, _, began) in rows.items():
+            if pid not in members and parent in members:
+                members[pid] = began
+                grew = True
+    members.pop(os.getpid(), None)
+    members.pop(1, None)
+    return members
+
+
+def end(root, members, rows):
+    # The group as one, while it is still the command's: some member is in it.
+    if any(rows[pid][1] == root for pid in members if pid in rows):
+        try:
+            os.killpg(root, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    for pid in members:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
+def watch(root, runner, limits, label):
+    started = time.monotonic()
+    swap_at_start = swap_used_gb()
+    root_started = None
+    known = {}
+    while True:
+        rows = processes()
+        if rows is not None:
+            if root_started is None and root in rows:
+                root_started = rows[root][3]
+            known = family(rows, root, root_started, known)
+            if not known:
+                return
+            sizes = [rows[pid][2] / KIB_PER_GB for pid in known]
+            why = None
+            if os.getppid() != runner:
+                why = "its runner is gone"
+            elif root not in known:
+                why = "it finished and left %d process(es) behind" % len(known)
+            elif max(sizes) > limits.mem:
+                why = "one process grew to %.1f GB (the limit is %g GB)" % (max(sizes), limits.mem)
+            elif sum(sizes) > limits.total:
+                why = "its processes grew to %.1f GB together (the limit is %g GB)" % (
+                    sum(sizes),
+                    limits.total,
+                )
+            elif time.monotonic() - started > limits.time:
+                why = "it ran for longer than %g s" % limits.time
+            else:
+                swap = swap_used_gb()
+                free = disk_free_gb()
+                if swap is not None and swap_at_start is not None and swap - swap_at_start > SWAP_GROWTH_GB:
+                    why = "the system's swap grew by %.1f GB while it ran" % (swap - swap_at_start)
+                elif free is not None and free < DISK_FLOOR_GB:
+                    why = "the disk is down to %.1f GB free" % free
+            if why:
+                # Look once more: what finished by itself meanwhile is not
+                # ended, and nothing is said of it.
+                fresh = processes()
+                if fresh is not None:
+                    rows = fresh
+                    known = family(rows, root, root_started, known)
+                if not known:
+                    return
+                say("ended `%s`: %s" % (label, why))
+                end(root, known, rows)
+                return
+        time.sleep(POLL)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="capped", description="Run a command with a ceiling on its memory and its time."
+    )
+    parser.add_argument("--mem", type=float, default=8.0, help="GB one process may hold (8)")
+    parser.add_argument("--total", type=float, default=24.0, help="GB all of them may hold (24)")
+    parser.add_argument("--time", type=float, default=1800.0, help="seconds it may run (1800)")
+    parser.add_argument("--jobs", type=int, default=0, help="compilers and tests at once (half the cores)")
+    parser.add_argument("--nice", type=int, default=15, help="how far below normal priority it runs (15)")
+    parser.add_argument("--eager", action="store_true", help="normal priority and every core")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    limits = parser.parse_args()
+    command = limits.command[1:] if limits.command[:1] == ["--"] else limits.command
+    if not command:
+        parser.error("no command given")
+
+    free = disk_free_gb()
+    if free is not None and free < DISK_FLOOR_GB:
+        say("not started: the disk has %.1f GB free" % free)
+        return 75
+
+    environment = dict(os.environ)
+    lower = None
+    if not limits.eager:
+        jobs = limits.jobs if limits.jobs > 0 else max(2, (os.cpu_count() or 4) // 2)
+        environment.setdefault("CARGO_BUILD_JOBS", str(jobs))
+        environment.setdefault("RUST_TEST_THREADS", str(jobs))
+        step = max(0, min(19, limits.nice))
+
+        def lower():
+            try:
+                os.nice(step)
+            except OSError:
+                pass
+
+    try:
+        child = subprocess.Popen(
+            command, start_new_session=True, env=environment, preexec_fn=lower
+        )
+    except OSError as error:
+        say("could not start `%s`: %s" % (command[0], error))
+        return 127
+
+    runner = os.getpid()
+    label = " ".join(command)
+    if len(label) > 80:
+        label = label[:77] + "..."
+    if os.fork() == 0:
+        try:
+            os.setsid()
+            for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+                signal.signal(sig, signal.SIG_IGN)
+            watch(child.pid, runner, limits, label)
+        finally:
+            os._exit(0)
+
+    def passed_on(signum, _frame):
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        sys.exit(128 + signum)
+
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, passed_on)
+
+    status = child.wait()
+    return 128 - status if status < 0 else status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

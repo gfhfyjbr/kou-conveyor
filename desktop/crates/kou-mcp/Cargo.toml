@@ -1,0 +1,17 @@
+[package]
+name = "kou-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "An MCP server that lets an agent in a pane drive the desktop app, and the guidance that teaches it how"
+
+[lints]
+workspace = true
+
+[dependencies]
+kou-ipc.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

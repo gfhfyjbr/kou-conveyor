@@ -1,0 +1,5 @@
+{
+  "name": "rail",
+  "description": "The rail: the spaces and their sessions, every agent by what it is doing, and the pages at its foot.",
+  "desktop": {"script": "desktop/rail.js"}
+}

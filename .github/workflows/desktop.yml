@@ -1,0 +1,164 @@
+name: Desktop
+
+# Builds the desktop app (desktop/) on every change to it and keeps the packages
+# with the run. A tag `desktop-v<version>` also publishes them as a release.
+
+on:
+  push:
+    branches: [main, rust-rewrite]
+    tags: ['desktop-v*']
+    paths:
+      - 'desktop/**'
+      - '.cargo/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'desktop/**'
+      - '.cargo/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # The Rust the gpuimm fork's rust-toolchain.toml names: what GPUI, which cargo
+  # fetches at the commit desktop/Cargo.toml pins, is known to build with.
+  RUST_TOOLCHAIN: 1.98.1
+  # libghostty-vt is built with Zig 0.17, which desktop/vendor/ is searched for.
+  ZIG_VERSION: 0.17.1
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-15
+            zig: aarch64-macos
+            zig-sha256: 75f1bc7a1e9852f17ec9a0c1895f767c4ec56d46bc8a834920eece1d0359dd8d
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            zig: x86_64-linux
+            zig-sha256: 3581863e3cbcfd0fce0efc682ce7e9e93da96668a977791d356a26d2a7e9b17a
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Validate release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          [[ "$RELEASE_TAG" =~ ^desktop-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' desktop/Cargo.toml)"
+          if [[ "${RELEASE_TAG#desktop-v}" != "$version" ]]; then
+            echo "::error::the tag says ${RELEASE_TAG#desktop-v}, desktop/Cargo.toml says $version"
+            exit 1
+          fi
+
+      - name: Install Rust
+        shell: bash
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$RUST_TOOLCHAIN" >> "$GITHUB_ENV"
+
+      # Before the long build: a lock file that is behind fails here, by name.
+      - name: Check the lock file
+        working-directory: desktop
+        shell: bash
+        run: |
+          if ! cargo metadata --locked --format-version 1 > /dev/null; then
+            echo "::error file=desktop/Cargo.lock::desktop/Cargo.lock is behind desktop/Cargo.toml or the pinned gpuimm commit: run desktop/script/gpuimm lock on a linked checkout (plain cargo on one that is not) and commit it"
+            exit 1
+          fi
+
+      - name: Install Linux packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config \
+            libasound2-dev libfontconfig-dev libfreetype-dev libssl-dev \
+            libvulkan1 libwayland-dev libx11-xcb-dev libxcb1-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev libzstd-dev
+
+      - name: Fetch Zig
+        env:
+          ZIG_NAME: zig-${{ matrix.zig }}-${{ env.ZIG_VERSION }}
+          ZIG_SHA256: ${{ matrix.zig-sha256 }}
+        shell: bash
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            --output "$RUNNER_TEMP/$ZIG_NAME.tar.xz" \
+            "https://ziglang.org/download/$ZIG_VERSION/$ZIG_NAME.tar.xz"
+          echo "$ZIG_SHA256  $RUNNER_TEMP/$ZIG_NAME.tar.xz" | shasum -a 256 --check
+          mkdir -p desktop/vendor
+          tar -xJf "$RUNNER_TEMP/$ZIG_NAME.tar.xz" -C desktop/vendor
+          "desktop/vendor/$ZIG_NAME/zig" version
+
+      - name: Build and package
+        env:
+          # A pull request is built as merged; its packages are named by the
+          # commit that was pushed, which is the one anybody can find.
+          COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        shell: bash
+        run: |
+          # A release is named by its version alone; any other build by its commit too.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            python3 desktop/script/package
+          else
+            python3 desktop/script/package --suffix "${COMMIT::7}"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: kou-desktop-${{ matrix.name }}
+          path: desktop/dist/kou-desktop-*
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/') && github.repository == 'gfhfyjbr/kou-conveyor'
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: kou-desktop-*
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          (cd dist && sha256sum ./kou-desktop-* > SHA256SUMS && cat SHA256SUMS)
+          # Notes start at the desktop release before this one, not at the last
+          # release of anything else in the repository.
+          previous="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/desktop-v" --jq '.[].ref' \
+            | sed 's#^refs/tags/##' | grep -vx "$RELEASE_TAG" | sort -V | tail -n 1 || true)"
+          # Not the repository's latest release: install.sh takes the runner from
+          # whatever `releases/latest` points at.
+          gh release create "$RELEASE_TAG" dist/kou-desktop-* dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest=false \
+            --title "kou desktop ${RELEASE_TAG#desktop-v}" \
+            --generate-notes ${previous:+--notes-start-tag "$previous"}

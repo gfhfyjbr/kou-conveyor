@@ -1,0 +1,5 @@
+{
+  "name": "workspace",
+  "description": "The workspace's chrome: the tab strip, the panes' headers, the panel a tab is named in, and the header of a split's half that waits for its agent.",
+  "desktop": {"script": "desktop/workspace.js"}
+}

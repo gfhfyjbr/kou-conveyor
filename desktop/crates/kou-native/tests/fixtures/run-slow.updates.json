@@ -1,0 +1,11 @@
+[
+  "TurnStarted",
+  {"Model":"stub-model"},
+  {"AssistantChunk":"Starting a long command."},
+  {"Usage":{"context_used":1000,"context_limit":null,"input_tokens":14100,"output_tokens":260,"cost_usd":null}},
+  {"Tool":{"id":"call_slow_1","title":"Run echo begun; sleep 120","kind":"execute","status":"pending","content":[],"locations":[],"raw_input":{"command":"echo begun; sleep 120"},"raw_output":null}},
+  {"ToolPatch":{"id":"call_slow_1","title":null,"kind":null,"status":"running","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_slow_1","title":null,"kind":null,"status":null,"content":[{"Terminal":{"id":"1c15d45d-3f8e-4ab7-9f74-e8b8775f83d0","output":"begun\n","exit":null}}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_slow_1","title":null,"kind":null,"status":"cancelled","content":[{"Terminal":{"id":"1c15d45d-3f8e-4ab7-9f74-e8b8775f83d0","output":"begun\n","exit":null}},{"Text":"```\nshell operation canceled\n```"}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"TurnEnded":"Cancelled"}
+]

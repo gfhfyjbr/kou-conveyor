@@ -1,0 +1,5 @@
+{
+  "name": "genui",
+  "description": "Surfaces: what an agent shows with kou's UI tool (metrics, charts, tables, diffs, inputs, buttons and layouts of its own), drawn in the chat where it was called and live as its files change.",
+  "desktop": {"scripts": ["shared/data.js", "desktop/genui.js"]}
+}

@@ -1,0 +1,72 @@
+[package]
+name = "kou-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "kou-conveyor's native workspace: sessions, agent panes and the canvas, drawn by GPUI"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "kou-desktop"
+path = "src/main.rs"
+
+[features]
+default = ["capture"]
+# `--capture file.png` renders a frame to an image without showing it on screen.
+capture = ["gpui/test-support", "gpui_platform/test-support"]
+# Take code changes as patches while running; see `src/hot.rs` and `script/dev`.
+hot = ["dep:subsecond", "dep:dioxus-devtools", "dep:syn", "dep:quote"]
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+dirs.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+# Reads the app's icon for a window to carry, where a window is asked for one.
+image = { version = "0.25", default-features = false, features = ["png"] }
+kou-acp.workspace = true
+kou-agents.workspace = true
+kou-canvas.workspace = true
+kou-claude.workspace = true
+kou-codex.workspace = true
+kou-ipc.workspace = true
+kou-mcp.workspace = true
+kou-native.workspace = true
+kou-term.workspace = true
+kou-thread.workspace = true
+kou-thread-view.workspace = true
+kou-ui.workspace = true
+kou-plugins.workspace = true
+kou-usage.workspace = true
+libc.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# The same version as the Dioxus CLI in `.tools/`: the two speak one protocol.
+subsecond = { version = "=0.7.10", optional = true }
+dioxus-devtools = { version = "=0.7.10", optional = true }
+# Reads the workspace's own source, to tell a change of function bodies from
+# one of what they work on; see `src/outline.rs`.
+syn = { version = "2", optional = true, features = ["full", "visit-mut"] }
+quote = { version = "1", optional = true }
+
+# The system's own notifications, posted in the app's name.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = "0.3"
+objc2-user-notifications = "0.3"
+
+# Puts the icon into the Windows program; see `build.rs`. GPUI's own build
+# uses it too, for its manifest.
+[build-dependencies]
+embed-resource = "3.0"
+
+[dev-dependencies]
+tempfile.workspace = true
+syn = { version = "2", features = ["full", "visit-mut"] }
+quote = "1"

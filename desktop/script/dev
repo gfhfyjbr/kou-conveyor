@@ -1,0 +1,64 @@
+#!/bin/sh
+# Run the app so that changes to its code land in it while it runs.
+#
+#   script/dev [arguments for kou-desktop]
+#
+# The Dioxus CLI builds the app once, starts it, and from then on turns every
+# saved change into a patch for the running process, usually within a second
+# or two. A change inside functions just goes in; a change to anything else
+# (a struct, an enum, a signature) makes the app rebuild its window's content
+# around the patch, in the same window, with the programs in its panes still
+# running. See crates/kou-desktop/src/hot.rs. Only a new dependency, a changed
+# Cargo.toml or a change in the GPUI fork needs `r` here: rebuild and start
+# again, which does end what runs in the panes.
+#
+# The first run compiles the dependencies once more, under the `hot` profile.
+set -eu
+
+here="$(cd "$(dirname "$0")/.." && pwd)"
+dx="$here/.tools/bin/dx"
+if [ ! -x "$dx" ]; then
+    echo "script/dev: the Dioxus CLI is not at $dx" >&2
+    echo "install it there (the app's subsecond crate is pinned to the same version):" >&2
+    echo "  cargo binstall dioxus-cli@0.7.10 --install-path $here/.tools/bin" >&2
+    exit 1
+fi
+
+case "$(uname -s)" in
+    Darwin)
+        platform=--macos
+        export SDKROOT="${SDKROOT:-$(xcrun --sdk macosx --show-sdk-path)}"
+        ;;
+    Linux) platform=--linux ;;
+    *) platform=--windows ;;
+esac
+
+# Started from a pane of another instance, these would point this one at it.
+unset KOU_SOCKET KOU_PANE KOU_SESSION KOU_BIN
+# A second instance beside the one in use (with --home DIR) needs a socket of
+# its own: KOU_DEV_SOCKET=/tmp/short/path script/dev --home DIR
+if [ -n "${KOU_DEV_SOCKET:-}" ]; then
+    export KOU_SOCKET="$KOU_DEV_SOCKET"
+fi
+
+cd "$here"
+
+# The CLI (0.7.10) leaves an empty `libdeps-*.a` behind in the target
+# directory after a build, and then fails to link the next start that has
+# nothing to recompile ("file is empty"). Without the leftover it starts fine.
+target="$(cargo metadata --format-version 1 --no-deps 2>/dev/null |
+    sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')"
+if [ -n "$target" ] && [ -d "$target" ]; then
+    find "$target" -maxdepth 3 -name 'libdeps-*.a' -size 0 -delete 2>/dev/null || true
+fi
+
+# Its full-screen interface only when there is a terminal to draw it on.
+set -- "$@"
+plain=""
+[ -t 1 ] || plain="--interactive=false"
+
+if [ $# -gt 0 ]; then
+    # One word after the equals sign: the value starts with a dash.
+    exec "$dx" serve --hot-patch "$platform" --package kou-desktop --features hot --profile hot $plain "--args=$*"
+fi
+exec "$dx" serve --hot-patch "$platform" --package kou-desktop --features hot --profile hot $plain

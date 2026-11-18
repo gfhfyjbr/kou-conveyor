@@ -1,0 +1,39 @@
+[package]
+name = "kou-thread-view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "The native agent pane: a kou-thread conversation and its composer, drawn by GPUI"
+
+[lints]
+workspace = true
+
+[features]
+# Render the view to an image in tests and examples.
+capture = ["gpui/test-support", "gpui_platform/test-support"]
+
+[[example]]
+name = "thread_capture"
+required-features = ["capture"]
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+gpui.workspace = true
+# GPUI builds the same crate with more formats: this adds no build.
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+kou-thread.workspace = true
+kou-ui.workspace = true
+log.workspace = true
+percent-encoding = "2"
+url = "2.5"
+pulldown-cmark = { version = "0.13", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+unicode-segmentation = "1.13"
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true, features = ["test-support"] }
+tempfile.workspace = true

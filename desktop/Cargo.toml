@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# GPUI comes from the gpuimm fork, at the commit named here; Glimm lives only in
+# that fork. `script/gpuimm link` builds against a checkout of the fork on this
+# machine instead, and `script/gpuimm pin` moves the commit: see the README.
+gpui = { git = "https://github.com/gfhfyjbr/gpuimm", rev = "941957dba592982ccb8368dda75c7b751e75a421" }
+gpui_platform = { git = "https://github.com/gfhfyjbr/gpuimm", rev = "941957dba592982ccb8368dda75c7b751e75a421", features = ["font-kit", "wayland", "x11"] }
+
+kou-acp = { path = "crates/kou-acp" }
+kou-agents = { path = "crates/kou-agents" }
+kou-canvas = { path = "crates/kou-canvas" }
+kou-claude = { path = "crates/kou-claude" }
+kou-codex = { path = "crates/kou-codex" }
+kou-ipc = { path = "crates/kou-ipc" }
+kou-mcp = { path = "crates/kou-mcp" }
+kou-native = { path = "crates/kou-native" }
+kou-plugins = { path = "crates/kou-plugins" }
+kou-term = { path = "crates/kou-term" }
+kou-thread = { path = "crates/kou-thread" }
+kou-thread-view = { path = "crates/kou-thread-view" }
+kou-ui = { path = "crates/kou-ui" }
+kou-usage = { path = "crates/kou-usage" }
+
+anyhow = "1.0.86"
+async-channel = { version = "2.5", default-features = false, features = ["std"] }
+dirs = "6.0"
+futures = "0.3.34"
+libc = "0.2"
+log = { version = "0.4", default-features = false, features = ["std"] }
+parking_lot = "0.12.1"
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
+smallvec = { version = "1.6", features = ["union", "const_new"] }
+smol = "2.0"
+tempfile = "3.20.0"
+thiserror = "2.0.12"
+uuid = { version = "1.1", features = ["serde", "v4"] }
+which = "8"
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "allow" }
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+
+# The fork patches these for GPUI's executor; a different async-task breaks it.
+[patch.crates-io]
+async-process = { git = "https://github.com/zed-industries/async-process.git", rev = "0b6d6713570af61806e1e5cb40e0f757cb93fd9d" }
+async-task = { git = "https://github.com/zed-industries/async-task.git", rev = "015845a19fc31752c02367567d3b8900a406f9da" }
+windows-capture = { git = "https://github.com/zed-industries/windows-capture.git", rev = "f0d6c1b6691db75461b732f6d5ff56eed002eeb9" }
+calloop = { git = "https://github.com/zed-industries/calloop" }
+khronos-egl = { git = "https://github.com/zed-industries/khronos-egl", rev = "42214b36347b108fd9630ca6254b96dde59e04fe" }
+
+[profile.dev]
+split-debuginfo = "unpacked"
+debug = "line-tables-only"
+codegen-units = 16
+
+# Dependencies, GPUI included, are built once: optimised so text shaping and
+# layout are not debug-slow, and without debug info to keep the target small.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false
+
+[profile.dev.build-override]
+opt-level = 1
+debug = false
+
+# What `script/dev` builds with, through the Dioxus CLI's hot-patching: the
+# dev profile under its own name, because the CLI will not build with a root
+# profile. It costs one more copy of the dependencies on disk.
+[profile.hot]
+inherits = "dev"
+
+[profile.release]
+debug = "limited"
+lto = "thin"
+codegen-units = 1

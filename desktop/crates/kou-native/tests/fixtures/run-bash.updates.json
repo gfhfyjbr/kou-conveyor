@@ -1,0 +1,18 @@
+[
+  "TurnStarted",
+  {"Model":"stub-model"},
+  {"ThoughtChunk":"The user wants "},
+  {"ThoughtChunk":"a command run."},
+  {"AssistantChunk":"I'll run "},
+  {"AssistantChunk":"it now."},
+  {"Usage":{"context_used":1000,"context_limit":null,"input_tokens":1000,"output_tokens":20,"cost_usd":null}},
+  {"Tool":{"id":"call_bash_1","title":"Run echo one; sleep 0.6; echo two >&2; sleep 0.6; echo three","kind":"execute","status":"pending","content":[],"locations":[],"raw_input":{"command":"echo one; sleep 0.6; echo two >&2; sleep 0.6; echo three"},"raw_output":null}},
+  {"ToolPatch":{"id":"call_bash_1","title":null,"kind":null,"status":"running","content":null,"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_bash_1","title":null,"kind":null,"status":null,"content":[{"Terminal":{"id":"a12a2826-a5e1-447a-925c-f0950507bdff","output":"one\n","exit":null}}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_bash_1","title":null,"kind":null,"status":null,"content":[{"Terminal":{"id":"a12a2826-a5e1-447a-925c-f0950507bdff","output":"one\ntwo\n","exit":null}}],"locations":null,"raw_input":null,"raw_output":null}},
+  {"ToolPatch":{"id":"call_bash_1","title":null,"kind":null,"status":"done","content":[{"Terminal":{"id":"a12a2826-a5e1-447a-925c-f0950507bdff","output":"one\nthree\ntwo\n","exit":0}}],"locations":null,"raw_input":null,"raw_output":{"exit_code":0,"duration_seconds":1.226283,"timed_out":false}}},
+  {"AssistantChunk":"It printed "},
+  {"AssistantChunk":"three lines."},
+  {"Usage":{"context_used":1100,"context_limit":null,"input_tokens":2100,"output_tokens":40,"cost_usd":null}},
+  {"TurnEnded":"Finished"}
+]

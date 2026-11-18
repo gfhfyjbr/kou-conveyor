@@ -1,0 +1,255 @@
+#!/usr/bin/env python3
+"""Say which GPUI the app builds against, and change it.
+
+    script/gpuimm                 the same as status
+    script/gpuimm status          the pinned commit, the linked checkout if there is one
+    script/gpuimm link [DIR]      build against the checkout of the fork in DIR
+                                  (~/Projects/Rust/gpuimm unless given)
+    script/gpuimm unlink          build against the pinned commit again
+    script/gpuimm lock [--check]  bring Cargo.lock up to what a linked checkout builds with
+    script/gpuimm pin [COMMIT]    pin the commit the linked checkout is at, or COMMIT
+
+GPUI comes from the gpuimm fork as a git dependency: `Cargo.toml` names the
+commit, `Cargo.lock` records it, and cargo fetches it. A clone of this
+repository, a worktree of it and the build service all build against that
+commit with nothing set up.
+
+Working on the fork and the app at once wants the app built against the fork
+as it is on disk, uncommitted changes included. `link` does that for this
+checkout of the repository only. It writes `.cargo/gpuimm.local.toml`, which
+git ignores and `.cargo/config.toml` includes when it is there: a `[patch]`
+that takes the fork's crates from the checkout, and a lock file of its own
+for builds made that way (`.cargo/linked/Cargo.lock`), because a patched
+build writes its lock file differently. So neither `Cargo.toml` nor
+`Cargo.lock` changes by being linked, and what is committed still builds
+against the pin.
+
+Two things a linked checkout does not do by itself:
+
+  * A dependency added or changed while linked (in the app or in the fork)
+    lands in the linked lock file only. `lock` writes it into `Cargo.lock`;
+    `status` says when that is due, and the build service refuses a
+    `Cargo.lock` that is behind.
+  * What the app comes to need from the fork reaches nobody else until it is
+    pinned: commit it in the fork, push it, and run `pin`, which refuses a
+    commit GitHub does not have and a checkout that is not what it names.
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+DESKTOP = Path(__file__).resolve().parent.parent
+MANIFEST = DESKTOP / "Cargo.toml"
+LOCK = DESKTOP / "Cargo.lock"
+LOCAL = DESKTOP / ".cargo" / "gpuimm.local.toml"
+# Cargo takes another lock file only under this name.
+LINKED_LOCK = DESKTOP / ".cargo" / "linked" / "Cargo.lock"
+CHECKOUT = Path.home() / "Projects" / "Rust" / "gpuimm"
+# The lines of Cargo.toml that take a crate from the fork at a commit.
+PINNED = re.compile(r'(?m)^([A-Za-z0-9_-]+) = \{ git = "([^"]+)", rev = "([0-9a-f]{40})"')
+
+
+def git(directory, *arguments, check=True):
+    done = subprocess.run(["git", "-C", str(directory), *arguments], capture_output=True, text=True)
+    if check and done.returncode != 0:
+        sys.exit(f"git {' '.join(arguments)} in {directory}: {done.stderr.strip()}")
+    return done.stdout.strip()
+
+
+def pin():
+    """What `Cargo.toml` takes from the fork: its address, the commit, the crates."""
+    found = PINNED.findall(MANIFEST.read_text())
+    pins = {(url, commit) for _, url, commit in found if url.endswith("/gpuimm")}
+    if len(pins) != 1:
+        sys.exit(f"{MANIFEST} should take its crates of the fork from one address at one commit")
+    url, commit = pins.pop()
+    return url, commit, [name for name, where, _ in found if where == url]
+
+
+def linked():
+    """The checkout the app is linked to, or None."""
+    if not LOCAL.is_file():
+        return None
+    for patches in tomllib.loads(LOCAL.read_text()).get("patch", {}).values():
+        for patch in patches.values():
+            return Path(patch["path"]).parent.parent
+    return None
+
+
+def members():
+    """The workspace's own packages, by name."""
+    return {
+        tomllib.loads(manifest.read_text())["package"]["name"]
+        for manifest in (DESKTOP / "crates").glob("*/Cargo.toml")
+    }
+
+
+def as_pinned(lock, url, commit):
+    """A lock file a linked build wrote, as one built against the pin writes it.
+
+    The two differ in where the fork's packages come from: a path, which a
+    lock file leaves unsaid, or the commit. Everything else is the same text.
+    """
+    source = f'source = "git+{url}?rev={commit}#{commit}"'
+    own = members()
+    out = []
+    lines = lock.splitlines()
+    for at, line in enumerate(lines):
+        out.append(line)
+        if not line.startswith("version = ") or not lines[at - 1].startswith("name = "):
+            continue
+        name = lines[at - 1].split('"')[1]
+        following = lines[at + 1] if at + 1 < len(lines) else ""
+        if name not in own and not following.startswith("source = "):
+            out.append(source)
+    text = "\n".join(out) + "\n"
+    # Two packages of one name are told apart by where they come from, in
+    # every place one is depended on; that is not rewritten here.
+    if re.search(r'^ "[^" ]+ [^" ]+ \((path|git)\+', text, re.M):
+        sys.exit("the lock file names a package by its source; run cargo unlinked to write Cargo.lock")
+    return text
+
+
+def behind(url, commit):
+    """Whether `Cargo.lock` is not what the linked lock file comes to."""
+    return LINKED_LOCK.is_file() and as_pinned(LINKED_LOCK.read_text(), url, commit) != LOCK.read_text()
+
+
+def status(_options):
+    url, commit, _ = pin()
+    print(f"pinned   {commit[:12]} of {url}")
+    checkout = linked()
+    if checkout is None:
+        print("linked   no: the app builds against the pinned commit")
+        return
+    print(f"linked   {checkout}")
+    if not (checkout / "crates" / "gpui" / "Cargo.toml").is_file():
+        print("         it is gone: link a checkout again, or unlink")
+        return
+    head = git(checkout, "rev-parse", "HEAD")
+    changed = git(checkout, "status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock").splitlines()
+    if head == commit and not changed:
+        print("         the same as the pin")
+    else:
+        if head != commit:
+            ahead = git(checkout, "rev-list", "--count", f"{commit}..{head}", check=False) or "?"
+            print(f"         at {head[:12]}, {ahead} commit(s) from the pin")
+        if changed:
+            print(f"         {len(changed)} file(s) changed and not committed")
+        print("         the pin does not have this: what the app uses of it builds here only, until it is pinned")
+    if behind(url, commit):
+        print("lock     Cargo.lock is behind what this checkout builds with: script/gpuimm lock")
+
+
+def link(options):
+    url, commit, crates = pin()
+    checkout = (options.directory or CHECKOUT).expanduser().resolve()
+    for crate in crates:
+        if not (checkout / "crates" / crate / "Cargo.toml").is_file():
+            sys.exit(f"{checkout} is not a checkout of the fork: it has no crates/{crate}")
+    if not LINKED_LOCK.is_file():
+        # Starts from what is committed; cargo rewrites the fork's entries itself.
+        LINKED_LOCK.parent.mkdir(parents=True, exist_ok=True)
+        LINKED_LOCK.write_text(LOCK.read_text())
+    patches = "".join(f'{crate} = {{ path = "{checkout / "crates" / crate}" }}\n' for crate in crates)
+    text = (
+        "# Written by script/gpuimm link: the app builds against this checkout of the\n"
+        "# GPUI fork instead of the commit Cargo.toml pins, with a lock file of its own.\n"
+        "# script/gpuimm unlink undoes it.\n"
+        f'[patch."{url}"]\n{patches}\n'
+        f'[resolver]\nlockfile-path = "{LINKED_LOCK}"\n'
+    )
+    # In one step: a cargo started meanwhile reads the old file or the new, never half of one.
+    draft = LOCAL.with_suffix(".toml.new")
+    draft.write_text(text)
+    os.replace(draft, LOCAL)
+    print(f"linked to {checkout}")
+
+
+def unlink(_options):
+    if not LOCAL.is_file():
+        print("not linked")
+        return
+    url, commit, _ = pin()
+    if behind(url, commit):
+        # What was added while linked is not lost with the link.
+        LOCK.write_text(as_pinned(LINKED_LOCK.read_text(), url, commit))
+        print("Cargo.lock brought up to date first")
+    LOCAL.unlink()
+    LINKED_LOCK.unlink(missing_ok=True)
+    if LINKED_LOCK.parent.is_dir() and not any(LINKED_LOCK.parent.iterdir()):
+        LINKED_LOCK.parent.rmdir()
+    print("unlinked: the app builds against the pinned commit")
+
+
+def lock(options):
+    url, commit, _ = pin()
+    if linked() is None or not LINKED_LOCK.is_file():
+        print("not linked: cargo keeps Cargo.lock itself")
+        return
+    if not behind(url, commit):
+        print("Cargo.lock is up to date")
+        return
+    if options.check:
+        sys.exit("Cargo.lock is behind what this checkout builds with: script/gpuimm lock")
+    LOCK.write_text(as_pinned(LINKED_LOCK.read_text(), url, commit))
+    print("Cargo.lock written: commit it")
+
+
+def move_pin(options):
+    url, old, _ = pin()
+    checkout = linked()
+    if options.commit:
+        new = git(checkout or CHECKOUT, "rev-parse", "--verify", f"{options.commit}^{{commit}}")
+        checkout = checkout or CHECKOUT
+        if linked() is not None and git(checkout, "rev-parse", "HEAD") != new:
+            sys.exit(f"the linked checkout is not at {new[:12]}: the lock file would not be that commit's")
+    else:
+        if checkout is None:
+            sys.exit("no checkout is linked: name the commit to pin")
+        new = git(checkout, "rev-parse", "HEAD")
+    if linked() is not None and git(checkout, "status", "--porcelain", "--", "crates", "Cargo.toml", "Cargo.lock"):
+        sys.exit(f"{checkout} has changes that are not committed: the pin would not be what the app is built against")
+    # Asked of the remote itself: a commit only this machine has pins nothing for anyone else.
+    git(checkout, "fetch", "--quiet", "origin")
+    if not git(checkout, "branch", "--remotes", "--contains", new, check=False):
+        sys.exit(f"{new[:12]} is on no branch of the fork's origin: push it first")
+    if new == old:
+        print(f"already pinned at {new[:12]}")
+        return
+    MANIFEST.write_text(MANIFEST.read_text().replace(f'rev = "{old}"', f'rev = "{new}"'))
+    # Linked, the lock file is this checkout's, which is at the commit. Not
+    # linked, cargo resolves the commit and writes Cargo.lock itself.
+    done = subprocess.run(["cargo", "metadata", "--format-version", "1"], cwd=DESKTOP, capture_output=True, text=True)
+    if done.returncode != 0:
+        sys.exit(f"Cargo.toml names {new[:12]} now, but cargo could not resolve:\n{done.stderr}")
+    if linked() is not None:
+        LOCK.write_text(as_pinned(LINKED_LOCK.read_text(), url, new))
+    print(f"pinned {new[:12]} (was {old[:12]}): commit Cargo.toml and Cargo.lock")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    commands = parser.add_subparsers(dest="command")
+    commands.add_parser("status").set_defaults(run=status)
+    linking = commands.add_parser("link")
+    linking.add_argument("directory", nargs="?", type=Path)
+    linking.set_defaults(run=link)
+    commands.add_parser("unlink").set_defaults(run=unlink)
+    locking = commands.add_parser("lock")
+    locking.add_argument("--check", action="store_true", help="say whether Cargo.lock is behind, change nothing")
+    locking.set_defaults(run=lock)
+    pinning = commands.add_parser("pin")
+    pinning.add_argument("commit", nargs="?")
+    pinning.set_defaults(run=move_pin)
+    options = parser.parse_args()
+    (options.run if options.command else status)(options)
+
+
+if __name__ == "__main__":
+    main()

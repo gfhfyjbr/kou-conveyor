@@ -1,0 +1,1 @@
+{"id":"broken","message":"prompt","next":"","session":"{\"type\":\"session\",\"data\":{}}\n{\"type\":\"other\",\"data\":{}}\n","before":{},"error":"read session record 2: unsupported record type \"other\"","gone":false,"keep":0,"tail":"","after":{}}

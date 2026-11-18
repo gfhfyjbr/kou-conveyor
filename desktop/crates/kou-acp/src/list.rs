@@ -76,7 +76,7 @@ pub fn sessions(
                 .context("the agent's list of sessions could not be read")?;
         found.extend(listed.sessions.into_iter().map(|session| PastSession {
             id: session.session_id.0.to_string(),
-            title: session.title.unwrap_or_default().trim().to_owned(),
+            title: kou_thread::plain_title(&session.title.unwrap_or_default()).to_owned(),
             updated: session.updated_at.as_deref().and_then(rfc3339),
             cwd: session.cwd,
         }));

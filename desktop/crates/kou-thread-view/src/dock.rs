@@ -19,11 +19,11 @@ use crate::{
     composer::parts::{GLIDE, SETTLE, grow},
     composer::{self, Composer, ComposerEvent},
     draft::Draft,
-    entries::{EDGE, MEASURE, TEXT_EDGE},
+    entries::{EDGE, MEASURE},
     history,
     queue::{Item, Queue},
     trace,
-    view::{Cancel, MenuDown, MenuUp, ThreadViewRequest, allow_key, usage_figures},
+    view::{Cancel, MenuChoose, MenuDown, MenuUp, ThreadViewRequest, allow_key, usage_figures},
 };
 use gpui::{
     Anchor, AnimationExt as _, AnyElement, App, AppContext as _, ClickEvent, Context, Div, Entity,
@@ -65,10 +65,16 @@ pub(crate) struct Sync {
     pub commands: Vec<Choice>,
     pub modes: Vec<Choice>,
     pub mode: Option<String>,
+    pub access: kou_thread::Access,
     pub models: Vec<Choice>,
     pub model: Option<String>,
+    /// The levels of effort on offer apart from the modes, lowest first.
+    pub efforts: Vec<Choice>,
+    pub effort: Option<String>,
     /// Who serves the models, when the backend says.
     pub providers: Vec<Provider>,
+    /// The question an agent asks that is at hand, while one is.
+    pub asking: Option<Asking>,
     pub usage: Usage,
     /// There is an answer to copy, and anything at all to fold or clear.
     pub answered: bool,
@@ -77,6 +83,17 @@ pub(crate) struct Sync {
     pub prompts: usize,
     /// Whether the backend has said it is ready, so what it takes is known.
     pub ready: bool,
+}
+
+/// A question of the agent's that is at hand (see [`crate::questions`]), as
+/// the field needs to know it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Asking {
+    /// It takes an answer in the user's own words: what is sent from the
+    /// field is that answer, not a prompt.
+    pub words: bool,
+    /// It takes several of its options: words sent go with those chosen.
+    pub multiple: bool,
 }
 
 /// What the dock asks of the view around it.
@@ -91,14 +108,22 @@ pub(crate) enum DockEvent {
     Steer {
         blocks: Vec<Block>,
     },
-    /// Enter, or the run button, on a field standing alone with nothing in
-    /// it: there is no prompt, and the app around it may still have a use
-    /// for the gesture.
+    /// Enter, or the run button, with nothing in the field, on a field
+    /// standing alone or under a question: there is no prompt, and the app
+    /// around it may still have a use for the gesture (a question that
+    /// takes several options is answered with those chosen).
     Blank,
+    /// The answer to the question at hand, in the user's own words.
+    Answer(String),
+    /// The field came to hold something, or nothing, while a question that
+    /// takes words is at hand: its Confirm may be live now.
+    Typed(bool),
     /// Stop the running turn.
     Cancel,
     SetMode(String),
+    SetAccess(String),
     SetModel(String),
+    SetEffort(String),
     /// A command about the transcript: copy, expand, collapse, clear.
     View(Act),
     /// Put prompt `n` (1 is the first), or the last, back in the field.
@@ -114,24 +139,43 @@ pub(crate) enum DockEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PickerKind {
     Mode,
+    Access,
     Model,
+    /// The levels of effort a backend offers apart from its modes.
+    Effort,
 }
 
 impl PickerKind {
     fn title(self) -> &'static str {
         match self {
             PickerKind::Mode => "Mode",
+            PickerKind::Access => "Permissions",
             PickerKind::Model => "Model",
+            PickerKind::Effort => "Effort",
         }
     }
 
     fn id(self) -> &'static str {
         match self {
             PickerKind::Mode => "mode-picker",
+            PickerKind::Access => "access-picker",
             PickerKind::Model => "model-picker",
+            PickerKind::Effort => "effort-picker",
+        }
+    }
+
+    fn menu_slot(self) -> &'static str {
+        match self {
+            Self::Model => "modelMenu",
+            Self::Mode => "modeMenu",
+            Self::Effort => "effortMenu",
+            Self::Access => "accessMenu",
         }
     }
 }
+
+/// How long after a press closed a list the click of that press may come.
+const PRESS: std::time::Duration = std::time::Duration::from_millis(600);
 
 /// An open picker: one focus handle per choice, so the choices are real tab stops.
 pub(crate) struct Picker {
@@ -203,13 +247,23 @@ pub(crate) struct Dock {
     activity: Option<Entity<Lights>>,
     /// The epoch the activity meter's phase is counted from.
     epoch: Instant,
-    /// The prompt area is narrow (under 520 pixels): the controls' names go.
+    /// The prompt area is narrow (under 520 pixels), as what draws the field
+    /// is told.
     narrow: Rc<Cell<bool>>,
     /// Drawn on its own, without a conversation: see [`crate::PromptField`].
     pub(crate) standalone: bool,
     /// What the app puts at the start of the field's foot, built every frame.
     pub(crate) foot: Option<crate::field::Foot>,
+    /// The app's own drawing of the field's frame, when it has one.
+    pub(crate) face: Option<crate::field::FieldFace>,
+    /// The app's own drawing of the rest of the prompt area (the line over
+    /// the field, the queue's tray, the figures under it), when it has one.
+    pub(crate) chat_face: Option<crate::face::ChatFace>,
     pickers_opened: u64,
+    /// The list a press outside it closed, and when: a press on the list's
+    /// own control closes it, and the click that the same press ends in is
+    /// not one that opens it again.
+    pressed_shut: Option<(PickerKind, std::time::Instant)>,
     pub(crate) queue: Queue,
     /// The queued prompt a turn is being stopped for (see
     /// [`Dock::interrupt`]), and whether the queue was paused before: once
@@ -242,7 +296,7 @@ pub(crate) struct Dock {
     /// that width times the factor, to the fraction.
     width: Rc<Cell<Option<gpui::Pixels>>>,
     /// The thread view's trace, which notes the frames the dock is built in.
-    trace: trace::Trace,
+    pub(crate) trace: trace::Trace,
     /// How the view around it looks, and what it tells the dock of its
     /// nested agents. See [`crate::nested::Around`].
     pub(crate) around: Rc<crate::nested::Around>,
@@ -302,7 +356,10 @@ impl Dock {
             narrow: Rc::new(Cell::new(false)),
             standalone: false,
             foot: None,
+            face: None,
+            chat_face: None,
             pickers_opened: 0,
+            pressed_shut: None,
             queue: Queue::default(),
             interrupting: None,
             queue_focus: HashMap::new(),
@@ -344,6 +401,12 @@ impl Dock {
 
     /// What the empty field says now, in the look the view has.
     fn placeholders(&self) -> (SharedString, SharedString) {
+        // Under a question that takes words, what is typed is the answer.
+        if let Some(asking) = self.sync.asking.as_ref().filter(|asking| asking.words)
+            && !matches!(self.sync.state, ThreadState::Closed(_))
+        {
+            return answer_placeholder(asking, &self.agent);
+        }
         if self.around.studio() {
             studio::placeholder(&self.sync.state, &self.agent)
         } else {
@@ -396,9 +459,22 @@ impl Dock {
             return;
         }
         let was = std::mem::replace(&mut self.sync, sync);
+        // An open model picker is of the list it opened on.
+        if (was.models != self.sync.models || was.providers != self.sync.providers)
+            && let Some(picker) = self.model_picker.as_mut()
+        {
+            picker.refill(
+                &self.sync.models,
+                &self.sync.providers,
+                self.sync.model.as_deref(),
+            );
+        }
         let busy =
             |state: &ThreadState| matches!(state, ThreadState::Working | ThreadState::Blocked);
-        if was.state != self.sync.state || was.offers.steer != self.sync.offers.steer {
+        if was.state != self.sync.state
+            || was.offers.steer != self.sync.offers.steer
+            || was.asking != self.sync.asking
+        {
             let (long, short) = self.placeholders();
             self.composer.update(cx, |composer, cx| {
                 composer.set_placeholders(long, short, cx)
@@ -407,6 +483,14 @@ impl Dock {
                 self.picker = None;
                 self.model_picker = None;
             }
+        }
+        // A model with no levels of effort: their list goes with them.
+        if self
+            .picker
+            .as_ref()
+            .is_some_and(|picker| self.choices(picker.kind).0.is_empty())
+        {
+            self.picker = None;
         }
         // The activity line's clock counts from when the turn began.
         if busy(&self.sync.state) && !busy(&was.state) {
@@ -437,6 +521,15 @@ impl Dock {
                     None => self.run_next(cx),
                 }
             }
+        }
+        // The agent has given its answer and only waits for what it left
+        // running: it takes the next prompt now, so the queue goes on.
+        if busy(&self.sync.state)
+            && self.sync.offers.listening
+            && !was.offers.listening
+            && self.interrupting.is_none()
+        {
+            self.run_next(cx);
         }
         let takes = self.sync.ready.then_some(self.sync.capabilities.images);
         let commands = self.sync.commands.clone();
@@ -502,6 +595,9 @@ impl Dock {
             model: self.sync.model.clone(),
             modes: self.sync.modes.clone(),
             mode: self.sync.mode.clone(),
+            efforts: self.sync.efforts.clone(),
+            access: self.sync.access.clone(),
+            effort: self.sync.effort.clone(),
             running: self.busy(),
             queued: self.queue.queued(),
             paused: self.queue.paused,
@@ -529,6 +625,13 @@ impl Dock {
 
     fn busy(&self) -> bool {
         matches!(self.sync.state, ThreadState::Working | ThreadState::Blocked)
+    }
+
+    /// Whether a prompt written now has to wait, or be forced in: a turn is
+    /// open in which the agent answers a prompt. One it has answered, and
+    /// holds open only for what it left running, takes the next at once.
+    fn occupied(&self) -> bool {
+        self.busy() && !self.sync.offers.listening
     }
 
     /// The draft in the field, or why it cannot go, said over the field.
@@ -575,6 +678,24 @@ impl Dock {
         self.composer.update(cx, |composer, cx| composer.clear(cx));
     }
 
+    /// The words typed in the field, taken out of it, for the answer to a
+    /// question: `None`, and the field left as it is, when it holds none,
+    /// or holds pictures too, or a queued prompt being edited.
+    pub(crate) fn take_words(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        if self.editing.is_some() {
+            return None;
+        }
+        let words = match self.composer.read(cx).draft() {
+            Ok((draft, _)) if draft.pictures.is_empty() => draft.text.trim().to_owned(),
+            _ => return None,
+        };
+        if words.is_empty() {
+            return None;
+        }
+        self.clear_field(cx);
+        Some(words)
+    }
+
     fn composer_event(
         &mut self,
         _: &Entity<Composer>,
@@ -587,12 +708,18 @@ impl Dock {
             ComposerEvent::Force(text) => self.submit(text.clone(), true, window, cx),
             ComposerEvent::Emptied(empty) => {
                 self.draft_empty = *empty;
+                // (Told only under a question that takes words: what is
+                // typed is no business of the transcript's otherwise.)
+                if self.answers_words() {
+                    cx.emit(DockEvent::Typed(!*empty));
+                }
                 cx.notify();
             }
-            // Nothing to send: in a conversation Enter then does nothing;
-            // standing alone, the field passes the gesture on.
+            // Nothing to send: in a conversation Enter then does nothing,
+            // but for a question at hand; standing alone, the field passes
+            // the gesture on.
             ComposerEvent::Blank => {
-                if self.standalone && self.draft_empty {
+                if (self.standalone || self.sync.asking.is_some()) && self.draft_empty {
                     cx.emit(DockEvent::Blank);
                 }
             }
@@ -606,16 +733,31 @@ impl Dock {
             self.finish_edit(true, cx);
             return;
         }
-        if !force && let Some((name, argument)) = commands::parse(&text) {
-            let catalog = self.composer.read(cx).catalog().clone();
-            if let Some(at) = catalog.named(&name)
-                && catalog.specs[at].act != Act::Backend
-            {
-                let act = catalog.specs[at].act;
-                self.clear_field(cx);
-                self.run(act, argument, window, cx);
-                return;
-            }
+        let command = commands::parse(&text).and_then(|(name, argument)| {
+            let catalog = self.composer.read(cx).catalog();
+            catalog
+                .named(&name)
+                .map(|at| (catalog.specs[at].act, argument))
+        });
+        if !force
+            && let Some((act, argument)) = command.clone()
+            && act != Act::Backend
+        {
+            self.clear_field(cx);
+            self.run(act, argument, window, cx);
+            return;
+        }
+        // Under a question that takes words, what is sent is its answer: by
+        // Enter as by the force key. (A command of the agent's, or a draft
+        // with pictures, still goes as a prompt.)
+        if self.answers_words()
+            && command.is_none()
+            && !text.trim().is_empty()
+            && matches!(self.composer.read(cx).draft(), Ok((draft, _)) if draft.pictures.is_empty())
+        {
+            self.clear_field(cx);
+            cx.emit(DockEvent::Answer(text.trim().to_owned()));
+            return;
         }
         match self.sync.state {
             ThreadState::Closed(_) => {
@@ -633,6 +775,11 @@ impl Dock {
                 );
             }
             ThreadState::Idle => self.send_now(cx),
+            // The agent takes a prompt though a turn is open: it goes at
+            // once, and nothing is stopped for it.
+            ThreadState::Working | ThreadState::Blocked if self.sync.offers.listening => {
+                self.send_now(cx)
+            }
             ThreadState::Working | ThreadState::Blocked if force => self.force_now(cx),
             ThreadState::Working | ThreadState::Blocked => {
                 let Some((draft, _)) = self.take_draft(cx) else {
@@ -723,11 +870,12 @@ impl Dock {
             Act::Backend => {}
             Act::Stop => cx.emit(DockEvent::Cancel),
             Act::Queue => self.queue_command(&argument, window, cx),
-            Act::Model | Act::Mode => {
-                let (kind, choices) = if act == Act::Model {
-                    (PickerKind::Model, &self.sync.models)
-                } else {
-                    (PickerKind::Mode, &self.sync.modes)
+            Act::Model | Act::Mode | Act::Effort | Act::Access => {
+                let (kind, choices) = match act {
+                    Act::Model => (PickerKind::Model, &self.sync.models),
+                    Act::Effort => (PickerKind::Effort, &self.sync.efforts),
+                    Act::Access => (PickerKind::Access, &self.sync.access.choices),
+                    _ => (PickerKind::Mode, &self.sync.modes),
                 };
                 if argument.is_empty() {
                     self.toggle_picker(kind, window, cx);
@@ -740,18 +888,18 @@ impl Dock {
                         || choice.name.to_lowercase().ends_with(&format!(": {wanted}"))
                 });
                 match (found, kind) {
-                    (Some(choice), PickerKind::Mode) => {
-                        cx.emit(DockEvent::SetMode(choice.id.clone()))
-                    }
-                    (Some(choice), PickerKind::Model) => {
-                        cx.emit(DockEvent::SetModel(choice.id.clone()))
-                    }
+                    (Some(choice), kind) => self.select_choice(kind, choice.id.clone(), window, cx),
                     // A model the list does not name may still be one the connection reaches.
                     (None, PickerKind::Model) => cx.emit(DockEvent::SetModel(argument)),
-                    (None, PickerKind::Mode) => {
+                    (None, kind) => {
                         let names: Vec<&str> =
                             choices.iter().map(|choice| choice.id.as_str()).collect();
-                        self.tell(format!("Modes: {}.", names.join(", ")), true, cx);
+                        let what = match kind {
+                            PickerKind::Effort => "Levels",
+                            PickerKind::Access => "Permissions",
+                            _ => "Modes",
+                        };
+                        self.tell(format!("{what}: {}.", names.join(", ")), true, cx);
                     }
                 }
             }
@@ -826,7 +974,10 @@ impl Dock {
 
     fn resume(&mut self, cx: &mut Context<Self>) {
         self.queue.paused = false;
-        if self.sync.state == ThreadState::Idle {
+        // (Also while the agent only waits for what it left running: a
+        // prompt goes at once then, and so does the queue's next.)
+        let listening = self.busy() && self.sync.offers.listening && self.interrupting.is_none();
+        if self.sync.state == ThreadState::Idle || listening {
             self.run_next(cx);
         }
         self.push_offer(cx);
@@ -911,8 +1062,9 @@ impl Dock {
     }
 
     fn force_queued(&mut self, id: u64, cx: &mut Context<Self>) {
-        if !self.busy() {
-            // Nothing runs: forcing it in is running it now.
+        if !self.occupied() {
+            // Nothing runs that a prompt would wait for: forcing it in is
+            // running it now.
             if let Some((_, item)) = self.queue.take(id) {
                 self.queue.insert(0, item);
                 let paused = std::mem::replace(&mut self.queue.paused, false);
@@ -1026,11 +1178,44 @@ impl Dock {
     fn choices(&self, kind: PickerKind) -> (&[Choice], Option<&str>) {
         match kind {
             PickerKind::Mode => (&self.sync.modes, self.sync.mode.as_deref()),
+            PickerKind::Access => (
+                &self.sync.access.choices,
+                self.sync.access.current.as_deref(),
+            ),
             PickerKind::Model => (&self.sync.models, self.sync.model.as_deref()),
+            PickerKind::Effort => (&self.sync.efforts, self.sync.effort.as_deref()),
         }
     }
 
+    /// A press outside an open list closes it.
+    pub(crate) fn press_outside(
+        &mut self,
+        kind: PickerKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pressed_shut = Some((kind, cx.background_executor().now()));
+        match kind {
+            PickerKind::Model => self.close_model_picker(window, cx),
+            PickerKind::Mode | PickerKind::Effort | PickerKind::Access => {
+                self.close_picker(window, cx)
+            }
+        }
+    }
+
+    /// Whether the press that this click ends closed the list of `kind`:
+    /// its control was pressed to close it.
+    pub(crate) fn closed_by_this_press(&mut self, kind: PickerKind, cx: &Context<Self>) -> bool {
+        let now = cx.background_executor().now();
+        self.pressed_shut
+            .take()
+            .is_some_and(|(shut, at)| shut == kind && now.saturating_duration_since(at) <= PRESS)
+    }
+
     fn toggle_picker(&mut self, kind: PickerKind, window: &mut Window, cx: &mut Context<Self>) {
+        if self.closed_by_this_press(kind, cx) {
+            return;
+        }
         if kind == PickerKind::Model {
             self.toggle_model_picker(window, cx);
             return;
@@ -1098,11 +1283,55 @@ impl Dock {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.close_picker(window, cx);
+        self.select_choice(kind, id, window, cx);
+    }
+
+    fn select_choice(
+        &mut self,
+        kind: PickerKind,
+        id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if kind == PickerKind::Access
+            && self.sync.access.confirm.contains(&id)
+            && self.sync.access.current.as_ref() != Some(&id)
+        {
+            let Some(choice) = self.sync.access.choices.iter().find(|c| c.id == id) else {
+                return;
+            };
+            let answer = window.prompt(
+                gpui::PromptLevel::Warning,
+                &format!("Enable {}?", choice.name),
+                choice.description.as_deref(),
+                &["Cancel", "Enable"],
+                cx,
+            );
+            let session = self.sync.session.clone();
+            let cwd = self.cwd.clone();
+            cx.spawn(async move |this, cx| {
+                if answer.await == Ok(1) {
+                    this.update(cx, |this, cx| {
+                        if this.sync.session == session
+                            && this.cwd == cwd
+                            && this.sync.access.choices.iter().any(|c| c.id == id)
+                        {
+                            cx.emit(DockEvent::SetAccess(id));
+                        }
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+            return;
+        }
         cx.emit(match kind {
             PickerKind::Mode => DockEvent::SetMode(id),
+            PickerKind::Access => DockEvent::SetAccess(id),
             PickerKind::Model => DockEvent::SetModel(id),
+            PickerKind::Effort => DockEvent::SetEffort(id),
         });
-        self.close_picker(window, cx);
     }
 
     /// Escape: the innermost thing the dock has open closes.
@@ -1175,26 +1404,40 @@ impl Dock {
         let queue = self.queue_element(window, cx);
         let measure = self.measure(cx);
         let activity = self.activity_line(cx);
-        let model_picker = self.model_picker_element(Anchor::BottomLeft, window, cx);
+        // The model picker stands over its control, as the modes' list over
+        // the mode's. With no such control (no model named yet, and `/model`
+        // typed), it stands over the field.
+        let over_control = self.chosen(PickerKind::Model).is_some();
+        let mut model_picker = self.model_picker_element(Anchor::BottomLeft, window, cx);
         // What the app puts at the start of the foot, built as the field is.
         let foot = self.foot.clone().map(|foot| foot(window, cx));
+        // (Once more for the view's own frame, should the app's drawing of
+        // it fail: what the app drew with is spent then.)
+        let spare = match self.face {
+            Some(_) => self.foot.clone().map(|foot| foot(window, cx)),
+            None => None,
+        };
+        let (models, spare_models) = if over_control {
+            let spare = match (&self.face, &model_picker) {
+                (Some(_), Some(_)) => self.model_picker_element(Anchor::BottomLeft, window, cx),
+                _ => None,
+            };
+            (model_picker.take(), spare)
+        } else {
+            (None, None)
+        };
         let theme = theme(cx);
-        let frame = self.frame(window, foot, theme, cx);
-        let usage = self.usage(theme);
+        let frame = self.frame(window, foot, spare, models, spare_models, theme, cx);
+        let usage = self.usage(theme, cx);
         let help = self.help.then(|| self.help_element(window, theme, cx));
         let standalone = self.standalone;
-        // The prompt area keeps to the transcript's column, centred as it
-        // is, and within it to the text: the field begins where the text
-        // does, past the rail, and ends where it ends. (Standing alone there
-        // is no rail to stand clear of.)
-        let lead = if standalone { EDGE } else { TEXT_EDGE };
+        // The field and the messages above it share both edges.
         let column = div()
             .relative()
             .w_full()
             .max_w(px(MEASURE))
             .flex_none()
-            .pl(px(lead))
-            .pr(px(EDGE))
+            .px(px(EDGE))
             .pb(px(if standalone { 0. } else { 10. }))
             .flex()
             .flex_col()
@@ -1205,7 +1448,7 @@ impl Dock {
             .children(usage)
             .children(help)
             .children(
-                model_picker.map(|picker| div().absolute().top_0().left(px(lead)).child(picker)),
+                model_picker.map(|picker| div().absolute().top_0().left(px(EDGE)).child(picker)),
             );
         // Where the card beside the transcript takes room from the pane,
         // the transcript's column is centred in what is left: the prompt
@@ -1255,7 +1498,7 @@ impl Dock {
     /// does, and the key that stops it. It also stands while nothing of the
     /// agent's own runs but something it left running does: the commands
     /// in the background, which a stop of the turn does not end.
-    fn activity_line(&mut self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
+    fn activity_line(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let waiting = self.around.waiting.borrow().clone();
         let behind = self.around.behind.borrow().clone();
         let busy = self.busy();
@@ -1275,6 +1518,7 @@ impl Dock {
         });
         let theme = theme(cx);
         let blocked = self.sync.state == ThreadState::Blocked;
+        let show_hint = busy && (waiting.is_empty() || blocked) && !self.narrow.get();
         // Over the queue's card it keeps to that card's edges, which stand
         // in from the field's; over the field alone, to the field's.
         let queued = !self.queue.items().is_empty() || !self.leaving.is_empty();
@@ -1295,6 +1539,39 @@ impl Dock {
         // Which of them, where the agents it waits on are not named already.
         let commands =
             (!behind.is_empty() && (waiting.is_empty() || blocked)).then(|| behind.join(", "));
+        // The app draws the line itself, around the meter, when it can.
+        if let Some(face) = self.chat_face.clone() {
+            let data = || {
+                serde_json::json!({
+                    "blocked": blocked,
+                    "queued": queued,
+                    "doing": doing,
+                    "waiting": (!waiting.is_empty() && !blocked).then(|| waiting.join(", ")),
+                    "background": in_background,
+                    "commands": commands,
+                    // The key that stops the turn, or the button that stops it
+                    // while the agents it waits on are named.
+                    "hint": show_hint,
+                    "stop": !waiting.is_empty() && !blocked && busy,
+                })
+            };
+            let slots = meter
+                .clone()
+                .map(|meter| ("meter", meter.into_any_element()))
+                .into_iter()
+                .collect();
+            let key = format!("activity-{}", cx.entity_id().as_u64());
+            let part = crate::face::Handed::new("composer-activity", key, data).kept((
+                (blocked, queued, &doing, &waiting, busy, show_hint),
+                (&in_background, &commands),
+            ));
+            let (entity, asked) = (cx.weak_entity(), Self::asked as crate::face::Asked<Self>);
+            if let Some(drawn) =
+                crate::face::drawn(&face, part, slots, entity, asked, &self.trace, cx)
+            {
+                return Some(drawn);
+            }
+        }
         Some(
             div()
                 .debug_selector(|| "activity".into())
@@ -1303,8 +1580,8 @@ impl Dock {
                 .flex()
                 .items_center()
                 .gap(px(10.))
-                .font_family(theme.mono_font.clone())
-                .text_size(px(11.5))
+                .font_family(theme.ui_font.clone())
+                .text_size(px(12.))
                 .text_color(if blocked { theme.blocked } else { theme.fg_dim })
                 .children(meter.map(|meter| {
                     div()
@@ -1312,7 +1589,7 @@ impl Dock {
                         .flex_none()
                         .child(meter)
                 }))
-                .children(doing.map(|doing| div().flex_none().child(scale::text(doing))))
+                .children(doing.map(|doing| div().min_w_0().truncate().child(scale::text(doing))))
                 // The agents it waits on, by their titles.
                 .when(!waiting.is_empty() && !blocked, |line| {
                     line.child(
@@ -1329,13 +1606,13 @@ impl Dock {
                 .children(in_background.map(|said| {
                     div()
                         .debug_selector(|| "activity-background".into())
-                        .flex_none()
+                        .min_w_0()
                         .flex()
                         .items_center()
                         .gap(px(6.))
                         .text_color(theme.fg_dim)
                         .child(icon(Icon::Terminal, theme.fg_muted).size(px(12.)))
-                        .child(scale::text(said))
+                        .child(div().min_w_0().truncate().child(scale::text(said)))
                 }))
                 .children(commands.map(|commands| {
                     div()
@@ -1343,10 +1620,11 @@ impl Dock {
                         .flex_shrink(1.)
                         .truncate()
                         .text_color(theme.fg_muted)
+                        .font_family(theme.mono_font.clone())
                         .child(scale::text(commands))
                 }))
                 .child(div().flex_1())
-                .when(busy && (waiting.is_empty() || blocked), |line| {
+                .when(show_hint, |line| {
                     line.child(
                         div()
                             .flex_none()
@@ -1356,7 +1634,8 @@ impl Dock {
                             .text_size(px(10.5))
                             .text_color(theme.fg_muted)
                             .child(key_hint("esc", theme))
-                            .child(scale::text("stop")),
+                            // (Twice: one press only asks.)
+                            .child(scale::text("twice to stop")),
                     )
                 })
                 .when(!waiting.is_empty() && !blocked && busy, |line| {
@@ -1368,8 +1647,39 @@ impl Dock {
                                 window.focus(&this.focus, cx);
                             })),
                     )
-                }),
+                })
+                .into_any_element(),
         )
+    }
+
+    /// What a part of the prompt area that the app draws asks for (see
+    /// [`crate::face`]). The field's frame asks through [`Self::act_named`].
+    fn asked(
+        &mut self,
+        name: &str,
+        _: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match name {
+            // The line over the field.
+            "stop" => {
+                cx.emit(DockEvent::Cancel);
+                window.focus(&self.focus, cx);
+            }
+            // The queue's tray.
+            "resume" => self.resume(cx),
+            "pause" => {
+                self.queue.paused = true;
+                self.push_offer(cx);
+            }
+            "clear" => {
+                self.queue.clear();
+                self.push_offer(cx);
+                window.focus(&self.focus, cx);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1441,42 +1751,130 @@ impl Dock {
 impl Dock {
     /// The field in its frame (`.composer`), with its foot: what the app puts
     /// there, attach, the model and the mode, and the buttons that send.
+    ///
+    /// `models` is the model picker while it is open, to stand over the
+    /// model's control (and `spare_models` the same once more, as `spare`
+    /// is of `foot`).
+    #[allow(clippy::too_many_arguments)]
     fn frame(
         &self,
         window: &Window,
-        foot: Option<AnyElement>,
+        mut foot: Option<AnyElement>,
+        spare: Option<AnyElement>,
+        mut models: Option<AnyElement>,
+        spare_models: Option<AnyElement>,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
         let focused = self.focus.is_focused(window);
         let busy = self.busy();
-        let (resting, lit, accent) = (theme.line_strong, theme.fg_faint, theme.accent);
         let drop_fill = theme.selected;
-        let pickers: Vec<AnyElement> = [PickerKind::Model, PickerKind::Mode]
-            .into_iter()
-            .filter_map(|kind| self.picker_button(kind, theme, cx))
-            .collect();
         let closed = matches!(self.sync.state, ThreadState::Closed(_));
-        let attach = (!closed).then(|| {
-            kou_ui::icon_button("attach", Icon::Paperclip, theme)
-                .debug_selector(|| "attach".into())
-                .size(px(28.))
-                .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
-        });
+        let attach = || {
+            (!closed).then(|| {
+                kou_ui::icon_button_sized("attach", Icon::Paperclip, 26., theme)
+                    .debug_selector(|| "attach".into())
+                    .on_click(cx.listener(|this, _, window, cx| this.attach_files(window, cx)))
+            })
+        };
+        let in_foot = |foot: AnyElement| {
+            div()
+                .debug_selector(|| "field-foot".into())
+                .flex_none()
+                .min_w_0()
+                .child(foot)
+        };
+        // The app draws the frame itself and places the field's parts in
+        // it; when it cannot, the frame is the view's own, below.
+        if let Some(face) = self.face.clone() {
+            let mut slots = vec![("editor", self.composer.clone().into_any_element())];
+            slots.extend(
+                foot.take()
+                    .map(|foot| ("foot", in_foot(foot).into_any_element())),
+            );
+            slots.extend(attach().map(|attach| ("attach", attach.into_any_element())));
+            for (name, kind) in [
+                ("model", PickerKind::Model),
+                ("effort", PickerKind::Effort),
+                ("mode", PickerKind::Mode),
+                ("access", PickerKind::Access),
+            ] {
+                slots.extend(
+                    self.picker_button(kind, None, theme, cx)
+                        .map(|picker| (name, picker)),
+                );
+            }
+            slots.push(("controls", self.controls(theme, cx).into_any_element()));
+            // The model picker on its own, for a frame that draws the
+            // model's control itself: it stands over that control.
+            slots.extend(models.take().map(|models| ("modelMenu", models)));
+            // The modes' or the levels' menu on its own, for a frame that
+            // draws its control itself: it stands over that control.
+            if let Some(picker) = self.picker.as_ref() {
+                let kind = picker.kind;
+                let (choices, current) = self.choices(kind);
+                let menu = self.picker_menu(kind, picker, choices, current, theme, cx);
+                let name = kind.menu_slot();
+                slots.push((name, menu.into_any_element()));
+            }
+            let (dropping, acting) = (cx.weak_entity(), cx.weak_entity());
+            let parts = crate::field::FieldParts {
+                look: "cockpit",
+                key: format!("field-{}", cx.entity_id().as_u64()).into(),
+                focused,
+                busy,
+                closed,
+                narrow: self.narrow.get(),
+                standalone: self.standalone,
+                controls: self.controls_state(theme),
+                slots,
+                dropped: Rc::new(move |paths, window, cx| {
+                    dropping
+                        .update(cx, |this, cx| {
+                            this.composer
+                                .update(cx, |composer, cx| composer.drop_paths(paths, window, cx));
+                        })
+                        .ok();
+                }),
+                act: Rc::new(move |name, window, cx| {
+                    acting
+                        .update(cx, |this, cx| this.act_named(name, window, cx))
+                        .ok();
+                }),
+            };
+            if let Some(drawn) = face(parts, window, cx) {
+                return drawn;
+            }
+            foot = spare;
+            models = spare_models;
+        }
+        let pickers: Vec<AnyElement> = [
+            PickerKind::Model,
+            PickerKind::Effort,
+            PickerKind::Mode,
+            PickerKind::Access,
+        ]
+        .into_iter()
+        .filter_map(|kind| {
+            let over = match kind {
+                PickerKind::Model => models.take(),
+                _ => None,
+            };
+            self.picker_button(kind, over, theme, cx)
+        })
+        .collect();
+        let attach = attach();
         let frame = div()
             .id("frame")
             .debug_selector(|| "frame".into())
             .relative()
             .rounded(px(metric::RADIUS_LARGE))
-            .border_1()
             .bg(theme.raised)
             .pl(px(14.))
             .pr(px(10.))
             .pt(px(12.))
             .pb(px(10.))
-            .drag_over::<ExternalPaths>(move |style, _, _, _| {
-                style.border_color(accent).bg(drop_fill)
-            })
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_fill))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.composer
                     .update(cx, |composer, cx| composer.drop_paths(paths, window, cx));
@@ -1495,59 +1893,178 @@ impl Dock {
                             .flex()
                             .items_center()
                             .gap(px(8.))
-                            .children(foot.map(|foot| {
-                                div()
-                                    .debug_selector(|| "field-foot".into())
-                                    .flex_none()
-                                    .min_w_0()
-                                    .child(foot)
-                            }))
+                            .children(foot.map(in_foot))
                             .children(attach)
                             .children(pickers),
                     )
                     .child(self.controls(theme, cx)),
             );
-        if busy {
-            // `.composer[data-busy]`: the accent in its border while the agent works.
-            return frame
-                .border_color(crate::lights::mix(resting, accent, 0.35))
-                .into_any_element();
-        }
-        frame
-            .with_spring(
-                "frame-focus",
-                SpringAnimation::new(SETTLE).to(focused),
-                move |this, phase| {
-                    let (from, to) = (gpui::Rgba::from(resting), gpui::Rgba::from(lit));
-                    this.border_color(phase.interpolate_clamped(from, to))
-                },
-            )
-            .into_any_element()
+        frame.into_any_element()
     }
 
-    /// The control of a picker (`.model-pick`, `.think`): framed, with its
-    /// name in capitals while there is room, then what is chosen.
+    /// Something of the field's the app asks for by name, from a frame it
+    /// drew itself (see [`crate::FieldParts::act`]).
+    fn act_named(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match name {
+            "attach" => self.attach_files(window, cx),
+            "send" => {
+                let text = self.composer.read(cx).text().to_owned();
+                self.submit(text, false, window, cx);
+                window.focus(&self.focus, cx);
+            }
+            "stop" => {
+                cx.emit(DockEvent::Cancel);
+                window.focus(&self.focus, cx);
+            }
+            // Into the running turn, as Cmd+Enter does.
+            "force" => {
+                let text = self.composer.read(cx).text().to_owned();
+                self.submit(text, true, window, cx);
+                window.focus(&self.focus, cx);
+            }
+            "focus" => window.focus(&self.focus, cx),
+            // The model's, the mode's and the levels' lists, opened or closed.
+            "model" => self.toggle_picker(PickerKind::Model, window, cx),
+            "mode" => self.toggle_picker(PickerKind::Mode, window, cx),
+            "access" => self.toggle_picker(PickerKind::Access, window, cx),
+            "effort" => self.toggle_picker(PickerKind::Effort, window, cx),
+            _ => {}
+        }
+    }
+
+    /// What a picker's control names: the choice in force by its name (or
+    /// its id, or the picker's own name). `None` with nothing to choose, or
+    /// nobody left to tell.
+    fn chosen(&self, kind: PickerKind) -> Option<SharedString> {
+        let (choices, current) = self.choices(kind);
+        if choices.is_empty() || matches!(self.sync.state, ThreadState::Closed(_)) {
+            return None;
+        }
+        let chosen = current.and_then(|id| choices.iter().find(|choice| choice.id == id));
+        Some(
+            match (chosen, current) {
+                (Some(choice), _) => choice.name.clone(),
+                (None, Some(id)) => id.to_owned(),
+                (None, None) if kind == PickerKind::Access => kind.title().into(),
+                (None, None) => kind.title().to_lowercase(),
+            }
+            .into(),
+        )
+    }
+
+    /// How the field's own controls stand, for a frame the app draws them
+    /// in itself (see [`crate::FieldParts::controls`]).
+    fn controls_state(&self, theme: &Theme) -> serde_json::Value {
+        let busy = self.busy() && !self.standalone;
+        let closed = matches!(self.sync.state, ThreadState::Closed(_));
+        let typed = !self.draft_empty && self.editing.is_none();
+        // (What is written while the agent only waits for what it left
+        // running, or answers its question, is sent as while nothing runs.)
+        let listening = self.sync.offers.listening || self.answers_words();
+        let buttons = match (busy, typed) {
+            (true, false) => "stop",
+            (true, true) if !listening => "force",
+            _ => "send",
+        };
+        let ready =
+            (self.sync.state == ThreadState::Idle || self.standalone || (busy && listening))
+                && typed
+                && !closed;
+        let model = self.chosen(PickerKind::Model).map(|name| {
+            let provider = self
+                .sync
+                .model
+                .as_deref()
+                .and_then(|id| crate::models::provider_of(id, &self.sync.providers));
+            let dot = theme.provider(provider.as_deref().unwrap_or_default());
+            serde_json::json!({
+                "name": name,
+                "open": self.model_picker.is_some(),
+                "dot": crate::face::hex(dot),
+            })
+        });
+        let mode = self.chosen(PickerKind::Mode).map(|name| {
+            let (choices, current) = self.choices(PickerKind::Mode);
+            let open = self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == PickerKind::Mode);
+            // kou's own agent offers its efforts as modes: bars filled to
+            // the level, and the level's name.
+            let effort = choices
+                .iter()
+                .all(|choice| choice.name.starts_with("Effort: "));
+            let level = choices
+                .iter()
+                .position(|choice| Some(choice.id.as_str()) == current)
+                .map_or(0, |at| at + 1);
+            serde_json::json!({
+                "name": if effort { name.trim_start_matches("Effort: ") } else { &name },
+                "open": open,
+                "effort": effort.then(|| serde_json::json!({
+                    "level": level,
+                    "bars": choices.len().min(5),
+                })),
+            })
+        });
+        // The levels of effort offered apart from the modes: drawn as kou's
+        // efforts are, bars filled to the level.
+        let effort = self.chosen(PickerKind::Effort).map(|name| {
+            let (choices, current) = self.choices(PickerKind::Effort);
+            let open = self
+                .picker
+                .as_ref()
+                .is_some_and(|picker| picker.kind == PickerKind::Effort);
+            serde_json::json!({
+                "name": name,
+                "open": open,
+                "effort": {
+                    "level": effort_level(choices, current),
+                    "bars": choices.len().min(5),
+                },
+            })
+        });
+        serde_json::json!({
+            "buttons": buttons,
+            "ready": ready,
+            "attach": !closed,
+            "model": model,
+            "effort": effort,
+            "mode": mode,
+            "access": self.chosen(PickerKind::Access).map(|name| serde_json::json!({
+                "name": name, "open": self.picker.as_ref().is_some_and(|p| p.kind == PickerKind::Access)
+            })),
+        })
+    }
+
+    /// Whether what is sent from the field answers a question at hand.
+    fn answers_words(&self) -> bool {
+        self.sync.asking.as_ref().is_some_and(|asking| asking.words)
+    }
+
+    /// Whether nothing is typed in the field.
+    pub(crate) fn field_empty(&self) -> bool {
+        self.draft_empty
+    }
+
+    /// The control of a picker (`.model-pick`, `.think`): framed, what is
+    /// chosen and that it opens. What it chooses among is said by its list.
+    ///
+    /// `over` is what stands over the control beside its own list: the
+    /// model picker, over the model's.
     fn picker_button(
         &self,
         kind: PickerKind,
+        over: Option<AnyElement>,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> Option<AnyElement> {
         let (choices, current) = self.choices(kind);
         // Nothing to choose, or nobody left to tell.
-        if choices.is_empty() || matches!(self.sync.state, ThreadState::Closed(_)) {
-            return None;
-        }
-        let chosen = current.and_then(|id| choices.iter().find(|choice| choice.id == id));
-        let name: SharedString = match (chosen, current) {
-            (Some(choice), _) => choice.name.clone(),
-            (None, Some(id)) => id.to_owned(),
-            (None, None) => kind.title().to_lowercase(),
-        }
-        .into();
+        let name = self.chosen(kind)?;
         let open = match kind {
             PickerKind::Model => self.model_picker.is_some(),
-            PickerKind::Mode => self
+            PickerKind::Mode | PickerKind::Effort | PickerKind::Access => self
                 .picker
                 .as_ref()
                 .is_some_and(|picker| picker.kind == kind),
@@ -1558,23 +2075,25 @@ impl Dock {
             .filter(|picker| picker.kind == kind)
             .map(|picker| self.picker_menu(kind, picker, choices, current, theme, cx));
         // kou's own agent offers its efforts as modes: drawn as the web's
-        // effort, its bars filled to the level.
-        let effort = kind == PickerKind::Mode
-            && choices
-                .iter()
-                .all(|choice| choice.name.starts_with("Effort: "));
-        let wide = !self.narrow.get();
+        // effort, its bars filled to the level. So are the levels another
+        // agent offers apart from its modes.
+        let effort = kind == PickerKind::Effort
+            || (kind == PickerKind::Mode
+                && choices
+                    .iter()
+                    .all(|choice| choice.name.starts_with("Effort: ")));
         let (hover, frame, ring) = (theme.hover, theme.line_strong, theme.accent);
         let mut control = div()
             .id(kind.id())
             .debug_selector(|| kind.id().to_owned())
-            .h(px(28.))
+            .h(px(26.))
             .min_w_0()
-            .max_w(px(300.))
-            .px(px(10.))
+            .max_w(px(260.))
+            .pl(px(9.))
+            .pr(px(if effort { 9. } else { 6. }))
             .flex()
             .items_center()
-            .gap(px(8.))
+            .gap(px(6.))
             .rounded(px(metric::RADIUS))
             .border_1()
             .border_color(if open { theme.line_strong } else { theme.line })
@@ -1585,13 +2104,9 @@ impl Dock {
             .focus_visible(move |style| style.border_color(ring))
             .on_click(cx.listener(move |this, _, window, cx| this.toggle_picker(kind, window, cx)));
         if effort {
-            let level = choices
-                .iter()
-                .position(|choice| Some(choice.id.as_str()) == current)
-                .map_or(0, |at| at + 1);
+            let level = effort_level(choices, current);
             let bars = choices.len().min(5);
             control = control
-                .children(wide.then(|| crate::picker::label("Effort", theme.fg_muted, theme)))
                 .child(
                     div()
                         .flex_none()
@@ -1623,7 +2138,6 @@ impl Dock {
                 })
                 .flatten();
             control = control
-                .children(wide.then(|| crate::picker::label(kind.title(), theme.fg_muted, theme)))
                 .children((kind == PickerKind::Model).then(|| {
                     div()
                         .flex_none()
@@ -1641,13 +2155,14 @@ impl Dock {
                         .text_color(theme.fg)
                         .child(scale::text(name)),
                 )
-                .child(icon(Icon::ChevronDown, theme.fg_muted).size(px(11.)));
+                .child(icon(Icon::ChevronDown, theme.fg_muted).size(px(12.)));
         }
         Some(
             div()
                 .relative()
                 .min_w_0()
                 .children(menu)
+                .children(over)
                 .child(control)
                 .into_any_element(),
         )
@@ -1666,22 +2181,51 @@ impl Dock {
     ) -> impl IntoElement + use<> {
         let (hover, ring) = (theme.hover, theme.accent);
         let still = cx.reduce_motion();
-        let rows =
+        // The app draws the list's card, its head and what each line says
+        // when it can (`chat-choices`, `chat-choice`); each line's place,
+        // which the keys move through and the pointer lights, stays the
+        // field's, as do where the list stands and how it comes in.
+        let face = self.chat_face.clone().filter(|_| !self.around.studio());
+        let entity = cx.entity_id().as_u64();
+        let said = |index: usize, choice: &Choice, is_current: bool| {
+            let face = face.as_ref()?;
+            let what = ChoiceLine {
+                name: &choice.name,
+                current: is_current,
+                description: choice.description.as_deref(),
+            };
+            let key = format!("choice-{entity}-{index}");
+            let part = crate::face::Handed::of("chat-choice", key, what);
+            let asked = Self::asked as crate::face::Asked<Self>;
+            crate::face::drawn(
+                face,
+                part,
+                Vec::new(),
+                cx.weak_entity(),
+                asked,
+                &self.trace,
+                cx,
+            )
+        };
+        // (`by_app`: what each line says is the app's to draw.)
+        let rows = |by_app: bool| {
             choices
                 .iter()
                 .zip(&picker.items)
                 .enumerate()
                 .map(|(index, (choice, handle))| {
                     let id = choice.id.clone();
+                    let key_id = id.clone();
                     let is_current = Some(choice.id.as_str()) == current;
-                    div()
+                    let line = div()
                         .id(("choice", index))
                         .debug_selector(|| format!("choice-{index}"))
                         .track_focus(handle)
                         .mx(px(4.))
                         .pl(px(10.))
                         .pr(px(8.))
-                        .py(px(6.))
+                        // A list's row: 28 with the name's line and the border.
+                        .py(px(4.))
                         .rounded(px(metric::RADIUS))
                         .border_1()
                         .border_color(gpui::transparent_black())
@@ -1689,41 +2233,44 @@ impl Dock {
                         .hover(move |style| style.bg(hover))
                         .focus(move |style| style.bg(hover))
                         .focus_visible(move |style| style.border_color(ring))
+                        .on_action(cx.listener(move |this, _: &MenuChoose, window, cx| {
+                            this.choose(kind, key_id.clone(), window, cx)
+                        }))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.choose(kind, id.clone(), window, cx)
-                        }))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(10.))
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .truncate()
-                                        .text_color(if is_current {
-                                            theme.accent
-                                        } else {
-                                            theme.fg
-                                        })
-                                        .child(scale::text(choice.name.clone())),
-                                )
-                                .child(div().flex_1())
-                                .children(
-                                    is_current.then(|| {
-                                        crate::picker::label("current", theme.accent, theme)
-                                    }),
-                                ),
-                        )
-                        .children(choice.description.clone().map(|description| {
-                            div()
-                                .font_family(theme.mono_font.clone())
-                                .text_size(px(10.5))
-                                .line_height(px(15.))
-                                .text_color(theme.fg_muted)
-                                .child(scale::text(description))
-                        }))
-                });
+                        }));
+                    if by_app && let Some(drawn) = said(index, choice, is_current) {
+                        return line.child(drawn);
+                    }
+                    line.child(
+                        div()
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(if is_current { theme.accent } else { theme.fg })
+                                    .child(scale::text(choice.name.clone())),
+                            )
+                            .child(div().flex_1())
+                            .children(
+                                is_current.then(|| icon(Icon::Check, theme.accent).size(px(14.))),
+                            ),
+                    )
+                    .children(choice.description.clone().map(|description| {
+                        div()
+                            .font_family(theme.mono_font.clone())
+                            .text_size(px(10.5))
+                            .line_height(px(15.))
+                            .text_color(theme.fg_muted)
+                            .child(scale::text(description))
+                    }))
+                })
+                .collect::<Vec<_>>()
+        };
         // Laid out after everything else, outside the scaled subtree: sizes are
         // taken now. It rises into place (`.menu`: `drop 0.1s ease-out`).
         let unit = px(1.);
@@ -1732,46 +2279,86 @@ impl Dock {
         } else {
             motion::cockpit::MENU
         };
+        let drawn = face.as_ref().and_then(|face| {
+            let key = format!("choices-{entity}");
+            let what = Choices {
+                title: kind.title(),
+            };
+            let part = crate::face::Handed::of("chat-choices", key, what);
+            let slots = vec![("choices", div().children(rows(true)).into_any_element())];
+            let asked = Self::asked as crate::face::Asked<Self>;
+            crate::face::drawn(face, part, slots, cx.weak_entity(), asked, &self.trace, cx)
+        });
+        let card = match drawn {
+            Some(drawn) => div()
+                .id("choices")
+                .key_context(MENU_CONTEXT)
+                .occlude()
+                .on_mouse_down_out(
+                    cx.listener(move |this, _, window, cx| this.press_outside(kind, window, cx)),
+                )
+                .child(drawn)
+                .with_animation(
+                    ("picker-in", picker.opened),
+                    gpui::Animation::new(duration).with_easing(motion::cockpit::ease_out),
+                    move |this, t| this.opacity(t).mt(unit * (6. * (1. - t))),
+                )
+                .into_any_element(),
+            None => self.picker_card(kind, picker, rows(false), duration, theme, cx),
+        };
         deferred(
             anchored()
                 .anchor(Anchor::BottomLeft)
                 .offset(point(px(0.), px(-6.)))
                 .snap_to_window_with_margin(px(8.))
-                .child(
-                    div()
-                        .id("choices")
-                        .key_context(MENU_CONTEXT)
-                        .occlude()
-                        .on_mouse_down_out(
-                            cx.listener(|this, _, window, cx| this.close_picker(window, cx)),
-                        )
-                        .w(px(264.))
-                        .max_h(px(320.))
-                        .overflow_y_scroll()
-                        .py(px(4.))
-                        .rounded(px(metric::RADIUS_LARGE))
-                        .border_1()
-                        .border_color(theme.line_strong)
-                        .bg(theme.raised)
-                        .shadow(crate::picker::shadow(theme))
-                        .text_size(px(13.))
-                        .text_color(theme.fg)
-                        .child(
-                            div()
-                                .px(px(14.))
-                                .pt(px(6.))
-                                .pb(px(6.))
-                                .child(crate::picker::label(kind.title(), theme.fg_muted, theme)),
-                        )
-                        .children(rows)
-                        .with_animation(
-                            ("picker-in", picker.opened),
-                            gpui::Animation::new(duration).with_easing(motion::cockpit::ease_out),
-                            move |this, t| this.opacity(t).mt(unit * (6. * (1. - t))),
-                        ),
-                ),
+                .child(card),
         )
         .with_priority(2)
+    }
+
+    /// The modes' card as the view draws it, around its lines.
+    fn picker_card(
+        &self,
+        kind: PickerKind,
+        picker: &Picker,
+        rows: Vec<gpui::Stateful<Div>>,
+        duration: std::time::Duration,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let unit = px(1.);
+        div()
+            .id("choices")
+            .key_context(MENU_CONTEXT)
+            .occlude()
+            .on_mouse_down_out(
+                cx.listener(move |this, _, window, cx| this.press_outside(kind, window, cx)),
+            )
+            .w(px(224.))
+            .max_h(px(320.))
+            .overflow_y_scroll()
+            .py(px(4.))
+            .rounded(px(metric::RADIUS_LARGE))
+            .border_1()
+            .border_color(theme.line_strong)
+            .bg(theme.raised)
+            .shadow(crate::picker::shadow(theme))
+            .text_size(px(13.))
+            .text_color(theme.fg)
+            .child(
+                div()
+                    .px(px(14.))
+                    .pt(px(6.))
+                    .pb(px(4.))
+                    .child(crate::picker::label(kind.title(), theme.fg_muted, theme)),
+            )
+            .children(rows)
+            .with_animation(
+                ("picker-in", picker.opened),
+                gpui::Animation::new(duration).with_easing(motion::cockpit::ease_out),
+                move |this, t| this.opacity(t).mt(unit * (6. * (1. - t))),
+            )
+            .into_any_element()
     }
 
     /// The buttons at the end of the field (`.composer-send`): run; while a
@@ -1806,7 +2393,10 @@ impl Dock {
             );
             return row.child(empty()).child(stop);
         }
-        if busy && !self.standalone {
+        // (What is written while the agent only waits for what it left
+        // running, or answers its question, is sent as while nothing runs.)
+        let listening = self.sync.offers.listening || self.answers_words();
+        if busy && !listening && !self.standalone {
             // Force is there for every agent: one that takes messages while
             // it works is handed this one, any other is stopped to take it.
             let force = div()
@@ -1834,7 +2424,10 @@ impl Dock {
             );
             return row.child(force).child(queue);
         }
-        let ready = (self.sync.state == ThreadState::Idle || self.standalone) && typed && !closed;
+        let ready =
+            (self.sync.state == ThreadState::Idle || self.standalone || (busy && listening))
+                && typed
+                && !closed;
         let press = ready.then(|| {
             press(|this, window, cx| {
                 let text = this.composer.read(cx).text().to_owned();
@@ -1852,10 +2445,36 @@ impl Dock {
 
     /// The figures under the field (`.stats-dock[data-style="line"]`): what
     /// the backend reported about context, tokens and cost, a dot between.
-    fn usage(&self, theme: &Theme) -> Option<Div> {
+    fn usage(&self, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
         let figures = usage_figures(&self.sync.usage);
         if figures.is_empty() || self.standalone {
             return None;
+        }
+        // The app draws the line itself when it can.
+        if let Some(face) = &self.chat_face {
+            let data = || {
+                serde_json::json!({
+                    "figures": figures
+                        .iter()
+                        .map(|figure| serde_json::json!({
+                            "key": figure.key,
+                            "value": figure.value,
+                            "share": figure.share,
+                        }))
+                        .collect::<Vec<_>>(),
+                })
+            };
+            let key = format!("usage-{}", cx.entity_id().as_u64());
+            let made_from: Vec<_> = figures
+                .iter()
+                .map(|figure| (figure.key, &figure.value, figure.share.map(f32::to_bits)))
+                .collect();
+            let part = crate::face::Handed::new("composer-usage", key, data).kept(made_from);
+            let (entity, asked) = (cx.weak_entity(), Self::asked as crate::face::Asked<Self>);
+            let drawn = crate::face::drawn(face, part, Vec::new(), entity, asked, &self.trace, cx);
+            if drawn.is_some() {
+                return drawn;
+            }
         }
         Some(
             div()
@@ -1922,7 +2541,8 @@ impl Dock {
                                 .text_color(theme.fg_muted)
                                 .child(scale::text(figure.value)),
                         )
-                })),
+                }))
+                .into_any_element(),
         )
     }
 
@@ -1991,6 +2611,80 @@ impl Dock {
             } else {
                 "Runs when the agent finishes, one after another".into()
             };
+            // In a stable order: a row's element keeps what it animates only
+            // while it keeps its place among its siblings. Where it shows is
+            // its spring's, by its place in the queue.
+            let rows = || {
+                let mut numbered: Vec<(&Item, usize, usize)> = Vec::new();
+                let mut number = 0;
+                for (item, at) in &current {
+                    if !item.forced {
+                        number += 1;
+                    }
+                    numbered.push((item, *at, number));
+                }
+                numbered.sort_by_key(|(item, _, _)| item.id);
+                let mut rows = Vec::new();
+                for (item, at, number) in numbered {
+                    rows.push(
+                        self.queue_row(item, at, number, waiting, window, theme, cx)
+                            .into_any_element(),
+                    );
+                }
+                let unit = px(1.);
+                for (item, at, _) in &self.leaving {
+                    let top = *at as f32 * QUEUE_ROW;
+                    rows.push(
+                        queue_row_body(item, 0, false, false, theme)
+                            .id(("queued-out", item.id))
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top(px(top))
+                            .with_animation(
+                                ("queued-out", item.id),
+                                gpui::Animation::new(composer::LEAVING)
+                                    .with_easing(motion::ease_in),
+                                move |this, t| this.opacity(1. - t).ml(unit * (t * 24.)),
+                            )
+                            .into_any_element(),
+                    );
+                }
+                rows
+            };
+            // The app draws the tray and its head itself when it can; the
+            // rows stay the view's own: they take the keys, are dragged to
+            // another place and slide to it.
+            if let Some(face) = self.chat_face.clone().filter(|_| !self.around.studio()) {
+                let paused = self.queue.paused;
+                let data = || {
+                    serde_json::json!({
+                        "count": current.len(),
+                        "state": state.as_ref(),
+                        "waiting": waiting,
+                        "paused": paused,
+                        "queued": queued,
+                    })
+                };
+                let slots = vec![(
+                    "rows",
+                    div().size_full().children(rows()).into_any_element(),
+                )];
+                let key = format!("queue-{}", cx.entity_id().as_u64());
+                let part = crate::face::Handed::new("composer-queue", key, data).kept((
+                    current.len(),
+                    &*state,
+                    waiting,
+                    paused,
+                    queued,
+                ));
+                let (entity, asked) = (cx.weak_entity(), Self::asked as crate::face::Asked<Self>);
+                if let Some(drawn) =
+                    crate::face::drawn(&face, part, slots, entity, asked, &self.trace, cx)
+                {
+                    return drawn;
+                }
+            }
             // `.act`: the queue's tools, words in capitals of the monospace.
             let tool = |id: &'static str, glyph: Icon, label: &'static str| {
                 let (ring, frame, lit) = (theme.accent, theme.line_strong, theme.fg);
@@ -2080,43 +2774,6 @@ impl Dock {
                             }),
                         ))
                     });
-            // In a stable order: a row's element keeps what it animates only
-            // while it keeps its place among its siblings. Where it shows is
-            // its spring's, by its place in the queue.
-            let mut numbered: Vec<(&Item, usize, usize)> = Vec::new();
-            let mut number = 0;
-            for (item, at) in &current {
-                if !item.forced {
-                    number += 1;
-                }
-                numbered.push((item, *at, number));
-            }
-            numbered.sort_by_key(|(item, _, _)| item.id);
-            let mut rows = Vec::new();
-            for (item, at, number) in numbered {
-                rows.push(
-                    self.queue_row(item, at, number, waiting, window, theme, cx)
-                        .into_any_element(),
-                );
-            }
-            let unit = px(1.);
-            for (item, at, _) in &self.leaving {
-                let top = *at as f32 * QUEUE_ROW;
-                rows.push(
-                    queue_row_body(item, 0, false, false, theme)
-                        .id(("queued-out", item.id))
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(top))
-                        .with_animation(
-                            ("queued-out", item.id),
-                            gpui::Animation::new(composer::LEAVING).with_easing(motion::ease_in),
-                            move |this, t| this.opacity(1. - t).ml(unit * (t * 24.)),
-                        )
-                        .into_any_element(),
-                );
-            }
             // `.queue`, round: a tray on the field's straight edge, clear of
             // its corners, rounded on top, its foot the field's border.
             div()
@@ -2140,8 +2797,9 @@ impl Dock {
                         .h(px(current.len() as f32 * QUEUE_ROW))
                         .border_t_1()
                         .border_color(theme.line)
-                        .children(rows),
+                        .children(rows()),
                 )
+                .into_any_element()
         });
         grow(
             "queue",
@@ -2377,6 +3035,60 @@ impl Dock {
         let catalog = self.composer.read(cx).catalog().clone();
         // The card is laid out after everything else, outside the scaled subtree.
         let lift = px(10.);
+        let placed = |card: AnyElement| {
+            div().absolute().top_0().left(px(8.)).child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::BottomLeft)
+                        .offset(point(px(0.), px(-8.)))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card),
+                )
+                .with_priority(2),
+            )
+        };
+        // The app draws the card and what it says when it can (`chat-help`):
+        // where it stands and how it comes in stay the field's.
+        if let Some(face) = self.chat_face.clone().filter(|_| !self.around.studio()) {
+            let what = Help {
+                keys: keys.to_vec(),
+                commands: catalog
+                    .specs
+                    .iter()
+                    .map(|spec| {
+                        let name = match &spec.args {
+                            Some(args) => format!("/{} {args}", spec.name),
+                            None => format!("/{}", spec.name),
+                        };
+                        (name, spec.help.to_string())
+                    })
+                    .collect(),
+            };
+            let key = format!("help-{}", cx.entity_id().as_u64());
+            let part = crate::face::Handed::of("chat-help", key, what);
+            let (entity, asked) = (cx.weak_entity(), Self::asked as crate::face::Asked<Self>);
+            if let Some(drawn) =
+                crate::face::drawn(&face, part, Vec::new(), entity, asked, &self.trace, cx)
+            {
+                let card = div()
+                    .id(("help", self.helps_opened))
+                    .debug_selector(|| "help".into())
+                    .occlude()
+                    .w(px(560.))
+                    .max_w(window.viewport_size().width - px(24.))
+                    .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                        this.help = false;
+                        cx.notify();
+                    }))
+                    .child(drawn)
+                    .with_animation(
+                        ("help-in", self.helps_opened),
+                        motion::enter(motion::BASE),
+                        move |this, t| this.opacity(t).mt(lift * (1. - t)),
+                    );
+                return placed(card.into_any_element());
+            }
+        }
         let row = |key: SharedString, text: SharedString| {
             div()
                 .flex()
@@ -2466,16 +3178,7 @@ impl Dock {
                 motion::enter(motion::BASE),
                 move |this, t| this.opacity(t).mt(lift * (1. - t)),
             );
-        div().absolute().top_0().left(px(8.)).child(
-            deferred(
-                anchored()
-                    .anchor(Anchor::BottomLeft)
-                    .offset(point(px(0.), px(-8.)))
-                    .snap_to_window_with_margin(px(8.))
-                    .child(card),
-            )
-            .with_priority(2),
-        )
+        placed(card.into_any_element())
     }
 
     /// The prompts waiting, for tests.
@@ -2490,6 +3193,29 @@ impl Dock {
 }
 
 /// The key that forces a message in, as shown.
+/// The modes' list as the app draws it (`chat-choices`): what it is for.
+#[derive(Hash, serde::Serialize)]
+struct Choices {
+    title: &'static str,
+}
+
+/// What a line of the modes' list says (`chat-choice`): the mode's name,
+/// whether it is the one in force, and what it does.
+#[derive(Hash, serde::Serialize)]
+struct ChoiceLine<'a> {
+    name: &'a str,
+    current: bool,
+    description: Option<&'a str>,
+}
+
+/// The help card as the app draws it (`chat-help`): the keys and what each
+/// does, and the commands with what each takes and does.
+#[derive(Hash, serde::Serialize)]
+struct Help {
+    keys: Vec<(&'static str, &'static str)>,
+    commands: Vec<(String, String)>,
+}
+
 fn force_key() -> &'static str {
     if cfg!(target_os = "macos") {
         "⌘↵"
@@ -2584,7 +3310,7 @@ fn main_button(
         .child(icon(glyph, ink_now).with_animation(
             gpui::ElementId::Name(format!("{id}-glyph-{ready}").into()),
             gpui::Animation::new(motion::cockpit::HOVER).with_easing(motion::cockpit::ease_out),
-            move |this, t| this.size(unit * motion::mix(12., 15., t)).opacity(t),
+            move |this, t| this.size(unit * motion::mix(11., 14., t)).opacity(t),
         ));
     if mode != SendMode::Idle {
         button = button
@@ -2604,7 +3330,7 @@ fn main_button(
 /// A queued prompt's row, without what makes it a control.
 fn queue_row_body(item: &Item, number: usize, next: bool, focused: bool, theme: &Theme) -> Div {
     let mark: gpui::AnyElement = if item.forced {
-        icon(Icon::Bolt, theme.accent)
+        icon(Icon::Bolt, theme.fg_muted)
             .size(px(13.))
             .into_any_element()
     } else {
@@ -2637,18 +3363,6 @@ fn queue_row_body(item: &Item, number: usize, next: bool, focused: bool, theme: 
                 .h(px(1.))
                 .bg(theme.line),
         )
-        .when(item.forced, |row| {
-            // On its way in: an accent edge along it.
-            row.child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(2.))
-                    .bg(theme.accent),
-            )
-        })
         .child(
             div()
                 .flex_none()
@@ -2708,6 +3422,26 @@ fn queue_row_body(item: &Item, number: usize, next: bool, focused: bool, theme: 
 /// A prompt on one line.
 fn first_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// How many of an effort control's bars are filled: the place of the level
+/// in force among the levels, counted from 1; none when it is not known.
+fn effort_level(choices: &[Choice], current: Option<&str>) -> usize {
+    choices
+        .iter()
+        .position(|choice| Some(choice.id.as_str()) == current)
+        .map_or(0, |at| at + 1)
+}
+
+/// What the empty field says while what is sent from it answers a question
+/// of the agent's.
+fn answer_placeholder(asking: &Asking, agent: &str) -> (SharedString, SharedString) {
+    let long = if asking.multiple {
+        "Type an answer of your own. Enter sends it with the options chosen.".to_owned()
+    } else {
+        format!("Type your answer. Enter sends it to {agent}.")
+    };
+    (long.into(), "Type your answer".into())
 }
 
 /// What the empty field says, at length and short: how to use it, or why

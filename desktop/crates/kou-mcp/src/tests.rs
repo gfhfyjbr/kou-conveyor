@@ -267,6 +267,7 @@ fn pane(id: &str, activity: Activity) -> Pane {
         activity,
         parent: (id != "p1").then(|| "p1".into()),
         since_ms: 20_000,
+        model: None,
     }
 }
 
@@ -725,6 +726,9 @@ fn every_tool_has_a_description_and_a_valid_schema() {
             "wait_for_panes",
             "read_pane",
             "list_panes",
+            "where_am_i",
+            "list_edges",
+            "list_models",
             "describe_pane"
         ]
     );
@@ -993,6 +997,7 @@ fn each_tool_sends_its_request_and_reads_the_answer() {
             below: false,
             share: None,
             native: true,
+            terminal: false,
         }),
         Request::PaneSpawn(Spawn {
             from: Some("p1".into()),
@@ -1506,6 +1511,41 @@ fn the_end_of_input_cancels_what_is_in_flight() {
 // The guidance.
 
 #[test]
+fn a_harness_given_only_the_skill_is_told_where_it_is_in_a_few_lines() {
+    for flavour in Flavour::ALL {
+        let place = flavour.place();
+        // Short enough to sit in every such agent's context from the start.
+        assert!(
+            place.len() < 1200,
+            "{flavour:?}: {} characters",
+            place.len()
+        );
+        assert!(!place.contains("{{") && !place.contains(":::"), "{place}");
+        // It says what the words the user will use mean, how to look, and
+        // where the rest is.
+        for said in ["kou desktop", "canvas", "edge", "pane", "orchestrate"] {
+            assert!(
+                place.contains(said),
+                "{flavour:?} leaves out {said}: {place}"
+            );
+        }
+        let look = match flavour {
+            Flavour::Tools => "where_am_i",
+            Flavour::Commands => "\"$KOU_BIN\" where",
+        };
+        assert!(place.contains(look), "{flavour:?}: {place}");
+        // The skill's description sends an agent to it for the same words.
+        let description = flavour.skill_description();
+        for said in ["canvas", "node", "edge", "pane", "tab"] {
+            assert!(description.contains(said), "{flavour:?}: {said}");
+        }
+    }
+    // Each flavour speaks of its own means only.
+    assert!(!Flavour::Commands.place().contains("where_am_i"));
+    assert!(!Flavour::Tools.place().contains("KOU_BIN"));
+}
+
+#[test]
 fn the_instructions_fit_what_clients_keep() {
     // Claude Code cuts server instructions and tool descriptions at 4,096
     // characters; the command line's text goes into the context the same way.
@@ -1522,8 +1562,20 @@ fn the_instructions_fit_what_clients_keep() {
     }
     let (instructions, guide) = (Flavour::Tools.instructions(), Flavour::Tools.guide());
     for tool in tools::catalog() {
+        // (The wires, asking and the models are taught where they come up,
+        // in the guide: the instructions have no room to spare.)
+        let guide_only = [
+            "list_harnesses",
+            "rename",
+            "list_edges",
+            "add_edge",
+            "set_edge",
+            "remove_edge",
+            "ask_pane",
+            "list_models",
+        ];
         assert!(
-            instructions.contains(tool.name) || ["list_harnesses", "rename"].contains(&tool.name),
+            instructions.contains(tool.name) || guide_only.contains(&tool.name),
             "{}",
             tool.name
         );
@@ -1579,6 +1631,7 @@ fn the_tools_guide_calls_only_tools_and_arguments_that_exist() {
 /// here too, on purpose; anything else is shared or comes in pairs.
 const ONE_FLAVOUR_ONLY: &[(&str, &str, &str)] = &[
     ("instructions", "commands", "own-pane"),
+    ("guide", "commands", "wiring"),
     ("guide", "commands", "command-line"),
     ("guide", "commands", "passing-the-brief"),
     ("guide", "commands", "shell-time-limit"),
@@ -1642,7 +1695,7 @@ fn both_flavours_come_from_one_source_and_differ_only_where_marked() {
     };
     let (tools, commands) = (Flavour::Tools.guide(), Flavour::Commands.guide());
     let mut expected = headings(tools);
-    expected.insert(1, "## The command line".into());
+    expected.insert(2, "## The command line".into());
     assert_eq!(headings(commands), expected);
 
     // A shared line that names one flavour's means would leak it into the other.

@@ -18,6 +18,8 @@ gpui_platform = { git = "https://github.com/gfhfyjbr/gpuimm", rev = "941957dba59
 kou-acp = { path = "crates/kou-acp" }
 kou-agents = { path = "crates/kou-agents" }
 kou-canvas = { path = "crates/kou-canvas" }
+kou-claude = { path = "crates/kou-claude" }
+kou-codex = { path = "crates/kou-codex" }
 kou-ipc = { path = "crates/kou-ipc" }
 kou-mcp = { path = "crates/kou-mcp" }
 kou-native = { path = "crates/kou-native" }

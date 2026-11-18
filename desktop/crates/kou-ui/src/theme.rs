@@ -1,22 +1,27 @@
 //! Every colour, size and font the desktop views use.
 //!
-//! Direction: the user's reference picture of a chat with an agent (drawn at
-//! about 1.7 pixels to the point), sampled: a black ground; what floats or
-//! holds input (the prompt field, the card beside the transcript) a step off
-//! it behind hairlines; prose near white and meta text a quiet grey; one
-//! accent, orange unless the user chose another, for links, focus, what is
-//! selected and an agent that runs; blue for one that finished; a flat navy
-//! for the one primary action, the send button. One palette for
-//! the whole app, the chat's look included. Each token carries the reason it
-//! exists.
+//! Colour presets and portable custom palettes live in `themes`. These
+//! tokens are shared by native views, plugin drawings and terminal styles.
 
 use gpui::{App, Global, Hsla, SharedString, WindowAppearance, rgb};
 
 macro_rules! palette {
     ($($(#[$doc:meta])* $name:ident),* $(,)?) => {
         /// A theme's colours as `0xRRGGBB`, so they can be checked without a window.
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
         pub struct Palette { $($(#[$doc])* pub $name: u32,)* }
+        impl Palette {
+            pub const TOKENS: &'static [&'static str] = &[$(stringify!($name)),*];
+            pub fn get(&self, token: &str) -> Option<u32> {
+                match token { $(stringify!($name) => Some(self.$name),)* _ => None }
+            }
+            pub fn set(&mut self, token: &str, color: u32) -> bool {
+                if color > 0xffffff { return false; }
+                match token { $(stringify!($name) => self.$name = color,)* _ => return false }
+                true
+            }
+        }
         /// The same colours, ready to paint.
         #[derive(Clone, Copy, Debug, PartialEq)]
         pub struct Colors { $($(#[$doc])* pub $name: Hsla,)* }
@@ -41,7 +46,7 @@ palette! {
     hover,
     /// The selected row or tab; a prompt's bubble.
     selected,
-    /// Hairline between regions, and around the prompt field.
+    /// Hairline between regions.
     line,
     /// Border of something that floats: a card, a menu, a node.
     line_strong,
@@ -178,7 +183,10 @@ pub const ACCENTS: [(&str, u32); 6] = [
 /// one, that colour moved toward white on the dark ground, or toward black on
 /// the light one, until it reads as text (4.5:1) on every surface.
 pub fn accent_in(dark: bool, chosen: Option<u32>) -> u32 {
-    let palette = if dark { DARK } else { LIGHT };
+    accent_on(if dark { DARK } else { LIGHT }, dark, chosen)
+}
+
+fn accent_on(palette: Palette, dark: bool, chosen: Option<u32>) -> u32 {
     let Some(chosen) = chosen else {
         return palette.accent;
     };
@@ -272,8 +280,14 @@ pub mod metric {
     /// canvas nodes, the inspector, a screen's groups. The picture's prompt
     /// field and the card beside the transcript (24 of its pixels).
     pub const RADIUS_LARGE: f32 = 14.;
-    /// An icon's box.
+    /// An icon's box: in a toolbar's button, and where it leads a row.
     pub const ICON: f32 = 16.;
+    /// The box of an icon that is a detail of a row or a header: what closes
+    /// a tab, what opens a group, a row's own action. Beside 13px text the
+    /// full icon reads as heavier than the words it serves.
+    pub const ICON_SMALL: f32 = 14.;
+    /// An icon button: its square, which fills under the pointer.
+    pub const ICON_BUTTON: f32 = 24.;
 
     // The rhythm of lists. Every list in the app (the rail, the picker, the
     // settings) puts its first picture and its headings on the same vertical
@@ -336,10 +350,9 @@ pub struct Theme {
     pub ansi: AnsiPalette,
     /// The palette the colours came from.
     pub palette: Palette,
-    /// The system interface font: this is a native window, and the OS font is
-    /// the one hinted for it and the one every other control on screen uses.
+    /// Interface labels and prose.
     pub ui_font: SharedString,
-    /// The platform's monospace, for anything a machine produced.
+    /// Code, commands, terminal cells and numeric metadata.
     pub mono_font: SharedString,
 }
 
@@ -365,6 +378,10 @@ impl Theme {
     /// The dark or the light theme.
     pub fn new(dark: bool) -> Self {
         let palette = if dark { DARK } else { LIGHT };
+        Self::from_palette(dark, palette)
+    }
+
+    pub fn from_palette(dark: bool, palette: Palette) -> Self {
         Self {
             dark,
             colors: Colors::from(&palette),
@@ -372,8 +389,8 @@ impl Theme {
             hue_ink: rgb(HUE_INK).into(),
             ansi: if dark { ANSI_DARK } else { ANSI_LIGHT },
             palette,
-            ui_font: SharedString::new_static(UI_FONT),
-            mono_font: SharedString::new_static(MONO_FONT),
+            ui_font: SharedString::new_static("Onest"),
+            mono_font: SharedString::new_static("Martian Mono"),
         }
     }
 
@@ -385,7 +402,7 @@ impl Theme {
         if accent.is_none() {
             return self;
         }
-        let accent = accent_in(self.dark, accent);
+        let accent = accent_on(self.palette, self.dark, accent);
         self.palette.accent = accent;
         self.palette.working = accent;
         self.palette.accent_ink = if contrast(0x00_0000, accent) >= contrast(0xff_ffff, accent) {
@@ -448,21 +465,32 @@ pub fn hue_index(name: &str) -> usize {
     (hash % HUES.len() as u64) as usize
 }
 
-#[cfg(target_os = "macos")]
-const UI_FONT: &str = ".SystemUIFont";
-#[cfg(target_os = "macos")]
-const MONO_FONT: &str = "Menlo";
-#[cfg(target_os = "windows")]
-const UI_FONT: &str = "Segoe UI";
-#[cfg(target_os = "windows")]
-const MONO_FONT: &str = "Consolas";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const UI_FONT: &str = "sans-serif";
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const MONO_FONT: &str = "monospace";
+const FONT_FILES: &[&[u8]] = &[
+    include_bytes!("../fonts/onest/Onest-Regular.ttf"),
+    include_bytes!("../fonts/onest/Onest-Medium.ttf"),
+    include_bytes!("../fonts/onest/Onest-SemiBold.ttf"),
+    include_bytes!("../fonts/onest/Onest-Bold.ttf"),
+    include_bytes!("../fonts/martian-mono/MartianMono-Regular.ttf"),
+    include_bytes!("../fonts/martian-mono/MartianMono-Medium.ttf"),
+    include_bytes!("../fonts/martian-mono/MartianMono-SemiBold.ttf"),
+];
 
-/// Install the theme for the current system appearance.
+struct FontsLoaded;
+impl Global for FontsLoaded {}
+
+/// Register the bundled fonts and install the theme for the current appearance.
 pub fn init(cx: &mut App) {
+    if !cx.has_global::<FontsLoaded>() {
+        let faces = FONT_FILES
+            .iter()
+            .copied()
+            .map(std::borrow::Cow::Borrowed)
+            .collect();
+        match cx.text_system().add_fonts(faces) {
+            Ok(()) => cx.set_global(FontsLoaded),
+            Err(err) => eprintln!("kou-ui: could not register bundled fonts: {err}"),
+        }
+    }
     let appearance = cx.window_appearance();
     cx.set_global(Theme::for_appearance(appearance));
 }

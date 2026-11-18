@@ -1,6 +1,9 @@
+mod accounts;
+mod appearance;
 // (Under `script/dev` the tool that runs the app makes its bundle.)
 #[cfg(all(target_os = "macos", not(feature = "hot")))]
 mod bundle;
+mod chat_faces;
 mod foreground;
 mod hot;
 mod integration;
@@ -8,6 +11,7 @@ mod notify;
 #[cfg(any(test, feature = "hot"))]
 mod outline;
 mod panes;
+mod plot;
 mod plugin_view;
 mod plugins;
 mod rail;
@@ -15,7 +19,9 @@ mod scenes;
 mod screens;
 mod shell;
 mod state;
+mod surfaces;
 mod usage;
+mod wires;
 mod workspace;
 
 use gpui::{
@@ -32,6 +38,7 @@ kou-desktop --open DIR           open the app with DIR as a space, added if it i
 kou-desktop mcp                             the app's tools for an agent in a pane, as an MCP server on stdio
 kou-desktop --layout panes|canvas
                                  show the open session that way
+kou-desktop --theme-link URL      preview a shared kou-theme:// theme
 kou-desktop --home DIR           keep its state in DIR instead of the user's data directory
 kou-desktop --hidden             run without showing the window (scripted checks)
 kou-desktop --capture FILE --after MS
@@ -48,6 +55,7 @@ struct Args {
     home: Option<PathBuf>,
     open: Option<PathBuf>,
     layout: Option<String>,
+    theme_link: Option<String>,
     strip: usize,
     every: u64,
     time: f32,
@@ -77,6 +85,11 @@ fn args(args: &[String]) -> Args {
         home: value("--home").map(PathBuf::from),
         open: value("--open").map(PathBuf::from),
         layout: value("--layout"),
+        theme_link: value("--theme-link").or_else(|| {
+            args.iter()
+                .find(|arg| arg.starts_with("kou-theme://"))
+                .cloned()
+        }),
         strip: number("--strip", 0.) as usize,
         every: number("--every", 24.) as u64,
         time: number("--time", 0.),
@@ -300,6 +313,35 @@ fn mount(mount: Mount, window: &mut Window, cx: &mut Context<Shell>) -> Shell {
         match kou_ipc::Server::bind(&shell.socket) {
             Ok((server, requests)) => {
                 shell.server = Some(server);
+                // The socket is this window's: so are the Claude Codes kept
+                // beside it. What was kept for panes that are no more is
+                // let go.
+                shell.keepers = Some(Shell::keepers_beside(&shell.socket));
+                shell.sweep_keepers();
+                // And what is kept for a pane that is still there is taken
+                // up in it, without being asked.
+                shell.revive_kept();
+                if !shell.revive.is_empty() {
+                    // Not left to the next frame alone: a window that is
+                    // not being looked at draws none, and what was kept is
+                    // to be taken up all the same, as soon as the harnesses
+                    // have been found.
+                    cx.spawn_in(window, async move |this, cx| {
+                        for _ in 0..240 {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(250))
+                                .await;
+                            let waiting = this.update_in(cx, |shell, window, cx| {
+                                shell.revive_ready(window, cx);
+                                !shell.revive.is_empty()
+                            });
+                            if !matches!(waiting, Ok(true)) {
+                                break;
+                            }
+                        }
+                    })
+                    .detach();
+                }
                 cx.spawn_in(window, async move |this, cx| {
                     while let Ok(request) = requests.recv().await {
                         // A request is taken apart by the handler, so it
@@ -326,6 +368,10 @@ fn mount(mount: Mount, window: &mut Window, cx: &mut Context<Shell>) -> Shell {
         match kept_program(&shell.home) {
             Ok(bin) => shell.bin = Some(bin),
             Err(error) => log::warn!("the app's program was not copied for the panes: {error}"),
+        }
+        match keeper_program(&shell.home) {
+            Ok(bin) => shell.keeper_bin = Some(bin),
+            Err(error) => log::warn!("the app's program was not copied for its keepers: {error}"),
         }
         // What an agent started in a pane is given to work with the others:
         // written once under the app's home, named after its content.
@@ -384,6 +430,42 @@ fn kept_program(home: &std::path::Path) -> std::io::Result<PathBuf> {
             .join(format!("kou-desktop.{}", std::process::id()));
         std::fs::copy(&program, &draft)?;
         std::fs::rename(&draft, &kept)?;
+    }
+    Ok(kept)
+}
+
+/// A copy of the running program under the app's home for the keepers of
+/// its Claude Codes to run from: `<home>/bin/claude-host-<size>-<time>`,
+/// this build's alone. `bin/kou-desktop` will not do: it is whichever build
+/// of the app last started under this home, and an older one (one that knows
+/// no keepers) would leave each keeper started from it unable to start.
+/// Copies of other builds are removed: a keeper that runs from one goes on
+/// (a file removed stays for whoever has it open), and nothing new is
+/// started from them.
+fn keeper_program(home: &std::path::Path) -> std::io::Result<PathBuf> {
+    keeper_copy(&std::env::current_exe()?, &home.join("bin"))
+}
+
+fn keeper_copy(program: &std::path::Path, folder: &std::path::Path) -> std::io::Result<PathBuf> {
+    let metadata = std::fs::metadata(program)?;
+    let time = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let name = format!("claude-host-{}-{time}", metadata.len());
+    let kept = folder.join(&name);
+    if !kept.exists() {
+        std::fs::create_dir_all(folder)?;
+        let draft = folder.join(format!(".{name}.{}", std::process::id()));
+        std::fs::copy(program, &draft)?;
+        std::fs::rename(&draft, &kept)?;
+    }
+    for entry in std::fs::read_dir(folder)?.flatten() {
+        let other = entry.file_name();
+        let other = other.to_string_lossy();
+        if other.starts_with("claude-host-") && other != name {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
     Ok(kept)
 }
@@ -532,6 +614,9 @@ fn run_app(args: Args, cx: &mut App) {
             cx.new(|cx| mount(mounting, window, cx))
         })
         .expect("open the window");
+    if let Some(link) = args.theme_link {
+        let _ = window.update(cx, |shell, _, cx| shell.import_theme_link(&link, cx));
+    }
     if let Some(path) = args.capture {
         let after = args.after;
         cx.spawn(async move |cx| {
@@ -547,6 +632,12 @@ fn run_app(args: Args, cx: &mut App) {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    // The same binary is the keeper of a Claude Code that is to outlive the
+    // app (`kou_claude::host`). It turns itself into a process of its own,
+    // so this comes before anything else is opened or started here.
+    if arguments.first().map(String::as_str) == Some("claude-host") {
+        std::process::exit(kou_claude::host::run(&arguments[1..]));
+    }
     if arguments.iter().any(|arg| arg == "--help" || arg == "-h") && arguments.len() == 1 {
         print!("{USAGE}\n{}", kou_ipc::cli::USAGE);
         return;
@@ -581,73 +672,144 @@ fn main() {
             eprintln!("kou-desktop: running outside its bundle, without notifications: {error}");
         }
     }
-    gpui_platform::application()
-        .with_assets(kou_ui::Assets)
-        .run(move |cx: &mut App| {
-            kou_ui::init(cx);
-            #[cfg(feature = "hot")]
-            {
-                // A patch arrives on the listener's thread and is applied on
-                // this one, between two frames: nothing is half-drawn by the
-                // old code when the new comes in.
-                let patches = hot::listen();
-                // The build that put up what is in the window takes it down.
-                let mut take: hot::TakeDown = Box::new(take_down);
-                let mut outline = hot::outline();
-                cx.spawn(async move |cx| {
-                    while let Ok(patch) = patches.recv().await {
-                        // A patch that changed function bodies only goes in
-                        // under what is alive. Anything else changed the shape
-                        // of it: the window's content is taken down by the
-                        // code that made it, and put up again by the new.
-                        let now = hot::outline();
-                        let reshaped = now != outline;
-                        let kept = reshaped.then(|| cx.update(|cx| take(cx)));
-                        // Back from that update, what was taken down is gone.
-                        let applied = hot::apply(patch);
-                        // For whoever runs `script/dev`: what became of the change.
-                        eprintln!(
-                            "kou-desktop: {}",
-                            match (applied, reshaped) {
-                                (false, _) => "a patch could not be applied; running as before",
-                                (true, false) => "patched",
-                                (true, true) => "patched; the window's content was rebuilt",
-                            }
-                        );
-                        cx.update(|cx| {
-                            if let Some(kept) = kept {
-                                if applied {
-                                    // This closure is the patch's own from here on.
-                                    take = subsecond::call(|| -> hot::TakeDown {
-                                        hot::started();
-                                        put_up(&kept, true, cx);
-                                        Box::new(take_down)
-                                    });
-                                    outline = now;
-                                } else {
-                                    // Not applied: the code that took it down
-                                    // is still the code there is.
+    let (links, incoming_links) = async_channel::unbounded::<String>();
+    let application = gpui_platform::application().with_assets(kou_ui::Assets);
+    application.on_open_urls(move |urls| {
+        for url in urls
+            .into_iter()
+            .filter(|url| url.starts_with("kou-theme://"))
+        {
+            let _ = links.try_send(url);
+        }
+    });
+    application.run(move |cx: &mut App| {
+        kou_ui::init(cx);
+        #[cfg(feature = "hot")]
+        {
+            // A patch arrives on the listener's thread and is applied on
+            // this one, between two frames: nothing is half-drawn by the
+            // old code when the new comes in.
+            let patches = hot::listen();
+            // The build that put up what is in the window takes it down.
+            let mut take: hot::TakeDown = Box::new(take_down);
+            let mut outline = hot::outline();
+            cx.spawn(async move |cx| {
+                while let Ok(patch) = patches.recv().await {
+                    // A patch that changed function bodies only goes in
+                    // under what is alive. Anything else changed the shape
+                    // of it: the window's content is taken down by the
+                    // code that made it, and put up again by the new.
+                    let now = hot::outline();
+                    let reshaped = now != outline;
+                    let kept = reshaped.then(|| cx.update(|cx| take(cx)));
+                    // Back from that update, what was taken down is gone.
+                    let applied = hot::apply(patch);
+                    // For whoever runs `script/dev`: what became of the change.
+                    eprintln!(
+                        "kou-desktop: {}",
+                        match (applied, reshaped) {
+                            (false, _) => "a patch could not be applied; running as before",
+                            (true, false) => "patched",
+                            (true, true) => "patched; the window's content was rebuilt",
+                        }
+                    );
+                    cx.update(|cx| {
+                        if let Some(kept) = kept {
+                            if applied {
+                                // This closure is the patch's own from here on.
+                                take = subsecond::call(|| -> hot::TakeDown {
+                                    hot::started();
                                     put_up(&kept, true, cx);
-                                }
+                                    Box::new(take_down)
+                                });
+                                outline = now;
+                            } else {
+                                // Not applied: the code that took it down
+                                // is still the code there is.
+                                put_up(&kept, true, cx);
                             }
-                            cx.refresh_windows();
-                        });
+                        }
+                        cx.refresh_windows();
+                    });
+                }
+            })
+            .detach();
+        }
+        shell::quit_without_a_window(cx);
+        match args.scene.clone() {
+            Some(scene) => run_scene(scene, args, cx),
+            None => run_app(args, cx),
+        }
+        cx.spawn(async move |cx| {
+            while let Ok(link) = incoming_links.recv().await {
+                cx.update(|cx| {
+                    for handle in cx.windows() {
+                        let opened = handle
+                            .update(cx, |root, window, cx| {
+                                if let Ok(shell) = root.clone().downcast::<Shell>() {
+                                    shell
+                                        .update(cx, |shell, cx| shell.import_theme_link(&link, cx));
+                                    window.activate_window();
+                                    true
+                                } else {
+                                    false
+                                }
+                            })
+                            .unwrap_or(false);
+                        if opened {
+                            break;
+                        }
                     }
-                })
-                .detach();
+                });
             }
-            shell::quit_without_a_window(cx);
-            match args.scene.clone() {
-                Some(scene) => run_scene(scene, args, cx),
-                None => run_app(args, cx),
-            }
-        });
+        })
+        .detach();
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use gpui::{TestAppContext, VisualTestContext};
+
+    #[test]
+    fn theme_links_can_be_opened_as_urls_or_with_an_explicit_option() {
+        let link = kou_ui::themes::Preset::White.document().link().unwrap();
+        assert_eq!(args(&[link.clone()]).theme_link, Some(link.clone()));
+        assert_eq!(
+            args(&["--theme-link".into(), link.clone()]).theme_link,
+            Some(link)
+        );
+        assert_eq!(
+            args(&["--home".into(), "/tmp/theme-test".into()]).theme_link,
+            None
+        );
+    }
+
+    #[test]
+    fn the_keepers_run_from_a_copy_of_this_build_that_no_other_build_replaces() {
+        let root = tempfile::tempdir().unwrap();
+        let program = root.path().join("kou-desktop");
+        std::fs::write(&program, b"this build").unwrap();
+        let folder = root.path().join("bin");
+        std::fs::create_dir_all(&folder).unwrap();
+        // What another build left: its own copy, and the panes' program.
+        std::fs::write(folder.join("claude-host-5-1"), b"older").unwrap();
+        std::fs::write(folder.join("kou-desktop"), b"older").unwrap();
+        let kept = keeper_copy(&program, &folder).unwrap();
+        let name = kept.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("claude-host-10-"), "{name}");
+        assert_eq!(std::fs::read(&kept).unwrap(), b"this build");
+        assert!(!folder.join("claude-host-5-1").exists());
+        assert_eq!(std::fs::read(folder.join("kou-desktop")).unwrap(), b"older");
+        // Found again as it is, the next time.
+        assert_eq!(keeper_copy(&program, &folder).unwrap(), kept);
+        let left: Vec<_> = std::fs::read_dir(&folder)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
+    }
 
     #[gpui::test]
     fn a_windows_content_is_taken_down_and_put_up_again_in_the_same_window(

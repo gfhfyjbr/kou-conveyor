@@ -1,7 +1,8 @@
 //! What each frame of the view costs and where it puts things, for finding out
-//! what makes a zoom uneven. Off unless the environment variable
-//! `KOU_ZOOM_TRACE` is set when the first view is made; then every frame a
-//! view draws anew prints one line to stderr, starting `zoom-trace`:
+//! what makes a zoom, a scroll or a stream uneven. Off unless the environment
+//! variable `KOU_ZOOM_TRACE` is set when the first view is made; then every
+//! frame a view draws anew prints one line to stderr, starting `zoom-trace`
+//! (a view that follows no zoom is traced too, at a zoom of 1):
 //!
 //! - `frame`, `t` (ms since the view's first frame) and `gap` (ms since its
 //!   last frame began): frames drawn back to back are as far apart as one
@@ -16,6 +17,8 @@
 //!   rows are built and laid out) and painting;
 //! - `rows`: transcript rows built; `texts`: texts laid out, and the ms that
 //!   took (shaping included, which the text system's cache should answer);
+//! - `faces`: parts of the chat the app drew (see [`crate::face`]), and the
+//!   ms that took, from their data being made to the drawing handed back;
 //! - `dock` and `field`: the factor the prompt area and the field were built
 //!   at this frame, `-` when they were drawn from an earlier frame;
 //! - `device`: the window's device pixels to one;
@@ -90,6 +93,8 @@ struct Frame {
     prepaint: Duration,
     paint: Duration,
     rows: u32,
+    faces: u32,
+    face_time: Duration,
     dock: Option<f32>,
     field: Option<f32>,
     view: Option<Bounds<Pixels>>,
@@ -151,6 +156,20 @@ pub(crate) fn built(trace: &Trace, started: Option<Instant>) {
 pub(crate) fn row_built(trace: &Trace) {
     if let Some(trace) = trace {
         trace.borrow_mut().frame.rows += 1;
+    }
+}
+
+/// When a part the app draws began to be drawn, if tracing is on.
+pub(crate) fn face_started(trace: &Trace) -> Option<Instant> {
+    trace.as_ref().map(|_| Instant::now())
+}
+
+/// A part the app draws was drawn, since `started`.
+pub(crate) fn face_drawn(trace: &Trace, started: Option<Instant>) {
+    if let (Some(trace), Some(started)) = (trace, started) {
+        let frame = &mut trace.borrow_mut().frame;
+        frame.faces += 1;
+        frame.face_time += started.elapsed();
     }
 }
 
@@ -304,7 +323,7 @@ impl Record {
         let mut line = format!(
             "zoom-trace frame={} t={since:.3} gap={} zoom={:.5} factor={:.5} new={} {} \
              build={:.3} layout={:.3} prepaint={:.3} paint={:.3} rows={} texts={}/{:.3} \
-             dock={} field={} device={} view={} content={} frame={}",
+             faces={}/{:.3} dock={} field={} device={} view={} content={} frame={}",
             self.frames,
             frame
                 .gap
@@ -320,6 +339,8 @@ impl Record {
             frame.rows,
             text.layouts,
             ms(text.time),
+            frame.faces,
+            ms(frame.face_time),
             factor(frame.dock),
             factor(frame.field),
             frame.device,

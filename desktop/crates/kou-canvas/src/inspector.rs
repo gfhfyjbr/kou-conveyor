@@ -8,6 +8,7 @@
 use crate::{
     anim::Clock,
     card::{elapsed, field_line, glyph, state_of},
+    face::mark_of,
     model::{Delivery, EdgeId, EdgeMode, EdgeOrigin, End, NodeId, NodeKind},
     view::{CanvasView, Edit},
 };
@@ -19,6 +20,7 @@ use gpui::{
 use kou_ui::{
     Icon, Mark, Theme, button_with_icon, icon, icon_button, metric, motion, status_mark, tip,
 };
+use serde_json::{Value, json};
 use std::time::Instant;
 
 /// The panel's width.
@@ -124,6 +126,35 @@ impl CanvasView {
             motion::ease_in(self.clock.progress(closing, motion::QUICK))
         });
         let shown = open * (1. - gone);
+        // As the app draws it, when it does (see [`crate::Face`]): the canvas
+        // keeps its sliding in and out, its keys, and the field being typed
+        // in.
+        if self.face.is_some()
+            && let Some(data) = self.inspector_data(&inspector.target)
+        {
+            let field = || {
+                self.inspector_field(&inspector.target, theme, cx)
+                    .map(|field| ("field", field))
+                    .into_iter()
+                    .collect()
+            };
+            if let Some(panel) = self.faced("canvasInspector", data, field, cx) {
+                return Some(
+                    div()
+                        .id("canvas-inspector")
+                        .absolute()
+                        .top(px(12.))
+                        .bottom(px(12.))
+                        .right(px(12. - (1. - shown) * 24.))
+                        .w(px(WIDTH))
+                        .opacity(shown)
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_key_down(cx.listener(Self::inspector_key))
+                        .child(panel)
+                        .into_any_element(),
+                );
+            }
+        }
         let (title, glyph_element, body): (SharedString, AnyElement, Vec<AnyElement>) =
             match &inspector.target {
                 Target::Nodes(ids) if ids.len() == 1 => {
@@ -163,13 +194,7 @@ impl CanvasView {
                 .opacity(shown)
                 .occlude()
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
-                    if event.keystroke.key == "escape" && this.editing.is_none() {
-                        this.close_inspector(cx);
-                        window.focus(&this.focus, cx);
-                        cx.stop_propagation();
-                    }
-                }))
+                .on_key_down(cx.listener(Self::inspector_key))
                 .child(
                     div()
                         .flex_none()
@@ -213,6 +238,203 @@ impl CanvasView {
                 )
                 .into_any_element(),
         )
+    }
+
+    // Escape closes the inspector, unless a field of it is being typed in.
+    fn inspector_key(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        window: &mut gpui::Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key == "escape" && self.editing.is_none() {
+            self.close_inspector(cx);
+            window.focus(&self.focus, cx);
+            cx.stop_propagation();
+        }
+    }
+
+    /// Which of the inspector's fields is being typed in, for `target`.
+    fn inspector_editing(&self, target: &Target) -> Option<(&'static str, Edit)> {
+        let what = &self.editing.as_ref()?.what;
+        let field = match (target, what) {
+            (Target::Nodes(ids), Edit::Title(id, true)) if ids == &[*id] => "title",
+            (Target::Nodes(ids), Edit::Note(id)) if ids == &[*id] => "note",
+            (Target::Edge(edge), Edit::Template(id)) if edge == id => "template",
+            _ => return None,
+        };
+        Some((field, what.clone()))
+    }
+
+    /// The field of the inspector's being typed in, as the canvas draws it.
+    fn inspector_field(
+        &self,
+        target: &Target,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        let (field, what) = self.inspector_editing(target)?;
+        let id = match field {
+            "title" => "inspector-title",
+            "note" => "inspector-note",
+            _ => "inspector-template",
+        };
+        Some(self.editable(id, what, "", "", theme, cx))
+    }
+
+    /// What the inspector shows, as a drawing is given it: `None` when what
+    /// it was showing is gone.
+    fn inspector_data(&self, target: &Target) -> Option<Value> {
+        let editing = self.inspector_editing(target).map(|(field, _)| field);
+        let mark =
+            |node: Option<&crate::model::Node>| node.map(|node| mark_of(&node.tag, node.kind));
+        Some(match target {
+            Target::Nodes(ids) if ids.len() == 1 => {
+                let id = ids[0];
+                let node = self.board.node(id)?;
+                let live = self.live.get(&id);
+                let state = live.map_or(Mark::Idle, |live| live.mark);
+                let since = live
+                    .map(|live| elapsed(self.clock.now().saturating_duration_since(live.since)));
+                let kind = match node.kind {
+                    NodeKind::Agent if !node.tag.is_empty() => format!("agent, {}", node.tag),
+                    kind => kind.label().to_owned(),
+                };
+                let wires = (!node.kind.inputs().is_empty() || !node.kind.outputs().is_empty())
+                    .then(|| {
+                        self.board
+                            .edges_of(id)
+                            .map(|edge| {
+                                let (arrow, other, port) = if edge.from == id {
+                                    ("→", edge.to, &edge.from_port)
+                                } else {
+                                    ("←", edge.from, &edge.to_port)
+                                };
+                                let other_node = self.board.node(other);
+                                let title = other_node
+                                    .map_or_else(|| other.to_string(), |node| node.title.clone());
+                                let mode = match edge.mode {
+                                    EdgeMode::Auto => String::new(),
+                                    mode => format!(", {}", mode.label().to_lowercase()),
+                                };
+                                json!({
+                                    "edge": edge.id,
+                                    "label": format!("{port} {arrow} {title}{mode}"),
+                                    "mark": mark(other_node),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    });
+                json!({
+                    "kind": "node",
+                    "title": node.title,
+                    "mark": mark(Some(node)),
+                    "editing": editing,
+                    "node": {
+                        "id": id,
+                        "title": node.title,
+                        "kind": kind,
+                        "note": node.kind == NodeKind::Note,
+                        "detail": node.detail,
+                        "state": state.name(),
+                        "word": state.label(),
+                        "since": since,
+                        "place": node.place,
+                        "wires": wires,
+                        "outputs": !node.kind.outputs().is_empty(),
+                        "agent": node.kind == NodeKind::Agent,
+                        "orchestrator": node.orchestrator,
+                        "body": self.bodies.contains_key(&id),
+                        "pane": !node.kind.canvas_owned(),
+                    },
+                })
+            }
+            Target::Nodes(ids) => json!({
+                "kind": "nodes",
+                "title": format!("{} nodes selected", ids.len()),
+                "nodes": ids
+                    .iter()
+                    .filter_map(|id| self.board.node(*id))
+                    .map(|node| json!({ "id": node.id, "title": node.title, "mark": mark(Some(node)) }))
+                    .collect::<Vec<_>>(),
+            }),
+            Target::Edge(id) => {
+                let edge = self.board.edge(*id)?;
+                let from = self.board.node(edge.from);
+                let to = self.board.node(edge.to);
+                let from_title = from.map_or_else(|| edge.from.to_string(), |n| n.title.clone());
+                let to_title = to.map_or_else(|| edge.to.to_string(), |n| n.title.clone());
+                let target_kind = to.map_or(NodeKind::Agent, |n| n.kind);
+                let delivery = edge.delivery(target_kind);
+                let traffic = self.traffic.get(id).copied().unwrap_or_default();
+                let header_default = target_kind == NodeKind::Agent;
+                json!({
+                    "kind": "edge",
+                    "title": "Edge",
+                    "editing": editing,
+                    "edge": {
+                        "id": id,
+                        "from": { "title": from_title, "port": edge.from_port, "mark": mark(from) },
+                        "to": { "title": to_title, "port": edge.to_port, "mark": mark(to) },
+                        "origin": self.origin_note(edge),
+                        "modes": EdgeMode::ALL
+                            .iter()
+                            .map(|mode| json!({ "label": mode.label(), "on": *mode == edge.mode }))
+                            .collect::<Vec<_>>(),
+                        "mode": edge.mode.description(),
+                        "deliveries": ([Delivery::Queue, Delivery::Now])
+                            .iter()
+                            .map(|d| json!({ "label": d.label(), "on": *d == delivery }))
+                            .collect::<Vec<_>>(),
+                        "delivery": match delivery {
+                            Delivery::Queue => "The message waits until its target is idle.",
+                            Delivery::Now => "The message goes at once, into what runs.",
+                        },
+                        "headers": [
+                            json!({
+                                "label": format!(
+                                    "Default ({})",
+                                    if header_default { "on" } else { "off" }
+                                ),
+                                "on": edge.header.is_none(),
+                            }),
+                            json!({ "label": "On", "on": edge.header == Some(true) }),
+                            json!({ "label": "Off", "on": edge.header == Some(false) }),
+                        ],
+                        "template": edge.template,
+                        "preview": edge
+                            .message("its output", &from_title, target_kind)
+                            .lines()
+                            .collect::<Vec<_>>(),
+                        "messages": if traffic == crate::view::Traffic::default() {
+                            "Nothing went along it yet.".to_owned()
+                        } else {
+                            format!(
+                                "{} delivered, {} waiting for your approval",
+                                traffic.delivered, traffic.waiting
+                            )
+                        },
+                    },
+                })
+            }
+        })
+    }
+
+    /// Who made an edge, in words.
+    fn origin_note(&self, edge: &crate::model::Edge) -> String {
+        match (edge.origin, edge.by.and_then(|by| self.board.node(by))) {
+            (EdgeOrigin::Spawned, _) => "Made when one started the other.".to_owned(),
+            (EdgeOrigin::Sent, _) => {
+                "Made when one sent the other a message. It carries nothing by itself.".to_owned()
+            }
+            (EdgeOrigin::Wired, Some(by)) => {
+                format!("Wired by the agent in «{}», not by you.", by.title)
+            }
+            (EdgeOrigin::Wired, None) if edge.by.is_some() => {
+                "Wired by an agent that is gone, not by you.".to_owned()
+            }
+            (EdgeOrigin::Wired, None) => "Wired by hand.".to_owned(),
+        }
     }
 
     fn node_sections(&self, id: NodeId, theme: &Theme, cx: &Context<Self>) -> Vec<AnyElement> {
@@ -353,6 +575,32 @@ impl CanvasView {
             sections.push(wires.into_any_element());
         }
 
+        // Who else may wire this board: the agent of a node the user made
+        // its orchestrator.
+        if node.kind == NodeKind::Agent {
+            let on = node.orchestrator;
+            sections.push(
+                section(Some(Icon::Wire), Some("Orchestrator"), theme)
+                    .child(segmented(
+                        "inspector-orchestrator",
+                        vec![("Off", !on), ("On", on)],
+                        theme,
+                        cx,
+                        move |this, index, cx| this.set_orchestrator(id, index == 1, cx),
+                    ))
+                    .child(note_text(
+                        if on {
+                            "Its agent may wire the nodes of this tab together and take \
+                             wires away, as you do. What it wires says that it did."
+                        } else {
+                            "Only you wire this tab. Turned on, this node's agent may too."
+                        },
+                        theme,
+                    ))
+                    .into_any_element(),
+            );
+        }
+
         let mut actions = div().flex().flex_wrap().gap(px(6.));
         if self.bodies.contains_key(&id) {
             actions = actions.child(
@@ -490,13 +738,7 @@ impl CanvasView {
                     .child(div().pl(px(4.)).text_color(theme.fg_muted).child("↓"))
                     .child(end(to, to_title, edge.to_port.clone())),
             )
-            .child(note_text(
-                match edge.origin {
-                    EdgeOrigin::Spawned => "Made when one started the other.",
-                    EdgeOrigin::Wired => "Wired by hand.",
-                },
-                theme,
-            ))
+            .child(note_text(self.origin_note(&edge), theme))
             .child(
                 div()
                     .flex()

@@ -106,6 +106,25 @@ assert panes['$child']['title'] == 'worker', panes
 " || fail "the list knows who started whom"
 pass "the list knows who started whom"
 
+# An agent that asks where it is is told: its own pane, the tab as a canvas,
+# the pane it started, and the edge that starting it made.
+KOU_PANE="$lead" "$bin" where >"$work/where.txt" || fail "a pane can ask where it is"
+grep -q "^You are pane $lead: shell in its terminal" "$work/where.txt" \
+    && grep -q "which the user sees as a canvas" "$work/where.txt" \
+    && grep -q "^  $child	.*	(you started it)$" "$work/where.txt" \
+    && grep -q "^  $lead -> $child	made when you started $child" "$work/where.txt" \
+    || { sed 's/^/      /' "$work/where.txt"; fail "a pane is told where it is"; }
+"$bin" where "$child" --json | python3 -c "
+import json, sys
+place = json.load(sys.stdin)
+assert place['pane']['id'] == '$child' and place['pane']['parent'] == '$lead', place
+assert place['tab']['layout'] == 'canvas', place
+assert [other['id'] for other in place['others']] == ['$lead'], place
+assert place['edges'] == [{'from': '$lead', 'to': '$child', 'mode': 'auto', 'wired': False, 'waiting': 0, 'sent': False}], place
+assert place['orchestrator'] is False, place
+" || fail "where answers as data too"
+pass "a pane is told where it is: its tab, its neighbours and the canvas's edges"
+
 # Started from a pane on a canvas, the child is on the same canvas: one tab, two panes.
 "$bin" tab list --json | python3 -c "
 import json, sys
@@ -147,6 +166,26 @@ pass "a session and a space are renamed"
 "$bin" pane wait "$lead" --exit --timeout 1 >/dev/null 2>&1; [ $? = 4 ] || fail "a wait that runs out exits 4"
 "$bin" pane read nope >/dev/null 2>&1; [ $? = 1 ] || fail "an unknown pane is an error"
 pass "a wait that runs out exits 4 and an unknown pane exits 1"
+
+# Only a tab's orchestrator wires it. Anyone lists its edges, and what one
+# pane sends another on purpose draws a line that carries nothing by itself.
+KOU_PANE="$lead" "$bin" edge list | grep -q "^$lead -> $child	started" || fail "a tab's edges are listed"
+KOU_PANE="$lead" "$bin" edge add "$child" me >/dev/null 2>"$work/err"; [ $? = 1 ] || fail "a pane that is no orchestrator wires nothing"
+grep -q "not this tab's orchestrator" "$work/err" || fail "the refusal says whose the wires are"
+KOU_PANE="$child" "$bin" pane send "$lead" 'echo from-child' >/dev/null || fail "one pane writes to another"
+KOU_PANE="$lead" "$bin" edge list | grep -q "^$child -> $lead	sent" || fail "a message sent on purpose draws a line that carries nothing"
+"$bin" pane wait "$lead" --timeout 10 >/dev/null
+pass "edges are listed, only an orchestrator wires, and a send wires nothing"
+
+# What a harness can run with, and a pane started with a title in the face asked for.
+"$bin" harness models shell | grep -q "names no models" || fail "a harness without models says so"
+"$bin" harness models nope >/dev/null 2>&1; [ $? = 1 ] || fail "an unknown harness is an error"
+named="$(KOU_PANE="$lead" "$bin" pane spawn shell --title Reviewer --terminal --json)"
+[ "$(echo "$named" | field title)" = "Reviewer" ] && [ "$(echo "$named" | field kind)" = "terminal" ] \
+    || fail "a pane is started with its title, in the face asked for"
+"$bin" pane close "$(echo "$named" | field id)" >/dev/null || fail "the pane started for the check is closed"
+"$bin" pane spawn shell --native --terminal >/dev/null 2>&1; [ $? = 2 ] || fail "a chat and a terminal at once is a mistake"
+pass "a harness's models are listed, and a pane is started as it was asked for"
 
 "$bin" pane close "$child" >/dev/null || fail "a pane can be closed"
 "$bin" pane info "$child" >/dev/null 2>&1 && fail "a closed pane is gone"

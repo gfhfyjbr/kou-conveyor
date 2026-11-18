@@ -10,6 +10,7 @@
 
 use crate::{
     anim::mix,
+    face::Shows,
     field::Part,
     geometry::Lod,
     model::{Dir, Node, NodeId, NodeKind, PortRef},
@@ -22,6 +23,7 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use kou_ui::{Icon, MONOGRAM, Mark, Palette, Theme, icon, metric, monogram_sized, status_mark};
+use serde_json::json;
 use std::time::Duration;
 
 /// The header's height, in world units: the web canvas's.
@@ -87,6 +89,22 @@ pub(crate) fn glyph(node: &Node, scale: f32, theme: &Theme) -> AnyElement {
         .size(px(metric::ICON * scale))
         .into_any_element(),
     }
+}
+
+/// Text of a node's chrome, at the canvas's zoom. It is laid out at the
+/// size it has at 1 and drawn scaled, its glyphs at one of a few sizes
+/// ([`kou_ui::scale`]). Set as ordinary text at `size * zoom`, every letter
+/// of every node on screen would be rasterised anew at each frame of a zoom
+/// gesture, at a size no frame before had: the frames get long, and the
+/// board scales in jerks. The text's box is set with [`gpui::Styled::text_size`]
+/// at the zoomed size, as for any text here.
+pub(crate) fn zoomed(text: impl Into<SharedString>, zoom: f32) -> AnyElement {
+    let text = text.into();
+    kou_ui::scale::with_factor(zoom, || {
+        kou_ui::scale::scaled(zoom, kou_ui::scale::text(text))
+            .inherit_rem()
+            .into_any_element()
+    })
 }
 
 /// The app's status mark at a scale.
@@ -245,7 +263,7 @@ impl CanvasView {
         unit: f32,
         theme: &Theme,
         cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
+    ) -> AnyElement {
         let approve = pending.awaiting > 0;
         let text = if self.lod() == Lod::Placeholder {
             // Over a placeholder, the count alone: the words would cover its neighbours.
@@ -262,6 +280,21 @@ impl CanvasView {
         } else {
             format!("{} waiting", pending.count)
         };
+        // As the app draws it, when it does (see [`crate::Face`]): the pill
+        // and what it says, at `unit`; the canvas hangs it over the node.
+        let shows = Shows::Pending {
+            text: text.clone(),
+            approve,
+        };
+        let data = || json!({ "node": id, "text": text, "approve": approve });
+        if let Some(pill) = self.node_faced(id, "canvasPending", shows, data, Vec::new, unit, cx) {
+            return div()
+                .absolute()
+                .right(px(0.))
+                .bottom(px(h + 4. * unit))
+                .child(pill)
+                .into_any_element();
+        }
         let color = if approve { theme.blocked } else { theme.fg_dim };
         let (hover, ring) = (theme.selected, theme.accent);
         div()
@@ -291,11 +324,12 @@ impl CanvasView {
             .hover(move |style| style.bg(hover))
             .focus_visible(move |style| style.border_color(ring))
             .child(icon(Icon::Queue, color).size(px(12. * unit)))
-            .child(SharedString::from(text))
+            .child(zoomed(text, unit))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |_, _, _, cx| {
                 cx.emit(crate::BoardEvent::PendingOpened(id));
             }))
+            .into_any_element()
     }
 
     fn card(&self, node: &Node, live: &Live, theme: &Theme, cx: &Context<Self>) -> Div {
@@ -350,7 +384,7 @@ impl CanvasView {
             &self.editing,
             Some(editing) if editing.what == Edit::Title(id, false)
         );
-        let title =
+        let title = || {
             if editing_title {
                 let editing = self.editing.as_ref().map(|editing| &editing.field);
                 div()
@@ -384,64 +418,128 @@ impl CanvasView {
                     .text_color(theme.fg)
                     .cursor(CursorStyle::IBeam)
                     .on_mouse_down(MouseButton::Left, grab(true))
-                    .child(SharedString::from(node.title.clone()))
+                    .child(zoomed(node.title.clone(), zoom))
                     .into_any_element()
-            };
+            }
+        };
         let since = self.clock.now().saturating_duration_since(live.since);
-        let header = div()
-            .id(("head", id as usize))
-            .flex_none()
-            .h(z(HEAD))
-            .pl(z(10.))
-            .pr(z(5.))
-            .flex()
-            .items_center()
-            .gap(z(8.))
-            .bg(if note { surface } else { theme.hover })
-            .border_b_1()
-            .border_color(if note {
-                mix(theme.line, theme.blocked, 0.18)
-            } else {
-                theme.line
+        // As the app draws them, when it does (see [`crate::Face`]): a
+        // drawing made at 1 and drawn at the zoom, inside what takes hold of
+        // the node; the mark, the name and the state's dot stay the
+        // canvas's, sized as they always were.
+        let reachable = self.selection == [id];
+        let ticking = (live.mark == Mark::Working).then(|| elapsed(since));
+        let shows = Shows::Head {
+            kind: node.kind,
+            mark: live.mark,
+            elapsed: ticking.clone(),
+            reachable,
+            editing: editing_title,
+        };
+        let data = || {
+            json!({
+                "node": id,
+                "kind": node.kind.label(),
+                "note": note,
+                "editing": editing_title,
+                "state": live.mark.name(),
+                "word": word,
+                "elapsed": ticking,
+                "reachable": reachable,
             })
-            .overflow_hidden()
-            .cursor(CursorStyle::OpenHand)
-            .on_mouse_down(MouseButton::Left, grab(false))
-            .child(glyph(node, zoom, theme))
-            .child(title)
-            .when(!note && !editing_title, |header| {
-                header.child(
-                    div()
-                        .flex_initial()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(z(metric::TEXT_SMALL))
-                        .text_color(theme.fg_muted)
-                        .child(node.kind.label()),
-                )
-            })
-            .child(div().flex_1())
-            .when(!note, |header| {
-                header.child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(z(5.))
-                        .text_size(z(metric::TEXT_SMALL))
-                        .when(live.mark == Mark::Working, |state| {
-                            state.child(div().text_color(theme.fg_muted).child(elapsed(since)))
-                        })
-                        .when(live.mark != Mark::Idle, |state| {
-                            state.child(div().text_color(state_color).child(word))
-                        })
-                        .child(state_mark(live.mark, zoom, theme)),
-                )
-            })
-            .child(self.more_button(id, zoom, theme, cx));
+        };
+        let slots = || {
+            let mut slots = vec![("glyph", glyph(node, zoom, theme)), ("title", title())];
+            if !note {
+                let dot = state_mark(live.mark, zoom, theme).into_any_element();
+                slots.push(("mark", dot));
+            }
+            slots
+        };
+        let held = |drawn: AnyElement| {
+            div()
+                .flex_none()
+                .cursor(CursorStyle::OpenHand)
+                .on_mouse_down(MouseButton::Left, grab(false))
+                .child(drawn)
+                .into_any_element()
+        };
+        let header = match self.node_faced(id, "canvasHead", shows, data, slots, zoom, cx) {
+            Some(drawn) => held(drawn),
+            None => div()
+                .id(("head", id as usize))
+                .flex_none()
+                .h(z(HEAD))
+                .pl(z(10.))
+                .pr(z(5.))
+                .flex()
+                .items_center()
+                .gap(z(8.))
+                .bg(if note { surface } else { theme.hover })
+                .border_b_1()
+                .border_color(if note {
+                    mix(theme.line, theme.blocked, 0.18)
+                } else {
+                    theme.line
+                })
+                .overflow_hidden()
+                .cursor(CursorStyle::OpenHand)
+                .on_mouse_down(MouseButton::Left, grab(false))
+                .child(glyph(node, zoom, theme))
+                .child(title())
+                .when(!note && !editing_title, |header| {
+                    header.child(
+                        div()
+                            .flex_initial()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(z(metric::TEXT_SMALL))
+                            .text_color(theme.fg_muted)
+                            .child(zoomed(node.kind.label(), zoom)),
+                    )
+                })
+                .child(div().flex_1())
+                .when(!note, |header| {
+                    header.child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(z(5.))
+                            .text_size(z(metric::TEXT_SMALL))
+                            .when(live.mark == Mark::Working, |state| {
+                                state.child(
+                                    div()
+                                        .text_color(theme.fg_muted)
+                                        .child(zoomed(elapsed(since), zoom)),
+                                )
+                            })
+                            .when(live.mark != Mark::Idle, |state| {
+                                state.child(div().text_color(state_color).child(zoomed(word, zoom)))
+                            })
+                            .child(state_mark(live.mark, zoom, theme)),
+                    )
+                })
+                .child(self.more_button(id, zoom, theme, cx))
+                .into_any_element(),
+        };
 
         let body = self.body(node, theme, cx);
         let footer = (!node.place.is_empty()).then(|| {
+            let shows = Shows::Foot {
+                place: node.place.clone(),
+                note,
+            };
+            let data = || {
+                json!({
+                    "place": node.place,
+                    "note": note,
+                })
+            };
+            if let Some(drawn) = self.node_faced(id, "canvasFoot", shows, data, Vec::new, zoom, cx)
+            {
+                return held(drawn);
+            }
             div()
                 .flex_none()
                 .h(z(FOOT))
@@ -462,8 +560,9 @@ impl CanvasView {
                     div()
                         .min_w_0()
                         .truncate()
-                        .child(SharedString::from(node.place.clone())),
+                        .child(zoomed(node.place.clone(), zoom)),
                 )
+                .into_any_element()
         });
         frame
             .child(header)
@@ -511,7 +610,9 @@ impl CanvasView {
             .line_height(px(title_px * 1.25))
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(theme.fg)
-            .child(SharedString::from(node.title.clone()));
+            // (Its size follows the zoom down to a least one: scaled from
+            // the size it has at 1 by as much as that is.)
+            .child(zoomed(node.title.clone(), title_px / PLACEHOLDER_TITLE));
         let pad = (title_px * 0.6).min(w * 0.08);
         // Room first for the name, then its mark, then its state: on a node
         // too narrow for all three, the state goes, then the mark.
@@ -633,9 +734,11 @@ impl CanvasView {
                 .child(self.wheel_guard(id, cx))
                 .child(body.view.clone());
         }
-        let grab = cx.listener(move |this: &mut Self, event: &MouseDownEvent, window, cx| {
-            this.node_grab(id, false, event, window, cx)
-        });
+        let grab = || {
+            cx.listener(move |this: &mut Self, event: &MouseDownEvent, window, cx| {
+                this.node_grab(id, false, event, window, cx)
+            })
+        };
         let editing_note = self
             .editing
             .as_ref()
@@ -670,14 +773,31 @@ impl CanvasView {
             .min_h_0()
             .overflow_hidden()
             .cursor(CursorStyle::OpenHand)
-            .on_mouse_down(MouseButton::Left, grab);
+            .on_mouse_down(MouseButton::Left, grab());
+        // As the app draws it, when it does (see [`crate::Face`]): what the
+        // node says, made at 100% and drawn at the zoom, in what takes hold
+        // of the node. (A note being written in is the canvas's.)
+        let shows = Shows::Body {
+            note: node.kind == NodeKind::Note,
+            detail: node.detail.clone(),
+        };
+        let data = || {
+            json!({
+                "note": node.kind == NodeKind::Note,
+                "empty": node.detail.trim().is_empty(),
+                "lines": node.detail.lines().collect::<Vec<_>>(),
+            })
+        };
+        if let Some(drawn) = self.node_faced(id, "canvasBody", shows, data, Vec::new, zoom, cx) {
+            return base.child(drawn);
+        }
         if node.kind == NodeKind::Note {
             if node.detail.trim().is_empty() {
                 return base.px(z(14.)).py(z(10.)).child(
                     div()
                         .text_size(z(12.))
                         .text_color(theme.fg_muted)
-                        .child("Double-click to write."),
+                        .child(zoomed("Double-click to write.", zoom)),
                 );
             }
             return base
@@ -686,18 +806,18 @@ impl CanvasView {
                 .text_size(z(metric::TEXT))
                 .line_height(z(20.))
                 .text_color(theme.fg)
-                .children(node.detail.lines().map(|line| {
-                    div()
-                        .min_h(z(20.))
-                        .child(SharedString::from(line.to_owned()))
-                }));
+                .children(
+                    node.detail
+                        .lines()
+                        .map(|line| div().min_h(z(20.)).child(zoomed(line.to_owned(), zoom))),
+                );
         }
         if node.detail.trim().is_empty() {
             return base.p(z(10.)).child(
                 div()
                     .text_size(z(12.))
                     .text_color(theme.fg_muted)
-                    .child("Nothing yet."),
+                    .child(zoomed("Nothing yet.", zoom)),
             );
         }
         base.p(z(10.))
@@ -708,7 +828,7 @@ impl CanvasView {
             .children(
                 node.detail
                     .lines()
-                    .map(|line| div().truncate().child(SharedString::from(line.to_owned()))),
+                    .map(|line| div().truncate().child(zoomed(line.to_owned(), zoom))),
             )
     }
 
@@ -803,7 +923,7 @@ impl CanvasView {
                         .whitespace_nowrap()
                         .opacity(if over || close { 1. } else { 0. })
                         .group_hover(group.clone(), |style| style.opacity(1.))
-                        .child(*name);
+                        .child(zoomed(*name, unit));
                     match dir {
                         Dir::In => text.right(px(hit - 2.)),
                         Dir::Out => text.left(px(hit - 2.)),

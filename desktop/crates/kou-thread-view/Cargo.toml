@@ -26,6 +26,8 @@ image = { version = "0.25", default-features = false, features = ["bmp", "gif", 
 kou-thread.workspace = true
 kou-ui.workspace = true
 log.workspace = true
+percent-encoding = "2"
+url = "2.5"
 pulldown-cmark = { version = "0.13", default-features = false }
 serde.workspace = true
 serde_json.workspace = true

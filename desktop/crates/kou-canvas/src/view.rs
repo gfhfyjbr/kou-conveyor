@@ -27,7 +27,7 @@ use gpui::{
 };
 use kou_ui::{HUES, Mark, hue_index, motion};
 use std::{
-    cell::Cell,
+    cell::{Cell, RefCell},
     collections::HashMap,
     rc::Rc,
     time::{Duration, Instant},
@@ -374,6 +374,13 @@ pub struct CanvasView {
     pub(crate) pointer: Option<(f32, f32)>,
     pub(crate) ticking: bool,
     pub(crate) scroll_generation: u64,
+    /// What draws the parts of the canvas's chrome the app draws itself
+    /// (see [`crate::Face`]), when it does.
+    pub(crate) face: Option<crate::Face>,
+    /// What each node's parts showed when last drawn by the app, by node
+    /// and part, and the last stamp given (see `face.rs`).
+    pub(crate) shown: RefCell<HashMap<(NodeId, &'static str), crate::face::Shown>>,
+    pub(crate) stamps: Cell<u64>,
 }
 
 impl EventEmitter<CanvasEvent> for CanvasView {}
@@ -451,6 +458,9 @@ impl CanvasView {
             pointer: None,
             ticking: false,
             scroll_generation: 0,
+            face: None,
+            shown: RefCell::default(),
+            stamps: Cell::new(0),
         }
     }
 
@@ -553,6 +563,9 @@ impl CanvasView {
         };
         let (id, edge) = self.board.add_wired(spec, (request.x, request.y), wire);
         self.welcome(id);
+        if let Some(edge) = edge {
+            self.carry_edge(edge);
+        }
         if let Some(edge) = edge.and_then(|edge| self.board.edge(edge).cloned()) {
             cx.emit(BoardEvent::EdgeAdded(edge));
         }
@@ -626,6 +639,11 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) -> Option<NodeId> {
         let id = self.board.add_child(parent, spec)?;
+        // (The edge from its parent is the app's, as the node is.)
+        let drawn: Vec<EdgeId> = self.board.edges_of(id).map(|edge| edge.id).collect();
+        for edge in drawn {
+            self.carry_edge(edge);
+        }
         self.welcome(id);
         self.reveal(id, cx);
         cx.emit(CanvasEvent::Changed);
@@ -678,7 +696,20 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         if let Some(node) = self.board.node_mut(id) {
+            let before = node.title.clone();
             change(node);
+            // A title the app gave (an agent named its session) is not the
+            // user's to undo: going back to an earlier state would put the
+            // old one back, and the app would take that for a name the
+            // user chose and stop following the agent's.
+            if node.title != before {
+                let title = node.title.clone();
+                for kept in self.history.iter_mut().chain(self.future.iter_mut()) {
+                    if let Some(node) = kept.node_mut(id) {
+                        node.title.clone_from(&title);
+                    }
+                }
+            }
             cx.notify();
         }
     }
@@ -750,10 +781,33 @@ impl CanvasView {
         to: PortRef,
         cx: &mut Context<Self>,
     ) -> Option<EdgeId> {
-        let id = self.board.connect(from, to).ok()?;
+        self.try_connect(from, to, cx).ok()
+    }
+
+    /// The same, saying why not when it cannot be wired.
+    pub fn try_connect(
+        &mut self,
+        from: PortRef,
+        to: PortRef,
+        cx: &mut Context<Self>,
+    ) -> Result<EdgeId, crate::WireError> {
+        let id = self.board.connect(from, to)?;
+        self.carry_edge(id);
         cx.emit(CanvasEvent::Changed);
         cx.notify();
-        Some(id)
+        Ok(id)
+    }
+
+    /// An edge was added, changed or taken away by the app or an agent, not
+    /// by the user: every state kept for undo takes that too. Going back to
+    /// one then undoes what the user did and nothing of theirs: an edge an
+    /// agent set to wait for approval would otherwise pass its messages on
+    /// again, and one it added would go, with what waits on it.
+    fn carry_edge(&mut self, id: EdgeId) {
+        let now = self.board.edge(id).cloned();
+        for kept in self.history.iter_mut().chain(self.future.iter_mut()) {
+            kept.carry_edge(id, now.as_ref());
+        }
     }
 
     /// Change an edge's settings from the app's side.
@@ -764,6 +818,7 @@ impl CanvasView {
         cx: &mut Context<Self>,
     ) {
         if self.board.update_edge(id, change).is_some() {
+            self.carry_edge(id);
             cx.emit(CanvasEvent::Changed);
             cx.notify();
         }
@@ -772,6 +827,7 @@ impl CanvasView {
     /// Take an edge away from the app's side.
     pub fn disconnect(&mut self, id: EdgeId, cx: &mut Context<Self>) {
         if self.board.disconnect(id).is_some() {
+            self.carry_edge(id);
             self.forget_edge(id);
             if self.edge_selected == Some(id) {
                 self.set_selection(self.selection.clone(), None, cx);
@@ -1376,7 +1432,8 @@ impl CanvasView {
         cx.notify();
     }
 
-    pub(crate) fn delete_edge(&mut self, id: EdgeId, window: &mut Window, cx: &mut Context<Self>) {
+    /// Deletes an edge as the user does: the bar that says so takes it back.
+    pub fn delete_edge(&mut self, id: EdgeId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edge) = self.board.edge(id).cloned() else {
             return;
         };
@@ -1417,6 +1474,24 @@ impl CanvasView {
             return;
         };
         cx.emit(BoardEvent::EdgeChanged { before, after });
+        cx.emit(CanvasEvent::Changed);
+        cx.notify();
+    }
+
+    /// Makes a node's agent the orchestrator of this board, or takes that
+    /// back: the user's own doing, which undo undoes.
+    pub(crate) fn set_orchestrator(&mut self, id: NodeId, on: bool, cx: &mut Context<Self>) {
+        if self
+            .board
+            .node(id)
+            .is_none_or(|node| node.orchestrator == on)
+        {
+            return;
+        }
+        self.remember();
+        if let Some(node) = self.board.node_mut(id) {
+            node.orchestrator = on;
+        }
         cx.emit(CanvasEvent::Changed);
         cx.notify();
     }

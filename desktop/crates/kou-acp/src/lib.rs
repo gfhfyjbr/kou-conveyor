@@ -94,6 +94,12 @@ pub struct Options {
     /// `session/fork`, where some agents take launch options of their own
     /// (Claude's adapter reads `claudeCode.options`, for one).
     pub meta: Option<serde_json::Map<String, serde_json::Value>>,
+    /// A few lines for an agent that takes no added instructions (it does
+    /// not advertise `sessionCapabilities.systemPrompt`): they go with the
+    /// first prompt of a new session, marked as the app's, and the thread
+    /// does not show them as the user's. An agent that takes instructions
+    /// gets [`Options::instructions`] instead and never this.
+    pub preface: Option<String>,
     /// What the user should run to log in, said when the agent answers that
     /// it needs a login. This client never logs in by itself.
     pub login_hint: Option<String>,
@@ -123,6 +129,12 @@ pub struct Options {
     /// and when it ended. Off unless set: an adapter is asked for it only
     /// when what it does with it is known.
     pub display_terminals: bool,
+    /// The agent keeps a prompt's turn open after its answer for as long as
+    /// what it started in the background runs, and takes the next prompt
+    /// meanwhile: Claude's adapter, which ends all of that work when it is
+    /// told to stop instead. A prompt sent then goes at once and the turn
+    /// before it is over (see [`kou_thread::Offers::listening`]).
+    pub holds_turns: bool,
 }
 
 /// What stands in [`Options::fork_meta`] for the id of the message a fork ends at.

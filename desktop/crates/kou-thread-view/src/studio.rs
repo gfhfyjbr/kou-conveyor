@@ -93,7 +93,7 @@ const TAIL: f32 = sized(29.2);
 const OVER_PROMPT: f32 = sized(24.);
 const UNDER_PROMPT: f32 = sized(16.);
 /// A step of work: a tool call, reasoning, the plan.
-const STEP: f32 = pitch(24.);
+const STEP: f32 = 24.;
 /// Air over a group of nested agents' cards after prose (the picture's 69
 /// pixels), and right under the folded line (9).
 pub(crate) const CARDS_AFTER_PROSE: f32 = sized(42.1);
@@ -206,7 +206,7 @@ impl ThreadView {
             }
             let cards =
                 (!cards.is_empty()).then(|| self.card_group(&cards, index, 0, TOP, theme, cx));
-            return self.studio_tail(cards, theme).into_any_element();
+            return self.studio_tail(cards, theme, cx).into_any_element();
         }
         if index < self.cleared {
             if index + 1 < self.cleared {
@@ -222,8 +222,7 @@ impl ThreadView {
         let fold = self.fold_of(index);
         // What a subagent did is in the card of the call that started it,
         // and shows nothing here either.
-        let folded = (fold.is_some_and(|(_, open, _)| !open)
-            && folds(&self.thread.entries()[index]))
+        let folded = (fold.is_some_and(|(_, open, _)| !open) && self.folds_at(index))
             || self.kept_in_its_agent(index);
         if folded && !fold.is_some_and(|(_, _, first)| first) {
             let (top, bottom) = self.cards_of(index);
@@ -316,6 +315,7 @@ impl ThreadView {
                 (Entry::Assistant(text), Some(Parsed::Document(blocks))) => {
                     let writing = self.writing(index);
                     let look = Prose::new(theme, Tone::answer(theme), self.field_focus())
+                        .with_links(&self.header.cwd, self.link_opener(cx))
                         .studio()
                         .with_mentions(self.mentions(theme), self.opener(cx))
                         .with_copy(index, self.copied.clone(), copy.clone())
@@ -351,11 +351,19 @@ impl ThreadView {
                     self.studio_tool(index, call, pieces, call_light, lit, now, theme, cx)
                         .into_any_element(),
                 ),
-                (Entry::Plan(steps), _) => Some(studio_plan(steps, lit, theme).into_any_element()),
+                (Entry::Plan(steps), _) => Some(
+                    self.plan_face(index, steps, lit, theme, cx)
+                        .unwrap_or_else(|| studio_plan(steps, lit, theme).into_any_element()),
+                ),
                 (Entry::Notice(level, text), _) => {
                     let turn = index + 1 == entries.len()
                         && matches!(&self.thread.last_stop, Some(Stop::Failed(reason)) if reason == text);
-                    Some(studio_notice(*level, text, turn, theme).into_any_element())
+                    Some(
+                        self.notice_face(index, *level, text, turn, cx)
+                            .unwrap_or_else(|| {
+                                studio_notice(*level, text, turn, theme).into_any_element()
+                            }),
+                    )
                 }
                 _ => None,
             }
@@ -500,6 +508,16 @@ impl ThreadView {
     ) -> AnyElement {
         let words = crate::nested::worked(self.worked_for(run), self.steps_of(run));
         let start = run.start;
+        if let Some(line) = self.entry_face(
+            "studio-worked",
+            start,
+            None,
+            || serde_json::json!({"start": start, "open": open, "text": words}),
+            Vec::new(),
+            cx,
+        ) {
+            return line;
+        }
         let (hover, ring) = (theme.fg_dim, theme.accent);
         let line = div()
             .id(("worked", start))
@@ -549,7 +567,7 @@ impl ThreadView {
         index: usize,
         message: &UserMessage,
         shots: &[Shot],
-        now: Instant,
+        _now: Instant,
         theme: &Theme,
         window: &Window,
         cx: &Context<Self>,
@@ -604,71 +622,108 @@ impl ThreadView {
         } else {
             None
         };
-        let pictures = (!message.pictures.is_empty()).then(|| {
-            div().flex().flex_wrap().justify_end().gap(px(8.)).children(
-                message
-                    .pictures
-                    .iter()
-                    .zip(shots)
-                    .map(|((label, block), shot)| {
-                        let block = *block;
-                        let ring = theme.accent;
-                        let frame = div()
-                            .id(("message-picture", index * 64 + block.min(63)))
-                            .debug_selector(move || format!("message-picture-{index}-{block}"))
-                            .relative()
-                            .w(px(136.))
-                            .h(px(90.))
-                            .rounded(px(RADIUS))
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(theme.line_strong)
-                            .bg(theme.raised)
-                            .cursor_pointer()
-                            .tab_index(0)
-                            .hover(move |style| style.border_color(ring))
-                            .focus_visible(move |style| style.border_color(ring))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.view_picture(index, block, cx)
-                            }));
-                        let content: AnyElement = match shot {
-                            Shot::Ready { thumb, large, .. } => img(ImageSource::Render(
-                                if scale::factor() > 1. { large } else { thumb }.clone(),
-                            ))
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover)
-                            .into_any_element(),
-                            Shot::Loading => div().into_any_element(),
-                            Shot::Failed => div()
+        let pictures = || {
+            (!message.pictures.is_empty()).then(|| {
+                div().flex().flex_wrap().justify_end().gap(px(8.)).children(
+                    message
+                        .pictures
+                        .iter()
+                        .zip(shots)
+                        .map(|((label, block), shot)| {
+                            let block = *block;
+                            let ring = theme.accent;
+                            let frame = div()
+                                .id(("message-picture", index * 64 + block.min(63)))
+                                .debug_selector(move || format!("message-picture-{index}-{block}"))
+                                .relative()
+                                .w(px(136.))
+                                .h(px(90.))
+                                .rounded(px(RADIUS))
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(theme.line_strong)
+                                .bg(theme.raised)
+                                .cursor_pointer()
+                                .tab_index(0)
+                                .hover(move |style| style.border_color(ring))
+                                .focus_visible(move |style| style.border_color(ring))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.view_picture(index, block, cx)
+                                }));
+                            let content: AnyElement = match shot {
+                                Shot::Ready { thumb, large, .. } => img(ImageSource::Render(
+                                    if scale::factor() > 1. { large } else { thumb }.clone(),
+                                ))
                                 .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(SMALL))
-                                .text_color(theme.fg_muted)
-                                .child(scale::text("not readable"))
+                                .object_fit(gpui::ObjectFit::Cover)
                                 .into_any_element(),
-                        };
-                        frame.child(content).child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .bottom_0()
-                                .px(px(6.))
-                                .rounded_tr(px(kou_ui::metric::RADIUS))
-                                .bg(theme.raised.opacity(0.88))
-                                .text_size(px(10.5))
-                                .text_color(theme.fg_dim)
-                                .child(scale::text(label.clone())),
-                        )
-                    }),
-            )
-        });
-        let flash = if cx.reduce_motion() {
-            None
-        } else {
-            self.motion.flash(index, now)
+                                Shot::Loading => div().into_any_element(),
+                                Shot::Failed => div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(SMALL))
+                                    .text_color(theme.fg_muted)
+                                    .child(scale::text("not readable"))
+                                    .into_any_element(),
+                            };
+                            frame.child(content).child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .bottom_0()
+                                    .px(px(6.))
+                                    .rounded_tr(px(kou_ui::metric::RADIUS))
+                                    .bg(theme.raised.opacity(0.88))
+                                    .text_size(px(10.5))
+                                    .text_color(theme.fg_dim)
+                                    .child(scale::text(label.clone())),
+                            )
+                        }),
+                )
+            })
         };
+        if self.chat_face.is_some() {
+            let editing = !matches!(self.thread.state(), ThreadState::Closed(_));
+            let again = if !editing {
+                None
+            } else if !self.edits() {
+                Some("reuse")
+            } else if self.edit_blocked().is_none() {
+                Some("edit")
+            } else {
+                None
+            };
+            let data = || {
+                serde_json::json!({
+                    "index": index, "copied": copied, "again": again,
+                    "files": message.files, "text": !message.text.is_empty(),
+                    "pictures": !message.pictures.is_empty(),
+                })
+            };
+            let tops = self.bubble_tops.clone();
+            let mut slots = vec![(
+                "measure",
+                gpui::canvas(
+                    move |bounds, _, _| tops.borrow_mut().push(bounds.top()),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full()
+                .into_any_element(),
+            )];
+            if !message.text.is_empty() {
+                slots.push((
+                    "text",
+                    scale::styled_text(message.text.clone(), runs.clone()).into_any_element(),
+                ));
+            }
+            slots.extend(pictures().map(|pictures| ("pictures", pictures.into_any_element())));
+            if let Some(body) = self.entry_face("studio-user", index, None, data, slots, cx) {
+                return div().id(("prompt", index)).w_full().child(body);
+            }
+        }
         let fill = theme.selected;
         let tops = self.bubble_tops.clone();
         let bubble = div()
@@ -691,10 +746,7 @@ impl ThreadView {
             .px(px(12.))
             .py(px(6.))
             .rounded(px(BUBBLE_RADIUS))
-            .bg(match flash {
-                Some(t) => lights_mix(fill, theme.accent, 0.18 * t),
-                None => fill,
-            })
+            .bg(fill)
             .text_size(px(PROSE))
             .line_height(px(LINE))
             .text_color(theme.fg)
@@ -736,7 +788,7 @@ impl ThreadView {
             .w_full()
             .child(exact::column(
                 div().w_full().flex().flex_col().gap(px(6.)),
-                pictures
+                pictures()
                     .map(IntoElement::into_any_element)
                     .into_iter()
                     .chain([line.into_any_element()]),
@@ -757,6 +809,11 @@ impl ThreadView {
         let group = SharedString::from(format!("answer-{index}"));
         let key = format!("answer-{index}");
         let copied = self.copied.as_ref().is_some_and(|copied| copied == &key);
+        if let Some(body) = self.entry_face("studio-answer", index, None,
+            || serde_json::json!({"index": index, "copied": copied, "writing": self.writing(index)}),
+            vec![("prose", prose::document(blocks, look).into_any_element())], cx) {
+            return div().id(("answer", index)).w_full().child(body);
+        }
         let text = text.to_owned();
         let copy = (!self.writing(index)).then(|| {
             quiet_action(
@@ -833,6 +890,29 @@ impl ThreadView {
             Some(Entry::Thought(text)) if writing => latest_gist(text),
             _ => markdown::first_line(blocks).unwrap_or("").to_owned(),
         };
+        if self.chat_face.is_some() {
+            let slots = open
+                .then(|| {
+                    (
+                        "prose",
+                        prose::document(
+                            blocks,
+                            &Prose::new(theme, Tone::reasoning(theme), self.field_focus())
+                                .with_links(&self.header.cwd, self.link_opener(cx))
+                                .studio()
+                                .small()
+                                .with_fades(fades.clone()),
+                        )
+                        .into_any_element(),
+                    )
+                })
+                .into_iter()
+                .collect();
+            if let Some(body) = self.entry_face("studio-thought", index, None,
+                || serde_json::json!({"index": index, "open": open, "writing": writing, "gist": gist.replace("**", "")}), slots, cx) {
+                return div().w_full().child(body);
+            }
+        }
         let (hover, ring) = (theme.fg_dim, theme.accent);
         let line = div()
             .id("fold")
@@ -867,7 +947,7 @@ impl ThreadView {
                     .flex_1()
                     .truncate()
                     .italic()
-                    .text_color(theme.fg_faint)
+                    .text_color(theme.fg_muted)
                     .child(scale::text(gist.replace("**", ""))),
             )
             .child(chevron(open, theme));
@@ -881,6 +961,7 @@ impl ThreadView {
                 .child(prose::document(
                     blocks,
                     &Prose::new(theme, Tone::reasoning(theme), self.field_focus())
+                        .with_links(&self.header.cwd, self.link_opener(cx))
                         .studio()
                         .small()
                         .with_fades(fades),
@@ -907,9 +988,9 @@ impl ThreadView {
     ) -> Div {
         let asking = self.asking(index);
         let open = self.tool_open(index, call);
-        // A call that starts a subagent is that agent's card, open or not:
-        // who was asked what, what it is doing, and what came of it.
-        if call.agent.is_some() {
+        // A subagent or background command can outlive the call that started
+        // it. Its card owns the current status and elapsed time.
+        if call.agent.is_some() || call.work.background {
             let level = self.unfold_level(index, open, now);
             return div()
                 .w_full()
@@ -920,7 +1001,6 @@ impl ThreadView {
             !call.content.is_empty() || call.raw_input.is_some() || call.raw_output.is_some();
         let running = call.status == ToolStatus::Running && asking.is_none();
         let (verb, input) = split_title(call);
-        let verb = capitalized(&verb);
         let input = input
             .trim_matches('`')
             .lines()
@@ -997,26 +1077,29 @@ impl ThreadView {
                 div()
                     .flex_none()
                     .text_color(theme.fg_dim)
-                    .child(scale::text(verb)),
+                    .child(scale::text(verb.clone())),
             )
-            .child(
-                div()
-                    .min_w_0()
-                    .flex_shrink(1.)
-                    .truncate()
-                    .font_family(theme.mono_font.clone())
-                    .text_size(px(SMALL))
-                    .text_color(theme.fg_muted)
-                    .child(scale::text(input)),
-            )
-            .children(location.map(|path| {
+            .when(!input.is_empty(), |head| {
+                head.child(
+                    div()
+                        .min_w_0()
+                        .flex_shrink(1.)
+                        .truncate()
+                        .font_family(theme.mono_font.clone())
+                        .text_size(px(SMALL))
+                        .text_color(theme.fg_muted)
+                        .child(scale::text(input.clone())),
+                )
+            })
+            .children(location.clone().map(|path| {
                 let mut place = div()
                     .min_w_0()
                     .overflow_hidden()
                     .whitespace_nowrap()
                     .text_ellipsis_start()
+                    .font_family(theme.mono_font.clone())
                     .text_size(px(SMALL))
-                    .text_color(theme.fg_faint);
+                    .text_color(theme.fg_muted);
                 place.style().flex_shrink = Some(1000.);
                 place.child(scale::text(path))
             }))
@@ -1027,6 +1110,7 @@ impl ThreadView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
+                    .font_family(theme.mono_font.clone())
                     .text_size(px(SMALL))
                     .text_color(theme.fg_muted)
                     .when(added > 0, |meta| {
@@ -1044,9 +1128,12 @@ impl ThreadView {
                         )
                     })
                     .children(took.map(|took| scale::text(motion::duration(took))))
-                    .children(
-                        word.map(|(word, color)| div().text_color(color).child(scale::text(word))),
-                    ),
+                    .children(word.map(|(word, color)| {
+                        div()
+                            .font_family(theme.ui_font.clone())
+                            .text_color(color)
+                            .child(scale::text(word))
+                    })),
             )
             .when(expandable, |head| {
                 head.cursor_pointer()
@@ -1058,7 +1145,17 @@ impl ThreadView {
                         this.rest_focus(click, window, cx);
                     }))
                     .child(chevron(open, theme))
-            });
+            })
+            .into_any_element();
+        let head = self.entry_face("studio-tool-head", index, None, || serde_json::json!({
+            "index": index, "verb": verb, "input": input, "location": location,
+            "added": added, "removed": removed, "took": took.map(motion::duration),
+            "word": word.map(|(text, color)| serde_json::json!({"text": text, "color": crate::face::hex(color)})),
+            "status": if asking.is_some() { "blocked" } else { match call.status {
+                ToolStatus::Running => "working", ToolStatus::Done => "done", ToolStatus::Failed => "error", _ => "idle",
+            }},
+            "expandable": expandable, "open": open,
+        }), Vec::new(), cx).unwrap_or(head);
         // Open, or on its way open or closed: the card, the line fading
         // over it as it grows from the line's height or shrinks back to it.
         let level = self.unfold_level(index, open, now);
@@ -1103,7 +1200,7 @@ impl ThreadView {
             })
             .flatten()
             .map(|lines| {
-                let tail = &lines[lines.len().saturating_sub(4)..];
+                let tail = &lines[lines.len().saturating_sub(crate::entries::LIVE_TAIL)..];
                 let text: Vec<&str> = tail.iter().map(|line| line.text.as_str()).collect();
                 div()
                     .w_full()
@@ -1112,12 +1209,18 @@ impl ThreadView {
                     .font_family(theme.mono_font.clone())
                     .text_size(px(11.))
                     .line_height(px(16.))
-                    .text_color(theme.fg_faint)
+                    .text_color(theme.fg_muted)
                     .whitespace_nowrap()
                     .overflow_hidden()
                     .child(scale::text(text.join("\n")))
             });
         let answer = asking.map(|pending| {
+            // The questions a call asks, as the cockpit's card has them.
+            if let Some(asks) = self.asks_of(pending) {
+                return framed(theme)
+                    .mt(px(6.))
+                    .child(self.question_block(&asks, theme, cx));
+            }
             let default = default_option(&pending.options);
             let request = pending.request;
             framed(theme)
@@ -1154,9 +1257,24 @@ impl ThreadView {
 
     /// The last row: what the thread is doing when that is not the prompt
     /// area's to say. Under it, room for the prompt area.
-    fn studio_tail(&self, cards: Option<AnyElement>, theme: &Theme) -> gpui::Stateful<Div> {
+    fn studio_tail(
+        &self,
+        cards: Option<AnyElement>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> gpui::Stateful<Div> {
         let agent = &self.header.agent;
         let line = |text: String| {
+            if let Some(body) = self.entry_face(
+                "studio-status",
+                "tail",
+                None,
+                || serde_json::json!({"text": text}),
+                Vec::new(),
+                cx,
+            ) {
+                return body;
+            }
             div()
                 .min_h(px(LINE))
                 .flex()
@@ -1172,7 +1290,7 @@ impl ThreadView {
                 display_path(&self.header.cwd, None)
             ))),
             ThreadState::Idle if self.thread.entries().is_empty() && cards.is_none() => {
-                Some(self.studio_ready(theme).into_any_element())
+                Some(self.studio_ready(theme, cx).into_any_element())
             }
             ThreadState::Idle => match &self.thread.last_stop {
                 Some(Stop::Cancelled) => Some(line("Stopped. Send a message to go on.".into())),
@@ -1230,7 +1348,11 @@ impl ThreadView {
 
     /// A new session before anything was said: a quiet question in the
     /// middle of the column, and the folder under it.
-    fn studio_ready(&self, theme: &Theme) -> Div {
+    fn studio_ready(&self, theme: &Theme, cx: &Context<Self>) -> Div {
+        if let Some(body) = self.entry_face("studio-ready", "ready", None,
+            || serde_json::json!({"agent": self.header.agent, "path": display_path(&self.header.cwd, None)}), Vec::new(), cx) {
+            return div().w_full().child(body);
+        }
         div()
             .w_full()
             .pt(px(72.))
@@ -1260,6 +1382,20 @@ impl ThreadView {
     /// What `/clear` left: how much is out of sight, and a way back to it.
     fn studio_cleared(&self, theme: &Theme, cx: &Context<Self>) -> Div {
         let hidden = self.cleared;
+        if let Some(body) = self.entry_face(
+            "studio-cleared",
+            "cleared",
+            None,
+            || serde_json::json!({"hidden": hidden}),
+            Vec::new(),
+            cx,
+        ) {
+            return div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .child(self.studio_column().pt(px(TOP)).child(body));
+        }
         let (hover, ring) = (theme.fg, theme.accent);
         div().w_full().flex().justify_center().child(
             self.studio_column().pt(px(TOP)).child(
@@ -1358,15 +1494,6 @@ fn shown_by(entry: &Entry) -> Shown {
         Entry::User(_) => Shown::Prompt,
         Entry::Assistant(_) | Entry::Notice(..) => Shown::Prose,
         Entry::Tool(_) | Entry::Thought(_) | Entry::Plan(_) => Shown::Step,
-    }
-}
-
-/// `run` as `Run`: a tool's verb as the quieter look writes it.
-fn capitalized(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
     }
 }
 

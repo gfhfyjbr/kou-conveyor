@@ -2137,6 +2137,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd417de3d1d015fc3bfd2b1ea46dfc7bab72ef86f1cc7cc9c78e728b34a6d1fd"
 
 [[package]]
+name = "futures-timer"
+version = "3.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f288b0a4f20f9a56b5d1da57e2227c661b7b16168e2f72365f57b63326e29b24"
+
+[[package]]
 name = "futures-util"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3299,6 +3305,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "kou-claude"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "kou-thread",
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
+name = "kou-codex"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-channel",
+ "base64 0.22.1",
+ "futures",
+ "futures-timer",
+ "kou-agents",
+ "kou-claude",
+ "kou-thread",
+ "libc",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "kou-desktop"
 version = "0.1.0"
 dependencies = [
@@ -3314,6 +3354,8 @@ dependencies = [
  "kou-acp",
  "kou-agents",
  "kou-canvas",
+ "kou-claude",
+ "kou-codex",
  "kou-ipc",
  "kou-mcp",
  "kou-native",
@@ -3427,11 +3469,13 @@ dependencies = [
  "kou-thread",
  "kou-ui",
  "log",
+ "percent-encoding",
  "pulldown-cmark",
  "serde",
  "serde_json",
  "tempfile",
  "unicode-segmentation",
+ "url",
 ]
 
 [[package]]
@@ -3439,7 +3483,10 @@ name = "kou-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "gpui",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

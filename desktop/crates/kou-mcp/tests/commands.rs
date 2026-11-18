@@ -100,6 +100,7 @@ fn pane(id: &str, activity: Activity) -> Pane {
         activity,
         parent: (id != ME).then(|| ME.into()),
         since_ms: 0,
+        model: None,
     }
 }
 
@@ -133,6 +134,29 @@ fn answer(request: &Request) -> Response {
             text: "> done: 2 files changed\n".into(),
         },
         Request::PaneInfo { pane: id } => Response::Pane(pane(id, Activity::Working)),
+        Request::Where { pane: id } => Response::Place(Box::new(kou_ipc::Place {
+            pane: pane(id, Activity::Working),
+            tab: Tab {
+                id: "t1".into(),
+                session: "s1".into(),
+                name: "api".into(),
+                layout: Layout::Canvas,
+                panes: vec![ME.into(), "p7".into()],
+                active: ME.into(),
+                front: true,
+                ..Tab::default()
+            },
+            session: "parser".into(),
+            space: "atlas".into(),
+            others: vec![pane("p7", Activity::Idle)],
+            edges: vec![kou_ipc::Edge {
+                from: ME.into(),
+                to: "p7".into(),
+                ..kou_ipc::Edge::default()
+            }],
+            notes: Vec::new(),
+            orchestrator: true,
+        })),
         Request::PaneList { .. } => Response::Panes {
             panes: vec![pane(ME, Activity::Working), pane("p7", Activity::Idle)],
         },
@@ -169,6 +193,30 @@ fn answer(request: &Request) -> Response {
             ..Space::default()
         }),
         Request::Hook { .. } => Response::Done,
+        Request::EdgeList { .. }
+        | Request::EdgeAdd { .. }
+        | Request::EdgeSet { .. }
+        | Request::EdgeRemove { .. } => Response::Edges {
+            edges: vec![kou_ipc::Edge {
+                from: "p7".into(),
+                to: ME.into(),
+                wired: true,
+                by: Some(ME.into()),
+                ..kou_ipc::Edge::default()
+            }],
+            said: Vec::new(),
+        },
+        Request::PaneAsk { pane, .. } => Response::Text {
+            text: format!("asked {pane}"),
+        },
+        Request::HarnessModels { harness } => Response::Models {
+            harness: harness.clone(),
+            models: vec![kou_ipc::Model {
+                id: "gpt-5.5".into(),
+                name: "GPT 5.5".into(),
+            }],
+            default: Some("gpt-5.5".into()),
+        },
     }
 }
 
@@ -188,7 +236,7 @@ fn commands(text: &str) -> Vec<String> {
             (None, _) => {
                 for span in line.split('`').skip(1).step_by(2) {
                     let words = span.split_whitespace().count();
-                    let noun = ["pane ", "tab ", "session ", "space ", "harness "]
+                    let noun = ["pane ", "tab ", "session ", "space ", "harness ", "edge "]
                         .iter()
                         .any(|noun| span.starts_with(noun));
                     if span.starts_with("\"$KOU_BIN\" ") {
@@ -288,8 +336,17 @@ fn every_command_in_the_command_lines_texts_runs_and_does_what_they_say() {
                     assert!(timeout_ms.is_some_and(|ms| ms < 120_000), "{script}");
                     assert!(!panes.iter().any(|pane| pane == ME), "{script}");
                 }
-                Request::PaneSend { pane, .. } | Request::PaneClose { pane } => {
+                Request::PaneSend { pane, .. }
+                | Request::PaneClose { pane }
+                | Request::PaneAsk { pane, .. } => {
                     assert_ne!(pane, ME, "{script}");
+                }
+                // An edge is asked for by the pane itself, and `me` is it.
+                Request::EdgeAdd { pane, from, to, .. }
+                | Request::EdgeSet { pane, from, to, .. }
+                | Request::EdgeRemove { pane, from, to } => {
+                    assert_eq!(pane, ME, "{script}");
+                    assert!(from != "me" && to != "me", "{script}");
                 }
                 Request::PaneRead {
                     scrollback: true,

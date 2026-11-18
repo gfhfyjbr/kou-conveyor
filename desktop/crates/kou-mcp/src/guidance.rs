@@ -43,6 +43,18 @@ impl Flavour {
         })[self.index()]
     }
 
+    /// Where the agent is, in a few lines: what this app is, that a tab is
+    /// also a canvas, and how to look. For a harness that is given the guide
+    /// as a skill and nothing else at launch: a skill is read when its
+    /// description fits the task, so without this such an agent is never
+    /// told that it runs in the app at all.
+    pub fn place(self) -> &'static str {
+        static RENDERED: OnceLock<[String; 2]> = OnceLock::new();
+        &RENDERED
+            .get_or_init(|| Flavour::ALL.map(|flavour| render(PLACE, flavour, Pointer::Skill).text))
+            [self.index()]
+    }
+
     /// The long how-to: patterns, worked examples, blocked and stuck workers,
     /// choosing a harness. It assumes the rules of [`Flavour::instructions`].
     pub fn guide(self) -> &'static str {
@@ -57,20 +69,25 @@ impl Flavour {
     pub fn skill_description(self) -> &'static str {
         match self {
             Flavour::Tools => {
-                "How to orchestrate other coding agents from inside kou desktop: decide whether to delegate, write \
-                 a worker's brief, start agents in panes, wait for them, read and verify their results, handle a \
-                 worker that is blocked, stuck or asking a question, and pick a harness. Use it before calling \
-                 start_agent, when a task could be split across parallel workers or would gain from a second \
-                 agent's review, and when a worker you started is blocked or not making progress."
+                "How to work inside kou desktop, the app you run in, and orchestrate other coding agents there: \
+                 find out where you are (where_am_i: your pane and tab, the panes beside you, the canvas and its \
+                 edges), decide whether to delegate, write a worker's brief, start agents in panes, wait for them, \
+                 read and verify their results, handle a worker that is blocked, stuck or asking a question, and \
+                 pick a harness. Use it when the user speaks of the canvas, a node, an edge, a pane, a tab or \
+                 another agent, before calling start_agent, when a task could be split across parallel workers or \
+                 would gain from a second agent's review, and when a worker you started is blocked or not making \
+                 progress."
             }
             Flavour::Commands => {
-                "How to orchestrate other coding agents from inside kou desktop with its command line (\"$KOU_BIN\" \
-                 pane spawn, pane wait, pane read, pane send): decide whether to delegate, write a worker's brief \
-                 and pass it without the shell mangling it, start agents in panes, wait for them within your shell \
-                 tool's time limit, read and verify their results, handle a worker that is blocked, stuck or asking \
-                 a question, and pick a harness. Use it before running \"$KOU_BIN\" pane spawn, when a task could \
-                 be split across parallel workers or would gain from a second agent's review, and when a worker \
-                 you started is blocked or not making progress."
+                "How to work inside kou desktop, the app you run in, and orchestrate other coding agents there with \
+                 its command line (\"$KOU_BIN\" where, pane spawn, pane wait, pane read, pane send): find out \
+                 where you are (your pane and tab, the panes beside you, the canvas and its edges), decide whether \
+                 to delegate, write a worker's brief and pass it without the shell mangling it, start agents in \
+                 panes, wait for them within your shell tool's time limit, read and verify their results, handle a \
+                 worker that is blocked, stuck or asking a question, and pick a harness. Use it when the user \
+                 speaks of the canvas, a node, an edge, a pane, a tab or another agent, before running \
+                 \"$KOU_BIN\" pane spawn, when a task could be split across parallel workers or would gain from a \
+                 second agent's review, and when a worker you started is blocked or not making progress."
             }
         }
     }
@@ -92,11 +109,13 @@ impl Flavour {
 }
 
 pub(crate) const INSTRUCTIONS: &str = include_str!("guidance/instructions.md");
+pub(crate) const PLACE: &str = include_str!("guidance/place.md");
 pub(crate) const GUIDE: &str = include_str!("guidance/guide.md");
 
 /// The words that differ between the flavours in otherwise shared lines: the
 /// term, then the tools' wording, then the command line's.
 pub(crate) const TERMS: &[(&str, &str, &str)] = &[
+    ("where", "where_am_i", "`\"$KOU_BIN\" where`"),
     ("start", "start_agent", "`pane spawn`"),
     ("wait", "wait_for_panes", "`pane wait`"),
     ("read", "read_pane", "`pane read`"),
@@ -125,6 +144,13 @@ pub(crate) const TERMS: &[(&str, &str, &str)] = &[
     ),
     ("model", "`model`", "`--model`"),
     ("native", "native=true", "`--native`"),
+    ("terminal", "terminal=true", "`--terminal`"),
+    ("models", "list_models", "`harness models`"),
+    ("ask", "ask_pane", "`pane ask`"),
+    ("edge_list", "list_edges", "`edge list`"),
+    ("edge_add", "add_edge", "`edge add`"),
+    ("edge_set", "set_edge", "`edge set`"),
+    ("edge_rm", "remove_edge", "`edge rm`"),
     (
         "shell_example",
         "`start_agent(harness=\"shell\", title=\"Tests\", prompt=\"cargo test 2>&1 | tail -n 40\")`",

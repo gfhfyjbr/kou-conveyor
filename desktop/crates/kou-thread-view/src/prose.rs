@@ -90,6 +90,8 @@ pub(crate) struct Mention {
 /// The room a mention's mark takes in the text: an em space and a thin one.
 const MARK_ROOM: &str = "\u{2003}\u{2009}";
 
+pub(crate) type LinkFn = Rc<dyn Fn(crate::links::Destination, &mut Window, &mut App)>;
+
 /// What drawing a document needs besides the document.
 pub(crate) struct Look<'a> {
     pub theme: &'a Theme,
@@ -120,6 +122,7 @@ pub(crate) struct Look<'a> {
     studio: bool,
     /// What the text may name that opens, and how it is opened.
     mentions: Option<(Rc<[Mention]>, OpenFn)>,
+    links: Option<(&'a std::path::Path, LinkFn)>,
     /// Code stands in what frames the document already (a tool call's card):
     /// its lines, without a frame and a caption of their own.
     bare: bool,
@@ -142,6 +145,7 @@ impl<'a> Look<'a> {
             inline_caret: Cell::new(false),
             studio: false,
             mentions: None,
+            links: None,
             bare: false,
         }
     }
@@ -152,6 +156,11 @@ impl<'a> Look<'a> {
         if !mentions.is_empty() {
             self.mentions = Some((mentions, open));
         }
+        self
+    }
+
+    pub(crate) fn with_links(mut self, root: &'a std::path::Path, open: LinkFn) -> Self {
+        self.links = Some((root, open));
         self
     }
 
@@ -866,12 +875,15 @@ fn inline(
         };
         if style.italic {
             font.style = FontStyle::Italic;
+            // The bundled families have upright faces. Keep emphasis visible there too.
+            if font.weight == FontWeight::NORMAL {
+                font.weight = FontWeight::MEDIUM;
+            }
         }
-        // `.prose a`: in the accent, underlined; in the quieter look, the
-        // accent alone. Its code is lighter than its text, on its chip.
+        // Links use the accent even when their text is inline code.
         let color = match (style.link, style.bold) {
             (true, _) => theme.accent,
-            (false, _) if style.code && look.studio => theme.chip_ink,
+            (false, _) if style.code => theme.chip_ink,
             (false, true) => look.tone.strong,
             (false, false) => color,
         };
@@ -960,12 +972,19 @@ fn inline(
     let mut links: Vec<(Range<usize>, Target)> = inline
         .links
         .iter()
-        .filter(|link| openable(&link.url))
-        .map(|link| {
-            (
-                link.range.clone(),
-                Target::Url(SharedString::from(link.url.clone())),
-            )
+        .filter_map(|link| {
+            let root = look.links.as_ref().map(|(root, _)| *root);
+            let destination = crate::links::destination(&link.url, root)?;
+            let target = match destination {
+                crate::links::Destination::Web(url) => Target::Url(url.into()),
+                destination => {
+                    let open = look.links.as_ref()?.1.clone();
+                    Target::Do(Rc::new(move |window, cx| {
+                        open(destination.clone(), window, cx)
+                    }))
+                }
+            };
+            Some((link.range.clone(), target))
         })
         .collect();
     // Where it names something the view opens: a link, its mark before it;
@@ -1225,15 +1244,6 @@ enum Target {
     Url(SharedString),
     /// Something of the view's own.
     Do(Action),
-}
-
-/// Whether a link from a model may be handed to the system. Only the web and
-/// mail: other schemes can start programs.
-pub(crate) fn openable(url: &str) -> bool {
-    let lower = url.trim_start().to_ascii_lowercase();
-    ["https://", "http://", "mailto:"]
-        .iter()
-        .any(|scheme| lower.starts_with(scheme))
 }
 
 /// A mention's mark at `side`: its harness's mark in its colour, or its
@@ -1647,16 +1657,5 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].len, start);
         assert_eq!(runs[1].color, gpui::red());
-    }
-
-    #[test]
-    fn only_web_and_mail_links_are_opened() {
-        assert!(openable("https://example.com"));
-        assert!(openable("HTTP://example.com"));
-        assert!(openable("mailto:someone@example.com"));
-        assert!(!openable("file:///etc/passwd"));
-        assert!(!openable("vscode://open?file=x"));
-        assert!(!openable("javascript:alert(1)"));
-        assert!(!openable("example.com"));
     }
 }

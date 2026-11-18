@@ -1,0 +1,29 @@
+UI bench v1 (.harness/ui/s-1/bench/v1.json)
+
+◇ sessionstore: benchmarks                                              bench v1
+  p99 is down to 45.3 ms
+  12 runs · last on commit 5cd3e6
+  [within budget]
+  P50 8.9 ms ▼1%   P99 45.3 ms ▼1%   ALLOCS/OP 1 082 ▼4%
+  P50 AND P99 BY COMMIT
+  p50_ms ███▇▆▅▄▄▃▂▁▁  last 8.9
+  p99_ms █▇▆▆▄▃▄▃▂▂▁▁  last 45.3
+  (12 points)
+  ALLOCATIONS PER OP, LAST 8 RUNS
+  allocs ███▇▇▅▄▃▃▂▁▁  last 1 082
+  (12 points)
+  ┌ WHAT CHANGED
+  │ The index is rebuilt in batches now, so fsync happens once per batch.
+  │ ── budget ──────────────────────────────────────────────────────────────────
+  │ Target: p99 under 50 ms
+  │ runs under budget ███████████████░░░░░ 75%
+  COMMIT  P50_MS  P99_MS  ALLOCS
+  5cd3e6  8.9     45.3    1 082
+  4b91c2  9       45.9    1 123
+  3af07d  9.5     47.5    1 198
+  29e6b1  10.1    48.5    1 277
+  … 8 more rows
+  Comment: [ when to ship it ]
+  fsync: (batch) ▾
+  [ Ship it ] (once)
+  [ Not yet ]

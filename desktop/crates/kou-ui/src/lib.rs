@@ -8,12 +8,14 @@ pub mod motion;
 pub mod scale;
 mod surface;
 mod theme;
+pub mod themes;
 
 pub use brands::{Brand, brand};
 pub use caret::{Blink, Caret, caret};
 pub use controls::{
-    MONOGRAM, MONOGRAM_LARGE, Mark, button, button_with_icon, icon_button, key_hint, letter_square,
-    letter_square_quiet, monogram, monogram_absent, monogram_sized, status_mark, tip,
+    MONOGRAM, MONOGRAM_LARGE, Mark, TipFace, button, button_with_icon, icon_button, icon_button_of,
+    icon_button_sized, icon_button_small, initial, key_hint, letter_square, letter_square_quiet,
+    monogram, monogram_absent, monogram_sized, set_tip_face, status_mark, tip,
 };
 pub use icons::{Assets, Icon, PICTURE, Picture, TAB_ICONS, icon, picture, tab_icon};
 pub use surface::{GRAIN_TILE, grain};

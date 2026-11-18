@@ -31,9 +31,10 @@ use gpui::{
     WindowControlArea, div, prelude::FluentBuilder as _, px,
 };
 use kou_ui::{
-    Icon, Mark, Theme, grain, icon, icon_button, letter_square, letter_square_quiet, metric,
-    monogram, motion::Spring, status_mark, tip,
+    Icon, Mark, Theme, grain, icon, icon_button, icon_button_small, letter_square,
+    letter_square_quiet, metric, monogram, motion::Spring, status_mark, tip,
 };
+use serde_json::{Value, json};
 
 /// Room left for the window's own buttons at the top left on macOS.
 #[cfg(target_os = "macos")]
@@ -227,15 +228,26 @@ fn heading(text: &'static str, theme: &Theme) -> Div {
         .child(div().flex_1().child(text))
 }
 
+/// What opens a group: a detail of its row, so the small icon, in the full
+/// icon's box so that the column it stands in stays one.
 fn chevron(open: bool, theme: &Theme) -> impl IntoElement {
-    icon(
-        if open {
-            Icon::ChevronDown
-        } else {
-            Icon::ChevronRight
-        },
-        theme.fg_muted,
-    )
+    div()
+        .flex_none()
+        .size(px(metric::ICON))
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            icon(
+                if open {
+                    Icon::ChevronDown
+                } else {
+                    Icon::ChevronRight
+                },
+                theme.fg_muted,
+            )
+            .size(px(metric::ICON_SMALL)),
+        )
 }
 
 /// An agent's state mark, centred in a fixed box so marks line up in a column.
@@ -275,14 +287,222 @@ fn folding(height: f32, open: f32) -> Div {
         .opacity(open.clamp(0., 1.))
 }
 
+/// The view of the `rail` plugin that draws the rail.
+const RAIL: &str = "rail";
+
+/// A colour as a plugin's script is given it.
+pub(crate) fn hex(rgb: u32) -> String {
+    format!("#{:06x}", rgb & 0xff_ffff)
+}
+
+/// The fill a name's square and folder are drawn in, as a script is given it.
+pub(crate) fn hue_of(name: &str) -> String {
+    hex(kou_ui::HUES[kou_ui::hue_index(name)])
+}
+
+/// What goes on under a row, as a script is given it: nothing, or the
+/// marks to show and the count in words.
+fn busy_json(busy: Busy) -> Value {
+    let marks = busy.marks();
+    if marks.is_empty() {
+        return Value::Null;
+    }
+    let names: Vec<&str> = marks.into_iter().map(Mark::name).collect();
+    json!({ "marks": names, "words": busy.words() })
+}
+
 impl Shell {
-    pub(crate) fn render_rail(
+    /// The rail, as the `rail` plugin draws it (see `plugins/rail`), or as
+    /// the app does when the plugin cannot.
+    pub(crate) fn render_rail(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let room = Room::at(self.rail_width());
+        let data = self.rail_data(room);
+        let name = || {
+            self.name_edit
+                .is_some()
+                .then(|| ("name", self.name_field(theme, cx).into_any_element()))
+                .into_iter()
+                .collect()
+        };
+        match self.chrome(RAIL, "", data, name, theme, cx) {
+            Some(drawn) => drawn,
+            None => self.native_rail(room, theme, cx).into_any_element(),
+        }
+    }
+
+    /// What the rail shows, as its plugin is given it. The folds' springs
+    /// are asked for where the app's own rail asks for them.
+    pub(crate) fn rail_data(&self, room: Room) -> Value {
+        let spaces: Vec<Value> = self
+            .store
+            .spaces
+            .iter()
+            .map(|space| {
+                let open: Vec<_> = self.store.sessions_of(&space.id, false).collect();
+                let archived: Vec<_> = self.store.sessions_of(&space.id, true).collect();
+                let unfolded = self.spring(
+                    format!("fold-{}", space.id),
+                    if space.collapsed { 0. } else { 1. },
+                    Spring::SNAPPY,
+                );
+                let shown = unfolded > 0.001;
+                let archive_unfolded = (shown && !archived.is_empty()).then(|| {
+                    self.spring(
+                        format!("fold-archive-{}", space.id),
+                        if space.archive_open { 1. } else { 0. },
+                        Spring::SNAPPY,
+                    )
+                });
+                let rows = |sessions: &[&crate::state::Session], archived: bool| -> Vec<Value> {
+                    sessions
+                        .iter()
+                        .map(|session| self.session_data(&session.id, space, archived, room))
+                        .collect()
+                };
+                json!({
+                    "id": space.id,
+                    "name": space.name,
+                    "hue": hue_of(&space.name),
+                    "count": open.len(),
+                    "collapsed": space.collapsed,
+                    "unfolded": unfolded,
+                    "renaming": self.renaming(&Named::Space(space.id.clone())),
+                    "busy": busy_json(self.busy(open.iter().map(|session| session.id.as_str()))),
+                    "sessions": if shown { rows(&open, false) } else { Vec::new() },
+                    "archivedCount": archived.len(),
+                    "archiveOpen": space.archive_open,
+                    "archiveUnfolded": archive_unfolded.unwrap_or(0.),
+                    "archived": if archive_unfolded.is_some_and(|open| open > 0.001) {
+                        rows(&archived, true)
+                    } else {
+                        Vec::new()
+                    },
+                })
+            })
+            .collect();
+        // Latest change first.
+        let mut live: Vec<_> = self
+            .store
+            .panes
+            .iter()
+            .filter_map(|pane| Some((pane, self.live.get(&pane.id)?)))
+            .collect();
+        live.sort_by_key(|(_, live)| std::cmp::Reverse(live.changed));
+        let agents: Vec<Value> = live
+            .iter()
+            .map(|(pane, live)| {
+                let session = self.store.session(&pane.session);
+                let focused = !self.page_open()
+                    && !self.pending_in_front()
+                    && self.store.selected.as_deref() == Some(pane.session.as_str())
+                    && session.is_some_and(|session| session.focused.as_ref() == Some(&pane.id));
+                let code = self
+                    .harness(&pane.harness)
+                    .map_or_else(|| pane.harness.clone(), |harness| harness.code.clone());
+                json!({
+                    "pane": pane.id,
+                    "title": pane.title,
+                    "code": code,
+                    "session": room
+                        .agent_session
+                        .then(|| session.map(|session| session.name.clone()))
+                        .flatten(),
+                    "age": age(live.changed.elapsed().as_millis() as u64),
+                    "state": live.shown().name(),
+                    "focused": focused,
+                })
+            })
+            .collect();
+        let idle = live.iter().any(|(_, live)| live.shown() == Mark::Idle);
+        let idle_unfolded = if idle {
+            self.spring(
+                "fold-idle",
+                if self.idle_open { 1. } else { 0. },
+                Spring::SNAPPY,
+            )
+        } else {
+            0.
+        };
+        let pages: Vec<Value> = self
+            .plugin_pages
+            .iter()
+            .filter(|page| page.id != "usage")
+            .map(|page| {
+                // An icon the app has, by its file's name; a note when not.
+                let icon = page
+                    .icon
+                    .as_deref()
+                    .filter(|name| {
+                        let path = format!("icons/{name}.svg");
+                        Icon::ALL.iter().any(|icon| icon.path() == path)
+                    })
+                    .unwrap_or("note");
+                json!({
+                    "id": page.id,
+                    "title": page.title,
+                    "icon": icon,
+                    "open": self.plugin_page.as_deref() == Some(page.id.as_str()),
+                })
+            })
+            .collect();
+        json!({
+            "windowButtons": WINDOW_BUTTONS,
+            "spaces": spaces,
+            "anyPane": !self.store.panes.is_empty(),
+            "agents": agents,
+            "idleOpen": self.idle_open,
+            "idleUnfolded": idle_unfolded,
+            "usageOpen": self.usage_open,
+            "settingsOpen": self.settings_open,
+            "pages": pages,
+        })
+    }
+
+    /// A session's row, as the rail's plugin is given it.
+    fn session_data(&self, id: &Id, space: &Space, archived: bool, room: Room) -> Value {
+        let Some(session) = self.store.session(id) else {
+            return Value::Null;
+        };
+        let selected = !self.page_open() && self.store.selected.as_deref() == Some(id.as_str());
+        let shown = if archived {
+            room.archived_place
+        } else {
+            room.place
+        };
+        let place = (shown && session.cwd != space.path).then(|| {
+            let directory = name_of(&session.cwd);
+            match self.branch(&session.cwd) {
+                Some(branch) => format!("{directory} · {branch}"),
+                None => directory,
+            }
+        });
+        // An archived session runs nothing.
+        let busy = if archived {
+            Value::Null
+        } else {
+            busy_json(self.busy(std::iter::once(id.as_str())))
+        };
+        json!({
+            "id": id,
+            "name": session.name,
+            "letter": kou_ui::initial(&session.name).as_ref(),
+            "hue": hue_of(&session.name),
+            "selected": selected,
+            "renaming": self.renaming(&Named::Session(id.clone())),
+            "place": place,
+            "busy": busy,
+        })
+    }
+
+    /// The rail as the app draws it itself.
+    fn native_rail(
         &self,
+        room: Room,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> impl IntoElement + use<> {
-        let room = Room::at(self.rail_width());
         div()
+            .debug_selector(|| "rail-native".into())
             .size_full()
             .relative()
             .flex()
@@ -441,7 +661,7 @@ impl Shell {
             })
             .children(busy_marks(("space-busy", index), busy, theme))
             .child(
-                icon_button(("space-new", index), Icon::Plus, theme)
+                icon_button_small(("space-new", index), Icon::Plus, theme)
                     .tooltip(tip("Start a session in this space"))
                     .on_click(cx.listener({
                         let id = id.clone();
@@ -609,7 +829,7 @@ impl Shell {
             )
         };
         let action = if archived {
-            icon_button(
+            icon_button_small(
                 SharedString::from(format!("{key}-delete")),
                 Icon::Close,
                 theme,
@@ -624,7 +844,7 @@ impl Shell {
                 }
             }))
         } else {
-            icon_button(
+            icon_button_small(
                 SharedString::from(format!("{key}-archive")),
                 Icon::Archive,
                 theme,

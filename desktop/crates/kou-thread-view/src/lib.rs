@@ -10,7 +10,8 @@
 //! [`draft`], [`pictures`], [`history`], [`queue`] and [`highlight`] are plain
 //! data in, plain data out, and carry the tests for what they compute;
 //! [`prose`], [`entries`], [`composer`], [`dock`] and [`view`] turn that data
-//! into elements.
+//! into elements; [`questions`] holds both for the questions an agent asks
+//! the user.
 //!
 //! The view has two looks ([`Look`]): the cockpit's, after kou's web
 //! cockpit, and a quieter one for a chat with a harness ([`studio`]). In
@@ -28,10 +29,12 @@ mod dock;
 mod draft;
 mod edit;
 mod entries;
+mod face;
 mod field;
 mod highlight;
 mod history;
 mod lights;
+mod links;
 mod markdown;
 mod models;
 mod motion;
@@ -39,6 +42,7 @@ mod nested;
 mod picker;
 mod pictures;
 mod prose;
+mod questions;
 mod queue;
 mod studio;
 mod terminal;
@@ -47,6 +51,11 @@ mod tests;
 mod trace;
 mod view;
 
-pub use field::{Prompt, PromptField, PromptFieldEvent};
+pub use face::{ChatAct, ChatFace, ChatPart};
+pub use field::{
+    FieldAct, FieldDrop, FieldFace, FieldParts, Prompt, PromptField, PromptFieldEvent,
+};
 pub use nested::{Beside, Look, Nested, NestedState};
-pub use view::{Header, ThreadView, ThreadViewEvent, ThreadViewRequest};
+pub use view::{
+    Header, ThreadView, ThreadViewEvent, ThreadViewRequest, ToolAids, ToolFace, ToolView,
+};

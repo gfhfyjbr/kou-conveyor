@@ -48,6 +48,79 @@ fn past_of_kou(session: kou_native::SessionSummary) -> crate::shell::Past {
     }
 }
 
+/// How long a Claude Code that only waits is kept with the app closed, and
+/// how long one is kept whatever it does.
+const KEEP_IDLE: Duration = Duration::from_secs(600);
+const KEEP_AWAY: Duration = Duration::from_secs(24 * 3600);
+/// How seldom a pane's conversation is opened again by itself for a lost
+/// connection to its kept Claude Code.
+const TAKE_UP_AGAIN: Duration = Duration::from_secs(60);
+
+/// The sockets of the keeper called `name` in `folder`: `<name>-<n>.sock`.
+fn keeper_sockets(folder: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    let prefix = format!("{name}-");
+    std::fs::read_dir(folder)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| {
+            let file = entry.file_name();
+            let file = file.to_string_lossy();
+            file.strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(".sock"))
+                .is_some_and(|n| n.parse::<u32>().is_ok())
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
+/// What `kou-claude` opens a session with, from how the app attaches
+/// itself to Claude Code.
+fn claude_options(
+    direct: kou_agents::ClaudeDirect,
+    cwd: std::path::PathBuf,
+) -> kou_claude::Options {
+    kou_claude::Options {
+        env: direct.env,
+        home: direct.home,
+        mcp_servers: direct
+            .mcp_servers
+            .into_iter()
+            .map(|server| kou_claude::McpServer {
+                name: server.name,
+                command: server.command,
+                args: server.args,
+                env: server.env,
+            })
+            .collect(),
+        instructions: direct.instructions,
+        plugins: direct.plugins,
+        ..kou_claude::Options::new(direct.program, cwd)
+    }
+}
+
+/// Who is asked which models a new session would offer.
+enum Asked {
+    /// kou, of its connection.
+    Kou,
+    /// An agent through its chat adapter: a session is opened and left.
+    Agent(kou_acp::Launch),
+    /// Claude Code itself.
+    Claude(Box<kou_claude::Options>),
+    Codex(kou_agents::Launch),
+}
+
+/// Where a pane's earlier conversations are read from.
+enum Kept {
+    /// kou's own files.
+    Kou,
+    /// An agent asked for its own, the way it is talked to.
+    Agent(kou_acp::Launch),
+    /// Claude Code's records, under this home (its own when `None`).
+    Claude(Option<std::path::PathBuf>),
+    Codex(kou_agents::Launch),
+}
+
 fn pick_session(sessions: &[crate::shell::Past], which: &str) -> Option<String> {
     let which = which.trim();
     let wanted = which.to_lowercase();
@@ -187,6 +260,9 @@ pub(crate) fn released_terminals(kept: &serde_json::Value) -> Vec<(Id, kou_term:
 pub(crate) struct Talking {
     view: Entity<ThreadView>,
     state: ThreadState,
+    /// To its backend, beside the view's own: for telling it to end. (A
+    /// backend merely let go of may live on; see `Shell::forget`.)
+    commands: async_channel::Sender<kou_thread::Command>,
     _subscription: Subscription,
     _requests: Subscription,
 }
@@ -236,22 +312,24 @@ pub(crate) struct Wait {
     reply: Reply,
 }
 
-/// What the interface lists for a detected harness.
-pub(crate) fn info(detected: &Detected) -> HarnessInfo {
+/// What the interface lists for a detected harness, given its selected transport.
+pub(crate) fn info(detected: &Detected, direct: bool) -> HarnessInfo {
+    let direct = direct && kou_agents::talks_directly(detected);
     HarnessInfo {
         id: detected.spec.id.to_owned(),
         name: detected.spec.name.to_owned(),
         code: detected.spec.code.to_owned(),
         ready: matches!(detected.readiness, Readiness::Ready),
         version: detected.version.clone(),
-        // kou's own agent is native through its runner; the others through ACP.
+        // kou's own agent is native through its runner; the others through
+        // ACP, or Claude Code by itself.
         native: if detected.spec.id == "kou" {
             kou_native::locate_runner().is_some()
         } else {
-            detected.native
+            detected.native || direct
         },
         adapter: match &detected.chat {
-            kou_agents::Chat::NeedsAdapter { message, install } => {
+            kou_agents::Chat::NeedsAdapter { message, install } if !direct => {
                 Some((message.clone(), install.as_deref().cloned()))
             }
             _ => None,
@@ -312,8 +390,16 @@ impl Shell {
             let detected = found.await;
             this.update(cx, |this, cx| {
                 this.scanning = false;
-                this.harnesses = detected.iter().map(info).collect();
                 this.detected = detected;
+                this.list_harnesses();
+                // A canvas offers what was found when it was made: one made
+                // before the first look had finished offered nothing.
+                this.offer_to_canvases(cx);
+                // With several accounts of a harness, what is left to each
+                // decides where a new agent goes: asked once they are found.
+                if !this.store.profiles.is_empty() {
+                    this.refresh_usage(false, cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -329,7 +415,13 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (session, parent, tab, beside) = match &self.picker {
+        // What is started takes the place the picker on screen holds for
+        // it. A picker that is not on screen (a tab waiting in another
+        // session, a half being chosen in a tab that was left) has no say
+        // in what is started here: it started in that other session, with
+        // the prompt typed in this one.
+        let shown = self.picker_shown();
+        let (session, parent, tab, beside) = match self.picker.as_ref().filter(|_| shown) {
             Some(picker) => (
                 picker.session.clone(),
                 picker.parent.clone(),
@@ -340,6 +432,12 @@ impl Shell {
                 Some(session) => (session, None, None, None),
                 None => return,
             },
+        };
+        // A tab that waits elsewhere goes on waiting there.
+        let waiting = if shown {
+            None
+        } else {
+            self.picker.take().filter(crate::shell::Picker::pending)
         };
         let beside = beside.filter(|(at, _)| self.store.pane(at).is_some());
         let pane = match (beside, tab.filter(|tab| self.store.tab(tab).is_some())) {
@@ -398,12 +496,25 @@ impl Shell {
                 saved.model = Some(model);
             }
             // The account it was asked to run under, when that is one of
-            // this harness.
-            let profile = self.launch_profile.take().filter(|id| {
+            // this harness. With none named, and its accounts one pool, the
+            // one with the most left (which may be its own).
+            let named = self.launch_profile.take().filter(|id| {
                 self.store
                     .profile(id)
                     .is_some_and(|profile| profile.harness == harness)
             });
+            let pooled = self.store.balance
+                && harness != "shell"
+                && self.store.profiles_of(harness).next().is_some();
+            let profile = match named {
+                None if pooled => {
+                    // (Asked again for the next start: what is known of the
+                    // limits is a few minutes old at most.)
+                    self.refresh_usage(false, cx);
+                    self.balanced_account(harness)
+                }
+                named => named,
+            };
             self.ask_profile = None;
             if let Some(saved) = self.store.pane_mut(&pane) {
                 saved.profile.clone_from(&profile);
@@ -412,9 +523,22 @@ impl Shell {
                 self.store.last_harness = Some(harness.to_owned());
                 self.store.last_profile = profile;
             }
-            self.launch(&pane, prompt, window, cx);
+            let access = self.ask_access.take().and_then(|(cwd, id)| {
+                (harness == "codex"
+                    && kind == PaneKind::Thread
+                    && self.store.codex_direct
+                    && self.store.pane(&pane).is_some_and(|p| p.cwd == cwd))
+                .then_some(id)
+            });
+            self.launch_with_access(&pane, prompt, access, window, cx);
             self.first_prompt = None;
             self.save(cx);
+        }
+        if let Some(waiting) = waiting {
+            self.picker = Some(crate::shell::Picker {
+                front: false,
+                ..waiting
+            });
         }
     }
 
@@ -440,6 +564,7 @@ impl Shell {
                 claude_plugin: Some(guidance.tools.claude_plugin.clone()),
                 // The short text, which names the long guide's file.
                 instructions: Some(guidance.tools.brief.clone()),
+                place: Some(guidance.tools.place.clone()),
             }),
             // Codex runs an agent's shell in a sandbox that cannot reach the
             // app's socket, so its command line is no use there; an MCP
@@ -454,6 +579,7 @@ impl Shell {
                     }),
                     claude_plugin: Some(guidance.tools.claude_plugin.clone()),
                     instructions: Some(guidance.tools.brief.clone()),
+                    place: Some(guidance.tools.place.clone()),
                 })
             }
             // No server: the guidance that speaks of the command line, which
@@ -462,6 +588,7 @@ impl Shell {
                 mcp: None,
                 claude_plugin: Some(guidance.commands.claude_plugin.clone()),
                 instructions: Some(guidance.commands.brief.clone()),
+                place: Some(guidance.commands.place.clone()),
             }),
             (Way::Off, _) | (_, None) => None,
         };
@@ -486,18 +613,28 @@ impl Shell {
         harness: &str,
         profile: Option<&str>,
     ) -> Vec<(String, String)> {
-        profile
+        let Some((profile, variable)) = profile
             .and_then(|id| self.store.profile(id))
             .filter(|profile| profile.harness == harness)
             .zip(kou_usage::home_variable(harness))
-            .map(|(profile, variable)| {
-                (
-                    variable.to_owned(),
-                    profile.home.to_string_lossy().into_owned(),
-                )
-            })
-            .into_iter()
-            .collect()
+        else {
+            return Vec::new();
+        };
+        let mut env = vec![(
+            variable.to_owned(),
+            profile.home.to_string_lossy().into_owned(),
+        )];
+        // Its proxy, when it has one: for the program and whatever it
+        // starts. (The whole address when it has a password, kept apart.)
+        let proxy =
+            crate::accounts::secret(&self.home, &profile.id).or_else(|| profile.proxy.clone());
+        if let Some(address) = proxy {
+            let direct = std::env::var("NO_PROXY")
+                .or_else(|_| std::env::var("no_proxy"))
+                .ok();
+            env.extend(crate::accounts::proxy_env(&address, direct.as_deref()));
+        }
+        env
     }
 
     /// How a harness opens when nothing says otherwise: as a chat in the
@@ -701,12 +838,23 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.launch_with_access(pane, prompt, None, window, cx);
+    }
+
+    fn launch_with_access(
+        &mut self,
+        pane: &str,
+        prompt: Option<String>,
+        access: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let thread = self
             .store
             .pane(pane)
             .is_some_and(|pane| pane.kind == PaneKind::Thread);
         let launched = if thread {
-            self.try_launch_thread(pane, prompt, window, cx)
+            self.try_launch_thread(pane, prompt, access, window, cx)
         } else {
             self.try_launch(pane, prompt, window, cx)
         };
@@ -753,9 +901,18 @@ impl Shell {
             resume: saved.resume.clone().filter(|_| attach.is_none()),
             attach,
         };
-        let launch = kou_agents::tui_launch(detected, &context, &options)?;
+        let mut launch = kou_agents::tui_launch(detected, &context, &options)?;
         // A harness with no prompt argument gets its prompt typed once it is up.
-        let typed = kou_agents::typed_prompt(detected, &options);
+        let mut typed = kou_agents::typed_prompt(detected, &options);
+        // A pane that signs in to an account runs the harness's sign-in
+        // command in place of its interface: the same program, home and
+        // proxy, and nothing typed into it.
+        if self.signing_in.contains_key(pane)
+            && let Some(sign_in) = detected.spec.login.sign_in()
+        {
+            launch.args = sign_in.iter().map(|word| (*word).to_owned()).collect();
+            typed = None;
+        }
         // A shell is asked to mark its prompts, so a resize does not leave
         // pieces of old ones behind; see `integration.rs`. Without the marks it
         // still runs, so a failure to write the file is not a failure to launch.
@@ -1024,18 +1181,367 @@ impl Shell {
         }) {
             (width, height) = (place[2], place[3]);
         }
-        let size = f32::from(style.font_size);
+        let cell = style.cell_size(window);
         let padding = f32::from(style.padding) * 2.;
-        // 0.6 of the size is the advance of the usual monospace faces.
-        let columns = ((width - padding) / (size * 0.602)).floor();
-        let lines = ((height - around - padding) / (size * style.line_height)).floor();
+        let columns = ((width - padding) / f32::from(cell.width)).floor();
+        let lines = ((height - around - padding) / f32::from(cell.height)).floor();
         (columns.max(20.) as usize, lines.max(5.) as usize)
+    }
+
+    /// Say again what the interface lists for the harnesses found: after a
+    /// look for them, and when how one of them is talked to changes.
+    pub(crate) fn list_harnesses(&mut self) {
+        self.harnesses = self
+            .detected
+            .iter()
+            .map(|detected| info(detected, self.store.direct(detected.spec.id)))
+            .collect();
+    }
+
+    /// The transport to use for this harness's next chat.
+    pub(crate) fn set_direct(&mut self, harness: &str, direct: bool, cx: &mut Context<Self>) {
+        let setting = match harness {
+            "claude" => &mut self.store.claude_direct,
+            "codex" => &mut self.store.codex_direct,
+            _ => return,
+        };
+        if *setting == direct {
+            return;
+        }
+        *setting = direct;
+        self.offered.remove(harness);
+        self.offered_changes += 1;
+        if harness == "codex" {
+            self.ask_access = None;
+        }
+        // Without its adapter it is a chat only one of the two ways.
+        self.list_harnesses();
+        self.offer_to_canvases(cx);
+        self.save(cx);
+    }
+
+    /// Where this app's chat keepers listen: a folder beside
+    /// the socket the app itself listens on, so that another instance (one
+    /// made for a check) never finds this one's.
+    pub(crate) fn keepers_beside(socket: &std::path::Path) -> std::path::PathBuf {
+        let mut folder = socket.as_os_str().to_owned();
+        folder.push(".hosts");
+        folder.into()
+    }
+
+    /// Allocate or reuse the pane's keeper according to its harness settings.
+    pub(crate) fn pane_keeper(
+        &mut self,
+        pane: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<kou_claude::Keeper> {
+        let had = self.store.pane(pane)?.keeper.clone();
+        let keeper = self.keeper_for(pane, had.as_deref());
+        let name = keeper.as_ref().and_then(|keeper| {
+            keeper
+                .stem
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        });
+        if name != had {
+            if let Some(saved) = self.store.pane_mut(pane) {
+                saved.keeper = name;
+            }
+            // One kept under a name the pane has dropped is let go.
+            self.sweep_keepers();
+            self.save(cx);
+        }
+        keeper
+    }
+
+    #[cfg(unix)]
+    fn keeper_for(&self, pane: &str, had: Option<&str>) -> Option<kou_claude::Keeper> {
+        let enabled = match self.store.pane(pane)?.harness.as_str() {
+            "codex" => self.store.codex_keep,
+            _ => self.store.claude_keep,
+        };
+        if !enabled && !had.is_some_and(|name| self.keeper_socket_exists(name)) {
+            return None;
+        }
+        // A window that listens on no socket of its own (a scene, a test,
+        // a second instance of the app) starts the harness as its child.
+        let folder = self.keepers.clone()?;
+        let name = had.map(str::to_owned).unwrap_or_else(|| {
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.subsec_nanos());
+            format!("{pane}-{nonce:08x}")
+        });
+        let stem = folder.join(name);
+        // A socket's address holds about a hundred bytes; `-<n>.sock`
+        // follows the stem.
+        if stem.as_os_str().len() + 9 > 100 {
+            log::warn!("{} is too long for a keeper socket", stem.display());
+            return None;
+        }
+        {
+            use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+            let made = std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&folder)
+                .and_then(|()| {
+                    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700))
+                });
+            if let Err(error) = made {
+                log::warn!("{} could not be made: {error}", folder.display());
+                return None;
+            }
+        }
+        let host = self
+            .keeper_bin
+            .clone()
+            .or_else(|| std::env::current_exe().ok())?;
+        Some(kou_claude::Keeper {
+            host,
+            host_args: vec!["claude-host".to_owned()],
+            stem,
+            idle: KEEP_IDLE,
+            away: KEEP_AWAY,
+        })
+    }
+
+    #[cfg(not(unix))]
+    fn keeper_for(&self, _: &str, _: Option<&str>) -> Option<kou_claude::Keeper> {
+        None
+    }
+
+    fn keeper_socket_exists(&self, name: &str) -> bool {
+        self.keepers
+            .as_ref()
+            .is_some_and(|folder| !keeper_sockets(folder, name).is_empty())
+    }
+
+    /// Reopen panes whose harness kept working while the window was closed.
+    pub(crate) fn revive_kept(&mut self) {
+        let Some(folder) = self.keepers.clone() else {
+            return;
+        };
+        let listening: Vec<String> = std::fs::read_dir(&folder)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".sock"))
+            .collect();
+        for pane in &self.store.panes {
+            let kept = pane.kind == PaneKind::Thread
+                && pane.keeper.as_ref().is_some_and(|keeper| {
+                    let mine = format!("{keeper}-");
+                    listening.iter().any(|name| name.starts_with(&mine))
+                });
+            if kept && !self.threads.contains_key(&pane.id) && !self.revive.contains(&pane.id) {
+                self.revive.push(pane.id.clone());
+            }
+        }
+    }
+
+    /// Open a conversation again by itself when its Claude Code is kept
+    /// apart from the app and the conversation ended with an error while
+    /// its keeper's socket is still there: what was lost is the connection
+    /// (the keeper dropped it, or died without a word), not the
+    /// conversation. Opened again, it finds the keeper if that still runs
+    /// and takes it up as it stands, all that was said shown from the
+    /// record; else Claude Code is started again from the record. Once a
+    /// minute at most for a pane: a keeper that keeps failing is left to the
+    /// user. (A keeper that ended by itself has taken its socket away.)
+    pub(crate) fn take_up_again(
+        &mut self,
+        pane: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(folder) = self.keepers.clone() else {
+            return;
+        };
+        let Some(name) = self.store.pane(pane).and_then(|saved| saved.keeper.clone()) else {
+            return;
+        };
+        let sockets = keeper_sockets(&folder, &name);
+        if sockets.is_empty() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        if self
+            .taken_up
+            .get(pane)
+            .is_some_and(|at| now.duration_since(*at) < TAKE_UP_AGAIN)
+        {
+            return;
+        }
+        self.taken_up.insert(pane.to_owned(), now);
+        for socket in &sockets {
+            kou_claude::host::note(socket, "app", "the chat is opened again");
+        }
+        let pane = pane.to_owned();
+        // Not from inside the view's own event: its pane gets a new view.
+        cx.defer_in(window, move |this, window, cx| {
+            let failed = this
+                .threads
+                .get(&pane)
+                .is_some_and(|talking| matches!(talking.state, ThreadState::Closed(Some(_))));
+            if !failed {
+                return;
+            }
+            let title = this
+                .store
+                .pane(&pane)
+                .map(|saved| saved.title.clone())
+                .unwrap_or_default();
+            this.launch(&pane, None, window, cx);
+            // (One that could not be started says so in its pane.)
+            if this.threads.contains_key(&pane) {
+                this.notice = Some(
+                    format!("{title}: the connection was lost and the chat was opened again.")
+                        .into(),
+                );
+            }
+            cx.notify();
+        });
+    }
+
+    /// End the Claude Code a pane's conversation is kept in, and let the
+    /// pane go on under a new keeper's name: for a conversation to be
+    /// started again differently (under another account), which a keeper
+    /// found under the old name would not be.
+    pub(crate) fn end_kept(&mut self, pane: &str) {
+        if self
+            .store
+            .pane(pane)
+            .is_none_or(|saved| saved.keeper.is_none())
+        {
+            return;
+        }
+        if let Some(talking) = self.threads.remove(pane) {
+            let _ = talking.commands.try_send(kou_thread::Command::Close);
+        }
+        if let Some(saved) = self.store.pane_mut(pane) {
+            saved.keeper = None;
+        }
+        self.sweep_keepers();
+    }
+
+    /// End the Claude Codes that are kept for no pane any more: one whose
+    /// pane was closed while nothing talked to it, or whose conversation
+    /// began anew. Off the main thread: each is asked over its socket.
+    pub(crate) fn sweep_keepers(&self) {
+        #[cfg(unix)]
+        {
+            let Some(folder) = self.keepers.clone() else {
+                return;
+            };
+            let Ok(entries) = std::fs::read_dir(&folder) else {
+                return;
+            };
+            let wanted: Vec<String> = self
+                .store
+                .panes
+                .iter()
+                .filter_map(|pane| pane.keeper.clone())
+                .collect();
+            let host = self
+                .keeper_bin
+                .clone()
+                .or_else(|| std::env::current_exe().ok())
+                .unwrap_or_default();
+            let mut strays = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let name = entry.file_name().to_string_lossy().into_owned();
+                // `<name>-<n>.sock`, and what a keeper that is gone left
+                // beside it (`.sock.last`).
+                let Some(stem) = name
+                    .split(".sock")
+                    .next()
+                    .filter(|_| name.contains(".sock"))
+                else {
+                    continue;
+                };
+                let keeper = stem.rsplit_once('-').map_or(stem, |(keeper, _)| keeper);
+                if !wanted.iter().any(|wanted| wanted == keeper) {
+                    strays.push(path);
+                }
+            }
+            if strays.is_empty() {
+                return;
+            }
+            std::thread::spawn(move || {
+                for path in strays {
+                    if path.extension().is_some_and(|ending| ending == "sock") {
+                        let keep = kou_claude::host::Keep {
+                            host: host.clone(),
+                            host_args: vec!["claude-host".to_owned()],
+                            socket: path.clone(),
+                            idle: KEEP_IDLE,
+                            away: KEEP_AWAY,
+                            stall: kou_claude::host::STALL,
+                        };
+                        match keep.attach() {
+                            Ok(Some(attached)) => {
+                                kou_claude::host::note(
+                                    &path,
+                                    "app",
+                                    "stopped: no pane has it any more",
+                                );
+                                let _ = attached.client.stop();
+                                // What it leaves to say why it ended is
+                                // for nobody: gone with it, once it is.
+                                let mut last = path.clone().into_os_string();
+                                last.push(".last");
+                                std::thread::sleep(Duration::from_secs(4));
+                                let _ = std::fs::remove_file(last);
+                                continue;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                log::warn!("a kept Claude Code did not answer: {error:#}");
+                            }
+                        }
+                    }
+                    // Nothing listens there: what is left is only a file.
+                    let _ = std::fs::remove_file(&path);
+                }
+            });
+        }
+    }
+
+    /// What Claude Code is started with when the app talks to it itself:
+    /// `None` for another harness, with that way of talking switched off
+    /// ([`crate::state::Store::claude_direct`]), and for a Claude Code that
+    /// cannot be started.
+    fn claude_direct(
+        &self,
+        harness: &str,
+        context: &PaneContext,
+    ) -> Option<kou_agents::ClaudeDirect> {
+        if harness != "claude" || !self.store.claude_direct {
+            return None;
+        }
+        let detected = self
+            .detected
+            .iter()
+            .find(|detected| detected.spec.id == harness)?;
+        kou_agents::claude_direct(detected, context)
+    }
+
+    fn codex_direct(&self, harness: &str, context: &PaneContext) -> Option<kou_agents::Launch> {
+        if harness != "codex" || !self.store.codex_direct {
+            return None;
+        }
+        let detected = self.detected.iter().find(|d| d.spec.id == harness)?;
+        kou_agents::codex_direct(detected, context)
     }
 
     fn try_launch_thread(
         &mut self,
         pane: &str,
         prompt: Option<String>,
+        access: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> anyhow::Result<()> {
@@ -1057,51 +1563,82 @@ impl Shell {
                 model: saved.model.clone(),
             })?
         } else {
+            let context = self.pane_context(&saved)?;
+            // A change of transport applies to new chats. Reattach a running
+            // keeper even if the user has since picked the ACP adapter.
+            let direct = self.store.direct(&saved.harness)
+                || saved
+                    .keeper
+                    .as_deref()
+                    .is_some_and(|name| self.keeper_socket_exists(name));
             let detected = self
                 .detected
                 .iter()
                 .find(|detected| detected.spec.id == saved.harness)
                 .ok_or_else(|| anyhow::anyhow!("{name} was not found on this machine"))?;
-            let context = self.pane_context(&saved)?;
-            let launch = kou_agents::acp_launch(detected, &context)
-                .ok_or_else(|| anyhow::anyhow!("{name} has no native mode installed"))?;
-            // What this session is opened with: the app's tools and
-            // guidance, attached the way this harness takes them.
-            let setup = kou_agents::acp_setup(detected, &context);
-            kou_acp::connect(
-                kou_acp::Launch {
-                    program: launch.program,
-                    args: launch.args,
-                    env: launch.env,
-                    cwd: launch.cwd,
-                },
-                kou_acp::Options {
+            if direct && let Some(launch) = kou_agents::codex_direct(detected, &context) {
+                let keep = self.pane_keeper(&saved.id, cx).map(|k| k.single_process());
+                kou_codex::connect_with_access(
+                    launch,
+                    saved.resume.clone(),
+                    saved.model.clone(),
+                    keep,
+                    access,
+                )?
+            } else if direct && let Some(launch) = kou_agents::claude_direct(detected, &context) {
+                kou_claude::connect(kou_claude::Options {
                     resume: saved.resume.clone(),
-                    mcp_servers: setup
-                        .mcp_servers
-                        .into_iter()
-                        .map(|server| kou_acp::McpServer::Stdio {
-                            name: server.name,
-                            command: server.command,
-                            args: server.args,
-                            env: server.env,
-                        })
-                        .collect(),
-                    instructions: setup.instructions,
-                    meta: setup.meta,
-                    login_hint: setup.login_hint,
-                    // How this agent is told where to branch a session, for
-                    // editing a prompt already sent; none for most.
-                    fork_meta: setup.fork_meta,
-                    display_terminals: setup.display_terminals,
                     model: saved.model.clone(),
-                    ..kou_acp::Options::new(
-                        saved.cwd.clone(),
-                        "kou-desktop",
-                        env!("CARGO_PKG_VERSION"),
-                    )
-                },
-            )?
+                    keep: self.pane_keeper(&saved.id, cx),
+                    ..claude_options(launch, saved.cwd.clone())
+                })?
+            } else {
+                anyhow::ensure!(
+                    access.is_none(),
+                    "The selected permissions require the direct Codex connection"
+                );
+                let launch = kou_agents::acp_launch(detected, &context)
+                    .ok_or_else(|| anyhow::anyhow!("{name} has no native mode installed"))?;
+                // What this session is opened with: the app's tools and
+                // guidance, attached the way this harness takes them.
+                let setup = kou_agents::acp_setup(detected, &context);
+                kou_acp::connect(
+                    kou_acp::Launch {
+                        program: launch.program,
+                        args: launch.args,
+                        env: launch.env,
+                        cwd: launch.cwd,
+                    },
+                    kou_acp::Options {
+                        resume: saved.resume.clone(),
+                        mcp_servers: setup
+                            .mcp_servers
+                            .into_iter()
+                            .map(|server| kou_acp::McpServer::Stdio {
+                                name: server.name,
+                                command: server.command,
+                                args: server.args,
+                                env: server.env,
+                            })
+                            .collect(),
+                        instructions: setup.instructions,
+                        preface: setup.preface,
+                        meta: setup.meta,
+                        login_hint: setup.login_hint,
+                        // How this agent is told where to branch a session, for
+                        // editing a prompt already sent; none for most.
+                        fork_meta: setup.fork_meta,
+                        display_terminals: setup.display_terminals,
+                        holds_turns: setup.holds_turns,
+                        model: saved.model.clone(),
+                        ..kou_acp::Options::new(
+                            saved.cwd.clone(),
+                            "kou-desktop",
+                            env!("CARGO_PKG_VERSION"),
+                        )
+                    },
+                )?
+            }
         };
         let view = self.install_thread(&saved, backend, name, window, cx);
         // From the empty screen's field a prompt comes whole, pictures and
@@ -1144,8 +1681,18 @@ impl Shell {
                 .join("history")
                 .join(format!("{}.json", saved.session))
         });
+        // The surfaces its agent shows are drawn by the app, in its cards.
+        let surfaces = self.surface_view(&saved.id, &saved.cwd, cx);
+        // And the frame of its prompt field, by the app's `composer` plugin,
+        // with the rest of the chat the plugins draw.
+        let field = self.field_face(cx);
+        let chat = self.chat_face(cx);
+        let commands = backend.commands.clone();
         let view = cx.new(|cx| {
             let mut view = ThreadView::new(backend, header, window, cx);
+            view.set_tool_view(Some(surfaces), cx);
+            view.set_field_face(Some(field), cx);
+            view.set_chat_face(Some(chat), cx);
             // The pane draws the header for every kind of pane.
             view.set_header_visible(false, cx);
             // `/new`, `/sessions`, `/resume`, `/rename` and `/settings` are
@@ -1182,6 +1729,7 @@ impl Shell {
             Talking {
                 view: view.clone(),
                 state: ThreadState::Starting,
+                commands,
                 _subscription: subscription,
                 _requests: requests,
             },
@@ -1650,8 +2198,15 @@ impl Shell {
         cwd: std::path::PathBuf,
         cx: &mut Context<Self>,
     ) {
+        let account = self
+            .asked_profile()
+            .filter(|p| p.harness == harness)
+            .map(|p| p.id.clone());
+        let known = self.offered.entry(harness.to_owned()).or_default();
+        known.cwd = cwd.clone();
+        known.account = account.clone();
         let asked = if harness == "kou" {
-            None
+            Asked::Kou
         } else {
             let bin = self
                 .bin
@@ -1668,61 +2223,98 @@ impl Shell {
                 cwd.clone(),
                 self.home.join("panes").join("models"),
             );
-            let account = self
-                .asked_profile()
-                .filter(|profile| profile.harness == harness)
-                .map(|profile| profile.id.clone());
             context.env = self.account_env(harness, account.as_deref());
-            let launch = self
-                .detected
-                .iter()
-                .find(|detected| detected.spec.id == harness)
-                .and_then(|detected| kou_agents::acp_launch(detected, &context));
-            let Some(launch) = launch else {
-                if let Some(known) = self.offered.get_mut(harness) {
-                    known.at = Some(Instant::now());
-                }
-                return;
-            };
-            Some(kou_acp::Launch {
-                program: launch.program,
-                args: launch.args,
-                env: launch.env,
-                cwd: launch.cwd,
-            })
+            if let Some(direct) = self.claude_direct(harness, &context) {
+                // Claude Code itself is asked: greeted, and left.
+                Asked::Claude(Box::new(claude_options(direct, cwd.clone())))
+            } else if let Some(launch) = self.codex_direct(harness, &context) {
+                Asked::Codex(launch)
+            } else {
+                let launch = self
+                    .detected
+                    .iter()
+                    .find(|detected| detected.spec.id == harness)
+                    .and_then(|detected| kou_agents::acp_launch(detected, &context));
+                let Some(launch) = launch else {
+                    if let Some(known) = self.offered.get_mut(harness) {
+                        known.at = Some(Instant::now());
+                    }
+                    return;
+                };
+                Asked::Agent(kou_acp::Launch {
+                    program: launch.program,
+                    args: launch.args,
+                    env: launch.env,
+                    cwd: launch.cwd,
+                })
+            }
         };
         let folder = cwd.clone();
         let read = cx.background_executor().spawn(async move {
             match asked {
-                None => {
+                Asked::Kou => {
                     let offered = kou_native::models(&folder);
-                    Ok(Some((offered.models, offered.providers, offered.current)))
+                    Ok(Some((
+                        offered.models,
+                        offered.providers,
+                        offered.current,
+                        Default::default(),
+                    )))
                 }
-                Some(launch) => kou_acp::models(
+                Asked::Claude(options) => kou_claude::models(&options, Duration::from_secs(20))
+                    .map(|offered| {
+                        Some((
+                            offered.models,
+                            Vec::new(),
+                            offered.current,
+                            Default::default(),
+                        ))
+                    }),
+                Asked::Codex(launch) => {
+                    kou_codex::models(&launch, Duration::from_secs(20)).map(|offered| {
+                        Some((offered.models, Vec::new(), offered.current, offered.access))
+                    })
+                }
+                Asked::Agent(launch) => kou_acp::models(
                     &launch,
                     &folder,
                     ("kou-desktop", env!("CARGO_PKG_VERSION")),
                     Duration::from_secs(20),
                 )
                 .map(|offered| {
-                    offered.map(|offered| (offered.models, offered.providers, offered.current))
+                    offered.map(|offered| {
+                        (
+                            offered.models,
+                            offered.providers,
+                            offered.current,
+                            Default::default(),
+                        )
+                    })
                 }),
             }
         });
+        let direct = self.store.direct(harness);
         let harness = harness.to_owned();
         cx.spawn(async move |this, cx| {
             let answer = read.await;
             this.update(cx, |this, cx| {
+                if this.store.direct(&harness) != direct {
+                    return;
+                }
                 let known = this.offered.entry(harness.clone()).or_default();
-                known.cwd = cwd;
+                if known.cwd != cwd || known.account != account {
+                    return;
+                }
                 known.at = Some(Instant::now());
                 match answer {
-                    Ok(Some((models, providers, current))) => {
+                    Ok(Some((models, providers, current, access))) => {
+                        known.access = access;
                         known.models = models;
                         known.providers = providers;
                         known.current = current;
                     }
                     Ok(None) => {
+                        known.access = Default::default();
                         known.models.clear();
                         known.providers.clear();
                         known.current = None;
@@ -1791,6 +2383,7 @@ impl Shell {
         }
         if let Some(saved) = self.store.pane_mut(pane) {
             saved.title = title.to_owned();
+            saved.titled = true;
         }
         self.show_on_canvas(pane, cx);
         self.save(cx);
@@ -1798,7 +2391,7 @@ impl Shell {
 
     // Show the earlier conversations a pane can go back to. They are read off
     // the main thread: the first reading of a long history takes a moment.
-    fn open_sessions(&mut self, pane: &str, cx: &mut Context<Self>) {
+    pub(crate) fn open_sessions(&mut self, pane: &str, cx: &mut Context<Self>) {
         let Some(saved) = self.store.pane(pane).cloned() else {
             return;
         };
@@ -1807,14 +2400,26 @@ impl Shell {
             .map_or_else(|| saved.harness.clone(), |harness| harness.name.clone());
         // kou's own are read from its files; another agent is asked for
         // its own, the way it is talked to.
+        let context = self.pane_context(&saved).ok();
         let asked = if saved.harness == "kou" {
-            None
+            Kept::Kou
+        } else if let Some(launch) = context
+            .as_ref()
+            .and_then(|c| self.codex_direct(&saved.harness, c))
+        {
+            Kept::Codex(launch)
+        } else if let Some(direct) = context
+            .as_ref()
+            .and_then(|context| self.claude_direct(&saved.harness, context))
+        {
+            // Talked to directly, its records are read as they are kept.
+            Kept::Claude(direct.home)
         } else {
             let launch = self
                 .detected
                 .iter()
                 .find(|detected| detected.spec.id == saved.harness)
-                .zip(self.pane_context(&saved).ok())
+                .zip(context)
                 .and_then(|(detected, context)| kou_agents::acp_launch(detected, &context));
             let Some(launch) = launch else {
                 self.notice = Some(
@@ -1826,7 +2431,7 @@ impl Shell {
                 cx.notify();
                 return;
             };
-            Some(kou_acp::Launch {
+            Kept::Agent(kou_acp::Launch {
                 program: launch.program,
                 args: launch.args,
                 env: launch.env,
@@ -1847,10 +2452,28 @@ impl Shell {
         let cwd = saved.cwd.clone();
         let read = cx.background_executor().spawn(async move {
             match asked {
-                None => kou_native::sessions(&cwd).map(|sessions| {
+                Kept::Kou => kou_native::sessions(&cwd).map(|sessions| {
                     Some(sessions.into_iter().map(past_of_kou).collect::<Vec<_>>())
                 }),
-                Some(launch) => kou_acp::sessions(
+                Kept::Claude(home) => {
+                    let home = home.or_else(kou_claude::records::transcript::default_home);
+                    let sessions = home
+                        .map(|home| kou_claude::sessions(&home, &cwd))
+                        .unwrap_or_default();
+                    Ok(Some(
+                        sessions
+                            .into_iter()
+                            .map(|session| crate::shell::Past {
+                                running: open.contains(&session.id),
+                                id: session.id,
+                                title: session.title,
+                                updated: session.updated,
+                                prompts: None,
+                            })
+                            .collect(),
+                    ))
+                }
+                Kept::Agent(launch) => kou_acp::sessions(
                     &launch,
                     &cwd,
                     ("kou-desktop", env!("CARGO_PKG_VERSION")),
@@ -1870,6 +2493,22 @@ impl Shell {
                             .collect()
                     })
                 }),
+                Kept::Codex(launch) => {
+                    kou_codex::sessions(&launch, Duration::from_secs(20)).map(|sessions| {
+                        Some(
+                            sessions
+                                .into_iter()
+                                .map(|s| crate::shell::Past {
+                                    running: open.contains(&s.id),
+                                    id: s.id,
+                                    title: s.title,
+                                    updated: s.updated,
+                                    prompts: None,
+                                })
+                                .collect(),
+                        )
+                    })
+                }
             }
         });
         let pane = pane.to_owned();
@@ -1918,9 +2557,15 @@ impl Shell {
                 let Some(saved) = self.store.pane_mut(pane) else {
                     return;
                 };
+                // A name it was given (by who started it, or by the user)
+                // is its name: what its agent calls the session is not.
+                if saved.titled {
+                    return;
+                }
                 saved.title = title.clone();
-                let (session, node) = (saved.session.clone(), saved.node);
-                if let Some(canvas) = self.canvas(&session, cx) {
+                let node = saved.node;
+                // (Its tab's canvas, when the tab has been shown as one.)
+                if let Some((_, canvas)) = self.canvas_of(pane) {
                     canvas.update(cx, |canvas, cx| {
                         canvas.update_node(node, |node| node.title = title, cx)
                     });
@@ -1937,6 +2582,15 @@ impl Shell {
             ThreadViewEvent::OpenFolder(path) => {
                 let _ = std::process::Command::new("open").arg(path).spawn();
             }
+            ThreadViewEvent::OpenFile(path) => {
+                if path.exists() {
+                    cx.open_with_system(path);
+                } else {
+                    self.notice = Some(format!("File not found: {}", path.display()).into());
+                    cx.notify();
+                }
+            }
+            ThreadViewEvent::OpenTheme(link) => self.import_theme_link(link, cx),
             // The model chosen in a conversation is the pane's from then on:
             // what its session is opened with the next time, as a chat or
             // in its terminal. ("default" is the harness's own choice, as
@@ -1958,7 +2612,15 @@ impl Shell {
                     && matches!(state, ThreadState::Idle);
                 talking.state = state.clone();
                 // What a later launch resumes: the backend's own session id.
-                let session = talking.view.read(cx).thread().session.clone();
+                // (Claude Code talked to directly names a new conversation
+                // only at its first prompt: until then there is none.)
+                let session = talking
+                    .view
+                    .read(cx)
+                    .thread()
+                    .session
+                    .clone()
+                    .filter(|session| !session.is_empty());
                 if session.is_some()
                     && let Some(saved) = self.store.pane_mut(pane)
                     && saved.resume != session
@@ -1978,6 +2640,9 @@ impl Shell {
                 };
                 self.set_mark(pane, mark, window, cx);
                 self.answer_waits(cx);
+                if matches!(state, ThreadState::Closed(Some(_))) {
+                    self.take_up_again(pane, window, cx);
+                }
                 if finished {
                     self.route_answer(pane, window, cx);
                 }
@@ -2061,6 +2726,13 @@ impl Shell {
         let Some(saved) = self.store.pane(pane).cloned() else {
             return;
         };
+        // What it answers has been passed on once more than what started
+        // its turn; the turn is over, and the next starts counting anew
+        // unless a message starts it.
+        let hops = self.hops_from(pane);
+        self.hops.remove(pane);
+        // Whoever asked it is answered, once, wires or no wires.
+        self.answer_asks(pane, &answer, hops, window, cx);
         // What a pane says goes along the wires of its own tab's canvas.
         let Some(tab) = self.store.tab_of(pane).map(|tab| tab.id.clone()) else {
             return;
@@ -2073,9 +2745,9 @@ impl Shell {
             .board()
             .routes_from(saved.node, "out")
             // Only what was wired on purpose pipes by itself. The edge made
-            // when one agent started another shows who made whom: the parent
-            // talks to its child when it means to, with `pane send`.
-            .filter(|edge| edge.origin == kou_canvas::EdgeOrigin::Wired)
+            // when one agent started another, or wrote to it, shows who made
+            // or wrote to whom: they talk when they mean to, with `pane send`.
+            .filter(|edge| edge.origin.pipes())
             .cloned()
             .collect();
         for edge in routes {
@@ -2093,10 +2765,18 @@ impl Shell {
                 .board()
                 .node(edge.to)
                 .map_or(kou_canvas::NodeKind::Agent, |node| node.kind);
-            let text = edge.message(&answer, &saved.title, kind);
+            let text = edge.message_at(&answer, &saved.title, kind, hops);
+            // Round a ring too many times: it stops here, for the user.
+            if hops > kou_canvas::HOP_LIMIT {
+                self.hold_at_limit(&tab, edge.id, &saved.id, &target.id, &text, cx);
+                continue;
+            }
+            self.hops.insert(saved.id.clone(), hops - 1);
             if self.pass_along(&saved.id, &target.id, &text, false, cx) {
+                self.hops.insert(target.id.clone(), hops);
                 self.deliver(&target.id, &text, window, cx);
             }
+            self.hops.remove(&saved.id);
         }
     }
 
@@ -2149,7 +2829,13 @@ impl Shell {
     }
 
     /// Give a pane input as another agent would: pasted, then Enter.
-    fn send_text(&mut self, pane: &str, text: &str, submit: bool, cx: &mut Context<Self>) -> bool {
+    pub(crate) fn send_text(
+        &mut self,
+        pane: &str,
+        text: &str,
+        submit: bool,
+        cx: &mut Context<Self>,
+    ) -> bool {
         // A conversation takes whole prompts: there is nothing to type into.
         if let Some(talking) = self.threads.get(pane) {
             if talking.closed() {
@@ -2221,11 +2907,24 @@ impl Shell {
                 let failed = !matches!(status, Some(0) | None);
                 let never_ran = running.launched.elapsed() < NEVER_RAN;
                 self.running.remove(pane);
-                if failed && never_ran {
+                // (A sign-in that is over: its account is asked again.)
+                self.signed_in(pane, cx);
+                // A harness that is over at once did nothing it was started
+                // for, whatever status it left with: a command line that
+                // prints why it cannot start and exits with 0 would take the
+                // pane, and the prompt typed for it, without a word. A shell
+                // that is told to exit is another matter.
+                let harness = self
+                    .store
+                    .pane(pane)
+                    .is_some_and(|saved| saved.harness != "shell");
+                if never_ran && (failed || harness) {
                     // It did not get going: closing its pane would hide why.
                     let reason = match status {
-                        Some(status) => format!("It ended at once, with status {status}."),
-                        None => "It ended at once.".to_owned(),
+                        Some(status) if failed => {
+                            format!("It ended at once, with status {status}.")
+                        }
+                        _ => "It ended at once.".to_owned(),
                     };
                     self.stop_pane(pane, &reason, cx);
                     let focused = self.is_focused(pane);
@@ -2265,8 +2964,8 @@ impl Shell {
             .text(Some(kou_agents::READ_LINES), false);
         running.tracker.screen(&tail, Instant::now());
         if let Some(saved) = self.store.pane(pane) {
-            let (session, node) = (saved.session.clone(), saved.node);
-            if let Some(canvas) = self.canvas(&session, cx) {
+            let node = saved.node;
+            if let Some((_, canvas)) = self.canvas_of(pane) {
                 let preview: Vec<&str> = tail
                     .lines()
                     .filter(|line| !line.trim().is_empty())
@@ -2315,7 +3014,7 @@ impl Shell {
 
     /// Bring a pane's mark in line with its tracker, and come back when the
     /// tracker says its answer may change without anything new happening.
-    fn refresh(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn refresh(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
         let now = Instant::now();
         let Some(running) = self.running.get_mut(pane) else {
             return;
@@ -2424,6 +3123,68 @@ impl Shell {
             },
             parent: saved.parent.clone(),
             since_ms: live.changed.elapsed().as_millis() as u64,
+            model: saved.model.clone(),
+        })
+    }
+
+    /// Where a pane is, for an agent that asks: its tab and how the tab is
+    /// shown, the panes beside it, and the tab's canvas: its edges, and the
+    /// nodes of it that are no pane.
+    pub(crate) fn place(&mut self, pane: &str, cx: &mut Context<Self>) -> Option<kou_ipc::Place> {
+        let described = self.describe(pane)?;
+        let session = self.store.session(&described.session)?.clone();
+        let tab = self.store.tab_of(pane)?.clone();
+        let space = self
+            .store
+            .space(&session.space)
+            .map(|space| space.name.clone())
+            .unwrap_or_default();
+        let others: Vec<kou_ipc::Pane> = tab
+            .root
+            .panes()
+            .into_iter()
+            .filter(|other| other.as_str() != pane)
+            .filter_map(|other| self.describe(other))
+            .collect();
+        // The nodes of the tab's canvas by the panes they are of; a node
+        // that is no pane is named by its number.
+        let nodes: std::collections::HashMap<kou_canvas::NodeId, String> = self
+            .store
+            .panes_in(&tab.id)
+            .into_iter()
+            .map(|saved| (saved.node, saved.id.clone()))
+            .collect();
+        let edges = self.tab_edges(&tab.id, cx);
+        let orchestrator = self.orchestrates(pane, cx);
+        let mut notes = Vec::new();
+        if let Some(canvas) = self.canvas(&tab.id, cx) {
+            let canvas = canvas.read(cx);
+            let board = canvas.board();
+            for node in board.nodes() {
+                if nodes.contains_key(&node.id) {
+                    continue;
+                }
+                notes.push(kou_ipc::Note {
+                    id: format!("n{}", node.id),
+                    kind: node.kind.label().to_owned(),
+                    title: node.title.clone(),
+                    text: if node.detail.trim().is_empty() {
+                        node.place.clone()
+                    } else {
+                        node.detail.clone()
+                    },
+                });
+            }
+        }
+        Some(kou_ipc::Place {
+            pane: described,
+            tab: self.describe_tab(&session, &tab),
+            session: session.name.clone(),
+            space,
+            others,
+            edges,
+            notes,
+            orchestrator,
         })
     }
 
@@ -2554,12 +3315,15 @@ impl Shell {
             Request::PaneInfo { pane } => self
                 .describe(&pane)
                 .map_or_else(|| missing(&pane), Response::Pane),
+            Request::Where { pane } => self
+                .place(&pane, cx)
+                .map_or_else(|| missing(&pane), |place| Response::Place(Box::new(place))),
             Request::Harnesses => Response::Harnesses {
                 harnesses: self
                     .detected
                     .iter()
                     .map(|detected| {
-                        let info = info(detected);
+                        let info = info(detected, self.store.direct(detected.spec.id));
                         kou_ipc::Harness {
                             id: info.id,
                             name: info.name,
@@ -2587,6 +3351,20 @@ impl Shell {
                     .collect(),
             },
             Request::PaneSpawn(spawn) => {
+                // A model the harness does not have is refused, once the
+                // harness has said which it has.
+                match self.check_model(&spawn, cx) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        self.deferred.push(crate::wires::defer_spawn(spawn, reply));
+                        self.wait_for_models(window, cx);
+                        return;
+                    }
+                    Err(message) => {
+                        reply.send(refused(message));
+                        return;
+                    }
+                }
                 let session = spawn
                     .from
                     .as_deref()
@@ -2614,7 +3392,11 @@ impl Shell {
                         let native = self
                             .harness(&spawn.harness)
                             .is_some_and(|harness| harness.native);
-                        let kind = if spawn.native && native {
+                        // Its own terminal when asked for, a chat when asked
+                        // for and there is one, else what the app opens.
+                        let kind = if spawn.terminal {
+                            PaneKind::Terminal
+                        } else if spawn.native && native {
                             PaneKind::Thread
                         } else {
                             self.default_kind(&spawn.harness)
@@ -2641,16 +3423,21 @@ impl Shell {
                             }
                             (_, parent) => self.seat_for(parent),
                         };
-                        match self.add_pane_at(
-                            &session,
-                            &spawn.harness,
-                            spawn.from.clone(),
-                            kind,
-                            crate::shell::Place::Auto,
-                            seat,
-                            window,
-                            cx,
-                        ) {
+                        // (What the user has open stays open: a pane an
+                        // agent asks for takes nothing from where they are.)
+                        let made = self.undisturbed(|this| {
+                            this.add_pane_at(
+                                &session,
+                                &spawn.harness,
+                                spawn.from.clone(),
+                                kind,
+                                crate::shell::Place::Auto,
+                                seat,
+                                window,
+                                cx,
+                            )
+                        });
+                        match made {
                             Some(pane) => {
                                 // A split asked for at a size other than half.
                                 if spawn.placement == Placement::Split
@@ -2661,13 +3448,23 @@ impl Shell {
                                 {
                                     tab.root.set_share(&pane, f32::from(share) / 100.);
                                 }
+                                // Under the account with the most left,
+                                // where its harness has several: what an
+                                // orchestrator starts is spread over them.
+                                let account = (self.store.balance
+                                    && spawn.harness != "shell"
+                                    && self.store.profiles_of(&spawn.harness).next().is_some())
+                                .then(|| self.balanced_account(&spawn.harness))
+                                .flatten();
                                 if let Some(saved) = self.store.pane_mut(&pane) {
+                                    saved.profile = account;
                                     saved.model = spawn.model.clone();
                                     if let Some(cwd) = spawn.cwd.clone() {
                                         saved.cwd = cwd;
                                     }
                                     if let Some(title) = spawn.title.clone() {
                                         saved.title = title;
+                                        saved.titled = true;
                                     }
                                 }
                                 // The canvas names the node as the tab names the pane.
@@ -2723,6 +3520,12 @@ impl Shell {
                 if held {
                     Response::Done
                 } else if self.send_text(&pane, &text, submit, cx) {
+                    // What one agent sends another has been passed on once
+                    // more than what the sender is answering.
+                    if let (true, Some(from)) = (submit, from.as_deref()) {
+                        let hops = self.hops_from(from);
+                        self.hops.insert(pane.clone(), hops);
+                    }
                     self.refresh(&pane, window, cx);
                     Response::Done
                 } else if self.store.pane(&pane).is_some() {
@@ -2732,6 +3535,27 @@ impl Shell {
                 } else {
                     missing(&pane)
                 }
+            }
+            Request::PaneAsk { pane, text, from } => self.ask_pane(&from, &pane, &text, window, cx),
+            Request::EdgeList { pane } => self.list_edges(&pane, cx),
+            Request::EdgeAdd {
+                pane,
+                from,
+                to,
+                mode,
+            } => self.change_edge(&pane, &from, &to, crate::wires::EdgeChange::Add(mode), cx),
+            Request::EdgeSet {
+                pane,
+                from,
+                to,
+                mode,
+            } => self.change_edge(&pane, &from, &to, crate::wires::EdgeChange::Set(mode), cx),
+            Request::EdgeRemove { pane, from, to } => {
+                self.change_edge(&pane, &from, &to, crate::wires::EdgeChange::Remove, cx)
+            }
+            Request::HarnessModels { harness } => {
+                self.harness_models(harness, reply, window, cx);
+                return;
             }
             Request::PaneRead {
                 pane,
@@ -2950,9 +3774,33 @@ impl Shell {
             running.terminal.read(cx).kill();
             drop(running.view);
         }
-        // Dropping the view drops the backend's channels, which ends its session.
-        self.threads.remove(pane);
+        // Its conversation is told to end: let go of without a word (as
+        // when the app quits, or its window is rebuilt), a Claude Code that
+        // is kept apart from the app works on, to be found again.
+        if let Some(talking) = self.threads.remove(pane) {
+            let _ = talking.commands.try_send(kou_thread::Command::Close);
+        }
+        let kept = self
+            .store
+            .pane_mut(pane)
+            .and_then(|saved| saved.keeper.take())
+            .is_some();
+        if kept {
+            // (Also one nothing talked to: found again by nobody, it is
+            // ended over its socket.)
+            self.sweep_keepers();
+        }
         self.answer_waits(cx);
+    }
+
+    /// Whether what runs in a pane goes on when the app is closed: a
+    /// conversation with a Claude Code that is kept apart from it.
+    pub(crate) fn outlives_app(&self, pane: &str) -> bool {
+        self.threads.contains_key(pane)
+            && self
+                .store
+                .pane(pane)
+                .is_some_and(|pane| pane.keeper.is_some())
     }
 }
 

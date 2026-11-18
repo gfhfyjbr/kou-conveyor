@@ -479,18 +479,25 @@ impl Run {
     }
 }
 
-/// The run of work entry `index` is in, when it is work.
-pub(crate) fn run_of(entries: &[Entry], state: &ThreadState, index: usize) -> Option<Run> {
-    if !folds(entries.get(index)?) {
+/// The run of work entry `index` is in, when it is work. `stays` says of
+/// an entry that would fold that it does not (a surface's newest call).
+pub(crate) fn run_of(
+    entries: &[Entry],
+    state: &ThreadState,
+    index: usize,
+    stays: &dyn Fn(usize) -> bool,
+) -> Option<Run> {
+    let folds = |at: usize| entries.get(at).is_some_and(folds) && !stays(at);
+    if !folds(index) {
         return None;
     }
     let stretch = stretch(entries, state, index)?;
     let mut start = index;
-    while start > stretch.start && folds(&entries[start - 1]) {
+    while start > stretch.start && folds(start - 1) {
         start -= 1;
     }
     let end = (index..stretch.end)
-        .find(|at| !folds(&entries[*at]))
+        .find(|at| !folds(*at))
         .unwrap_or(stretch.end);
     Some(Run {
         start,
@@ -754,9 +761,12 @@ impl ThreadView {
         if let Some(known) = self.fold_memo.borrow().get(&index) {
             return known.map(|(run, open)| (run, open, run.start == index));
         }
-        let found = run_of(self.thread.entries(), self.thread.state(), index)
-            .filter(Run::over)
-            .map(|run| (run, self.nest.worked_open.contains(&run.start)));
+        let stays = self.newest_surfaces();
+        let found = run_of(self.thread.entries(), self.thread.state(), index, &|at| {
+            stays.contains(&at)
+        })
+        .filter(Run::over)
+        .map(|run| (run, self.nest.worked_open.contains(&run.start)));
         let mut memo = self.fold_memo.borrow_mut();
         match found {
             Some((run, open)) => {
@@ -777,8 +787,11 @@ impl ThreadView {
             self.nest.worked_open.insert(start);
         }
         self.forget_folds();
-        let end = run_of(self.thread.entries(), self.thread.state(), start)
-            .map_or(start + 1, |run| run.end);
+        let stays = self.newest_surfaces();
+        let end = run_of(self.thread.entries(), self.thread.state(), start, &|at| {
+            stays.contains(&at)
+        })
+        .map_or(start + 1, |run| run.end);
         self.remeasure_rows(start..end.max(start + 1));
         cx.notify();
     }
@@ -1020,14 +1033,22 @@ mod tests {
             tool(),
             tool(),
         ];
-        let run = run_of(&entries, &ThreadState::Working, 2).unwrap();
+        let none = |_: usize| false;
+        let run = run_of(&entries, &ThreadState::Working, 2, &none).unwrap();
         assert_eq!((run.start, run.end), (1, 3));
         assert!(run.over(), "a message follows it");
-        let last = run_of(&entries, &ThreadState::Working, 4).unwrap();
+        let last = run_of(&entries, &ThreadState::Working, 4, &none).unwrap();
         assert_eq!((last.start, last.end), (4, 6));
         assert!(!last.over(), "the turn still runs");
-        assert!(run_of(&entries, &ThreadState::Idle, 5).unwrap().over());
-        assert_eq!(run_of(&entries, &ThreadState::Idle, 3), None);
+        assert!(
+            run_of(&entries, &ThreadState::Idle, 5, &none)
+                .unwrap()
+                .over()
+        );
+        assert_eq!(run_of(&entries, &ThreadState::Idle, 3, &none), None);
+        // An entry that stays cuts a run in two, and is in neither.
+        let kept = |at: usize| at == 4;
+        assert_eq!(run_of(&entries, &ThreadState::Idle, 4, &kept), None);
     }
 
     #[test]

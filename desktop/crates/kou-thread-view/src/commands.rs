@@ -15,6 +15,9 @@ pub(crate) enum Act {
     Model,
     /// Switch the mode through the contract.
     Mode,
+    Access,
+    /// Switch the level of effort through the contract.
+    Effort,
     /// Stop the running turn.
     Stop,
     /// What waits for the agent.
@@ -95,6 +98,10 @@ pub(crate) struct Offer {
     pub model: Option<String>,
     pub modes: Vec<Choice>,
     pub mode: Option<String>,
+    pub access: kou_thread::Access,
+    /// The levels of effort, offered apart from the modes.
+    pub efforts: Vec<Choice>,
+    pub effort: Option<String>,
     /// A turn runs.
     pub running: bool,
     /// Prompts wait in the queue; it is paused.
@@ -120,6 +127,8 @@ pub(crate) struct Catalog {
     pub specs: Vec<Spec>,
     pub models: Vec<Value>,
     pub modes: Vec<Value>,
+    pub access: Vec<Value>,
+    pub efforts: Vec<Value>,
     pub queue: Vec<Value>,
 }
 
@@ -211,15 +220,45 @@ impl Catalog {
                 Act::Model,
             ));
         }
+        // An agent that offers its efforts apart from its modes has a command
+        // for them; one that offers them as its modes (kou) has them under
+        // the mode's.
+        let efforts = !offer.efforts.is_empty() && !offer.closed;
         if !offer.modes.is_empty() && !offer.closed {
             let mut mode = spec(
                 "mode",
                 Some("<mode>"),
-                "The mode the agent works in; kou calls it its effort",
+                if efforts {
+                    "The mode the agent works in"
+                } else {
+                    "The mode the agent works in; kou calls it its effort"
+                },
                 Act::Mode,
             );
-            mode.aliases = vec!["effort", "think"];
+            if !efforts {
+                mode.aliases = vec!["effort", "think"];
+            }
             add(mode);
+        }
+        if !offer.access.choices.is_empty() && !offer.closed {
+            let mut permissions = spec(
+                "permissions",
+                Some("[preset]"),
+                "Choose permissions for this chat",
+                Act::Access,
+            );
+            permissions.aliases = vec!["approvals"];
+            add(permissions);
+        }
+        if efforts {
+            let mut effort = spec(
+                "effort",
+                Some("<level>"),
+                "How hard the model thinks; alone, the list",
+                Act::Effort,
+            );
+            effort.aliases = vec!["think"];
+            add(effort);
         }
         if offer.app {
             add(spec(
@@ -332,6 +371,8 @@ impl Catalog {
             specs,
             models: values(&offer.models, offer.model.as_deref()),
             modes: values(&offer.modes, offer.mode.as_deref()),
+            access: values(&offer.access.choices, offer.access.current.as_deref()),
+            efforts: values(&offer.efforts, offer.effort.as_deref()),
             queue,
         }
     }
@@ -349,6 +390,8 @@ impl Catalog {
         match self.specs[spec].act {
             Act::Model => &self.models,
             Act::Mode => &self.modes,
+            Act::Access => &self.access,
+            Act::Effort => &self.efforts,
             Act::Queue => &self.queue,
             _ => &[],
         }
@@ -626,6 +669,45 @@ mod tests {
         assert_eq!(
             (clear.act, clear.help.as_str()),
             (Act::Backend, "The agent's clear")
+        );
+    }
+
+    #[test]
+    fn levels_of_effort_offered_apart_from_the_modes_have_a_command_of_their_own() {
+        let mut offer = offer();
+        offer.modes = vec![choice("default", "Ask"), choice("plan", "Plan")];
+        offer.mode = Some("default".into());
+        offer.efforts = vec![
+            Choice {
+                id: "low".into(),
+                name: "Low".into(),
+                description: None,
+            },
+            Choice {
+                id: "high".into(),
+                name: "High".into(),
+                description: None,
+            },
+        ];
+        offer.effort = Some("high".into());
+        let catalog = Catalog::of(&offer);
+        let get = |name: &str| &catalog.specs[catalog.named(name).expect(name)];
+        assert_eq!(get("effort").act, Act::Effort);
+        assert_eq!(get("think").act, Act::Effort, "by alias");
+        assert!(get("mode").aliases.is_empty());
+        assert_eq!(names(&catalog, "/effort "), ["low", "high"]);
+        assert_eq!(names(&catalog, "/effort hi"), ["high"]);
+        let Suggestion::Value { value, .. } = &catalog.suggestions("/effort ")[1] else {
+            panic!("a value");
+        };
+        assert!(value.current);
+        assert_eq!(value.detail, "High");
+        // None on offer: the mode's command answers to `/effort`, as kou's does.
+        offer.efforts.clear();
+        let catalog = Catalog::of(&offer);
+        assert_eq!(
+            catalog.specs[catalog.named("effort").unwrap()].act,
+            Act::Mode
         );
     }
 

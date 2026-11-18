@@ -525,6 +525,7 @@ started you unless your brief says to. Returns the new pane's id and state.".int
                     "below": { "type": "boolean", "default": false, "description": "With placement split: put the pane below you instead of to your right." },
                     "share": { "type": "integer", "minimum": 10, "maximum": 90, "description": "With placement split: how much of your own room the pane takes, in percent. Default: half." },
                     "native": { "type": "boolean", "default": false, "description": "Run it as the app's native chat instead of its terminal interface, when list_harnesses says it can. read_pane then returns its whole last answer as clean text." },
+                    "terminal": { "type": "boolean", "default": false, "description": "Run it in its own terminal interface, where the app would open a native chat. Not together with native." },
                 }),
                 &["harness"],
             ),
@@ -674,6 +675,166 @@ session ids, or to see what already runs before you start something.".into(),
             ),
             hints: READ_ONLY,
             run: list_panes,
+        },
+        Tool {
+            name: "where_am_i",
+            title: "Where you are in the app",
+            description: "Say where you are in kou desktop: your pane, your tab and how the user sees it (as panes \
+side by side, or as a canvas on which each pane is a node), the other panes of the tab, and the edges of the tab's \
+canvas with what each carries. Call it first when the user speaks of the canvas, a node, an edge, a pane, a tab, \
+\"the agent next to you\" or what you are connected to, and before you act on a pane you did not start. `pane` \
+asks the same of another pane.".into(),
+            input: object(
+                json!({
+                    "pane": { "type": "string", "description": "A pane id such as \"p3\". Default: your own pane." },
+                }),
+                &[],
+            ),
+            output: object(json!({ "place": { "type": "object" } }), &["place"]),
+            hints: READ_ONLY,
+            run: where_am_i,
+        },
+        Tool {
+            name: "list_edges",
+            title: "List the canvas's edges",
+            description: "List the edges of your tab's canvas: for each, where it starts and ends, whether it is a \
+wire (and in which mode: auto, approve or off), a line that only shows who started or wrote to whom, who wired it \
+when an agent did, and how many messages wait on it for the user. where_am_i says the same with the panes around \
+you; use this when the edges are all you need.".into(),
+            input: no_arguments(),
+            output: object(
+                json!({
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "said": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["edges"],
+            ),
+            hints: READ_ONLY,
+            run: list_edges,
+        },
+        Tool {
+            name: "add_edge",
+            title: "Wire one node to another",
+            description: "Wire one node of your tab's canvas to another: from then on every final answer of the agent \
+at `from` goes to the node at `to` as a prompt (mode auto), waits there for the user (approve), or does not go by \
+itself (off). Only the tab's orchestrator may: the user gives a node that right on the canvas, and where_am_i says \
+whether you have it. Wire sparingly, and take a wire away with remove_edge when the work it was for is done: an auto \
+wire keeps carrying. A wire that closes a ring is made, with a warning: a message passed on more than 6 times, agent \
+to agent, waits for the user. To hear one answer from another agent without a wire, use ask_pane.".into(),
+            input: edge_input(true, false),
+            output: object(
+                json!({
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "said": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["edges"],
+            ),
+            hints: Hints {
+                read_only: false,
+                destructive: false,
+                idempotent: true,
+            },
+            run: add_edge,
+        },
+        Tool {
+            name: "set_edge",
+            title: "Change a wire's mode",
+            description: "Change the mode of a wire of your tab's canvas: auto (what it carries goes at once), approve \
+(it waits on its target until the user lets it through) or off (nothing goes by itself). The tab's orchestrator \
+only.".into(),
+            input: edge_input(true, true),
+            output: object(
+                json!({
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "said": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["edges"],
+            ),
+            hints: Hints {
+                read_only: false,
+                destructive: false,
+                idempotent: true,
+            },
+            run: set_edge,
+        },
+        Tool {
+            name: "remove_edge",
+            title: "Take a wire away",
+            description: "Take a wire of your tab's canvas away: what its start answers no longer goes to its end. \
+Between an agent and one it started, the line that shows who started whom stays. The tab's orchestrator only.".into(),
+            input: edge_input(false, false),
+            output: object(
+                json!({
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "said": { "type": "array", "items": { "type": "string" } },
+                }),
+                &["edges"],
+            ),
+            hints: Hints {
+                read_only: false,
+                destructive: false,
+                idempotent: true,
+            },
+            run: remove_edge,
+        },
+        Tool {
+            name: "ask_pane",
+            title: "Ask a pane, and get its answer back",
+            description: "Ask another agent something and have its answer come back to you by itself: the text is \
+sent to the pane as a message, and what its agent answers at the end of that turn is delivered to you once, as a \
+message beginning `[canvas] answer from`. Nothing is wired, and you do not wait: go on with your own work or end your \
+turn. Use it instead of send_to_pane followed by wait_for_panes and read_pane when you have something else to do \
+meanwhile. The pane must be a native chat that is running.".into(),
+            input: object(
+                json!({
+                    "pane": { "type": "string", "description": PANE_ARGUMENT },
+                    "text": { "type": "string", "description": "The question." },
+                }),
+                &["pane", "text"],
+            ),
+            output: object(
+                json!({
+                    "pane": { "type": "string" },
+                    "asked": { "type": "boolean" },
+                }),
+                &["pane", "asked"],
+            ),
+            hints: Hints {
+                read_only: false,
+                destructive: false,
+                idempotent: false,
+            },
+            run: ask_pane,
+        },
+        Tool {
+            name: "list_models",
+            title: "List a harness's models",
+            description: "List the models a harness can run with, by the ids start_agent's `model` takes, with the one \
+it runs when none is asked for. start_agent refuses an id that is not among them. A harness that names no models to \
+the app runs with its own, and an id given for it cannot be checked.".into(),
+            input: object(
+                json!({
+                    "harness": { "type": "string", "description": "A harness id from list_harnesses, such as claude." },
+                }),
+                &["harness"],
+            ),
+            output: object(
+                json!({
+                    "harness": { "type": "string" },
+                    "models": { "type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "name": { "type": "string" },
+                        },
+                        "required": ["id", "name"],
+                    }},
+                    "default": { "type": "string" },
+                }),
+                &["harness", "models"],
+            ),
+            hints: READ_ONLY,
+            run: list_models,
         },
         Tool {
             name: "describe_pane",
@@ -873,6 +1034,12 @@ fn start_agent(context: &Context, args: &Args) -> Run {
         _ => Placement::Auto,
     };
     let native = args.flag("native", false)?;
+    let terminal = args.flag("terminal", false)?;
+    if native && terminal {
+        return Err(invalid(
+            "`native` and `terminal` exclude each other: a native chat, or its terminal".to_owned(),
+        ));
+    }
     let below = args.flag("below", false)?;
     let share = args.whole("share", 10, 90)?.map(|share| share as u8);
     if (below || share.is_some()) && placement != Placement::Split {
@@ -893,6 +1060,7 @@ fn start_agent(context: &Context, args: &Args) -> Run {
         below,
         share,
         native,
+        terminal,
     };
     let pane = match ask(context, &Request::PaneSpawn(spawn))? {
         Response::Pane(pane) => pane,
@@ -1411,6 +1579,162 @@ fn describe_pane(context: &Context, args: &Args) -> Run {
         text,
         structured: json!({ "pane": pane_json(&pane, env) }),
     })
+}
+
+fn where_am_i(context: &Context, args: &Args) -> Run {
+    let id = match args.text("pane")? {
+        Some(pane) => pane,
+        None => own_pane(context, "Name a pane")?,
+    };
+    let place = match ask(context, &Request::Where { pane: id })? {
+        Response::Place(place) => *place,
+        other => return Err(unexpected(other)),
+    };
+    let own = context.env.pane.as_deref() == Some(place.pane.id.as_str());
+    Ok(Done {
+        text: kou_ipc::cli::describe_place(&place, own),
+        structured: json!({ "place": place }),
+    })
+}
+
+/// What the tools that wire take: the ends, and where one goes, the mode.
+fn edge_input(mode: bool, mode_required: bool) -> Value {
+    let end = "A node of your tab's canvas: a pane id such as \"p3\", a node id such as \"n7\" (where_am_i \
+               lists them), or \"me\" for your own pane.";
+    let mut properties = json!({
+        "from": { "type": "string", "description": format!("Where the wire starts: the node whose answers it carries. {end}") },
+        "to": { "type": "string", "description": format!("Where the wire ends: the node that gets them. {end}") },
+    });
+    if mode {
+        properties["mode"] = json!({
+            "type": "string",
+            "enum": ["auto", "approve", "off"],
+            "description": "auto: what it carries goes at once. approve: it waits on its target until the user lets it through. off: nothing goes by itself.",
+        });
+        if !mode_required {
+            properties["mode"]["default"] = json!("auto");
+        }
+    }
+    let required: &[&str] = if mode_required {
+        &["from", "to", "mode"]
+    } else {
+        &["from", "to"]
+    };
+    object(properties, required)
+}
+
+fn edges_done(response: Response) -> Run {
+    match response {
+        Response::Edges { edges, said } => Ok(Done {
+            text: kou_ipc::cli::describe_edges(&edges, &said),
+            structured: json!({ "edges": edges, "said": said }),
+        }),
+        other => Err(unexpected(other)),
+    }
+}
+
+/// The ends of an edge a tool was given, with `me` as the caller's pane.
+fn edge_ends(context: &Context, args: &Args) -> Result<(String, String, String), Fail> {
+    let own = own_pane(context, "Wires are of the tab you are in")?;
+    let end = |key: &str| -> Result<String, Fail> {
+        let given = args.required(key, "a pane id such as \"p3\", or \"me\"")?;
+        Ok(if given == "me" { own.clone() } else { given })
+    };
+    Ok((own.clone(), end("from")?, end("to")?))
+}
+
+fn edge_mode(word: &str) -> kou_ipc::EdgeMode {
+    match word {
+        "approve" => kou_ipc::EdgeMode::Approve,
+        "off" => kou_ipc::EdgeMode::Off,
+        _ => kou_ipc::EdgeMode::Auto,
+    }
+}
+
+fn list_edges(context: &Context, _args: &Args) -> Run {
+    let pane = own_pane(context, "Edges are of the tab you are in")?;
+    edges_done(ask(context, &Request::EdgeList { pane })?)
+}
+
+fn add_edge(context: &Context, args: &Args) -> Run {
+    let (pane, from, to) = edge_ends(context, args)?;
+    let mode = args.text("mode")?.is_some().then(|| {
+        args.choice("mode", &["auto", "approve", "off"], "auto")
+            .map(edge_mode)
+    });
+    let request = Request::EdgeAdd {
+        pane,
+        from,
+        to,
+        mode: mode.transpose()?,
+    };
+    edges_done(ask(context, &request)?)
+}
+
+fn set_edge(context: &Context, args: &Args) -> Run {
+    let (pane, from, to) = edge_ends(context, args)?;
+    args.required("mode", "auto, approve or off")?;
+    let mode = edge_mode(args.choice("mode", &["auto", "approve", "off"], "auto")?);
+    edges_done(ask(
+        context,
+        &Request::EdgeSet {
+            pane,
+            from,
+            to,
+            mode,
+        },
+    )?)
+}
+
+fn remove_edge(context: &Context, args: &Args) -> Run {
+    let (pane, from, to) = edge_ends(context, args)?;
+    edges_done(ask(context, &Request::EdgeRemove { pane, from, to })?)
+}
+
+fn ask_pane(context: &Context, args: &Args) -> Run {
+    let pane = args.required("pane", PANE_ARGUMENT)?;
+    let text = args
+        .raw("text")?
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| invalid("`text` is required: what to ask".into()))?;
+    not_yourself(context, &pane, "ask another pane")?;
+    let from = own_pane(context, "An answer needs a pane to come back to")?;
+    let request = Request::PaneAsk {
+        pane: pane.clone(),
+        text,
+        from,
+    };
+    match ask(context, &request)? {
+        Response::Text { text } => Ok(Done {
+            text,
+            structured: json!({ "pane": pane, "asked": true }),
+        }),
+        other => Err(unexpected(other)),
+    }
+}
+
+fn list_models(context: &Context, args: &Args) -> Run {
+    let harness = args.required(
+        "harness",
+        "a harness id from list_harnesses, such as claude",
+    )?;
+    match ask(context, &Request::HarnessModels { harness })? {
+        Response::Models {
+            harness,
+            models,
+            default,
+        } => {
+            let mut structured = json!({ "harness": harness, "models": models });
+            if let Some(default) = &default {
+                structured["default"] = json!(default);
+            }
+            Ok(Done {
+                text: kou_ipc::cli::describe_models(&harness, &models, default.as_deref()),
+                structured,
+            })
+        }
+        other => Err(unexpected(other)),
+    }
 }
 
 fn close_pane(context: &Context, args: &Args) -> Run {

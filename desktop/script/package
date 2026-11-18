@@ -44,6 +44,8 @@ DESKTOP = Path(__file__).resolve().parent.parent
 CRATE = DESKTOP / "crates" / "kou-desktop"
 RESOURCES = CRATE / "resources"
 LICENSE = DESKTOP.parent / "LICENSE"
+FONT_DIR = DESKTOP / "crates" / "kou-ui" / "fonts"
+FONT_LICENSES = {f"{family}-OFL.txt": FONT_DIR / family / "LICENSE.txt" for family in ("onest", "martian-mono")}
 PROGRAM = "kou-desktop"
 IDENTIFIER = "dev.kou-conveyor.desktop"
 
@@ -59,8 +61,10 @@ here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$prefix/bin" "$prefix/share/applications" "$prefix/share/icons"
 cp "$here/bin/kou-desktop" "$prefix/bin/kou-desktop"
 cp -R "$here/share/icons/hicolor" "$prefix/share/icons/"
+mkdir -p "$prefix/share/licenses/kou-desktop"
+cp "$here"/share/licenses/kou-desktop/*.txt "$prefix/share/licenses/kou-desktop/"
 # The entry starts the program where it was put, on the path or not.
-sed "s|^Exec=.*|Exec=$prefix/bin/kou-desktop|" \\
+sed "s|^Exec=.*|Exec=$prefix/bin/kou-desktop %u|" \\
     "$here/share/applications/kou-desktop.desktop" > "$prefix/share/applications/kou-desktop.desktop"
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database "$prefix/share/applications" || true
@@ -116,6 +120,8 @@ def macos(program, name, version, out, identifier, sign):
     (bundle / "Contents" / "Info.plist").write_text(info)
     for icon in ("Assets.car", "AppIcon.icns"):
         shutil.copy(RESOURCES / "macos" / icon, bundle / "Contents" / "Resources" / icon)
+    for filename, license_file in FONT_LICENSES.items():
+        shutil.copy(license_file, bundle / "Contents" / "Resources" / filename)
     signing = ["codesign", "--force", "--sign", sign]
     if sign != "-":
         # What a notary asks of a program signed with a certificate.
@@ -155,6 +161,10 @@ def linux(program, name, out):
     (root / "share" / "applications").mkdir(parents=True)
     shutil.copy(RESOURCES / "linux" / f"{PROGRAM}.desktop", root / "share" / "applications")
     shutil.copytree(RESOURCES / "linux" / "icons", root / "share" / "icons")
+    licenses = root / "share" / "licenses" / PROGRAM
+    licenses.mkdir(parents=True)
+    for filename, license_file in FONT_LICENSES.items():
+        shutil.copy(license_file, licenses / filename)
     (root / "install.sh").write_text(INSTALL)
     shutil.copy(LICENSE, root / "LICENSE")
     package = out / f"{name}.tar.gz"
@@ -178,6 +188,8 @@ def windows(program, name, out):
     with zipfile.ZipFile(package, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         archive.write(program, f"{name}/{PROGRAM}.exe")
         archive.write(LICENSE, f"{name}/LICENSE.txt")
+        for filename, license_file in FONT_LICENSES.items():
+            archive.write(license_file, f"{name}/{filename}")
     return package
 
 

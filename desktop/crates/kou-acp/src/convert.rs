@@ -85,6 +85,40 @@ pub(crate) struct Prompt {
     pub attachments: usize,
 }
 
+/// What marks a note of the app's own in a prompt: see [`preface`].
+const PREFACE_OPEN: &str = "<kou-desktop>";
+const PREFACE_CLOSE: &str = "</kou-desktop>";
+
+/// `text` as a note of the app's that goes with a prompt: marked, and said
+/// not to be the user's.
+pub(crate) fn preface(text: &str) -> String {
+    format!(
+        "{PREFACE_OPEN}\nA note from the app this session runs in, not from the user:\n{}\n{PREFACE_CLOSE}",
+        text.trim()
+    )
+}
+
+/// A block of a user's message without the app's note it may begin with
+/// (an agent that shows the prompt back, or replays a session, shows the
+/// note too). `None` when the note was all of it.
+pub(crate) fn without_preface(block: acp::ContentBlock) -> Option<acp::ContentBlock> {
+    let acp::ContentBlock::Text(mut text) = block else {
+        return Some(block);
+    };
+    let Some(noted) = text.text.trim_start().strip_prefix(PREFACE_OPEN) else {
+        return Some(acp::ContentBlock::Text(text));
+    };
+    let Some(end) = noted.find(PREFACE_CLOSE) else {
+        return Some(acp::ContentBlock::Text(text));
+    };
+    let rest = noted[end + PREFACE_CLOSE.len()..].trim_start().to_owned();
+    if rest.is_empty() {
+        return None;
+    }
+    text.text = rest;
+    Some(acp::ContentBlock::Text(text))
+}
+
 /// A prompt, restricted to what the agent said it accepts. Text and resource
 /// links are the baseline every agent takes.
 pub(crate) fn prompt(blocks: &[Block], accepts: &acp::PromptCapabilities) -> Prompt {
@@ -306,6 +340,18 @@ pub(crate) fn display(meta: &impl serde::Serialize) -> Display {
 /// part of the conversation's own.
 pub(crate) fn said_by_subagent(meta: &impl serde::Serialize) -> Option<String> {
     delegation(meta, None).parent
+}
+
+/// What set off the cycle of the model whose end a report of usage marks,
+/// as Claude's adapter says it (`_meta["_claude/origin"].kind`):
+/// `task-notification` for one the model ran because something it had left
+/// in the background ended. `None` for a cycle a prompt set off.
+pub(crate) fn cycle_origin(meta: &impl serde::Serialize) -> Option<String> {
+    let meta = serde_json::to_value(meta).unwrap_or_default();
+    meta.get("_claude/origin")?
+        .get("kind")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// A tool call's content. `terminal` gives the state of an embedded terminal.
@@ -667,6 +713,38 @@ mod tests {
             delegation(&Some(json!({"other": 1})), None),
             told(None, None)
         );
+    }
+
+    #[test]
+    fn the_app_s_note_before_a_prompt_is_marked_and_taken_out_where_it_comes_back() {
+        let note = preface("  You run in a pane of kou desktop.\n");
+        assert_eq!(
+            note,
+            "<kou-desktop>\nA note from the app this session runs in, not from the user:\n\
+             You run in a pane of kou desktop.\n</kou-desktop>"
+        );
+        let text = |text: &str| acp::ContentBlock::from(text.to_owned());
+        let shown = |block: acp::ContentBlock| match without_preface(block) {
+            Some(acp::ContentBlock::Text(text)) => Some(text.text),
+            Some(other) => panic!("not text: {other:?}"),
+            None => None,
+        };
+        // A block that is the note alone is nothing of the user's.
+        assert_eq!(shown(text(&note)), None);
+        // An agent that joins the blocks of a prompt: the user's part is left.
+        assert_eq!(
+            shown(text(&format!("{note}\n\nfix the build"))).as_deref(),
+            Some("fix the build")
+        );
+        // Anything else is as it was, a message that only mentions the mark too.
+        assert_eq!(
+            shown(text("fix the build")).as_deref(),
+            Some("fix the build")
+        );
+        let quoted = "what does <kou-desktop> mean?";
+        assert_eq!(shown(text(quoted)).as_deref(), Some(quoted));
+        let unclosed = "<kou-desktop> and no end";
+        assert_eq!(shown(text(unclosed)).as_deref(), Some(unclosed));
     }
 
     #[test]

@@ -1,0 +1,12 @@
+{"commit": "a41c9e", "p50_ms": 12.1, "p99_ms": 60.1, "allocs": 1754}
+{"commit": "b7d210", "p50_ms": 12.0, "p99_ms": 58.0, "allocs": 1697}
+{"commit": "c03fa1", "p50_ms": 11.8, "p99_ms": 56.0, "allocs": 1673}
+{"commit": "d9e77b", "p50_ms": 11.5, "p99_ms": 55.4, "allocs": 1643}
+{"commit": "e12a50", "p50_ms": 11.1, "p99_ms": 52.3, "allocs": 1610}
+{"commit": "f6b3c8", "p50_ms": 10.9, "p99_ms": 49.9, "allocs": 1495}
+{"commit": "07ad4e", "p50_ms": 10.4, "p99_ms": 52.4, "allocs": 1377}
+{"commit": "18c2f9", "p50_ms": 10.3, "p99_ms": 49.3, "allocs": 1328}
+{"commit": "29e6b1", "p50_ms": 10.1, "p99_ms": 48.5, "allocs": 1277}
+{"commit": "3af07d", "p50_ms": 9.5, "p99_ms": 47.5, "allocs": 1198}
+{"commit": "4b91c2", "p50_ms": 9.0, "p99_ms": 45.9, "allocs": 1123}
+{"commit": "5cd3e6", "p50_ms": 8.9, "p99_ms": 45.3, "allocs": 1082}

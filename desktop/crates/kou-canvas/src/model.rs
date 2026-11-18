@@ -269,6 +269,12 @@ pub struct Node {
     /// Where it works, for its footer: a folder, a branch, the program it runs.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub place: String,
+    /// The user made its agent the orchestrator of this board: it may wire
+    /// the board's nodes together and take wires away, as the user does.
+    /// The user gives the right in the node's inspector, and takes it back
+    /// there.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub orchestrator: bool,
 }
 
 impl Node {
@@ -370,7 +376,23 @@ pub enum EdgeOrigin {
     Spawned,
     /// The user (or a template) wired an output to an input.
     Wired,
+    /// One agent sent the other a message on purpose: it shows that they
+    /// talk, and carries nothing by itself.
+    Sent,
 }
+
+impl EdgeOrigin {
+    /// Whether an edge that came to be this way pipes what its source
+    /// answers: only one wired on purpose does.
+    pub fn pipes(self) -> bool {
+        self == EdgeOrigin::Wired
+    }
+}
+
+/// How many times a message may be passed on along edges, one agent's
+/// answer becoming the next one's prompt, before it waits for the user: what
+/// stops a ring of agents answering each other for ever.
+pub const HOP_LIMIT: u32 = 6;
 
 fn out_port() -> String {
     "out".to_owned()
@@ -413,10 +435,26 @@ pub struct Edge {
     /// See [`EdgeOrigin`].
     #[serde(default)]
     pub origin: EdgeOrigin,
+    /// The node whose agent made it, or wired it last; `None` when the user
+    /// did. The board says so on the edge, so that the user can tell a wire
+    /// of their own from one an agent drew.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<NodeId>,
 }
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
+}
+
+/// The line a message that came through the canvas starts with: what it is
+/// (`from`, `answer from`), whose it is, and, from the second time it was
+/// passed on, how many times that is of how many there may be.
+pub fn canvas_header(what: &str, title: &str, id: &str, hops: u32) -> String {
+    if hops >= 2 {
+        format!("[canvas] {what} «{title}» ({id}), hop {hops} of {HOP_LIMIT}:")
+    } else {
+        format!("[canvas] {what} «{title}» ({id}):")
+    }
 }
 
 /// Which end of an edge.
@@ -459,6 +497,13 @@ impl Edge {
     /// `{{from.title}}`, `{{from.id}}`, `{{from.port}}`, `{{edge.id}}`), under
     /// a line naming its source when the header is on for the target.
     pub fn message(&self, text: &str, from_title: &str, target: NodeKind) -> String {
+        self.message_at(text, from_title, target, 1)
+    }
+
+    /// The same for a message that has been passed on `hops` times, this
+    /// time included: from the second on, the line naming its source says
+    /// so, and how many there may be (see [`HOP_LIMIT`]).
+    pub fn message_at(&self, text: &str, from_title: &str, target: NodeKind, hops: u32) -> String {
         let template = if self.template.trim().is_empty() {
             "{{text}}"
         } else {
@@ -486,7 +531,10 @@ impl Edge {
         }
         body.push_str(rest);
         if self.header_for(target) {
-            format!("[canvas] from «{from_title}» ({}):\n{body}", self.from)
+            format!(
+                "{}\n{body}",
+                canvas_header("from", from_title, &self.from.to_string(), hops)
+            )
         } else {
             body
         }
@@ -653,6 +701,42 @@ impl Board {
             .filter(move |edge| edge.from == node || edge.to == node)
     }
 
+    /// The ring an edge from `from` to `to` would close, if it carried:
+    /// the nodes from `to` round to `from`, along edges that pipe by
+    /// themselves ([`EdgeOrigin::pipes`], and not switched off). `None` when
+    /// what `to` answers never comes back to `from`.
+    pub fn would_ring(&self, from: NodeId, to: NodeId) -> Option<Vec<NodeId>> {
+        if from == to {
+            return Some(vec![from]);
+        }
+        // Breadth first from `to`, remembering how each node was reached.
+        let mut came: Vec<(NodeId, NodeId)> = Vec::new();
+        let mut queue = std::collections::VecDeque::from([to]);
+        while let Some(node) = queue.pop_front() {
+            for edge in &self.edges {
+                if edge.from != node || !edge.carries() || !edge.origin.pipes() {
+                    continue;
+                }
+                if edge.to == to || came.iter().any(|(reached, _)| *reached == edge.to) {
+                    continue;
+                }
+                came.push((edge.to, node));
+                if edge.to == from {
+                    let mut ring = vec![from];
+                    let mut at = from;
+                    while at != to {
+                        at = came.iter().find(|(reached, _)| *reached == at)?.1;
+                        ring.push(at);
+                    }
+                    ring.reverse();
+                    return Some(ring);
+                }
+                queue.push_back(edge.to);
+            }
+        }
+        None
+    }
+
     /// The edges a node's output on `port` goes along: the ones that carry,
     /// in the order they were made. What the app routes a message by.
     pub fn routes_from<'a>(
@@ -795,6 +879,7 @@ impl Board {
                 header: None,
                 template: String::new(),
                 origin: EdgeOrigin::Spawned,
+                by: None,
             });
         }
         Some(id)
@@ -824,6 +909,7 @@ impl Board {
             header: None,
             template: String::new(),
             origin: EdgeOrigin::Wired,
+            by: None,
         };
         if let Some(existing) = self.edges.iter().find(|other| other.same_ends(&edge)) {
             return Err(WireError::Exists(existing.id));
@@ -1036,6 +1122,23 @@ impl Board {
             .map(|(id, _)| id)
     }
 
+    /// Makes the edge `id` here what it is in `now` (there, changed or gone):
+    /// how a state kept for undo takes a change that was not the user's.
+    pub(crate) fn carry_edge(&mut self, id: EdgeId, now: Option<&Edge>) {
+        let at = self.edges.iter().position(|edge| edge.id == id);
+        match (at, now) {
+            (Some(at), Some(now)) => self.edges[at] = now.clone(),
+            (Some(at), None) => {
+                self.edges.remove(at);
+            }
+            (None, Some(now)) => {
+                self.edges.push(now.clone());
+                self.next_edge = self.next_edge.max(now.id);
+            }
+            (None, None) => {}
+        }
+    }
+
     /// Go back to an earlier state of this board, as far as it can be gone back
     /// to: where nodes were and what they were called, the notes, and the edges
     /// between nodes that are still here. Nodes the app owns stay or stay gone,
@@ -1118,6 +1221,7 @@ impl Board {
             rect,
             parent,
             place: String::new(),
+            orchestrator: false,
         });
         self.next
     }
@@ -1642,5 +1746,72 @@ mod tests {
         // And an empty object is an empty board.
         let empty: Board = serde_json::from_str("{}").unwrap();
         assert!(empty.is_empty());
+    }
+
+    #[test]
+    fn a_ring_of_wires_is_found_before_it_is_closed() {
+        let mut board = Board::new();
+        let a = board.add_at(agent("a"), 0., 0.);
+        let b = board.add_at(agent("b"), 900., 0.);
+        let c = board.add_at(agent("c"), 1800., 0.);
+        assert!(board.link(a, b) && board.link(b, c));
+        // What c answers would come round to c: through a and b.
+        assert_eq!(board.would_ring(c, a), Some(vec![a, b, c]));
+        assert_eq!(board.would_ring(b, a), Some(vec![a, b]));
+        // Nothing comes back along a chain, and nothing wires to itself.
+        assert_eq!(board.would_ring(a, c), None);
+        assert_eq!(board.would_ring(a, a), Some(vec![a]));
+        // An edge that is off, and one that only shows who started or
+        // wrote to whom, carry nothing round.
+        let first = board.edges()[0].id;
+        board.update_edge(first, |edge| edge.mode = EdgeMode::Off);
+        assert_eq!(board.would_ring(c, a), None);
+        board.update_edge(first, |edge| {
+            edge.mode = EdgeMode::Auto;
+            edge.origin = EdgeOrigin::Sent;
+        });
+        assert_eq!(board.would_ring(c, a), None);
+        assert!(!EdgeOrigin::Sent.pipes() && !EdgeOrigin::Spawned.pipes());
+        assert!(EdgeOrigin::Wired.pipes());
+    }
+
+    #[test]
+    fn a_message_passed_on_says_how_many_times_and_who_made_a_wire_is_kept() {
+        let mut board = Board::new();
+        let a = board.add_at(agent("lead"), 0., 0.);
+        let b = board.add_at(agent("worker"), 900., 0.);
+        let id = board
+            .connect(PortRef::new(a, "out"), PortRef::new(b, "in"))
+            .unwrap();
+        let edge = board.edge(id).unwrap().clone();
+        // The first time it is as it always was; from the second on the
+        // line counts.
+        assert_eq!(
+            edge.message_at("done", "lead", NodeKind::Agent, 1),
+            edge.message("done", "lead", NodeKind::Agent)
+        );
+        assert_eq!(
+            edge.message_at("done", "lead", NodeKind::Agent, 3),
+            format!("[canvas] from «lead» ({a}), hop 3 of {HOP_LIMIT}:\ndone")
+        );
+        assert_eq!(
+            canvas_header("answer from", "worker", "p7", 1),
+            "[canvas] answer from «worker» (p7):"
+        );
+        // Who wired it, and who may: kept with the board, and absent from
+        // a board that has neither, which reads as before.
+        let plain = serde_json::to_string(&board).unwrap();
+        assert!(
+            !plain.contains("orchestrator") && !plain.contains("\"by\""),
+            "{plain}"
+        );
+        board.update_edge(id, |edge| edge.by = Some(a));
+        board.node_mut(a).unwrap().orchestrator = true;
+        let saved = serde_json::to_string(&board).unwrap();
+        let back: Board = serde_json::from_str(&saved).unwrap();
+        assert_eq!(back.edge(id).unwrap().by, Some(a));
+        assert!(back.node(a).unwrap().orchestrator && !back.node(b).unwrap().orchestrator);
+        let old: Board = serde_json::from_str(&plain).unwrap();
+        assert_eq!(old.edge(id).unwrap().by, None);
     }
 }

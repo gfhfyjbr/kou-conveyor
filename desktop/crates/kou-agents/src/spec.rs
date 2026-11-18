@@ -79,7 +79,20 @@ pub enum Login {
         signed_out: &'static [&'static str],
         /// What to tell the user to run.
         hint: &'static str,
+        /// The arguments that sign in, in a terminal: what the app runs
+        /// for an account that is new.
+        sign_in: &'static [&'static str],
     },
+}
+
+impl Login {
+    /// The arguments that sign in, when the harness has a command for it.
+    pub fn sign_in(&self) -> Option<&'static [&'static str]> {
+        match self {
+            Login::Status { sign_in, .. } => Some(sign_in),
+            Login::Unknown => None,
+        }
+    }
 }
 
 /// How one launch option reaches a harness.
@@ -462,6 +475,7 @@ static SPECS: &[Spec] = &[
             args: &["auth", "status"],
             signed_out: &["\"loggedin\":false"],
             hint: "Run `claude auth login`.",
+            sign_in: &["auth", "login"],
         },
         tui: Tui {
             args: &[],
@@ -527,6 +541,7 @@ static SPECS: &[Spec] = &[
             args: &["login", "status"],
             signed_out: &["notloggedin"],
             hint: "Run `codex login`.",
+            sign_in: &["login"],
         },
         tui: Tui {
             args: &[],
@@ -723,6 +738,7 @@ static SPECS: &[Spec] = &[
             args: &["status"],
             signed_out: &["notloggedin", "notauthenticated"],
             hint: "Run `cursor-agent login`.",
+            sign_in: &["login"],
         },
         tui: Tui {
             args: &[],
@@ -1145,6 +1161,7 @@ static SPECS: &[Spec] = &[
             args: &["whoami", "--format", "json"],
             signed_out: &["\"account\":null", "notloggedin"],
             hint: "Run `kiro-cli login`.",
+            sign_in: &["login"],
         },
         tui: Tui {
             args: &["chat"],

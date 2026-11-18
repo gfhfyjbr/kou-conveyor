@@ -1,0 +1,5 @@
+{
+  "name": "appearance",
+  "description": "Theme library, shared theme previews and colour editor.",
+  "desktop": { "script": "desktop/appearance.js" }
+}

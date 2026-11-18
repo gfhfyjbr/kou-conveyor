@@ -82,6 +82,11 @@ pub struct Orchestration {
     pub claude_plugin: Option<PathBuf>,
     /// The same guidance as one Markdown file, for the others.
     pub instructions: Option<PathBuf>,
+    /// A few lines on where the agent is (the app, its panes, the canvas,
+    /// how to look), as a file: put into the context of a harness that is
+    /// given the plugin, which otherwise learns nothing of the app until
+    /// its skill's description happens to fit a task.
+    pub place: Option<PathBuf>,
 }
 
 /// A stdio MCP server.
@@ -109,6 +114,10 @@ pub struct AcpSetup {
     pub instructions: Option<String>,
     /// `_meta` for opening the session.
     pub meta: Option<Map<String, Value>>,
+    /// A few lines on where the agent is, for an agent that takes no added
+    /// instructions (`kou_acp::Options::preface`): they go with its first
+    /// prompt.
+    pub preface: Option<String>,
     /// The harness's own login command, said when the agent needs a login.
     pub login_hint: Option<String>,
     /// How `session/fork` is told the message a fork ends at, for
@@ -122,6 +131,10 @@ pub struct AcpSetup {
     /// adapter known to say then which commands it left running in the
     /// background, and when each of them ends.
     pub display_terminals: bool,
+    /// The adapter keeps a turn open while what the agent started in the
+    /// background runs, and takes the next prompt meanwhile
+    /// (`kou_acp::Options::holds_turns`).
+    pub holds_turns: bool,
 }
 
 /// The adapters that fork a session up to one of their messages when
@@ -174,7 +187,7 @@ pub fn tui_launch(
     options: &TuiOptions,
 ) -> anyhow::Result<Launch> {
     let theirs = match context.orchestration {
-        Some(_) => Theirs::read(),
+        Some(_) => Theirs::read(context),
         None => Theirs::default(),
     };
     tui_launch_with(detected, context, options, &theirs)
@@ -297,12 +310,12 @@ struct Theirs {
 }
 
 impl Theirs {
-    fn read() -> Self {
+    fn read(context: &PaneContext) -> Self {
         let variable = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
         Theirs {
             opencode_config: variable("OPENCODE_CONFIG_CONTENT"),
             copilot_dirs: variable("COPILOT_CUSTOM_INSTRUCTIONS_DIRS"),
-            codex_instructions: codex_sets("developer_instructions"),
+            codex_instructions: codex_sets(context, "developer_instructions"),
         }
     }
 }
@@ -338,7 +351,7 @@ fn prompt_is_typed(spec: &Spec, options: &TuiOptions) -> bool {
 /// file that cannot be read or copied leaves it out rather than failing.
 pub fn acp_launch(detected: &Detected, context: &PaneContext) -> Option<Launch> {
     let theirs = match context.orchestration {
-        Some(_) => Theirs::read(),
+        Some(_) => Theirs::read(context),
         None => Theirs::default(),
     };
     acp_launch_with(detected, context, &theirs)
@@ -427,10 +440,18 @@ pub fn acp_setup(detected: &Detected, context: &PaneContext) -> AcpSetup {
         // them went on in the background and when they ended; another
         // client sees such a command as one that is over.
         setup.display_terminals = true;
+        // It holds a turn open until the agents started in it are done
+        // (`Turn.deferredSettle` in its source), hands that turn off to a
+        // prompt sent meanwhile, and ends every one of them at a stop.
+        setup.holds_turns = true;
     }
     let Some(orchestration) = &context.orchestration else {
         return setup;
     };
+    // Whatever the harness, its agent is to know where it runs: one that
+    // takes no instructions when its session opens is told with its first
+    // prompt.
+    setup.preface = place_text(orchestration);
     // The agent starts the server; how much of its own environment it passes
     // on differs, so the pane's variables are always spelled out.
     if let Some(server) = &orchestration.mcp {
@@ -447,9 +468,14 @@ pub fn acp_setup(detected: &Detected, context: &PaneContext) -> AcpSetup {
                 json!([{ "type": "local", "path": text(plugin) }]),
             );
             setup.meta = Some(claude_meta(&claude_options));
+            // The skill is read when a task fits it; where the agent is,
+            // it is told from the start (its adapter adds this to Claude
+            // Code's own instructions).
+            setup.instructions = place_text(orchestration);
         }
-        // Loaded at launch by `acp_launch`.
-        ("grok", Some(_)) => {}
+        // Loaded at launch by `acp_launch`: a skill, read when a task fits
+        // it. Where the agent is, it is told from the start.
+        ("grok", Some(_)) => setup.instructions = place_text(orchestration),
         // Given at launch by `acp_launch`.
         ("opencode" | "copilot", _) => {}
         _ => setup.instructions = instructions_text(orchestration),
@@ -457,11 +483,113 @@ pub fn acp_setup(detected: &Detected, context: &PaneContext) -> AcpSetup {
     setup
 }
 
+/// What Claude Code is started with when the app talks to it itself, over
+/// its own stream of JSON lines, with no adapter between (`kou-claude`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaudeDirect {
+    /// The `claude` executable.
+    pub program: PathBuf,
+    /// Variables to add to the app's own environment: the pane's, and its
+    /// account's.
+    pub env: Vec<(String, String)>,
+    /// The account's home, when it is not Claude Code's own: where its
+    /// records are.
+    pub home: Option<PathBuf>,
+    /// The orchestration server, when one is attached.
+    pub mcp_servers: Vec<McpServer>,
+    /// What is added to Claude Code's own instructions: where the agent is
+    /// when the guidance comes as a plugin, else the guidance itself.
+    pub instructions: Option<String>,
+    /// The guidance as a plugin folder.
+    pub plugins: Vec<PathBuf>,
+}
+
+/// Whether the app can hold a chat with this harness itself, with no
+/// adapter: an installed, ready Claude Code or Codex CLI.
+pub fn talks_directly(detected: &Detected) -> bool {
+    matches!(detected.spec.id, "claude" | "codex")
+        && detected.readiness == Readiness::Ready
+        && detected.path.is_some()
+}
+
+/// How to start Claude Code for a chat the app holds with it directly, with
+/// the same things attached as its terminal launch gets by flags
+/// ([`Attach::ClaudeFlags`]). `None` for another harness, and for a Claude
+/// Code that is not installed or cannot be started.
+pub fn claude_direct(detected: &Detected, context: &PaneContext) -> Option<ClaudeDirect> {
+    if detected.spec.id != "claude" || !talks_directly(detected) {
+        return None;
+    }
+    let mut direct = ClaudeDirect {
+        program: detected.path.clone()?,
+        env: pane_env(context),
+        home: context
+            .env
+            .iter()
+            .find(|(name, _)| name == "CLAUDE_CONFIG_DIR")
+            .map(|(_, home)| PathBuf::from(home)),
+        ..ClaudeDirect::default()
+    };
+    let Some(orchestration) = &context.orchestration else {
+        return Some(direct);
+    };
+    if let Some(server) = &orchestration.mcp {
+        direct.mcp_servers.push(McpServer {
+            env: server_env(server, context),
+            ..server.clone()
+        });
+    }
+    match &orchestration.claude_plugin {
+        Some(plugin) => {
+            direct.plugins.push(plugin.clone());
+            direct.instructions = place_text(orchestration);
+        }
+        None => direct.instructions = instructions_text(orchestration),
+    }
+    Some(direct)
+}
+
+/// A private app server for this pane, with the same account and orchestration
+/// as its Codex terminal. The chat gets its events over stdio.
+pub fn codex_direct(detected: &Detected, context: &PaneContext) -> Option<Launch> {
+    if detected.spec.id != "codex" || !talks_directly(detected) {
+        return None;
+    }
+    let mut launch = Launch {
+        program: detected.path.clone()?,
+        args: vec!["app-server".into()],
+        env: pane_env(context),
+        cwd: context.cwd.clone(),
+    };
+    if let Some(orchestration) = &context.orchestration {
+        let server = orchestration
+            .mcp
+            .as_ref()
+            .map(|s| (s, server_env(s, context)));
+        codex_config(
+            &mut launch,
+            server.as_ref(),
+            instructions_text(orchestration),
+            codex_sets(context, "developer_instructions"),
+        );
+    }
+    Some(launch)
+}
+
 /// The `_meta` Claude's adapter reads the SDK's `options` from.
 fn claude_meta(options: &Map<String, Value>) -> Map<String, Value> {
     let mut meta = Map::new();
     meta.insert("claudeCode".to_owned(), json!({ "options": options }));
     meta
+}
+
+/// The few lines on where the agent is, when there are any to read.
+fn place_text(orchestration: &Orchestration) -> Option<String> {
+    let file = orchestration.place.as_ref()?;
+    std::fs::read_to_string(file)
+        .ok()
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
 }
 
 /// The guidance file's text, when there is one and it can be read.
@@ -528,6 +656,13 @@ fn attach(
                 launch
                     .args
                     .extend(["--plugin-dir".to_owned(), text(plugin)]);
+                // The skill is read when a task fits it; where the agent
+                // is, it is told from the start.
+                if let Some(place) = place_text(orchestration) {
+                    launch
+                        .args
+                        .extend(["--append-system-prompt".to_owned(), place]);
+                }
             } else if let Some(guidance) = guidance {
                 launch
                     .args
@@ -535,33 +670,7 @@ fn attach(
             }
         }
         Attach::CodexConfig => {
-            if let Some((server, env)) = &server {
-                let key = format!("mcp_servers.{}", toml_key(&server.name));
-                let args: Vec<String> = server.args.iter().map(|arg| toml_string(arg)).collect();
-                let table: Vec<String> = env
-                    .iter()
-                    .map(|(name, value)| format!("{}={}", toml_key(name), toml_string(value)))
-                    .collect();
-                for value in [
-                    format!("{key}.command={}", toml_string(&text(&server.command))),
-                    format!("{key}.args=[{}]", args.join(", ")),
-                    format!("{key}.env={{{}}}", table.join(", ")),
-                    // Codex ends a tool call after 60 seconds by default
-                    // (developers.openai.com/codex/mcp), and waiting on another
-                    // pane takes longer than that.
-                    format!("{key}.tool_timeout_sec={CODEX_TOOL_TIMEOUT}"),
-                ] {
-                    launch.args.extend(["-c".to_owned(), value]);
-                }
-            }
-            if let Some(guidance) = guidance
-                && !theirs.codex_instructions
-            {
-                launch.args.extend([
-                    "-c".to_owned(),
-                    format!("developer_instructions={}", toml_string(&guidance)),
-                ]);
-            }
+            codex_config(launch, server.as_ref(), guidance, theirs.codex_instructions)
         }
         Attach::OpencodeConfig => {
             let instructions = orchestration
@@ -752,8 +861,13 @@ fn copilot_instructions(
 
 /// Whether the user's Codex configuration sets this top-level key, which an
 /// override would hide.
-fn codex_sets(key: &str) -> bool {
-    let home = std::env::var_os("CODEX_HOME")
+fn codex_sets(context: &PaneContext, key: &str) -> bool {
+    let home = context
+        .env
+        .iter()
+        .find(|(name, _)| name == "CODEX_HOME")
+        .map(|(_, home)| std::ffi::OsString::from(home))
+        .or_else(|| std::env::var_os("CODEX_HOME"))
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .or_else(|| Some(dirs::home_dir()?.join(".codex")));
@@ -769,6 +883,47 @@ fn codex_sets(key: &str) -> bool {
                 .strip_prefix(key)
                 .is_some_and(|rest| rest.trim_start().starts_with('='))
         })
+}
+
+fn codex_config(
+    launch: &mut Launch,
+    server: Option<&(&McpServer, Vec<(String, String)>)>,
+    guidance: Option<String>,
+    has_instructions: bool,
+) {
+    let mut settings = Vec::new();
+    if let Some((server, env)) = server {
+        let key = format!("mcp_servers.{}", toml_key(&server.name));
+        let args: Vec<_> = server.args.iter().map(|arg| toml_string(arg)).collect();
+        settings.push(format!(
+            "{key}.command={}",
+            toml_string(&text(&server.command))
+        ));
+        settings.push(format!("{key}.args=[{}]", args.join(", ")));
+        // Pass the pane's environment by name. Account proxy passwords belong
+        // in the environment, not in the program's command line.
+        let (inherited, explicit): (Vec<_>, Vec<_>) =
+            env.iter().partition(|pair| launch.env.contains(pair));
+        let names: Vec<_> = inherited
+            .iter()
+            .map(|(name, _)| toml_string(name))
+            .collect();
+        settings.push(format!("{key}.env_vars=[{}]", names.join(", ")));
+        if !explicit.is_empty() {
+            let table: Vec<_> = explicit
+                .iter()
+                .map(|(name, value)| format!("{}={}", toml_key(name), toml_string(value)))
+                .collect();
+            settings.push(format!("{key}.env={{{}}}", table.join(", ")));
+        }
+        settings.push(format!("{key}.tool_timeout_sec={CODEX_TOOL_TIMEOUT}"));
+    }
+    if let Some(guidance) = guidance.filter(|_| !has_instructions) {
+        settings.push(format!("developer_instructions={}", toml_string(&guidance)));
+    }
+    for value in settings {
+        launch.args.extend(["-c".into(), value]);
+    }
 }
 
 /// A TOML key: bare when it can be, quoted otherwise.
@@ -1815,9 +1970,111 @@ mod tests {
                 }),
                 claude_plugin: plugin.then(|| folder.join("kou-plugin")),
                 instructions: Some(guidance),
+                place: None,
             }),
             ..context(state)
         }
+    }
+
+    #[test]
+    fn a_harness_given_the_skill_is_also_told_where_it_is() {
+        let state = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let mut context = orchestrated(state.path(), folder.path(), true);
+        let place = folder.path().join("place.md");
+        std::fs::write(&place, "You run in a pane of kou desktop.\n").unwrap();
+        if let Some(orchestration) = &mut context.orchestration {
+            orchestration.place = Some(place);
+        }
+        // Claude Code in its terminal: the plugin, and the few lines with it.
+        let launch = launch_with(
+            &installed("claude", Some("2.1.322")),
+            &context,
+            &options(Some("fix the build"), None, None),
+            &Theirs::default(),
+        );
+        let plugin = folder.path().join("kou-plugin");
+        let at = launch
+            .args
+            .iter()
+            .position(|arg| arg == "--plugin-dir")
+            .expect("the plugin");
+        assert_eq!(
+            launch.args[at..],
+            [
+                "--plugin-dir",
+                plugin.to_str().unwrap(),
+                "--append-system-prompt",
+                "You run in a pane of kou desktop.",
+                "fix the build",
+            ]
+        );
+        // As a chat: added to its instructions when the session opens.
+        let claude = Detected {
+            native: true,
+            acp: Some(AcpCommand {
+                program: "/x/claude-agent-acp".into(),
+                args: Vec::new(),
+                env: Vec::new(),
+            }),
+            ..installed("claude", Some("2.1.322"))
+        };
+        let setup = acp_setup(&claude, &context);
+        assert_eq!(
+            setup.instructions.as_deref(),
+            Some("You run in a pane of kou desktop.")
+        );
+        // Any harness's chat has the lines at hand: an agent that takes no
+        // instructions when its session opens is told with its first prompt.
+        assert_eq!(setup.preface, setup.instructions);
+        for (id, program) in [
+            ("droid", "/x/droid"),
+            ("codex", "/x/codex-acp"),
+            ("grok", "/x/grok"),
+        ] {
+            let other = Detected {
+                native: true,
+                acp: Some(AcpCommand {
+                    program: program.into(),
+                    args: Vec::new(),
+                    env: Vec::new(),
+                }),
+                ..installed(id, Some("9.9.9"))
+            };
+            let setup = acp_setup(&other, &context);
+            assert_eq!(
+                setup.preface.as_deref(),
+                Some("You run in a pane of kou desktop."),
+                "{id}"
+            );
+            // Grok Build is given the skill, and so the lines; the others
+            // the whole guidance.
+            assert_eq!(
+                setup.instructions.as_deref(),
+                Some(if id == "grok" {
+                    "You run in a pane of kou desktop."
+                } else {
+                    "Use kou to start agents in other panes.\n"
+                }),
+                "{id}"
+            );
+        }
+        // Without the plugin a harness has the whole guidance, which says
+        // where it is itself: nothing is added twice.
+        let mut plain = orchestrated(state.path(), folder.path(), false);
+        if let Some(orchestration) = &mut plain.orchestration {
+            orchestration.place = Some(folder.path().join("place.md"));
+        }
+        let launch = launch_with(
+            &installed("claude", Some("2.1.322")),
+            &plain,
+            &options(None, None, None),
+            &Theirs::default(),
+        );
+        assert_eq!(
+            value_after(&launch, "--append-system-prompt"),
+            "Use kou to start agents in other panes.\n"
+        );
     }
 
     /// The pane's variables as an MCP server is given them.
@@ -1966,7 +2223,7 @@ mod tests {
                 "-c",
                 r#"mcp_servers.kou.args=["mcp"]"#,
                 "-c",
-                r#"mcp_servers.kou.env={KOU_SOCKET="/run/kou/kou.sock", KOU_PANE="p3", KOU_SESSION="s1", KOU_BIN="/Applications/kou desktop/kou-desktop"}"#,
+                r#"mcp_servers.kou.env_vars=["KOU_SOCKET", "KOU_PANE", "KOU_SESSION", "KOU_BIN"]"#,
                 "-c",
                 "mcp_servers.kou.tool_timeout_sec=3600",
                 "-c",
@@ -1987,6 +2244,51 @@ mod tests {
                 .any(|arg| arg.starts_with("developer_instructions"))
         );
         assert_eq!(toml_key("odd name"), r#""odd name""#);
+    }
+
+    #[test]
+    fn the_direct_codex_server_uses_the_panes_account_and_mcp_environment() {
+        let folder = tempfile::tempdir().unwrap();
+        let profile = tempfile::tempdir().unwrap();
+        let mut context = orchestrated(folder.path(), folder.path(), false);
+        let profile_path = profile.path().to_string_lossy().into_owned();
+        context.env = vec![
+            ("CODEX_HOME".into(), profile_path.clone()),
+            ("HTTPS_PROXY".into(), "http://proxy.invalid:8181".into()),
+        ];
+        let detected = installed("codex", None);
+        let launch = codex_direct(&detected, &context).unwrap();
+        assert_eq!(launch.program, detected.path.clone().unwrap());
+        assert_eq!(launch.cwd, context.cwd);
+        assert_eq!(env_of(&launch, "CODEX_HOME"), Some(profile_path.as_str()));
+        assert_eq!(
+            env_of(&launch, "HTTPS_PROXY"),
+            Some("http://proxy.invalid:8181")
+        );
+        assert_eq!(launch.args[0], "app-server");
+        let args = launch.args[1..].join(" ");
+        assert!(args.contains("mcp_servers.kou.env_vars=") && args.contains("HTTPS_PROXY"));
+        assert!(!args.contains("proxy.invalid") && !args.contains("notify="));
+        assert!(args.contains("developer_instructions="));
+
+        std::fs::write(
+            profile.path().join("config.toml"),
+            "developer_instructions = 'Account guidance'",
+        )
+        .unwrap();
+        let launch = codex_direct(&detected, &context).unwrap();
+        assert!(
+            !launch
+                .args
+                .iter()
+                .any(|arg| arg.starts_with("developer_instructions="))
+        );
+        assert!(codex_direct(&installed("claude", None), &context).is_none());
+        let missing = Detected {
+            path: None,
+            ..detected
+        };
+        assert!(codex_direct(&missing, &context).is_none());
     }
 
     #[test]
@@ -2427,6 +2729,7 @@ mod tests {
                 fork_meta: acp_setup(&claude, &context).fork_meta,
                 meta: Some(words),
                 display_terminals: true,
+                holds_turns: true,
                 ..AcpSetup::default()
             }
         );
@@ -2485,6 +2788,76 @@ mod tests {
             acp_setup(&installed("claude", None), &context).fork_meta,
             None
         );
+    }
+
+    #[test]
+    fn claude_code_talked_to_directly_gets_what_its_terminal_gets() {
+        let state = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        let claude = installed("claude", Some("2.1.325"));
+
+        // Nothing attached: the program, the pane, and no home of its own.
+        let plain = claude_direct(&claude, &context(state.path())).unwrap();
+        assert_eq!(plain.program, Path::new("/usr/local/bin/claude"));
+        assert!(plain.env.contains(&("KOU_PANE".into(), "p3".into())));
+        assert_eq!(plain.home, None);
+        assert!(plain.mcp_servers.is_empty() && plain.plugins.is_empty());
+        assert_eq!(plain.instructions, None);
+
+        // With the app's tools and skill, under another account: the server
+        // with the pane spelled out, the plugin, where the agent is, and the
+        // account's home for its records.
+        let mut context = orchestrated(state.path(), folder.path(), true);
+        let place = folder.path().join("place.md");
+        std::fs::write(&place, "You run in a pane of kou desktop.\n").unwrap();
+        if let Some(orchestration) = &mut context.orchestration {
+            orchestration.place = Some(place);
+        }
+        context.env = vec![
+            ("CLAUDE_CONFIG_DIR".into(), "/homes/work".into()),
+            ("HTTPS_PROXY".into(), "http://10.0.0.1:8080".into()),
+        ];
+        let direct = claude_direct(&claude, &context).unwrap();
+        assert_eq!(direct.home.as_deref(), Some(Path::new("/homes/work")));
+        assert!(
+            direct
+                .env
+                .contains(&("HTTPS_PROXY".into(), "http://10.0.0.1:8080".into()))
+        );
+        assert_eq!(direct.mcp_servers.len(), 1);
+        assert_eq!(direct.mcp_servers[0].name, "kou");
+        assert!(
+            direct.mcp_servers[0]
+                .env
+                .contains(&("KOU_PANE".into(), "p3".into()))
+        );
+        assert_eq!(direct.plugins, [folder.path().join("kou-plugin")]);
+        assert_eq!(
+            direct.instructions.as_deref(),
+            Some("You run in a pane of kou desktop.")
+        );
+
+        // Without a plugin the guidance itself is what it is told.
+        let context = orchestrated(state.path(), folder.path(), false);
+        let direct = claude_direct(&claude, &context).unwrap();
+        assert!(direct.plugins.is_empty());
+        assert_eq!(
+            direct.instructions.as_deref(),
+            Some("Use kou to start agents in other panes.\n")
+        );
+
+        // Only Claude Code, and only one that can be started.
+        assert_eq!(claude_direct(&installed("codex", None), &context), None);
+        let signed_out = Detected {
+            readiness: Readiness::NeedsLogin,
+            ..installed("claude", None)
+        };
+        assert_eq!(claude_direct(&signed_out, &context), None);
+        let missing = Detected {
+            path: None,
+            ..installed("claude", None)
+        };
+        assert_eq!(claude_direct(&missing, &context), None);
     }
 
     #[test]

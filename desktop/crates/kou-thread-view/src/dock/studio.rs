@@ -57,20 +57,39 @@ impl Dock {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        self.studio_dock_body(true, window, cx)
+            .or_else(|| self.studio_dock_body(false, window, cx))
+            .unwrap()
+    }
+
+    fn studio_dock_body(
+        &mut self,
+        scripted: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if scripted && self.chat_face.is_none() {
+            return None;
+        }
         let queue = self.queue_element(window, cx);
         let measure = self.measure(cx);
         let line = self.studio_line(cx);
         // The model's list rises from its word at the right of the foot; with
         // no word there (nothing to choose from), from the field's right edge.
-        let model_picker = self.model_picker_element(gpui::Anchor::BottomRight, window, cx);
+        let theme = crate::studio::studio_theme(kou_ui::theme(cx));
+        let scripted_frame = self.studio_field_face(window, theme, cx);
+        let model_picker = (scripted_frame.is_none() || !self.model_word_shown())
+            .then(|| self.model_picker_element(gpui::Anchor::BottomRight, window, cx))
+            .flatten();
         let (at_word, at_edge) = if self.model_word_shown() {
             (model_picker, None)
         } else {
             (None, model_picker)
         };
-        let foot = self.foot.clone().map(|foot| foot(window, cx));
-        let theme = crate::studio::studio_theme(kou_ui::theme(cx));
-        let frame = self.studio_frame(window, foot, at_word, theme, cx);
+        let frame = scripted_frame.unwrap_or_else(|| {
+            let foot = self.foot.clone().map(|foot| foot(window, cx));
+            self.studio_frame(window, foot, at_word, theme, cx)
+        });
         // Standing alone (an empty page's field), it is the frame and nothing
         // around it: no ground of its own, no air under it, and the sides the
         // app aligns what it puts under the field to.
@@ -81,59 +100,98 @@ impl Dock {
             SIDE
         };
         let usage = (!standalone && !self.around.context_beside.get())
-            .then(|| studio_usage(&self.sync.usage, theme))
+            .then(|| self.studio_usage_line(theme, cx))
             .flatten();
         let chrome = crate::studio::chrome_theme(theme);
         let help = self.help.then(|| self.help_element(window, chrome, cx));
         let inset = self.around.inset.get();
-        let column = div()
-            .relative()
-            .w_full()
-            .max_w(px(COLUMN + 2. * SIDE))
-            .flex_none()
-            .px(px(side))
-            .pb(px(if standalone { 0. } else { UNDER }))
-            .flex()
-            .flex_col()
-            .child(measure)
-            // The line that says the agent works, then what waits for it: the
-            // queue is a tray on the field's top edge, under that line.
-            .children(line)
-            .child(queue)
-            .child(crate::trace::traced(
+        let band = if scripted {
+            let mut slots = vec![
+                ("measure", measure.into_any_element()),
+                ("queue", queue.into_any_element()),
+                (
+                    "frame",
+                    crate::trace::traced(&self.trace, crate::trace::Part::FieldFrame, frame),
+                ),
+            ];
+            slots.extend(line.map(|line| ("activity", line)));
+            slots.extend(usage.map(|usage| ("usage", usage)));
+            slots.extend(help.map(|help| ("help", help.into_any_element())));
+            slots.extend(at_edge.map(|menu| ("modelMenu", menu)));
+            let names: Vec<_> = slots.iter().map(|(name, _)| *name).collect();
+            let data = move || {
+                serde_json::json!({"standalone": standalone, "side": side,
+                "inset": inset, "width": COLUMN + 2. * SIDE, "under": UNDER, "slots": names})
+            };
+            let part = crate::face::Handed::new(
+                "studio-dock",
+                format!("studio-dock-{}", cx.entity_id().as_u64()),
+                data,
+            );
+            crate::face::drawn(
+                self.chat_face.as_ref().unwrap(),
+                part,
+                slots,
+                cx.weak_entity(),
+                Self::asked,
                 &self.trace,
-                crate::trace::Part::FieldFrame,
-                frame,
-            ))
-            .children(usage)
-            .children(help)
-            .children(at_edge.map(|picker| div().absolute().top_0().right(px(side)).child(picker)));
-        let band = div()
-            .w_full()
-            .flex_none()
-            .pr(px(inset))
-            .flex()
-            .justify_center()
-            .when(!standalone, |band| band.bg(theme.pane))
-            .child(column);
-        div()
-            .id("dock")
-            .when(!standalone, |dock| dock.size_full().justify_end())
-            .when(standalone, |dock| dock.w_full())
-            .flex()
-            .flex_col()
-            .text_color(theme.fg)
-            .font_family(theme.ui_font.clone())
-            .text_size(px(MODEL))
-            .on_action(cx.listener(Self::cancel))
-            .on_action(cx.listener(|this, _: &crate::view::MenuUp, window, cx| {
-                this.picker_step(false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &crate::view::MenuDown, window, cx| {
-                this.picker_step(true, window, cx)
-            }))
-            .child(band)
-            .into_any_element()
+                cx,
+            )?
+        } else {
+            let column = div()
+                .relative()
+                .w_full()
+                .max_w(px(COLUMN + 2. * SIDE))
+                .flex_none()
+                .px(px(side))
+                .pb(px(if standalone { 0. } else { UNDER }))
+                .flex()
+                .flex_col()
+                .child(measure)
+                // The line that says the agent works, then what waits for it: the
+                // queue is a tray on the field's top edge, under that line.
+                .children(line)
+                .child(queue)
+                .child(crate::trace::traced(
+                    &self.trace,
+                    crate::trace::Part::FieldFrame,
+                    frame,
+                ))
+                .children(usage)
+                .children(help)
+                .children(
+                    at_edge.map(|picker| div().absolute().top_0().right(px(side)).child(picker)),
+                );
+            let band = div()
+                .w_full()
+                .flex_none()
+                .pr(px(inset))
+                .flex()
+                .justify_center()
+                .when(!standalone, |band| band.bg(theme.pane))
+                .child(column);
+            band.into_any_element()
+        };
+        Some(
+            div()
+                .id("dock")
+                .when(!standalone, |dock| dock.size_full().justify_end())
+                .when(standalone, |dock| dock.w_full())
+                .flex()
+                .flex_col()
+                .text_color(theme.fg)
+                .font_family(theme.ui_font.clone())
+                .text_size(px(MODEL))
+                .on_action(cx.listener(Self::cancel))
+                .on_action(cx.listener(|this, _: &crate::view::MenuUp, window, cx| {
+                    this.picker_step(false, window, cx)
+                }))
+                .on_action(cx.listener(|this, _: &crate::view::MenuDown, window, cx| {
+                    this.picker_step(true, window, cx)
+                }))
+                .child(band)
+                .into_any_element(),
+        )
     }
 
     /// The line over the field: while the agent waits on agents it started,
@@ -186,6 +244,39 @@ impl Dock {
                 Some(waiting.join(", ")),
             ),
             (false, true) => ("Working".to_owned(), None),
+        };
+        let mark = if let Some(face) = &self.chat_face {
+            let data =
+                || serde_json::json!({"words": words, "titles": titles, "stop": self.busy()});
+            let part = crate::face::Handed::new(
+                "studio-activity",
+                format!("studio-activity-{}", cx.entity_id().as_u64()),
+                data,
+            );
+            if let Some(body) = crate::face::drawn(
+                face,
+                part,
+                vec![("meter", mark)],
+                cx.weak_entity(),
+                Self::asked,
+                &self.trace,
+                cx,
+            ) {
+                return Some(body);
+            }
+            if blocked {
+                div()
+                    .size(px(SPINNER))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(crate::studio::dot(theme.blocked, 6.))
+                    .into_any_element()
+            } else {
+                self.activity.as_ref().unwrap().clone().into_any_element()
+            }
+        } else {
+            mark
         };
         let busy = self.busy();
         let (hover, ring) = (theme.fg_dim, theme.accent);
@@ -259,7 +350,7 @@ impl Dock {
     ) -> AnyElement {
         let _ = window;
         let closed = matches!(self.sync.state, ThreadState::Closed(_));
-        let (accent, drop_fill) = (theme.accent, theme.selected);
+        let drop_fill = theme.selected;
         let (hover, ring) = (theme.hover, theme.accent);
         let attach = (!closed).then(|| {
             div()
@@ -289,8 +380,6 @@ impl Dock {
             .relative()
             .min_h(px(FRAME))
             .rounded(px(FRAME_RADIUS))
-            .border_1()
-            .border_color(theme.line)
             .bg(theme.raised)
             .pl(px(FRAME_LEFT))
             .pr(px(FRAME_RIGHT))
@@ -298,9 +387,7 @@ impl Dock {
             .pb(px(FRAME_BOTTOM))
             .flex()
             .flex_col()
-            .drag_over::<ExternalPaths>(move |style, _, _, _| {
-                style.border_color(accent).bg(drop_fill)
-            })
+            .drag_over::<ExternalPaths>(move |style, _, _, _| style.bg(drop_fill))
             .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
                 this.composer
                     .update(cx, |composer, cx| composer.drop_paths(paths, window, cx));
@@ -339,15 +426,112 @@ impl Dock {
             .into_any_element()
     }
 
+    fn studio_field_face(
+        &mut self,
+        window: &mut Window,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let face = self.face.clone()?;
+        let mut slots = vec![("editor", self.composer.clone().into_any_element())];
+        slots.extend(self.foot.clone().map(|foot| ("foot", foot(window, cx))));
+        if self.model_word_shown() {
+            slots.extend(
+                self.model_picker_element(gpui::Anchor::BottomRight, window, cx)
+                    .map(|menu| ("modelMenu", menu)),
+            );
+        }
+        if let Some(picker) = &self.picker {
+            let (choices, current) = self.choices(picker.kind);
+            let menu = self.picker_menu(
+                picker.kind,
+                picker,
+                choices,
+                current,
+                crate::studio::chrome_theme(theme),
+                cx,
+            );
+            slots.push((picker.kind.menu_slot(), menu.into_any_element()));
+        }
+        let (dropping, acting) = (cx.weak_entity(), cx.weak_entity());
+        face(
+            crate::field::FieldParts {
+                look: "studio",
+                key: format!("field-{}", cx.entity_id().as_u64()).into(),
+                focused: self.focus.is_focused(window),
+                busy: self.busy(),
+                closed: matches!(self.sync.state, ThreadState::Closed(_)),
+                narrow: self.narrow.get(),
+                standalone: self.standalone,
+                controls: self.controls_state(theme),
+                slots,
+                dropped: std::rc::Rc::new(move |paths, window, cx| {
+                    dropping
+                        .update(cx, |this, cx| {
+                            this.composer
+                                .update(cx, |composer, cx| composer.drop_paths(paths, window, cx))
+                        })
+                        .ok();
+                }),
+                act: std::rc::Rc::new(move |name, window, cx| {
+                    acting
+                        .update(cx, |this, cx| this.act_named(name, window, cx))
+                        .ok();
+                }),
+            },
+            window,
+            cx,
+        )
+    }
+
+    fn studio_usage_line(&self, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
+        let parts = studio_usage_parts(&self.sync.usage);
+        if parts.is_empty() {
+            return None;
+        }
+        if let Some(face) = &self.chat_face {
+            let part = crate::face::Handed::new(
+                "studio-usage",
+                format!("studio-usage-{}", cx.entity_id().as_u64()),
+                || serde_json::json!({"text": parts.join(" · ")}),
+            );
+            if let Some(body) = crate::face::drawn(
+                face,
+                part,
+                Vec::new(),
+                cx.weak_entity(),
+                Self::asked,
+                &self.trace,
+                cx,
+            ) {
+                return Some(body);
+            }
+        }
+        Some(
+            div()
+                .debug_selector(|| "usage".into())
+                .h(px(LINE))
+                .mt(px(2.))
+                .px(px(SPINNER_AT))
+                .flex()
+                .items_center()
+                .text_size(px(SMALL))
+                .text_color(theme.fg_muted)
+                .child(scale::text(parts.join(" · ")))
+                .into_any_element(),
+        )
+    }
+
     /// Whether the foot shows the model's word: there is a model to choose.
     fn model_word_shown(&self) -> bool {
         !matches!(self.sync.state, ThreadState::Closed(_))
             && !self.choices(PickerKind::Model).0.is_empty()
     }
 
-    /// The model and the mode as quiet words at the right of the foot, the
-    /// model after the mark of who makes it: each opens its list, and the
-    /// model's (`model_picker`, when it is open) ends at its word's right.
+    /// The model, the level of effort and the mode as quiet words at the
+    /// right of the foot, the model after the mark of who makes it: each
+    /// opens its list, and the model's (`model_picker`, when it is open)
+    /// ends at its word's right.
     fn studio_pickers(
         &self,
         mut model_picker: Option<AnyElement>,
@@ -358,7 +542,12 @@ impl Dock {
             return Vec::new();
         }
         let mut shown = Vec::new();
-        for kind in [PickerKind::Model, PickerKind::Mode] {
+        for kind in [
+            PickerKind::Model,
+            PickerKind::Effort,
+            PickerKind::Mode,
+            PickerKind::Access,
+        ] {
             let (choices, current) = self.choices(kind);
             if choices.is_empty() {
                 continue;
@@ -422,7 +611,7 @@ impl Dock {
                 div()
                     .relative()
                     .min_w_0()
-                    .when(kind == PickerKind::Mode, |mode| mode.ml(px(-11.5)))
+                    .when(kind != PickerKind::Model, |mode| mode.ml(px(-11.5)))
                     .children(menu)
                     .children(
                         (kind == PickerKind::Model)
@@ -516,7 +705,7 @@ impl Dock {
 
 /// The figures under the field, quietly, when the card beside does not show
 /// the context: what the backend reported, nothing estimated.
-fn studio_usage(usage: &kou_thread::Usage, theme: &Theme) -> Option<Div> {
+fn studio_usage_parts(usage: &kou_thread::Usage) -> Vec<String> {
     let mut parts = Vec::new();
     match (usage.context_used, usage.context_limit) {
         (Some(used), Some(limit)) if limit > 0 => parts.push(format!(
@@ -540,18 +729,7 @@ fn studio_usage(usage: &kou_thread::Usage, theme: &Theme) -> Option<Div> {
             format!("${cost:.2}")
         });
     }
-    (!parts.is_empty()).then(|| {
-        div()
-            .debug_selector(|| "usage".into())
-            .h(px(LINE))
-            .mt(px(2.))
-            .px(px(SPINNER_AT))
-            .flex()
-            .items_center()
-            .text_size(px(SMALL))
-            .text_color(theme.fg_muted)
-            .child(scale::text(parts.join(" · ")))
-    })
+    parts
 }
 
 /// The send button's fill once there is something to send: a step brighter.

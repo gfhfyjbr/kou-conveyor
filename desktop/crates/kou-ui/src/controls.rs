@@ -34,6 +34,18 @@ impl Mark {
             Mark::Failed => "failed",
         }
     }
+
+    /// The name a plugin's script knows this state by: `working`, `done`,
+    /// `blocked`, `idle`, `failed`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mark::Working => "working",
+            Mark::Done => "done",
+            Mark::Blocked => "blocked",
+            Mark::Idle => "idle",
+            Mark::Failed => "failed",
+        }
+    }
 }
 
 /// The 8px status mark for an agent.
@@ -48,14 +60,18 @@ pub fn status_mark(mark: Mark, theme: &Theme) -> Div {
     }
 }
 
-/// A coloured square with one letter: how a session or a space is told apart at a glance.
-pub fn letter_square(name: &str, fill: Hsla, theme: &Theme) -> Div {
-    let letter: SharedString = name
-        .chars()
+/// The letter a name's square shows: its first letter or digit, in capitals.
+pub fn initial(name: &str) -> SharedString {
+    name.chars()
         .find(|c| c.is_alphanumeric())
         .map(|c| c.to_uppercase().collect::<String>())
         .unwrap_or_else(|| "·".to_owned())
-        .into();
+        .into()
+}
+
+/// A coloured square with one letter: how a session or a space is told apart at a glance.
+pub fn letter_square(name: &str, fill: Hsla, theme: &Theme) -> Div {
+    let letter = initial(name);
     div()
         .flex_none()
         .size(px(18.))
@@ -73,12 +89,7 @@ pub fn letter_square(name: &str, fill: Hsla, theme: &Theme) -> Div {
 /// A session's letter square, quieter: an outline with a muted letter, for a
 /// session that is archived and should not compete with the live ones.
 pub fn letter_square_quiet(name: &str, theme: &Theme) -> Div {
-    let letter: SharedString = name
-        .chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().collect::<String>())
-        .unwrap_or_else(|| "·".to_owned())
-        .into();
+    let letter = initial(name);
     div()
         .flex_none()
         .size(px(18.))
@@ -165,6 +176,40 @@ fn harness_tile(code: &str, side: f32, ink: Hsla, theme: &Theme) -> Div {
 /// A square icon button: reachable by Tab, activated by click, Enter or Space,
 /// with a visible ring when focused from the keyboard. Add `.on_click`.
 pub fn icon_button(id: impl Into<ElementId>, glyph: Icon, theme: &Theme) -> Stateful<Div> {
+    icon_button_sized(id, glyph, metric::ICON_BUTTON, theme)
+}
+
+/// An icon button of another side: 20 in a tab, 22 in a pane's header, more
+/// beside a field. A smaller one than the usual holds the small icon, so
+/// that its fill has room around the glyph.
+pub fn icon_button_sized(
+    id: impl Into<ElementId>,
+    glyph: Icon,
+    side: f32,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let glyph_side = if side < metric::ICON_BUTTON {
+        metric::ICON_SMALL
+    } else {
+        metric::ICON
+    };
+    icon_button_of(id, glyph, side, glyph_side, theme)
+}
+
+/// A row's own action (start one here, archive this one): the usual square,
+/// for the pointer, with the small icon, which is a detail of its row.
+pub fn icon_button_small(id: impl Into<ElementId>, glyph: Icon, theme: &Theme) -> Stateful<Div> {
+    icon_button_of(id, glyph, metric::ICON_BUTTON, metric::ICON_SMALL, theme)
+}
+
+/// An icon button of `side` whose glyph is `glyph_side` wide.
+pub fn icon_button_of(
+    id: impl Into<ElementId>,
+    glyph: Icon,
+    side: f32,
+    glyph_side: f32,
+    theme: &Theme,
+) -> Stateful<Div> {
     let id = id.into();
     // The icon brightens with its button; an SVG takes no colour from its parent.
     let group = SharedString::from(format!("icon-button-{id:?}"));
@@ -173,7 +218,7 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: Icon, theme: &Theme) -> Stat
         .id(id)
         .group(group.clone())
         .flex_none()
-        .size(px(24.))
+        .size(px(side))
         .rounded(px(metric::RADIUS))
         .border_1()
         .border_color(gpui::transparent_black())
@@ -186,7 +231,11 @@ pub fn icon_button(id: impl Into<ElementId>, glyph: Icon, theme: &Theme) -> Stat
         // Pressed, it gives a little: the answer to a click before anything else happens.
         .active(|style| style.opacity(0.6))
         .focus_visible(move |style| style.border_color(ring))
-        .child(icon(glyph, theme.fg_muted).group_hover(group, move |style| style.text_color(fg)))
+        .child(
+            icon(glyph, theme.fg_muted)
+                .size(px(glyph_side))
+                .group_hover(group, move |style| style.text_color(fg)),
+        )
 }
 
 /// What a control without a label is for, shown when the pointer rests on it:
@@ -206,11 +255,42 @@ pub fn tip(
 
 struct Tip(SharedString, f32);
 
+/// What draws a tooltip's body in place of the app's own, when the app has
+/// one: given what it says, at the factor in effect. `None` leaves it to
+/// [`tip`]'s own.
+pub type TipFace = std::rc::Rc<dyn Fn(&SharedString, &gpui::App) -> Option<gpui::AnyElement>>;
+
+struct TipFaced(TipFace);
+
+impl gpui::Global for TipFaced {}
+
+/// Gives the drawing of tooltips' bodies to `face`, or back with `None`.
+pub fn set_tip_face(face: Option<TipFace>, cx: &mut gpui::App) {
+    match face {
+        Some(face) => cx.set_global(TipFaced(face)),
+        None => {
+            if cx.has_global::<TipFaced>() {
+                cx.remove_global::<TipFaced>();
+            }
+        }
+    }
+}
+
 impl gpui::Render for Tip {
     fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         let theme = crate::theme(cx);
+        let face = cx.try_global::<TipFaced>().map(|faced| faced.0.clone());
+        let drawn = face.and_then(|face| crate::scale::with_factor(self.1, || face(&self.0, cx)));
+        if let Some(tip) = drawn {
+            return if self.1 == 1. {
+                tip
+            } else {
+                crate::scale::scaled(self.1, tip).into_any_element()
+            };
+        }
         let tip = crate::scale::with_factor(self.1, || {
             div()
+                .debug_selector(|| "tip-native".into())
                 .px(px(8.))
                 .py(px(4.))
                 .rounded(px(metric::RADIUS))
@@ -256,8 +336,8 @@ pub fn button_with_icon(
         theme.fg_muted
     };
     button_base(id, primary, theme)
-        .pl(px(7.))
-        .child(icon(glyph, ink))
+        .pl(px(8.))
+        .child(icon(glyph, ink).size(px(metric::ICON_SMALL)))
         .child(crate::scale::text(label))
 }
 

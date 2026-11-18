@@ -7,6 +7,7 @@
 mod anim;
 mod card;
 pub mod catalog;
+mod face;
 pub mod field;
 mod geometry;
 mod inspector;
@@ -22,10 +23,11 @@ mod view;
 
 pub use card::field_lines;
 pub use catalog::{AddRequest, Offer, Template, TemplateEdge, TemplateNode, TemplateRequest};
+pub use face::{Face, FaceAct, FaceParts};
 pub use geometry::{Camera, Cubic, Lod, ZOOM_STEPS, curve, edge_curve};
 pub use model::{
     Board, Change, Delivery, Dir, Edge, EdgeId, EdgeMode, EdgeOrigin, End, GAP_X, GAP_Y, GRID,
-    MAX_SIZE, MIN_H, MIN_W, Node, NodeId, NodeKind, NodeSpec, PortRef, Rect, SNAP, Wire, WireError,
-    port_at, snap_to,
+    HOP_LIMIT, MAX_SIZE, MIN_H, MIN_W, Node, NodeId, NodeKind, NodeSpec, PortRef, Rect, SNAP, Wire,
+    WireError, canvas_header, port_at, snap_to,
 };
 pub use view::{BoardEvent, CanvasEvent, CanvasView, Pending, Traffic};

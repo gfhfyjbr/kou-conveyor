@@ -33,10 +33,8 @@ const INSIDE: &str = "KOU_BUNDLED";
 const PROGRAM: &str = "kou-desktop";
 // What the bundle says of itself, with places for what differs.
 const INFO: &str = include_str!("../resources/Info.plist");
-// The icon, named `AppIcon` there: the Icon Composer document compiled, which
-// macOS 26 and later draw as glass, and pictures of it for older systems.
-// Both come from `script/icons`.
-const ICON: [(&str, &[u8]); 2] = [
+// Keep the resources of the local app bundle in sync with `script/package`.
+const RESOURCES: &[(&str, &[u8])] = &[
     (
         "Assets.car",
         include_bytes!("../resources/macos/Assets.car"),
@@ -44,6 +42,14 @@ const ICON: [(&str, &[u8]); 2] = [
     (
         "AppIcon.icns",
         include_bytes!("../resources/macos/AppIcon.icns"),
+    ),
+    (
+        "onest-OFL.txt",
+        include_bytes!("../../kou-ui/fonts/onest/LICENSE.txt"),
+    ),
+    (
+        "martian-mono-OFL.txt",
+        include_bytes!("../../kou-ui/fonts/martian-mono/LICENSE.txt"),
     ),
 ];
 const REGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/\
@@ -135,7 +141,7 @@ fn refresh(
     std::fs::copy(program, draft.join("Contents/MacOS").join(PROGRAM))?;
     std::fs::write(draft.join("Contents/Info.plist"), wanted)?;
     std::fs::create_dir_all(draft.join("Contents/Resources"))?;
-    for (name, bytes) in ICON {
+    for &(name, bytes) in RESOURCES {
         std::fs::write(draft.join("Contents/Resources").join(name), bytes)?;
     }
     std::fs::write(draft.join("Contents/Resources/built-from"), built)?;

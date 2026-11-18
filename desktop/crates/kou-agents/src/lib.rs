@@ -9,6 +9,8 @@
 //!   launch only, and the app's orchestration server and guidance attached
 //!   when [`PaneContext::orchestration`] asks; [`acp_setup`] is what the chat
 //!   session opens with.
+//! - [`claude_direct`] and [`codex_direct`] build launches for native chats
+//!   over the Claude Code stream and Codex app-server protocols.
 //! - [`Chat`] says whether a harness opens as a chat, and [`Install`] how to
 //!   put a missing adapter into the app's folder; [`terminal_resume`] and
 //!   [`chat_resume`] carry a conversation across the switch.
@@ -35,8 +37,8 @@ pub use detect::{
 };
 pub use hooks::{Signal, parse_hook};
 pub use launch::{
-    AcpSetup, Launch, McpServer, Orchestration, PaneContext, TuiOptions, acp_launch, acp_setup,
-    tui_launch, typed_prompt,
+    AcpSetup, ClaudeDirect, Launch, McpServer, Orchestration, PaneContext, TuiOptions, acp_launch,
+    acp_setup, claude_direct, codex_direct, talks_directly, tui_launch, typed_prompt,
 };
 pub use spec::{
     ACP_REGISTRY, Acp, Arg, Attach, Binary, Coverage, Crossing, Evidence, Guidance, Hooks,

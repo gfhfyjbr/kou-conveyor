@@ -287,6 +287,66 @@ fn a_drag_from_a_port_to_another_node_wires_them(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn undo_takes_back_what_the_user_did_and_nothing_the_app_or_an_agent_did_since(
+    cx: &mut TestAppContext,
+) {
+    let (view, cx, _, board_events, [a, b, _]) = row_of_three(cx);
+    let was = view.read_with(cx, |view, _| view.board().node(a).unwrap().title.clone());
+    // The user's own change, which is what undo is for.
+    view.update(cx, |view, cx| view.rename(a, "mine", cx));
+    // Then, not the user's: an agent wires two nodes and makes the edge
+    // wait for approval, and another names its session.
+    let edge = view.update(cx, |view, cx| {
+        let edge = view
+            .connect(PortRef::new(a, "out"), PortRef::new(b, "in"), cx)
+            .unwrap();
+        view.update_edge(edge, |edge| edge.mode = EdgeMode::Approve, cx);
+        view.update_node(b, |node| node.title = "the agent's".into(), cx);
+        edge
+    });
+    board_events.borrow_mut().clear();
+    assert!(view.update(cx, |view, cx| view.undo(cx)));
+    view.read_with(cx, |view, _| {
+        let board = view.board();
+        assert_eq!(
+            board.node(a).unwrap().title,
+            was,
+            "the user's change is undone"
+        );
+        // The edge is there, as the agent set it: put back to what it was
+        // before, it would pass on the messages that wait on it.
+        assert_eq!(
+            board.edge(edge).map(|edge| edge.mode),
+            Some(EdgeMode::Approve)
+        );
+        assert_eq!(board.node(b).unwrap().title, "the agent's");
+    });
+    assert!(
+        !board_events.borrow().iter().any(|event| matches!(
+            event,
+            BoardEvent::EdgeRemoved(_) | BoardEvent::EdgeChanged { .. }
+        )),
+        "nothing of the edge is told as changed"
+    );
+    assert!(
+        !board_events
+            .borrow()
+            .iter()
+            .any(|event| matches!(event, BoardEvent::Renamed { node, .. } if *node == b)),
+        "nor the title the app gave"
+    );
+    // And forward again: the same holds.
+    assert!(view.update(cx, |view, cx| view.redo(cx)));
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.board().node(a).unwrap().title, "mine");
+        assert_eq!(
+            view.board().edge(edge).map(|edge| edge.mode),
+            Some(EdgeMode::Approve)
+        );
+    });
+}
+
+#[gpui::test]
 fn a_click_on_a_curve_selects_its_edge_delete_removes_it_and_undo_brings_it_back(
     cx: &mut TestAppContext,
 ) {
@@ -1339,4 +1399,59 @@ fn zooming_out_to_placeholders_takes_the_keys_back_and_entering_one_brings_it_cl
         assert_eq!(view.entered(), Some(a));
     });
     assert!(cx.update(|window, _| focus.is_focused(window)));
+}
+
+/// How many lines of text a zoom of twenty frames shapes, on a board of
+/// three nodes with all their chrome on show.
+fn shaped_by_a_zoom(cx: &mut TestAppContext) -> u64 {
+    let (view, cx, _, _, nodes) = row_of_three(cx);
+    view.update(cx, |view, cx| {
+        for (node, mark) in nodes
+            .into_iter()
+            .zip([Mark::Working, Mark::Blocked, Mark::Idle])
+        {
+            view.update_node(
+                node,
+                |node| {
+                    node.place = "~/work/kou-conveyor".into();
+                    node.detail = "Split the migration into three parts\nand review each.".into();
+                },
+                cx,
+            );
+            view.restore_mark(node, mark, cx);
+        }
+    });
+    let zoom_to = |zoom: f32, cx: &mut VisualTestContext| {
+        at_camera(
+            &view,
+            Camera {
+                x: 40.,
+                y: 40.,
+                zoom,
+            },
+            cx,
+        );
+    };
+    // Once before counting: what a first frame at any zoom costs is not
+    // what a gesture's frames cost.
+    zoom_to(0.9, cx);
+    cx.update(|window, _| window.reset_layout_stats());
+    for step in 1..=20 {
+        zoom_to(0.9 + step as f32 * 0.004, cx);
+    }
+    cx.update(|window, _| window.layout_stats().lines_shaped)
+}
+
+#[gpui::test]
+fn a_zoom_does_not_shape_the_text_of_the_nodes_anew_at_each_of_its_frames(cx: &mut TestAppContext) {
+    // Titles, kinds, states, how long, where, and what each node says:
+    // some twenty texts on the board, through twenty frames of a zoom. Set
+    // at `size * zoom` each would be shaped and its glyphs drawn afresh in
+    // every frame, at a size no frame before had; laid out at 1 and drawn
+    // scaled, they are shaped once.
+    let shaped = shaped_by_a_zoom(cx);
+    assert!(
+        shaped <= 20,
+        "{shaped} lines were shaped in twenty frames of a zoom"
+    );
 }

@@ -5,6 +5,7 @@
 //! Nothing here glides. A tab, a split, a layout is simply there when asked
 //! for; the one exception is a pane made a moment ago, which comes in once.
 
+use crate::plugins::icon_file;
 use crate::{
     rail::{WINDOW_BUTTONS, mark},
     shell::{
@@ -21,7 +22,11 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, Window, WindowControlArea, canvas, div,
     prelude::FluentBuilder as _, px,
 };
-use kou_ui::{Icon, Mark, Theme, button, icon, icon_button, metric, monogram, motion, theme, tip};
+use kou_ui::{
+    Icon, Mark, Theme, button, icon, icon_button, icon_button_sized, metric, monogram, motion,
+    theme, tip,
+};
+use serde_json::{Value, json};
 use std::time::{Duration, Instant};
 
 /// The line between the two parts of a split, in pixels.
@@ -59,9 +64,23 @@ impl Render for NothingDragged {
 // no pane has this id.
 const CHOOSING: &str = "\u{0}choosing";
 
+/// What the account in a pane's header says under the pointer.
+const ACCOUNT_TIP: &str =
+    "The account it runs under. Press to go on under the one with the most left of its limits.";
+
 // Tabs share the strip like a browser's: one width for all, within limits.
 fn tab_width(room: f32, tabs: usize) -> f32 {
     ((room - 200.) / tabs.max(1) as f32).clamp(104., 196.)
+}
+
+/// How wide the panel a tab is named in is.
+const TAB_EDITOR_WIDTH: f32 = 268.;
+
+// Where the panel of the tab at `at` stands: under its tab, kept inside the
+// window.
+fn tab_editor_left(room: f32, tabs: usize, at: usize) -> f32 {
+    let step = tab_width(room, tabs) + 2.;
+    (step * at as f32).clamp(0., (room - TAB_EDITOR_WIDTH - 16.).max(0.))
 }
 
 // The state a tab shows: the most pressing among its panes.
@@ -86,7 +105,91 @@ impl Shell {
         }
     }
 
-    fn tab_strip(
+    /// The tab strip, as the `workspace` plugin draws it (its `tabs` view),
+    /// or as the app does when the plugin cannot.
+    pub(crate) fn tab_strip(
+        &self,
+        session: Option<&Session>,
+        room: f32,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let data = self.tabs_data(session, room);
+        match self.chrome("tabs", "", data, Vec::new, theme, cx) {
+            Some(drawn) => drawn,
+            None => self
+                .native_tab_strip(session, room, theme, cx)
+                .into_any_element(),
+        }
+    }
+
+    /// What the tab strip shows, as its plugin is given it.
+    fn tabs_data(&self, session: Option<&Session>, room: f32) -> Value {
+        let pending = session.map(|session| {
+            (
+                self.pending_tab(&session.id).map(|picker| picker.front),
+                session.tabs.is_empty(),
+            )
+        });
+        let (waiting, empty) = pending.unwrap_or((None, false));
+        let waiting_front = !self.page_open() && (waiting == Some(true) || empty);
+        let layout = session
+            .filter(|_| !waiting_front)
+            .map(|session| session.layout());
+        let mut tabs = Vec::new();
+        let mut width = 0.;
+        let shown = waiting.is_some() || empty;
+        if let Some(session) = session {
+            width = tab_width(room, session.tabs.len() + usize::from(shown));
+            let front = session.tab();
+            for (index, tab) in session.tabs.iter().enumerate() {
+                let Some(pane) = self.store.pane(&tab.active) else {
+                    continue;
+                };
+                let panes = tab.root.panes();
+                let code = self
+                    .harness(&pane.harness)
+                    .map_or_else(|| pane.harness.clone(), |harness| harness.code.clone());
+                let state = pressing(
+                    panes
+                        .iter()
+                        .filter_map(|pane| self.live.get(*pane))
+                        .map(Live::shown),
+                );
+                tabs.push(json!({
+                    "pane": pane.id,
+                    "session": session.id,
+                    "index": index,
+                    "name": self.tab_name(tab),
+                    "code": code,
+                    "icon": tab.icon.as_deref().and_then(kou_ui::tab_icon).map(icon_file),
+                    "active": !self.page_open() && !waiting_front && front == Some(index),
+                    "more": panes.len() - 1,
+                    "state": state.name(),
+                }));
+            }
+        }
+        let shows = |to: Layout| !self.page_open() && layout == Some(to);
+        json!({
+            "railHidden": self.store.rail_hidden,
+            "windowButtons": WINDOW_BUTTONS,
+            "session": session.is_some(),
+            "width": width,
+            "tabs": tabs,
+            "waiting": (session.is_some() && shown)
+                .then(|| json!({ "active": waiting_front, "closable": !empty })),
+            "splittable": layout == Some(Layout::Panes)
+                && !self.page_open()
+                && session.is_some_and(|session| !session.tabs.is_empty()),
+            "panes": shows(Layout::Panes),
+            "canvas": shows(Layout::Canvas),
+            "newMenu": self.new_menu,
+            "shell": self.shell_ready(),
+            "appKey": crate::screens::APP_KEY,
+        })
+    }
+
+    fn native_tab_strip(
         &self,
         session: Option<&Session>,
         room: f32,
@@ -142,6 +245,8 @@ impl Shell {
             && !self.page_open()
             && session.is_some_and(|session| !session.tabs.is_empty());
         div()
+            .debug_selector(|| "tabs-native".into())
+            .w_full()
             .h(px(metric::BAR))
             .pl(px(if self.store.rail_hidden {
                 WINDOW_BUTTONS
@@ -322,8 +427,7 @@ impl Shell {
             )
             .when(closable, |tab| {
                 tab.child(
-                    icon_button("tab-close-waiting", Icon::Close, theme)
-                        .size(px(20.))
+                    icon_button_sized("tab-close-waiting", Icon::Close, 20., theme)
                         .tooltip(tip("Close"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
@@ -428,12 +532,12 @@ impl Shell {
             // Only a state worth a glance gets a mark in the strip.
             .when(shown != Mark::Idle, |tab| tab.child(mark(shown, theme)))
             .child(
-                icon_button(
+                icon_button_sized(
                     SharedString::from(format!("tab-close-{id}")),
                     Icon::Close,
+                    20.,
                     theme,
                 )
-                .size(px(20.))
                 .tooltip(tip(if more > 0 {
                     "Close the tab and its panes"
                 } else {
@@ -447,8 +551,64 @@ impl Shell {
             .into_any_element()
     }
 
-    // The small panel under a tab where it is named and given an icon.
+    // The small panel under a tab where it is named and given an icon, as
+    // the `workspace` plugin draws it (its `tabEditor` view), or as the app
+    // does when the plugin cannot.
     fn tab_editor(&self, room: f32, theme: &Theme, cx: &Context<Self>) -> Option<AnyElement> {
+        let edit = self.tab_edit.as_ref()?;
+        let session = self.store.session(&edit.session)?;
+        let at = session.tabs.iter().position(|tab| tab.id == edit.id)?;
+        let code = self
+            .store
+            .pane(&session.tabs[at].active)
+            .and_then(|pane| self.harness(&pane.harness))
+            .map_or_else(String::new, |harness| harness.code.clone());
+        let icons: Vec<Value> = kou_ui::TAB_ICONS
+            .iter()
+            .map(|(key, glyph)| json!({ "key": key, "icon": icon_file(*glyph) }))
+            .collect();
+        let data = json!({
+            "left": tab_editor_left(room, session.tabs.len(), at),
+            "code": code,
+            "icons": icons,
+            "chosen": edit.icon,
+        });
+        let field = || vec![("field", self.tab_name_field(theme, cx).into_any_element())];
+        self.chrome("tabEditor", "", data, field, theme, cx)
+            .or_else(|| self.native_tab_editor(room, theme, cx))
+    }
+
+    // The field a tab's name is typed in.
+    fn tab_name_field(&self, theme: &Theme, cx: &Context<Self>) -> Div {
+        let field = div()
+            .h(px(metric::CONTROL))
+            .px(px(8.))
+            .flex()
+            .items_center()
+            .rounded(px(metric::RADIUS))
+            .border_1()
+            .border_color(theme.accent)
+            .bg(theme.pane)
+            .text_color(theme.fg)
+            .track_focus(&self.tab_focus)
+            .on_key_down(cx.listener(Self::tab_edit_key));
+        match self.tab_edit.as_ref() {
+            Some(edit) => field.child(kou_canvas::field_lines(
+                "tab-name-field",
+                &edit.field,
+                theme,
+                px(16.),
+            )),
+            None => field,
+        }
+    }
+
+    fn native_tab_editor(
+        &self,
+        room: f32,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
         let edit = self.tab_edit.as_ref()?;
         let session = self.store.session(&edit.session)?;
         // Under its tab, wherever that is in the strip by now.
@@ -459,10 +619,7 @@ impl Shell {
             .pane(&tab.active)
             .and_then(|pane| self.harness(&pane.harness))
             .map_or_else(String::new, |harness| harness.code.clone());
-        // Under its tab, kept inside the window.
-        const WIDTH: f32 = 268.;
-        let step = tab_width(room, session.tabs.len()) + 2.;
-        let left = (step * at as f32).clamp(0., (room - WIDTH - 16.).max(0.));
+        let left = tab_editor_left(room, session.tabs.len(), at);
         let (accent, hover, selected) = (theme.accent, theme.hover, theme.selected);
         let choice = |key: Option<&'static str>, glyph: AnyElement, name: &'static str| {
             let chosen = edit.icon.as_deref() == key;
@@ -513,7 +670,7 @@ impl Shell {
                 .absolute()
                 .top(px(4.))
                 .left(px(left + 6.))
-                .w(px(WIDTH))
+                .w(px(TAB_EDITOR_WIDTH))
                 .p(px(metric::PAD))
                 .flex()
                 .flex_col()
@@ -525,26 +682,7 @@ impl Shell {
                 .shadow_lg()
                 // A press inside it is not a press outside it.
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .child(
-                    div()
-                        .h(px(metric::CONTROL))
-                        .px(px(8.))
-                        .flex()
-                        .items_center()
-                        .rounded(px(metric::RADIUS))
-                        .border_1()
-                        .border_color(theme.accent)
-                        .bg(theme.pane)
-                        .text_color(theme.fg)
-                        .track_focus(&self.tab_focus)
-                        .on_key_down(cx.listener(Self::tab_edit_key))
-                        .child(kou_canvas::field_lines(
-                            "tab-name-field",
-                            &edit.field,
-                            theme,
-                            px(16.),
-                        )),
-                )
+                .child(self.tab_name_field(theme, cx))
                 .child(icons)
                 .child(
                     div()
@@ -562,7 +700,61 @@ impl Shell {
         )
     }
 
-    fn pane_header(
+    /// A pane's header, as the `workspace` plugin draws it (its
+    /// `paneHeader` view, once for each pane), or as the app does when the
+    /// plugin cannot.
+    pub(crate) fn pane_header(
+        &self,
+        pane: &Pane,
+        focused: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let code = self
+            .harness(&pane.harness)
+            .map_or_else(|| pane.harness.clone(), |harness| harness.code.clone());
+        let shown = self.live.get(&pane.id).map_or(Mark::Idle, Live::shown);
+        let other = self
+            .other_way(pane)
+            .map(|(glyph, label)| json!({ "icon": icon_file(glyph), "label": label }));
+        let data = json!({
+            "pane": pane.id,
+            "code": code,
+            "title": pane.title,
+            "focused": focused,
+            "account": self.account_shown(pane),
+            "cwd": abbreviate(&pane.cwd),
+            "parent": pane
+                .parent
+                .as_deref()
+                .and_then(|parent| self.store.pane(parent))
+                .map(|parent| format!("from {}", parent.title)),
+            "other": other,
+            "closed": self.threads.get(&pane.id).is_some_and(|thread| thread.closed()),
+            "state": shown.name(),
+            "stateLabel": shown.label(),
+        });
+        match self.chrome("paneHeader", &pane.id, data, Vec::new, theme, cx) {
+            Some(drawn) => drawn,
+            None => self
+                .native_pane_header(pane, focused, theme, cx)
+                .into_any_element(),
+        }
+    }
+
+    /// The other way to open what runs in a pane: a chat as its harness's
+    /// own terminal interface, a terminal as a chat.
+    fn other_way(&self, pane: &Pane) -> Option<(Icon, &'static str)> {
+        self.harness(&pane.harness)
+            .filter(|_| pane.harness != "shell")
+            .and_then(|harness| match pane.kind {
+                PaneKind::Thread if harness.ready => Some((Icon::Terminal, "Open in its terminal")),
+                PaneKind::Terminal if harness.native => Some((Icon::Thread, "Open as a chat")),
+                _ => None,
+            })
+    }
+
+    fn native_pane_header(
         &self,
         pane: &Pane,
         focused: bool,
@@ -580,15 +772,12 @@ impl Shell {
             .map(|parent| format!("from {}", parent.title));
         let id = pane.id.clone();
         // The account it runs under, when that is not the harness's own.
-        let account = pane
-            .profile
-            .as_deref()
-            .and_then(|profile| self.store.profile(profile))
-            .map(|profile| profile.name.clone());
+        let account = self.account_shown(pane);
         div()
             .h(px(34.))
             .pl(px(12.))
-            .pr(px(6.))
+            // Its cross stands under the strip's plus: 20 in from the pane's edge.
+            .pr(px(9.))
             .flex()
             .flex_none()
             .items_center()
@@ -602,8 +791,10 @@ impl Shell {
                     .child(SharedString::from(pane.title.clone())),
             )
             .when_some(account, |header, account| {
+                let (id, hover) = (id.clone(), theme.hover);
                 header.child(
                     div()
+                        .id(SharedString::from(format!("pane-account-{id}")))
                         .flex_none()
                         .h(px(18.))
                         .px(px(6.))
@@ -614,6 +805,13 @@ impl Shell {
                         .border_color(theme.line_strong)
                         .text_size(px(metric::TEXT_SMALL))
                         .text_color(theme.fg_dim)
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(hover))
+                        .tooltip(tip(ACCOUNT_TIP))
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.move_to_best_account(&id, window, cx);
+                        }))
                         .child(SharedString::from(account)),
                 )
             })
@@ -637,39 +835,23 @@ impl Shell {
                         .child(SharedString::from(parent)),
                 )
             })
-            // The other way to open what runs here: a chat as its harness's
-            // own terminal interface, a terminal as a chat.
-            .when_some(
-                self.harness(&pane.harness)
-                    .filter(|_| pane.harness != "shell")
-                    .and_then(|harness| match pane.kind {
-                        PaneKind::Thread if harness.ready => {
-                            Some((Icon::Terminal, "Open in its terminal"))
-                        }
-                        PaneKind::Terminal if harness.native => {
-                            Some((Icon::Thread, "Open as a chat"))
-                        }
-                        _ => None,
-                    }),
-                |header, (glyph, label)| {
-                    let id = id.clone();
-                    header.child(
-                        icon_button(
-                            SharedString::from(format!("pane-switch-{id}")),
-                            glyph,
-                            theme,
-                        )
-                        .size(px(22.))
-                        .tooltip(tip(label))
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.switch_interface(&id, window, cx);
-                            },
-                        )),
+            // The other way to open what runs here.
+            .when_some(self.other_way(pane), |header, (glyph, label)| {
+                let id = id.clone();
+                header.child(
+                    icon_button_sized(
+                        SharedString::from(format!("pane-switch-{id}")),
+                        glyph,
+                        22.,
+                        theme,
                     )
-                },
-            )
+                    .tooltip(tip(label))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.switch_interface(&id, window, cx);
+                    })),
+                )
+            })
             // A conversation whose agent is gone keeps its transcript on screen;
             // the way to bring the agent back is here.
             .when(
@@ -707,12 +889,12 @@ impl Shell {
                     .child(mark(shown, theme))
             })
             .child(
-                icon_button(
+                icon_button_sized(
                     SharedString::from(format!("pane-close-{id}")),
                     Icon::Close,
+                    22.,
                     theme,
                 )
-                .size(px(22.))
                 .tooltip(tip("Close the pane"))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
@@ -739,8 +921,26 @@ impl Shell {
     }
 
     // The half of a split that waits for its agent: what can be started
-    // there, under a header that says so and closes it.
-    fn choosing_pane(
+    // there, under a header that says so and closes it. As the `workspace`
+    // plugin draws it (its `choosing` view) around the app's own list, or
+    // as the app does when the plugin cannot.
+    fn choosing_pane(&self, session: &Session, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let picker = || {
+            let heading = SharedString::from(format!("Start an agent in {}", session.name));
+            vec![(
+                "picker",
+                self.picker_element(heading, false, "choosing", theme, cx),
+            )]
+        };
+        match self.chrome("choosing", "", json!({}), picker, theme, cx) {
+            Some(drawn) => drawn,
+            None => self
+                .native_choosing_pane(session, theme, cx)
+                .into_any_element(),
+        }
+    }
+
+    fn native_choosing_pane(
         &self,
         session: &Session,
         theme: &Theme,
@@ -758,7 +958,7 @@ impl Shell {
                 div()
                     .h(px(34.))
                     .pl(px(12.))
-                    .pr(px(6.))
+                    .pr(px(9.))
                     .flex()
                     .flex_none()
                     .items_center()
@@ -774,8 +974,7 @@ impl Shell {
                             .child("New pane"),
                     )
                     .child(
-                        icon_button("pane-choosing-close", Icon::Close, theme)
-                            .size(px(22.))
+                        icon_button_sized("pane-choosing-close", Icon::Close, 22., theme)
                             .tooltip(tip("Close"))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.picker = None;
@@ -803,14 +1002,50 @@ impl Shell {
             )
     }
 
-    fn pane(&self, pane: &Pane, focused: bool, theme: &Theme, cx: &Context<Self>) -> Div {
+    /// A pane: its header over what runs in it, and, among several, a line
+    /// along its top that is the accent's on the one with the keys (`line`).
+    /// As the `workspace` plugin draws it (its `paneFrame` view), around the
+    /// header and the body, or as the app does when the plugin cannot.
+    pub(crate) fn pane(
+        &self,
+        pane: &Pane,
+        focused: bool,
+        line: Option<bool>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Div {
+        let parts = std::cell::RefCell::new(Some((
+            self.pane_header(pane, focused, theme, cx),
+            self.pane_body(pane, theme, cx),
+        )));
+        let slots = || {
+            parts
+                .borrow_mut()
+                .take()
+                .map(|(header, body)| vec![("header", header), ("body", body)])
+                .unwrap_or_default()
+        };
+        let data = json!({ "line": line });
+        if let Some(drawn) = self.chrome("paneFrame", &pane.id, data, slots, theme, cx) {
+            return div().size_full().child(drawn);
+        }
+        let Some((header, body)) = parts.into_inner() else {
+            return div();
+        };
         div()
             .size_full()
             .flex()
             .flex_col()
             .bg(theme.pane)
-            .child(self.pane_header(pane, focused, theme, cx))
-            .child(self.pane_body(pane, theme, cx))
+            .child(header)
+            .child(body)
+            .when_some(line, |pane, lit| {
+                pane.border_t_1().border_color(if lit {
+                    theme.accent
+                } else {
+                    gpui::transparent_black()
+                })
+            })
     }
 
     // The tab on screen: its panes where its splits put them, and the lines
@@ -875,29 +1110,21 @@ impl Shell {
             let pane = self.store.pane(&id)?;
             // While a half is chosen for, that half is what has the keys.
             let focused = session.focused.as_ref() == Some(&id) && choosing.is_none();
-            let mut inside = self.pane(pane, focused || !several, theme, cx);
+            // Which pane has the keys: a line of the accent along its top.
+            let line = several.then_some(focused);
+            let mut inside = self.pane(pane, focused || !several, line, theme, cx);
             if several {
-                // Which pane has the keys: a line of the accent along its top.
-                inside = inside
-                    .border_t_1()
-                    .border_color(if focused {
-                        theme.accent
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener({
-                            let id = id.clone();
-                            move |this, _, _, cx| {
-                                if this.store.current().and_then(|s| s.focused.as_ref())
-                                    != Some(&id)
-                                {
-                                    this.focus_pane(&id, cx);
-                                }
+                inside = inside.on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener({
+                        let id = id.clone();
+                        move |this, _, _, cx| {
+                            if this.store.current().and_then(|s| s.focused.as_ref()) != Some(&id) {
+                                this.focus_pane(&id, cx);
                             }
-                        }),
-                    );
+                        }
+                    }),
+                );
             }
             // A pane made a moment ago comes in once; one that was already
             // there, or is shown again, is simply there.
@@ -997,7 +1224,7 @@ impl Shell {
             return if self.store.spaces.is_empty() {
                 self.no_spaces(theme, cx)
             } else {
-                self.no_session(theme)
+                self.no_session(theme, cx)
             };
         };
         if let Some(open) = self.resuming_here(&session.id) {
@@ -1028,6 +1255,81 @@ impl Shell {
     }
 }
 
+/// Which part of the window a [`Part`] draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Which {
+    Rail,
+    Tabs,
+}
+
+/// A part of the window drawn as a view of its own: the window's frames in
+/// which it shows what it showed (a drag between panes, a pane coming in)
+/// reuse what it drew, rather than build it again. The window tells it to
+/// draw again when what it shows changes (see `Shell::draw`).
+pub(crate) struct Part {
+    shell: gpui::WeakEntity<Shell>,
+    which: Which,
+    /// The plugin's drawing of it the window last handed it, which it makes
+    /// into elements without reading the window: so the window's frames do
+    /// not draw it again. `None` draws it from the window as it stands.
+    pub(crate) drawn: Option<Drawn>,
+    /// How many times it was drawn: what a test of its keeping counts.
+    pub(crate) draws: u64,
+}
+
+/// A plugin's drawing of a part, as the window hands it over: the tree,
+/// what its elements are known by, and what they do when used.
+pub(crate) struct Drawn {
+    pub tree: std::rc::Rc<kou_plugins::Node>,
+    pub page: SharedString,
+    pub on: crate::plugin_view::On,
+}
+
+impl Part {
+    pub(crate) fn new(which: Which, cx: &mut Context<Shell>) -> gpui::Entity<Self> {
+        let shell = cx.weak_entity();
+        gpui::AppContext::new(cx, |_| Self {
+            shell,
+            which,
+            drawn: None,
+            draws: 0,
+        })
+    }
+}
+
+/// What a part showed when it was last handed a drawing: its data, and the
+/// palette and the scripts it was drawn with.
+pub(crate) struct Shows {
+    data: serde_json::Value,
+    palette: kou_ui::Palette,
+    epoch: u64,
+}
+
+impl Render for Part {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.draws += 1;
+        let (which, theme) = (self.which, theme(cx).clone());
+        if let Some(drawn) = &self.drawn {
+            let on = drawn.on.clone();
+            return crate::plugins::drawn(&drawn.tree, &drawn.page, Vec::new(), &theme, on);
+        }
+        self.shell
+            .update(cx, |shell, cx| match which {
+                Which::Rail => shell.render_rail(&theme, cx),
+                Which::Tabs => {
+                    let session = if shell.page_open() {
+                        None
+                    } else {
+                        shell.store.current()
+                    };
+                    let room = f32::from(window.viewport_size().width) - shell.rail_width();
+                    shell.tab_strip(session, room, &theme, cx)
+                }
+            })
+            .unwrap_or_else(|_| Empty.into_any_element())
+    }
+}
+
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Everything drawn goes through here, which is where a hot patch
@@ -1037,8 +1339,15 @@ impl Render for Shell {
 }
 
 impl Shell {
-    fn draw(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+    pub(crate) fn draw(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
         self.settle(window, cx);
+        // The rail and the rest of the window's own parts are drawn by
+        // plugins where they can be.
+        self.start_plugins();
         {
             let mut springs = self.springs.borrow_mut();
             springs.set_still(cx.reduce_motion());
@@ -1055,16 +1364,58 @@ impl Shell {
             f32::from(viewport.height) - metric::BAR,
         ));
         let content = self.content(theme, window, cx);
-        let cx = &*cx;
-        let session = if self.page_open() {
-            None
-        } else {
-            self.store.current()
-        };
         let room = f32::from(viewport.width) - rail;
+        // The rail and the tab strip are drawn again when what they show
+        // changed since they last drew, and only then: each is handed the
+        // plugin's drawing of what it shows now. (While a name is typed in
+        // the rail, the rail is drawn from the window, field and all.)
+        let epoch = self.plugins.borrow().epoch;
+        let same = |known: &Option<Shows>, data: &serde_json::Value| {
+            known.as_ref().is_some_and(|known| {
+                known.epoch == epoch && known.palette == theme.palette && known.data == *data
+            })
+        };
+        if rail > 0. {
+            let data = self.rail_data(crate::rail::Room::at(rail));
+            if !same(&self.rail_shows, &data) || self.name_edit.is_some() {
+                let drawn = match self.name_edit {
+                    Some(_) => None,
+                    None => self.chrome_drawing("rail", "", data.clone(), theme, cx),
+                };
+                self.rail_shows = Some(Shows {
+                    data,
+                    palette: theme.palette,
+                    epoch,
+                });
+                self.rail_part.update(cx, |part, cx| {
+                    part.drawn = drawn;
+                    cx.notify();
+                });
+            }
+        }
+        let data = {
+            let session = if self.page_open() {
+                None
+            } else {
+                self.store.current()
+            };
+            self.tabs_data(session, room)
+        };
+        if !same(&self.tabs_shows, &data) {
+            let drawn = self.chrome_drawing("tabs", "", data.clone(), theme, cx);
+            self.tabs_shows = Some(Shows {
+                data,
+                palette: theme.palette,
+                epoch,
+            });
+            self.tabs_part.update(cx, |part, cx| {
+                part.drawn = drawn;
+                cx.notify();
+            });
+        }
+        let cx = &*cx;
         let editor = self.tab_editor(room, theme, cx);
         let area = self.content_area.clone();
-        let accent = theme.accent;
         // A hot patch that was declined (see `hot.rs`) outranks other notices:
         // what is on screen is no longer what is on disk.
         let notice = if crate::hot::stale() {
@@ -1074,6 +1425,69 @@ impl Shell {
         } else {
             self.notice.clone()
         };
+        let data = json!({ "rail": rail, "editor": editor.is_some(), "notice": notice.is_some() });
+        let body = self.core_chrome(
+            "shell",
+            data,
+            || {
+                let mut slots = vec![
+                    (
+                        "rail",
+                        self.rail_part
+                            .clone()
+                            .cached(gpui::StyleRefinement::default().size_full())
+                            .into_any_element(),
+                    ),
+                    (
+                        "tabs",
+                        self.tabs_part
+                            .clone()
+                            .cached(
+                                gpui::StyleRefinement::default()
+                                    .w_full()
+                                    .h(px(metric::BAR))
+                                    .flex_none(),
+                            )
+                            .into_any_element(),
+                    ),
+                    ("content", content),
+                    (
+                        "measure",
+                        canvas(move |bounds, _, _| area.set(bounds), |_, _, _, _| {})
+                            .absolute()
+                            .size_full()
+                            .into_any_element(),
+                    ),
+                    (
+                        "railResize",
+                        div()
+                            .id("rail-edge")
+                            .size_full()
+                            .cursor(CursorStyle::ResizeLeftRight)
+                            .on_drag(RailDrag, |_, _, _, cx| {
+                                gpui::AppContext::new(cx, |_| NothingDragged)
+                            })
+                            .into_any_element(),
+                    ),
+                ];
+                slots.extend(editor.map(|editor| ("editor", editor)));
+                slots.extend(notice.map(|notice| {
+                    (
+                        "notice",
+                        self.core_chrome(
+                            "notice",
+                            json!({"text": notice.as_ref()}),
+                            Vec::new,
+                            theme,
+                            cx,
+                        ),
+                    )
+                }));
+                slots
+            },
+            theme,
+            cx,
+        );
         let shell = div()
             .id("shell")
             .key_context("Shell")
@@ -1164,99 +1578,7 @@ impl Shell {
                 this.set_rail_width(f32::from(event.event.position.x), cx);
             }))
             .on_drop(cx.listener(|this, _: &RailDrag, _, cx| this.save(cx)))
-            .when(rail > 0., |shell| {
-                shell.child(
-                    div()
-                        .flex_none()
-                        .w(px(rail))
-                        .h_full()
-                        .child(self.render_rail(theme, cx)),
-                )
-            })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(self.tab_strip(session, room, theme, cx))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
-                            .relative()
-                            .child(
-                                // Where the panes are, for the next frame's layout.
-                                canvas(move |bounds, _, _| area.set(bounds), |_, _, _, _| {})
-                                    .absolute()
-                                    .size_full(),
-                            )
-                            .child(div().size_full().child(content))
-                            .when_some(editor, |area, editor| {
-                                area.child(
-                                    // A press anywhere else keeps what was
-                                    // typed and chosen, as leaving a name
-                                    // being edited does everywhere.
-                                    div()
-                                        .id("tab-editor-away")
-                                        // Over the panes, not after them:
-                                        // without a place of its own it
-                                        // would be laid out below them.
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .size_full()
-                                        .on_mouse_down(
-                                            MouseButton::Left,
-                                            cx.listener(|this, _, _, cx| this.commit_tab_edit(cx)),
-                                        )
-                                        .child(editor),
-                                )
-                            }),
-                    )
-                    .when_some(notice, |main, notice| {
-                        main.child(
-                            div()
-                                .flex_none()
-                                .px(px(12.))
-                                .py(px(6.))
-                                .border_t_1()
-                                .border_color(theme.line)
-                                .text_size(px(metric::TEXT_SMALL))
-                                .text_color(theme.error)
-                                .child(notice),
-                        )
-                    }),
-            )
-            // The rail's edge, to take hold of: over both sides of it, so it
-            // is drawn last.
-            .when(rail > 0., |shell| {
-                shell.child(
-                    div()
-                        .id("rail-edge")
-                        .absolute()
-                        .top_0()
-                        .left(px(rail - GRIP))
-                        .w(px(GRIP * 2.))
-                        .h_full()
-                        .flex()
-                        .justify_center()
-                        .cursor(CursorStyle::ResizeLeftRight)
-                        .group("rail-edge")
-                        .on_drag(RailDrag, |_, _, _, cx| {
-                            gpui::AppContext::new(cx, |_| NothingDragged)
-                        })
-                        .child(
-                            div()
-                                .w(px(2.))
-                                .h_full()
-                                .group_hover("rail-edge", move |style| {
-                                    style.bg(accent.opacity(0.7))
-                                }),
-                        ),
-                )
-            });
+            .child(body);
         // Anything still gliding needs the next frame; so does a pane area that
         // has not been measured yet.
         let unmeasured = self.content_area.get().size.width <= px(0.);

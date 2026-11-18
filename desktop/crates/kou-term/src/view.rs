@@ -1491,6 +1491,13 @@ struct Metrics {
     stroke: Pixels,
 }
 
+impl TerminalStyle {
+    /// Cell dimensions at the window's display scale, before canvas zoom.
+    pub fn cell_size(&self, window: &Window) -> Size<Pixels> {
+        Metrics::measure(self, window).cell
+    }
+}
+
 impl Metrics {
     fn measure(style: &TerminalStyle, window: &Window) -> Self {
         let scale = window.scale_factor();

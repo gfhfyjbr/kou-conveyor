@@ -279,7 +279,12 @@ pub(crate) fn claude_agents(json: &str) -> Vec<OpenSession> {
             Some(OpenSession {
                 session,
                 background,
-                busy: said("status") == Some("busy"),
+                // An interactive session says `status`, one in the
+                // background `state`: either way a turn that runs is one
+                // the user is asked about before it is stopped. (Asking
+                // once too often costs a click; not asking ends work.)
+                busy: said("status") == Some("busy")
+                    || matches!(said("state"), Some("working" | "busy" | "running")),
             })
         })
         .collect()
@@ -350,7 +355,7 @@ mod open_tests {
                 OpenSession {
                     session: "c255120d-2731".into(),
                     background: Some("c255120d".into()),
-                    busy: false,
+                    busy: true,
                 },
                 OpenSession {
                     session: "8f9526eb-1046".into(),

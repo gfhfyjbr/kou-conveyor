@@ -44,6 +44,12 @@ pub enum Request {
         /// The pane.
         pane: String,
     },
+    /// Where a pane is: its tab and how it is shown, the panes beside it,
+    /// and the edges of the tab's canvas. The caller's own, by `$KOU_PANE`.
+    Where {
+        /// The pane.
+        pane: String,
+    },
     /// The harnesses the app found installed.
     Harnesses,
     /// The panes of a session, or of every session.
@@ -138,6 +144,59 @@ pub enum Request {
         /// Its new name; not empty.
         name: String,
     },
+    /// The edges of the canvas of the tab a pane is in. Anyone may ask.
+    EdgeList {
+        /// The pane asking.
+        pane: String,
+    },
+    /// Wire one node of the asking pane's tab to another. Only a pane the
+    /// user made its tab's orchestrator may.
+    EdgeAdd {
+        /// The pane asking.
+        pane: String,
+        /// The node whose output it starts at: a pane's id, or a node's
+        /// (`n7`), as [`Place`] names them.
+        from: String,
+        /// The node whose input it ends at.
+        to: String,
+        /// Its mode; [`EdgeMode::Auto`] when absent.
+        mode: Option<EdgeMode>,
+    },
+    /// Change the mode of an edge of the asking pane's tab. An orchestrator's.
+    EdgeSet {
+        /// The pane asking.
+        pane: String,
+        /// Where the edge starts.
+        from: String,
+        /// Where it ends.
+        to: String,
+        /// Its new mode.
+        mode: EdgeMode,
+    },
+    /// Take a wire of the asking pane's tab away. An orchestrator's.
+    EdgeRemove {
+        /// The pane asking.
+        pane: String,
+        /// Where the edge starts.
+        from: String,
+        /// Where it ends.
+        to: String,
+    },
+    /// Send a pane a prompt, and have what its agent answers come back to
+    /// the asker once, as a message, with nothing wired between them.
+    PaneAsk {
+        /// The pane asked.
+        pane: String,
+        /// The question.
+        text: String,
+        /// The pane asking, which the answer goes to.
+        from: String,
+    },
+    /// The models a harness can run with, as far as the app knows them.
+    HarnessModels {
+        /// The harness, by id.
+        harness: String,
+    },
 }
 
 /// A new pane.
@@ -168,6 +227,11 @@ pub struct Spawn {
     /// Run it as a native thread rather than its terminal interface, when the harness can.
     #[serde(default)]
     pub native: bool,
+    /// Run it in its own terminal interface, where the app would open a
+    /// native thread by default. With neither this nor `native`, the app's
+    /// own default for the harness.
+    #[serde(default)]
+    pub terminal: bool,
 }
 
 /// Where a new pane appears.
@@ -242,6 +306,10 @@ pub struct Pane {
     pub parent: Option<String>,
     /// Milliseconds since its activity last changed.
     pub since_ms: u64,
+    /// The model its agent runs with, in the harness's own naming, when
+    /// one was chosen for it or its agent said which.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
 }
 
 /// How a tab shows its panes.
@@ -276,6 +344,90 @@ pub struct Tab {
     pub active: String,
     /// Whether it is the tab its session shows.
     pub front: bool,
+}
+
+/// Where a pane is: what stands around it in the app.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Place {
+    /// The pane asked about.
+    pub pane: Pane,
+    /// Its tab: its name, how it is shown, the panes it has.
+    pub tab: Tab,
+    /// The names of its session and of its space.
+    pub session: String,
+    /// See [`Place::session`].
+    pub space: String,
+    /// The other panes of its tab, in reading order.
+    pub others: Vec<Pane>,
+    /// The edges of the tab's canvas, whichever way the tab is shown.
+    pub edges: Vec<Edge>,
+    /// What stands on the tab's canvas that is no pane: notes and sources.
+    pub notes: Vec<Note>,
+    /// The user made this pane its tab's orchestrator: it may wire the
+    /// tab's nodes together and take wires away.
+    #[serde(default)]
+    pub orchestrator: bool,
+}
+
+/// An edge of a tab's canvas: from one node's output to another's input.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Edge {
+    /// The pane it starts at, by id; a node that is no pane by its
+    /// [`Note::id`].
+    pub from: String,
+    /// The pane or node it ends at.
+    pub to: String,
+    /// See [`EdgeMode`].
+    pub mode: EdgeMode,
+    /// It was wired on purpose (by the user, a template, or by one pane
+    /// sending to another), and so carries by itself what a native chat at
+    /// its start answers. Otherwise it was made when its start started its
+    /// end, and only shows that.
+    pub wired: bool,
+    /// How many messages wait on it for the user to let them through.
+    pub waiting: u32,
+    /// It was made when its start sent its end a message on purpose: it
+    /// shows that they talk, and carries nothing by itself.
+    #[serde(default)]
+    pub sent: bool,
+    /// The pane whose agent wired it, when an agent did and not the user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
+}
+
+/// A model a harness can run with.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Model {
+    /// What `pane spawn --model` takes.
+    pub id: String,
+    /// What it is called.
+    pub name: String,
+}
+
+/// Whether messages go along an edge, and how.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EdgeMode {
+    /// They go as they come.
+    #[default]
+    Auto,
+    /// Each waits on its target until the user lets it through.
+    Approve,
+    /// Nothing goes along it by itself.
+    Off,
+}
+
+/// A node of a canvas that is no pane.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    /// What edges name it by: `n` and its number.
+    pub id: String,
+    /// `note` or `source`.
+    pub kind: String,
+    /// Its name.
+    pub title: String,
+    /// What it says: a note's text, a source's place.
+    pub text: String,
 }
 
 /// A session as the app describes it.
@@ -340,6 +492,8 @@ pub enum Response {
     Done,
     /// One pane.
     Pane(Pane),
+    /// Answer to [`Request::Where`].
+    Place(Box<Place>),
     /// Several panes.
     Panes {
         /// The panes.
@@ -382,6 +536,25 @@ pub enum Response {
     Harnesses {
         /// The harnesses.
         harnesses: Vec<Harness>,
+    },
+    /// The edges of a tab's canvas, as they are after the request.
+    Edges {
+        /// The edges.
+        edges: Vec<Edge>,
+        /// What the caller is told besides: a ring it closed, a wire that
+        /// was already there.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        said: Vec<String>,
+    },
+    /// Answer to [`Request::HarnessModels`].
+    Models {
+        /// The harness.
+        harness: String,
+        /// The models it can run with; empty when it names none.
+        models: Vec<Model>,
+        /// The one it runs with when none is asked for, when it says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        default: Option<String>,
     },
     /// The request failed.
     Error {

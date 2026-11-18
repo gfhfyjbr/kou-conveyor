@@ -480,6 +480,16 @@ pub struct Pane {
     /// conversation shows of them, also once their own panes are gone.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub started: Vec<Started>,
+    /// Its title was given to it: by whoever started it, or by the user.
+    /// What its agent calls its session later does not replace it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub titled: bool,
+    /// The name its Claude Code is kept under while it runs apart from the
+    /// app (see `Store::claude_keep`): what the app finds it by when it is
+    /// opened again. A new one for each start of its conversation; none
+    /// once that is ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<String>,
 }
 
 /// Another account of a harness: the same program with its home in another
@@ -495,6 +505,11 @@ pub struct Profile {
     pub name: String,
     /// The folder its home variable is set to.
     pub home: PathBuf,
+    /// The proxy what runs under it goes out through, as it is shown: its
+    /// address without a name and password, which are kept apart from the
+    /// state (see `accounts.rs`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy: Option<String>,
 }
 
 /// An agent a pane's agent started, as that pane remembers it.
@@ -595,6 +610,10 @@ pub struct Store {
     /// of the settings', or any colour written here by hand.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accent: Option<String>,
+    #[serde(default)]
+    pub theme: kou_ui::themes::Selection,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub themes: Vec<kou_ui::themes::SavedTheme>,
     /// The other accounts of harnesses, in the order added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub profiles: Vec<Profile>,
@@ -602,6 +621,25 @@ pub struct Store {
     /// not the harness's own: what a prompt on an empty screen goes to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_profile: Option<Id>,
+    /// A harness's accounts are one pool: a new agent runs under the one
+    /// with the most left (see `accounts.rs`), unless one is named.
+    #[serde(default = "yes")]
+    pub balance: bool,
+    /// Claude Code's chat is held with Claude Code itself (`kou-claude`),
+    /// with no adapter between. Off, it goes through its ACP adapter, as
+    /// every other harness's does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub claude_direct: bool,
+    /// Run the Codex CLI's own app server for new chats.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub codex_direct: bool,
+    #[serde(default = "yes")]
+    pub codex_keep: bool,
+    /// A Claude Code the app talks to itself is kept by a process of its
+    /// own, so that it works on while the app is closed and is found again
+    /// when the app is back. Off, it ends with the app.
+    #[serde(default = "yes")]
+    pub claude_keep: bool,
     #[serde(default)]
     next: u64,
 }
@@ -649,8 +687,15 @@ impl Default for Store {
             notify_done: true,
             notify_asks: true,
             accent: None,
+            theme: kou_ui::themes::Selection::Preset(kou_ui::themes::Preset::Charcoal),
+            themes: Vec::new(),
             profiles: Vec::new(),
             last_profile: None,
+            balance: true,
+            claude_direct: false,
+            codex_direct: false,
+            codex_keep: true,
+            claude_keep: true,
             next: 0,
         }
     }
@@ -690,6 +735,14 @@ pub fn name_of(path: &Path) -> String {
 }
 
 impl Store {
+    pub fn direct(&self, harness: &str) -> bool {
+        match harness {
+            "claude" => self.claude_direct,
+            "codex" => self.codex_direct,
+            _ => false,
+        }
+    }
+
     /// The chosen accent as `0xRRGGBB`, when there is one and it reads as a
     /// colour.
     pub fn accent_rgb(&self) -> Option<u32> {
@@ -737,8 +790,15 @@ impl Store {
             harness: harness.to_owned(),
             name,
             home,
+            proxy: None,
         });
         id
+    }
+
+    /// The id the next account will have: for the folder the app makes for
+    /// it, before it is added.
+    pub fn next_profile_id(&self) -> Id {
+        format!("a{}", self.next + 1)
     }
 
     /// Forget an account. Panes that ran under it are the harness's own
@@ -844,6 +904,8 @@ impl Store {
             model: None,
             profile: None,
             started: Vec::new(),
+            titled: false,
+            keeper: None,
         };
         if let Some(session) = self.session_mut(session) {
             let seated = match &seat {
@@ -1174,6 +1236,33 @@ impl Store {
             Ok(bytes) => {
                 let mut store: Self = serde_json::from_slice(&bytes)?;
                 store.settle_tabs();
+                // The next id is past every id the file holds: a file with
+                // no count of its own (an older build's, one written by
+                // hand) would hand out ids that are in use.
+                let used = store
+                    .spaces
+                    .iter()
+                    .map(|space| &space.id)
+                    .chain(store.sessions.iter().map(|session| &session.id))
+                    .chain(
+                        store
+                            .sessions
+                            .iter()
+                            .flat_map(|session| session.tabs.iter().map(|tab| &tab.id)),
+                    )
+                    .chain(store.panes.iter().map(|pane| &pane.id))
+                    .chain(store.profiles.iter().map(|profile| &profile.id))
+                    .filter_map(|id| id.get(1..)?.parse::<u64>().ok())
+                    .max()
+                    .unwrap_or(0);
+                store.next = store.next.max(used);
+                // Titles saved by a build that kept an agent's "(fork)" marks.
+                for pane in &mut store.panes {
+                    let plain = kou_thread::plain_title(&pane.title);
+                    if plain.len() != pane.title.len() {
+                        pane.title = plain.to_owned();
+                    }
+                }
                 Ok(store)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
@@ -1324,6 +1413,49 @@ mod tests {
         store.remove_pane(&parent);
         assert_eq!(store.pane(&again).unwrap().parent, None);
         assert!(store.remove_pane(&parent).is_none());
+    }
+
+    #[test]
+    fn ids_made_after_a_load_are_past_every_id_the_file_holds() {
+        // A file with no count of its own: an older build's, or one
+        // written by hand.
+        let folder = std::env::temp_dir().join(format!("kou-ids-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("state.json");
+        let mut store = Store::default();
+        let space = store.add_space("/work/atlas".into());
+        let session = store.add_session(&space).unwrap();
+        store.add_pane(
+            &session,
+            "shell",
+            "Shell",
+            "/work/atlas".into(),
+            PaneKind::Terminal,
+            None,
+            1,
+            Seat::Tab(Board::new()),
+        );
+        store.save(&path).unwrap();
+        let mut written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        written.as_object_mut().unwrap().remove("next");
+        std::fs::write(&path, serde_json::to_vec(&written).unwrap()).unwrap();
+
+        let mut loaded = Store::load(&path).unwrap();
+        let taken: Vec<Id> = loaded
+            .spaces
+            .iter()
+            .map(|space| space.id.clone())
+            .chain(loaded.sessions.iter().map(|session| session.id.clone()))
+            .chain(loaded.panes.iter().map(|pane| pane.id.clone()))
+            .collect();
+        let fresh = loaded.add_session(&space).unwrap();
+        let number = |id: &Id| id[1..].parse::<u64>().unwrap();
+        assert!(
+            taken.iter().all(|id| number(id) < number(&fresh)),
+            "{fresh} against {taken:?}"
+        );
+        std::fs::remove_dir_all(&folder).ok();
     }
 
     #[test]

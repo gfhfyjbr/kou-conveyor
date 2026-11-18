@@ -2,7 +2,7 @@
 
 use crate::{
     node::Node,
-    source::{self, Found, Source},
+    source::{self, Found, Source, runnable},
 };
 use rquickjs::{CatchResultExt, Context, Function, Object, Runtime, context::EvalOptions};
 use serde::Deserialize;
@@ -41,16 +41,32 @@ pub struct PageInfo {
     pub id: String,
     pub title: String,
     pub icon: Option<String>,
+    /// A page of its own in the app (a row of the rail shows it), rather
+    /// than a view the app draws where it has a place for it.
+    #[serde(default = "yes")]
+    pub page: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Something a plugin asks the app to do: its name and what it is given.
 pub type Act = (String, Value);
 
-/// A page as last drawn: from what, and what came of it.
+/// A page as last drawn: from what (its input is kept as a hash: a view's
+/// may be megabytes of a file), and what came of it.
 struct Drawn {
-    input: String,
+    input: u64,
     state: u64,
     tree: Rc<Node>,
+}
+
+fn hash_of(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A plugin that runs.
@@ -58,8 +74,17 @@ struct Loaded {
     found: Found,
     context: Context,
     pages: Vec<PageInfo>,
-    drawn: HashMap<String, Drawn>,
+    /// What was last drawn, by page and instance.
+    drawn: HashMap<(String, String), Drawn>,
+    /// The drawings whose script failed, by page and instance, from what
+    /// (input and state), for a drawing that must not be the one before
+    /// (see [`Host::render_strict`]).
+    failed: HashMap<(String, String), (u64, u64, Problem)>,
 }
+
+/// How many drawings a plugin's views are remembered for: past this the
+/// lot is let go and drawn anew when next asked for.
+const DRAWN: usize = 512;
 
 /// What a plugin's page remembers, kept apart from its script so that it
 /// outlives the script being read again.
@@ -81,6 +106,8 @@ pub struct Host {
     kept: HashMap<String, Kept>,
     /// What is wrong now, at most one thing for each plugin.
     problems: Vec<Problem>,
+    /// How many times a script ran to draw.
+    runs: u64,
 }
 
 impl Host {
@@ -102,6 +129,7 @@ impl Host {
             plugins: Vec::new(),
             kept: HashMap::new(),
             problems: Vec::new(),
+            runs: 0,
         };
         host.reload();
         Ok(host)
@@ -168,7 +196,9 @@ impl Host {
                         .map_err(|error| error.to_string())
                 };
                 run("kou/kernel.js", KERNEL)?;
-                run(&plugin.script_name, &plugin.script)?;
+                for (name, text) in &plugin.scripts {
+                    run(name, &runnable(name, text)?)?;
+                }
                 let listed: String = kernel(&ctx)?
                     .get::<_, Function>("pages")
                     .and_then(|pages| pages.call(()))
@@ -188,6 +218,7 @@ impl Host {
             found: plugin.clone(),
             context,
             drawn: HashMap::new(),
+            failed: HashMap::new(),
         })
     }
 
@@ -212,14 +243,27 @@ impl Host {
     }
 
     /// The pages plugins add, each id once: a later plugin's page takes the
-    /// place of an earlier one's of the same id.
+    /// place of an earlier one's of the same id. (Their views are not pages:
+    /// the app draws those where it has a place for them.)
     pub fn pages(&self) -> Vec<PageInfo> {
         let mut pages: Vec<PageInfo> = Vec::new();
         for page in self.plugins.iter().flat_map(|loaded| &loaded.pages) {
             pages.retain(|known| known.id != page.id);
             pages.push(page.clone());
         }
+        pages.retain(|page| page.page);
         pages
+    }
+
+    /// Whether some plugin has a page or a view called `id`.
+    pub fn has(&self, id: &str) -> bool {
+        self.owner(id).is_some()
+    }
+
+    /// How many times a script has run to draw (not a drawing remembered
+    /// from the same input): for a test of how often the scripts run.
+    pub fn runs(&self) -> u64 {
+        self.runs
     }
 
     /// What is wrong with the plugins now.
@@ -248,6 +292,41 @@ impl Host {
     /// When the script fails, the page as it was last drawn is what comes
     /// back, if it was ever drawn, and the failure is a [`Problem`].
     pub fn render(&mut self, id: &str, input: &Value) -> Result<Rc<Node>, Problem> {
+        self.render_as(id, "", input)
+    }
+
+    /// The same for a view that is drawn for several things: `instance`
+    /// names the one meant, which is drawn from its own input and keeps a
+    /// state of its own.
+    pub fn render_as(
+        &mut self,
+        id: &str,
+        instance: &str,
+        input: &Value,
+    ) -> Result<Rc<Node>, Problem> {
+        self.draw(id, instance, input, false)
+    }
+
+    /// The same for a part of the app's own window, which the app draws
+    /// itself when the plugin cannot: a script that fails gives the
+    /// failure, not what it drew before, and is not run again for the same
+    /// input and state until it is read again.
+    pub fn render_strict(
+        &mut self,
+        id: &str,
+        instance: &str,
+        input: &Value,
+    ) -> Result<Rc<Node>, Problem> {
+        self.draw(id, instance, input, true)
+    }
+
+    fn draw(
+        &mut self,
+        id: &str,
+        instance: &str,
+        input: &Value,
+        strict: bool,
+    ) -> Result<Rc<Node>, Problem> {
         let Some(at) = self.owner(id) else {
             return Err(Problem {
                 plugin: String::new(),
@@ -255,7 +334,7 @@ impl Host {
             });
         };
         let name = self.plugins[at].found.name.clone();
-        let key = format!("{name}/{id}");
+        let key = kept_key(&name, id, instance);
         let kept = self.kept.entry(key).or_default();
         let (state, version) = (
             if kept.json.is_empty() {
@@ -266,17 +345,27 @@ impl Host {
             kept.version,
         );
         let input = input.to_string();
-        if let Some(drawn) = self.plugins[at].drawn.get(id)
-            && drawn.input == input
+        let given = hash_of(&input);
+        let slot = (id.to_owned(), instance.to_owned());
+        if strict
+            && let Some((input, state, problem)) = self.plugins[at].failed.get(&slot)
+            && *input == given
+            && *state == version
+        {
+            return Err(problem.clone());
+        }
+        if let Some(drawn) = self.plugins[at].drawn.get(&slot)
+            && drawn.input == given
             && drawn.state == version
         {
             return Ok(drawn.tree.clone());
         }
+        self.runs += 1;
         let built = self.within(CALL, || {
             self.plugins[at].context.with(|ctx| {
                 let tree: String = kernel(&ctx)?
                     .get::<_, Function>("render")
-                    .and_then(|render| render.call((id, input.as_str(), state.as_str())))
+                    .and_then(|render| render.call((id, input.as_str(), state.as_str(), instance)))
                     .catch(&ctx)
                     .map_err(|error| error.to_string())?;
                 serde_json::from_str::<Node>(&tree).map_err(|error| error.to_string())
@@ -287,10 +376,14 @@ impl Host {
         match built {
             Ok(tree) => {
                 let tree = Rc::new(tree);
+                self.plugins[at].failed.remove(&slot);
+                if self.plugins[at].drawn.len() >= DRAWN {
+                    self.plugins[at].drawn.clear();
+                }
                 self.plugins[at].drawn.insert(
-                    id.to_owned(),
+                    slot,
                     Drawn {
-                        input,
+                        input: given,
                         state: version,
                         tree: tree.clone(),
                     },
@@ -303,7 +396,15 @@ impl Host {
                     message: format!("page \"{id}\": {}", message.trim()),
                 };
                 self.problems.push(problem.clone());
-                match self.plugins[at].drawn.get(id) {
+                if strict {
+                    let failed = &mut self.plugins[at].failed;
+                    if failed.len() >= DRAWN {
+                        failed.clear();
+                    }
+                    failed.insert(slot, (given, version, problem.clone()));
+                    return Err(problem);
+                }
+                match self.plugins[at].drawn.get(&slot) {
                     Some(drawn) => Ok(drawn.tree.clone()),
                     None => Err(problem),
                 }
@@ -311,10 +412,31 @@ impl Host {
         }
     }
 
+    /// Page `id` as it was last drawn for `instance`, if it was: its
+    /// handlers are the ones that answer now.
+    pub fn drawn(&self, id: &str, instance: &str) -> Option<Rc<Node>> {
+        let at = self.owner(id)?;
+        self.plugins[at]
+            .drawn
+            .get(&(id.to_owned(), instance.to_owned()))
+            .map(|drawn| drawn.tree.clone())
+    }
+
     /// Calls the handler `handler` of page `id` as it was last drawn, with
     /// `event`: what the page asks the app to do, in order. What the
     /// handler keeps is remembered for the page's next drawing.
     pub fn dispatch(&mut self, id: &str, handler: u64, event: &Value) -> Vec<Act> {
+        self.dispatch_as(id, "", handler, event)
+    }
+
+    /// The same for one of the things a view is drawn for.
+    pub fn dispatch_as(
+        &mut self,
+        id: &str,
+        instance: &str,
+        handler: u64,
+        event: &Value,
+    ) -> Vec<Act> {
         #[derive(Deserialize)]
         struct Told {
             acts: Vec<Act>,
@@ -324,7 +446,7 @@ impl Host {
             return Vec::new();
         };
         let name = self.plugins[at].found.name.clone();
-        let key = format!("{name}/{id}");
+        let key = kept_key(&name, id, instance);
         let state = self
             .kept
             .get(&key)
@@ -337,7 +459,13 @@ impl Host {
                 let told: String = kernel(&ctx)?
                     .get::<_, Function>("dispatch")
                     .and_then(|dispatch| {
-                        dispatch.call((id, handler as f64, event.as_str(), state.as_str()))
+                        dispatch.call((
+                            id,
+                            handler as f64,
+                            event.as_str(),
+                            state.as_str(),
+                            instance,
+                        ))
                     })
                     .catch(&ctx)
                     .map_err(|error| error.to_string())?;
@@ -364,6 +492,16 @@ impl Host {
                 Vec::new()
             }
         }
+    }
+}
+
+/// What the state of a page, or of one of the things a view is drawn for,
+/// is kept under.
+fn kept_key(plugin: &str, id: &str, instance: &str) -> String {
+    if instance.is_empty() {
+        format!("{plugin}/{id}")
+    } else {
+        format!("{plugin}/{id}#{instance}")
     }
 }
 
@@ -427,6 +565,7 @@ mod tests {
                 id: "counter".into(),
                 title: "Counter".into(),
                 icon: Some("flame".into()),
+                page: true,
             }]
         );
         // Text is an element, nothing stands for `null`, nested lists are
@@ -612,6 +751,107 @@ mod tests {
                 .iter()
                 .any(|problem| problem.plugin == "loop" && problem.message.contains("stopped"))
         );
+    }
+
+    #[test]
+    fn a_plugin_s_scripts_are_one_program_and_a_view_is_drawn_for_each_thing_apart() {
+        let folder = tempfile::tempdir().unwrap();
+        let plugin = folder.path().join("cards");
+        std::fs::create_dir_all(plugin.join("shared")).unwrap();
+        std::fs::write(
+            plugin.join("plugin.json"),
+            json!({"name": "cards", "desktop": {"scripts": ["shared/data.js", "main.js"]}})
+                .to_string(),
+        )
+        .unwrap();
+        // The first is written as a module, as the browser cockpit's are.
+        std::fs::write(
+            plugin.join("shared/data.js"),
+            "export const twice = (x) => x * 2;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("main.js"),
+            r#"kou.view({ id: "card", render: (ctx) => ui.col({}, [
+                 ui.text(ctx.data.name + ": " + twice((ctx.state && ctx.state.n) || 1)),
+                 ui.button("More", { id: "more", onClick: (api, event) =>
+                   api.setState({ n: ((api.state && api.state.n) || 1) + event.by }) }),
+               ]) });"#,
+        )
+        .unwrap();
+        let mut host = Host::new(vec![Source::Folder(folder.path().into())]).unwrap();
+        assert_eq!(host.problems(), []);
+        // A view is no page of the app's, and is there to be drawn.
+        assert_eq!(host.pages(), []);
+        assert!(host.has("card") && !host.has("nothing"));
+        let draw = |host: &mut Host, instance: &str, name: &str| {
+            host.render_as("card", instance, &json!({"data": {"name": name}}))
+                .unwrap()
+        };
+        assert_eq!(draw(&mut host, "a", "first").said(), "first: 2 More");
+        assert_eq!(draw(&mut host, "b", "second").said(), "second: 2 More");
+        // What one of them keeps is its own, and its handlers are too.
+        let more = draw(&mut host, "b", "second")
+            .find("more")
+            .unwrap()
+            .handler("onClick")
+            .unwrap();
+        host.dispatch_as("card", "b", more, &json!({"by": 4}));
+        assert_eq!(draw(&mut host, "a", "first").said(), "first: 2 More");
+        assert_eq!(draw(&mut host, "b", "second").said(), "second: 10 More");
+        // A script that imports is refused, and says which file to list.
+        std::fs::write(
+            plugin.join("main.js"),
+            "import { twice } from './shared/data.js';\n",
+        )
+        .unwrap();
+        assert!(host.reload());
+        assert!(
+            host.problems()[0]
+                .message
+                .contains("cards/main.js:1: a plugin's script cannot import"),
+            "{:?}",
+            host.problems()
+        );
+        // The plugin goes on as it ran.
+        assert_eq!(draw(&mut host, "b", "second").said(), "second: 10 More");
+    }
+
+    #[test]
+    fn a_part_of_the_app_s_own_is_not_drawn_from_a_failed_script_nor_tried_again_for_the_same_input()
+     {
+        let folder = tempfile::tempdir().unwrap();
+        plugin(
+            folder.path(),
+            "chrome",
+            r#"let runs = 0;
+               kou.view({ id: "bar", render(ctx) {
+                 runs += 1;
+                 if (ctx.data.fail) throw new Error("no " + runs);
+                 return ui.text("runs " + runs);
+               } });"#,
+        );
+        let mut host = Host::new(vec![Source::Folder(folder.path().into())]).unwrap();
+        let input = |fail: bool, n: u32| json!({"data": {"fail": fail, "n": n}});
+        let draw =
+            |host: &mut Host, fail: bool, n: u32| host.render_strict("bar", "", &input(fail, n));
+        assert_eq!(draw(&mut host, false, 1).unwrap().said(), "runs 1");
+        // It fails: what comes back is the failure, where a page would be
+        // given what it drew before.
+        let failed = draw(&mut host, true, 1).unwrap_err();
+        assert!(failed.message.contains("no 2"), "{failed:?}");
+        assert_eq!(host.problems(), std::slice::from_ref(&failed));
+        // Asked again for the same, the script is not run again.
+        assert_eq!(draw(&mut host, true, 1).unwrap_err(), failed);
+        // For something new it is, and once it draws nothing is wrong.
+        assert!(
+            draw(&mut host, true, 2)
+                .unwrap_err()
+                .message
+                .contains("no 3")
+        );
+        assert_eq!(draw(&mut host, false, 2).unwrap().said(), "runs 4");
+        assert_eq!(host.problems(), []);
     }
 
     #[test]

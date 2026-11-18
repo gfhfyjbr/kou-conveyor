@@ -96,7 +96,7 @@ impl Render for CanvasView {
                 Some(self.node_slot(node, live, theme, cx))
             })
             .collect();
-        let labels = self.edge_labels(theme, cx);
+        let labels = self.edge_labels(theme, window, cx);
         let handles = self.edge_handles(theme, cx);
         let marquee = self.marquee(theme);
         let cursor = match &self.gesture {

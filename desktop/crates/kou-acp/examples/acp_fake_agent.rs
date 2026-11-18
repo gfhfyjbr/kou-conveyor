@@ -62,6 +62,7 @@ fn main() {
         mode: "ask".into(),
         model: "model-1".into(),
         early_prompts: 0,
+        cancels: 0,
         opened_sessions: 0,
         forks: 0,
         messages: 0,
@@ -81,6 +82,7 @@ fn main() {
             list: flag("--list"),
             fork: flag("--fork"),
             refuse_fork: flag("--refuse-fork"),
+            steer: flag("--steer"),
         },
     };
     while let Some(message) = agent.read() {
@@ -107,6 +109,8 @@ struct Flags {
     list: bool,
     fork: bool,
     refuse_fork: bool,
+    /// It takes a message into the turn that runs (`_session/steering`).
+    steer: bool,
 }
 
 struct Agent {
@@ -124,6 +128,8 @@ struct Agent {
     model: String,
     /// Prompts that arrived while a turn was still running.
     early_prompts: u64,
+    /// Times it was told to stop (`session/cancel`).
+    cancels: u64,
     /// Sessions `session/new` made.
     opened_sessions: u64,
     /// Sessions `session/fork` made.
@@ -148,7 +154,10 @@ impl Agent {
     fn read_input(&mut self) -> Option<Value> {
         loop {
             let line = self.input.next()?.ok()?;
-            if let Ok(message) = serde_json::from_str(&line) {
+            if let Ok(message) = serde_json::from_str::<Value>(&line) {
+                if message["method"] == "session/cancel" {
+                    self.cancels += 1;
+                }
                 return Some(message);
             }
         }
@@ -274,6 +283,11 @@ impl Agent {
                 self.respond(&id, json!({}));
             }
             Some("session/prompt") => self.prompt(&id, &params),
+            // A message for a turn, with none running: left to the client.
+            Some("_session/steering") if self.flags.steer => self.respond(
+                &id,
+                json!({"outcome": "promptRequired", "reason": "noRunningTurn"}),
+            ),
             Some("session/set_mode") => {
                 self.mode = params["modeId"].as_str().unwrap_or_default().to_owned();
                 self.respond(&id, json!({}));
@@ -317,10 +331,16 @@ impl Agent {
             sessions["fork"] = json!({});
             sessions["close"] = json!({});
         }
+        let steering = if self.flags.steer {
+            json!({"steering": {"supported": true}})
+        } else {
+            Value::Null
+        };
         self.respond(
             id,
             json!({
                 "protocolVersion": self.flags.protocol,
+                "_meta": steering,
                 "agentCapabilities": {
                     "loadSession": self.flags.load,
                     "promptCapabilities": {
@@ -552,9 +572,11 @@ impl Agent {
             self.session = session.to_owned();
         }
         let blocks = params["prompt"].as_array().cloned().unwrap_or_default();
+        // (A client's own note before a first prompt is not the prompt.)
         let text = blocks
             .iter()
-            .find_map(|block| block["text"].as_str())
+            .filter_map(|block| block["text"].as_str())
+            .find(|text| !text.starts_with("<kou-desktop>"))
             .unwrap_or_default()
             .to_owned();
         // What the session held before this prompt.
@@ -585,6 +607,144 @@ impl Agent {
                 self.respond(id, json!({"stopReason": "end_turn"}));
                 return self.say("Something came up.");
             }
+            "wake-ask" => {
+                // After its turn, by itself: something it needs leave for.
+                self.respond(id, json!({"stopReason": "end_turn"}));
+                self.permission();
+                return;
+            }
+            "steerable" => {
+                // A turn a message can be handed to: it works until one
+                // comes, takes it without stopping, and answers it in the
+                // same turn. It says nothing of the message again.
+                self.say("Working.");
+                let steer = self.wait_for(|message| message["method"] == "_session/steering");
+                let text = steer["params"]["prompt"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                self.respond(&steer["id"], json!({"outcome": "injected"}));
+                self.say(&format!("Steered: {text}"));
+                "end_turn"
+            }
+            "behind" => {
+                // Two agents started in the background, as Claude Code
+                // reports them: each launch is over at once, the answer and
+                // its cost are said, and the prompt stays unanswered while
+                // they run. Then the first says its last words and the
+                // agent, told that it ended, runs a cycle of its own; the
+                // second goes on. A stop ends the turn.
+                let launch = |id: &str, title: &str| {
+                    json!({
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": id,
+                        "title": title,
+                        "kind": "think",
+                        "status": "completed",
+                        "rawInput": {
+                            "description": title, "prompt": title,
+                            "subagent_type": "general-purpose", "run_in_background": true,
+                        },
+                        "_meta": {"claudeCode": {
+                            "toolName": "Agent",
+                            "toolResponse": {"isAsync": true, "status": "async_launched"},
+                        }},
+                    })
+                };
+                let of = |id: &str| json!({"claudeCode": {"parentToolUseId": id}});
+                let cost = |origin: Option<&str>| {
+                    let mut usage = json!({
+                        "sessionUpdate": "usage_update",
+                        "used": 1000,
+                        "size": 200000,
+                        "cost": {"amount": 0.01, "currency": "USD"},
+                    });
+                    if let Some(kind) = origin {
+                        usage["_meta"] = json!({"_claude/origin": {"kind": kind}});
+                    }
+                    usage
+                };
+                self.update(launch("b1", "Rewrite the protocol"));
+                self.update(launch("b2", "Finish the parser"));
+                self.say("Started both.");
+                self.update(cost(None));
+                // The second is in the middle of a call; the first reports.
+                self.update(json!({
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "b2-read",
+                    "title": "Read src/parser.rs",
+                    "kind": "read",
+                    "status": "in_progress",
+                    "_meta": {"claudeCode": {"toolName": "Read", "parentToolUseId": "b2"}},
+                }));
+                self.update(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "messageId": "b1-last",
+                    "content": {"type": "text", "text": "The protocol is rewritten."},
+                    "_meta": of("b1"),
+                }));
+                thread::sleep(Duration::from_millis(30));
+                self.say("The first is done.");
+                self.update(cost(Some("task-notification")));
+                // Heard of again, it was not done after all.
+                thread::sleep(Duration::from_millis(200));
+                self.update(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "messageId": "b1-more",
+                    "content": {"type": "text", "text": "One more thing."},
+                    "_meta": of("b1"),
+                }));
+                self.wait_for(|message| message["method"] == "session/cancel");
+                "cancelled"
+            }
+            "hold" => {
+                // As Claude's adapter does with a turn in which the agent
+                // started something that still runs: the answer and what
+                // it cost are said, and the prompt is answered only when
+                // another prompt comes (the turn is handed off to it) or a
+                // stop does.
+                self.say("Started it.");
+                self.update(json!({
+                    "sessionUpdate": "usage_update",
+                    "used": 1000,
+                    "size": 200000,
+                    "cost": {"amount": 0.01, "currency": "USD"},
+                }));
+                loop {
+                    let next = self.wait_for(|message| {
+                        message["method"] == "session/prompt"
+                            || message["method"] == "session/cancel"
+                            || message["method"] == "_session/steering"
+                    });
+                    match next["method"].as_str() {
+                        Some("session/cancel") => break "cancelled",
+                        // A message for the held turn: it is answered in
+                        // it, and the turn is held on.
+                        Some("_session/steering") if self.flags.steer => {
+                            let text = next["params"]["prompt"][0]["text"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .to_owned();
+                            self.respond(&next["id"], json!({"outcome": "injected"}));
+                            self.say(&format!("Steered: {text}"));
+                            self.update(json!({
+                                "sessionUpdate": "usage_update",
+                                "used": 1000,
+                                "size": 200000,
+                                "cost": {"amount": 0.01, "currency": "USD"},
+                            }));
+                        }
+                        Some("_session/steering") => {
+                            self.fail(&next["id"], -32601, "Method not found", Value::Null)
+                        }
+                        _ => {
+                            self.respond(id, json!({"stopReason": "end_turn"}));
+                            self.backlog.push_front(next);
+                            return;
+                        }
+                    }
+                }
+            }
             "permission" => self.permission(),
             "files" => self.files(),
             "terminal" => self.terminal(),
@@ -610,6 +770,7 @@ impl Agent {
                     "mode": self.mode,
                     "model": self.model,
                     "closed": self.closed,
+                    "cancels": self.cancels,
                 });
                 self.say(&seen.to_string());
                 "end_turn"

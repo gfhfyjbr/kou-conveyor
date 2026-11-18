@@ -2,7 +2,10 @@
 //! pane to reach other panes, and by harness hooks to report what the harness
 //! is doing.
 
-use crate::protocol::{Harness, Pane, Placement, Request, Response, Spawn, Until, env};
+use crate::protocol::{
+    EdgeMode, Harness, Layout, Pane, PaneKind, Place, Placement, Request, Response, Spawn, Until,
+    env,
+};
 use crate::transport::{self, NotRunning};
 use std::io::{IsTerminal as _, Read as _, Write};
 use std::path::{Path, PathBuf};
@@ -16,15 +19,25 @@ kou-desktop: a workspace for coding agents, and the command line to drive it
 
   kou-desktop                                 start the app
   kou-desktop ping
+  kou-desktop where [<pane>]                           (default: $KOU_PANE) where it is: its tab,
+                                                       the panes beside it, the canvas's edges
   kou-desktop harness list [--json]
+  kou-desktop harness models <harness> [--json]        the model ids pane spawn --model takes
   kou-desktop pane list [--all] [--json]
   kou-desktop pane info [<pane>]                       (default: $KOU_PANE)
-  kou-desktop pane spawn <harness> [--cwd DIR] [--title T] [--prompt TEXT | --prompt-file F | -] [--model M] [--tab | --split | --split-down] [--share PERCENT] [--native]
+  kou-desktop pane spawn <harness> [--cwd DIR] [--title T] [--prompt TEXT | --prompt-file F | -] [--model M] [--tab | --split | --split-down] [--share PERCENT] [--native | --terminal]
   kou-desktop pane send <pane> [--no-submit] <text...> (text from stdin when \"-\")
+  kou-desktop pane ask <pane> <text...>                (text from stdin when \"-\") its answer comes
+                                                       back to you once, as a message; nothing is wired
   kou-desktop pane read <pane> [--lines N] [--scrollback]
   kou-desktop pane wait <pane>... [--exit] [--any] [--timeout SECONDS]
   kou-desktop pane close <pane>
   kou-desktop pane focus <pane>
+  kou-desktop edge list [--json]                       the edges of your tab's canvas
+  kou-desktop edge add <from> <to> [--mode auto|approve|off]   (the tab's orchestrator only;
+                                                       \"me\" is your own pane)
+  kou-desktop edge set <from> <to> --mode auto|approve|off
+  kou-desktop edge rm <from> <to>
   kou-desktop tab list [--all] [--json]
   kou-desktop tab rename [--tab ID] <name...>          (default: the tab $KOU_PANE is in)
   kou-desktop tab rename [--tab ID] --clear            (called after its pane again)
@@ -113,7 +126,9 @@ fn is_client_command(args: &[String]) -> bool {
         args.first().map(String::as_str),
         Some(
             "ping"
+                | "where"
                 | "harness"
+                | "edge"
                 | "pane"
                 | "tab"
                 | "session"
@@ -192,7 +207,32 @@ enum Text {
 enum Command {
     Help,
     Ping,
+    Where {
+        pane: Option<String>,
+    },
     Harnesses,
+    HarnessModels {
+        harness: String,
+    },
+    EdgeList,
+    EdgeAdd {
+        from: String,
+        to: String,
+        mode: Option<EdgeMode>,
+    },
+    EdgeSet {
+        from: String,
+        to: String,
+        mode: EdgeMode,
+    },
+    EdgeRemove {
+        from: String,
+        to: String,
+    },
+    PaneAsk {
+        pane: String,
+        text: Text,
+    },
     PaneList {
         all: bool,
     },
@@ -209,6 +249,7 @@ enum Command {
         below: bool,
         share: Option<u8>,
         native: bool,
+        terminal: bool,
     },
     PaneSend {
         pane: String,
@@ -345,15 +386,45 @@ fn parse(args: &[String]) -> Result<Parsed, String> {
     }
     match first.as_str() {
         "ping" => Args::new(rest).finish(Command::Ping),
+        "where" => {
+            let mut args = Args::new(rest);
+            let mut pane = None;
+            while let Some(token) = args.next() {
+                match token {
+                    Token::Flag(flag) => return Err(unknown_flag(flag)),
+                    Token::Word(word) if pane.is_none() => pane = Some(word.to_owned()),
+                    Token::Word(word) => return Err(format!("unexpected argument {word:?}")),
+                }
+            }
+            args.finish(Command::Where { pane })
+        }
         "harness" => match rest.split_first() {
             Some((sub, rest)) if sub == "list" => Args::new(rest).finish(Command::Harnesses),
+            Some((sub, rest)) if sub == "models" => {
+                let mut args = Args::new(rest);
+                let mut harness = None;
+                while let Some(token) = args.next() {
+                    match token {
+                        Token::Flag(flag) => return Err(unknown_flag(flag)),
+                        Token::Word(word) if harness.is_none() => harness = Some(word.to_owned()),
+                        Token::Word(word) => return Err(format!("unexpected argument {word:?}")),
+                    }
+                }
+                let harness = harness.ok_or("usage: harness models <harness>")?;
+                args.finish(Command::HarnessModels { harness })
+            }
             Some((sub, _)) => Err(format!("unknown command: harness {sub}")),
-            None => Err("harness needs a command: list".into()),
+            None => Err("harness needs a command: list, models".into()),
+        },
+        "edge" => match rest.split_first() {
+            Some((sub, rest)) => parse_edge(sub, rest),
+            None => Err("edge needs a command: list, add, set, rm".into()),
         },
         "pane" => match rest.split_first() {
             Some((sub, rest)) => parse_pane(sub, rest),
             None => Err(
-                "pane needs a command: list, info, spawn, send, read, wait, close, focus".into(),
+                "pane needs a command: list, info, spawn, send, ask, read, wait, close, focus"
+                    .into(),
             ),
         },
         "tab" => match rest.split_first() {
@@ -431,6 +502,24 @@ fn parse_pane(sub: &str, rest: &[String]) -> Result<Parsed, String> {
                 words => Text::Inline(words.join(" ")),
             };
             Command::PaneSend { pane, text, submit }
+        }
+        "ask" => {
+            let mut pane = None;
+            let mut words: Vec<&str> = Vec::new();
+            while let Some(token) = args.next() {
+                match token {
+                    Token::Flag(flag) => return Err(unknown_flag(flag)),
+                    Token::Word(word) if pane.is_none() => pane = Some(word.to_owned()),
+                    Token::Word(word) => words.push(word),
+                }
+            }
+            let pane = pane.ok_or("usage: pane ask <pane> <text...>")?;
+            let text = match words.as_slice() {
+                [] => return Err("pane ask needs a question, or - to read it from stdin".into()),
+                ["-"] => Text::Stdin,
+                words => Text::Inline(words.join(" ")),
+            };
+            Command::PaneAsk { pane, text }
         }
         "read" => {
             let mut pane = None;
@@ -519,6 +608,60 @@ fn parse_pane(sub: &str, rest: &[String]) -> Result<Parsed, String> {
 
 /// The options of a list that defaults to the caller's session: `--all`, and
 /// nothing else.
+/// An edge's mode, as the command line spells it.
+fn parse_mode(value: &str) -> Result<EdgeMode, String> {
+    match value {
+        "auto" => Ok(EdgeMode::Auto),
+        "approve" => Ok(EdgeMode::Approve),
+        "off" => Ok(EdgeMode::Off),
+        other => Err(format!("--mode takes auto, approve or off, not {other:?}")),
+    }
+}
+
+fn parse_edge(sub: &str, rest: &[String]) -> Result<Parsed, String> {
+    let mut args = Args::new(rest);
+    if sub == "list" {
+        if let Some(token) = args.next() {
+            return Err(match token {
+                Token::Flag(flag) => unknown_flag(flag),
+                Token::Word(word) => format!("unexpected argument {word:?}"),
+            });
+        }
+        return args.finish(Command::EdgeList);
+    }
+    if !matches!(sub, "add" | "set" | "rm") {
+        return Err(format!("unknown command: edge {sub}"));
+    }
+    let (mut ends, mut mode) = (Vec::new(), None);
+    while let Some(token) = args.next() {
+        match token {
+            Token::Flag("--mode") if sub != "rm" => mode = Some(parse_mode(args.value("--mode")?)?),
+            Token::Flag(flag) => return Err(unknown_flag(flag)),
+            Token::Word(word) => ends.push(word.to_owned()),
+        }
+    }
+    let [from, to] = <[String; 2]>::try_from(ends).map_err(|_| {
+        format!(
+            "usage: edge {sub} <from> <to>{}",
+            match sub {
+                "add" => " [--mode auto|approve|off]",
+                "set" => " --mode auto|approve|off",
+                _ => "",
+            }
+        )
+    })?;
+    let command = match sub {
+        "add" => Command::EdgeAdd { from, to, mode },
+        "set" => Command::EdgeSet {
+            from,
+            to,
+            mode: mode.ok_or("edge set needs --mode auto, approve or off")?,
+        },
+        _ => Command::EdgeRemove { from, to },
+    };
+    args.finish(command)
+}
+
 fn parse_all(args: &mut Args<'_>) -> Result<bool, String> {
     let mut all = false;
     while let Some(token) = args.next() {
@@ -650,7 +793,7 @@ fn parse_spawn(args: &mut Args<'_>) -> Result<Command, String> {
     let mut placement = None;
     let mut below = false;
     let mut share = None;
-    let mut native = false;
+    let (mut native, mut terminal) = (false, false);
     let set_prompt = |prompt: &mut Option<Text>, text: Text| match prompt {
         Some(_) => Err("give the prompt once: --prompt, --prompt-file or -".to_owned()),
         None => {
@@ -694,6 +837,7 @@ fn parse_spawn(args: &mut Args<'_>) -> Result<Command, String> {
                 );
             }
             Token::Flag("--native") => native = true,
+            Token::Flag("--terminal") => terminal = true,
             Token::Flag(flag) => return Err(unknown_flag(flag)),
             Token::Word("-") => set_prompt(&mut prompt, Text::Stdin)?,
             Token::Word(word) if harness.is_none() => harness = Some(word.to_owned()),
@@ -706,6 +850,9 @@ fn parse_spawn(args: &mut Args<'_>) -> Result<Command, String> {
             "--share goes with --split or --split-down: it is a share of your own room".into(),
         );
     }
+    if native && terminal {
+        return Err("--native and --terminal exclude each other: a chat, or its terminal".into());
+    }
     Ok(Command::PaneSpawn {
         harness: harness.ok_or("usage: pane spawn <harness> [options]")?,
         cwd,
@@ -716,6 +863,7 @@ fn parse_spawn(args: &mut Args<'_>) -> Result<Command, String> {
         below,
         share,
         native,
+        terminal,
     })
 }
 
@@ -832,7 +980,47 @@ fn request(
             return Err("this command is not a request".into());
         }
         Command::Ping => Request::Ping,
+        Command::Where { pane } => Request::Where {
+            pane: pane
+                .or_else(|| env.pane.clone())
+                .ok_or("where needs a pane: none was given and $KOU_PANE is not set")?,
+        },
         Command::Harnesses => Request::Harnesses,
+        Command::HarnessModels { harness } => Request::HarnessModels { harness },
+        Command::EdgeList => Request::EdgeList {
+            pane: own_pane(env, "edge list")?,
+        },
+        Command::EdgeAdd { from, to, mode } => {
+            let pane = own_pane(env, "edge add")?;
+            Request::EdgeAdd {
+                from: end_of(from, &pane),
+                to: end_of(to, &pane),
+                pane,
+                mode,
+            }
+        }
+        Command::EdgeSet { from, to, mode } => {
+            let pane = own_pane(env, "edge set")?;
+            Request::EdgeSet {
+                from: end_of(from, &pane),
+                to: end_of(to, &pane),
+                pane,
+                mode,
+            }
+        }
+        Command::EdgeRemove { from, to } => {
+            let pane = own_pane(env, "edge rm")?;
+            Request::EdgeRemove {
+                from: end_of(from, &pane),
+                to: end_of(to, &pane),
+                pane,
+            }
+        }
+        Command::PaneAsk { pane, text } => Request::PaneAsk {
+            pane,
+            text: read_text(text, env, input)?,
+            from: own_pane(env, "pane ask")?,
+        },
         Command::PaneList { all } => Request::PaneList {
             session: if all { None } else { env.session.clone() },
         },
@@ -851,6 +1039,7 @@ fn request(
             below,
             share,
             native,
+            terminal,
         } => Request::PaneSpawn(Spawn {
             from: env.pane.clone(),
             harness,
@@ -865,6 +1054,7 @@ fn request(
             below,
             share,
             native,
+            terminal,
         }),
         Command::PaneSend { pane, text, submit } => Request::PaneSend {
             pane,
@@ -955,6 +1145,18 @@ fn request(
     Ok((request, Some(CALL_TIMEOUT)))
 }
 
+/// The pane the command is run in: what `command` is about, or comes from.
+fn own_pane(env: &Env, command: &str) -> Result<String, String> {
+    env.pane.clone().ok_or_else(|| {
+        format!("{command} is run from inside a pane of the app: $KOU_PANE is not set")
+    })
+}
+
+/// An end of an edge as the app takes it: `me` is the pane asking.
+fn end_of(end: String, own: &str) -> String {
+    if end == "me" { own.to_owned() } else { end }
+}
+
 /// Why `command` cannot tell the app which `noun` it means.
 fn no_target(command: &str, noun: &str) -> String {
     format!("{command} needs a {noun}: no --{noun} was given and $KOU_PANE is not set")
@@ -1019,6 +1221,7 @@ fn exchange(
         Response::Pong { version } => drop(writeln!(out, "pong (protocol {version})")),
         Response::Done => drop(writeln!(out, "ok")),
         Response::Pane(pane) => drop(writeln!(out, "{}", pane_line(pane))),
+        Response::Place(place) => drop(write!(out, "{}", describe_place(place, true))),
         Response::Panes { panes } => {
             for pane in panes {
                 drop(writeln!(out, "{}", pane_line(pane)));
@@ -1043,6 +1246,16 @@ fn exchange(
                 drop(writeln!(out, "{}", harness_line(harness)));
             }
         }
+        Response::Edges { edges, said } => drop(write!(out, "{}", describe_edges(edges, said))),
+        Response::Models {
+            harness,
+            models,
+            default,
+        } => drop(write!(
+            out,
+            "{}",
+            describe_models(harness, models, default.as_deref())
+        )),
         Response::Tab(tab) => drop(writeln!(out, "{}", tab_line(tab))),
         Response::Tabs { tabs } => {
             for tab in tabs {
@@ -1115,7 +1328,7 @@ fn space_line(space: &crate::protocol::Space) -> String {
 /// One pane on one line, tab separated so an agent can cut it:
 /// id, activity, harness, kind, age of the activity, directory, title.
 fn pane_line(pane: &Pane) -> String {
-    format!(
+    let mut line = format!(
         "{}\t{}\t{}\t{}\t{}\t{}\t{}",
         pane.id,
         word(&pane.activity),
@@ -1124,7 +1337,242 @@ fn pane_line(pane: &Pane) -> String {
         age(pane.since_ms),
         pane.cwd.display(),
         single_line(&pane.title),
-    )
+    );
+    // The model, where one is known: after everything that is always there.
+    if let Some(model) = &pane.model {
+        line.push_str(&format!("\tmodel {}", single_line(model)));
+    }
+    line
+}
+
+/// The edges of a tab's canvas, one on a line: its ends, how it came to be
+/// and what it carries, who wired it when an agent did, and what waits on
+/// it; then whatever else the app said, each on a line of its own. The
+/// command line prints this, and the app's tools answer with it.
+pub fn describe_edges(edges: &[crate::protocol::Edge], said: &[String]) -> String {
+    let mut text = String::new();
+    if edges.is_empty() {
+        text.push_str("The tab's canvas has no edges.\n");
+    }
+    for edge in edges {
+        let what = if edge.sent {
+            "sent: one wrote to the other on purpose; carries nothing by itself".to_owned()
+        } else if !edge.wired {
+            "started: shows who started whom; carries nothing by itself".to_owned()
+        } else {
+            format!("wired, {}", word(&edge.mode))
+        };
+        text.push_str(&format!("{} -> {}\t{what}", edge.from, edge.to));
+        if let (true, Some(by)) = (edge.wired, &edge.by) {
+            text.push_str(&format!("\tby {by}"));
+        }
+        if edge.waiting > 0 {
+            text.push_str(&format!("\t{} waiting for the user", edge.waiting));
+        }
+        text.push('\n');
+    }
+    for line in said {
+        text.push_str(&single_line(line));
+        text.push('\n');
+    }
+    text
+}
+
+/// The models a harness can run with, one on a line: its id, `default` or
+/// `-`, and its name.
+pub fn describe_models(
+    harness: &str,
+    models: &[crate::protocol::Model],
+    default: Option<&str>,
+) -> String {
+    if models.is_empty() {
+        return format!(
+            "{harness} names no models to the app: it runs with its own, and an id given to \
+             pane spawn --model cannot be checked.\n"
+        );
+    }
+    let mut text = String::new();
+    for model in models {
+        text.push_str(&format!(
+            "{}\t{}\t{}\n",
+            model.id,
+            if default == Some(model.id.as_str()) {
+                "default"
+            } else {
+                "-"
+            },
+            single_line(&model.name),
+        ));
+    }
+    text
+}
+
+/// Where a pane is, said to the agent in it (or, with `own` false, of
+/// another pane): who it is, its tab and how the tab is shown, the panes
+/// beside it, and what the edges of the tab's canvas do. The command line
+/// prints this, and the app's tools answer with it.
+pub fn describe_place(place: &Place, own: bool) -> String {
+    let pane = &place.pane;
+    let me = pane.id.as_str();
+    // "you" where the text speaks to the pane itself.
+    let name = |id: &str| -> String {
+        if own && id == me {
+            "you".to_owned()
+        } else {
+            id.to_owned()
+        }
+    };
+    let chat = |id: &str| -> bool {
+        std::iter::once(pane)
+            .chain(&place.others)
+            .find(|other| other.id == id)
+            .is_some_and(|other| other.kind == PaneKind::Thread)
+    };
+    let mut text = String::new();
+    let title = single_line(&pane.title);
+    text.push_str(&format!(
+        "{} pane {}: {} in {}{}, {}.\n",
+        if own { "You are" } else { "This is" },
+        pane.id,
+        pane.harness,
+        if pane.kind == PaneKind::Thread {
+            "a native chat"
+        } else {
+            "its terminal"
+        },
+        if title.is_empty() {
+            String::new()
+        } else {
+            format!(", \"{title}\"")
+        },
+        word(&pane.activity),
+    ));
+    text.push_str(&format!(
+        "Directory {}. Session \"{}\", space \"{}\".\n",
+        pane.cwd.display(),
+        single_line(&place.session),
+        single_line(&place.space),
+    ));
+    if let Some(parent) = &pane.parent {
+        text.push_str(&format!(
+            "Started by {parent}: another agent started {}.\n",
+            if own { "you" } else { "it" }
+        ));
+    }
+    let tab = &place.tab;
+    text.push_str(&format!(
+        "Tab \"{}\" ({}), which the user sees {}.\n",
+        single_line(&tab.name),
+        tab.id,
+        match tab.layout {
+            Layout::Canvas => {
+                "as a canvas: each pane of the tab is a node on it, and edges join the nodes"
+            }
+            Layout::Panes => {
+                "as panes side by side; it has a canvas too, with the same panes as nodes, \
+                 which the user can switch to"
+            }
+        },
+    ));
+    text.push('\n');
+    if place.others.is_empty() {
+        text.push_str("No other pane is in this tab.\n");
+    } else {
+        text.push_str(
+            "Other panes of this tab (id, activity, harness, kind, for how long, directory, title):\n",
+        );
+        for other in &place.others {
+            text.push_str("  ");
+            text.push_str(&pane_line(other));
+            if other.parent.as_deref() == Some(me) {
+                text.push_str(if own {
+                    "\t(you started it)"
+                } else {
+                    "\t(started by it)"
+                });
+            }
+            text.push('\n');
+        }
+    }
+    text.push('\n');
+    if place.edges.is_empty() {
+        text.push_str("The tab's canvas has no edges.\n");
+    } else {
+        text.push_str("Edges of the tab's canvas (the first's output into the second's input):\n");
+        for edge in &place.edges {
+            let (from, to) = (name(&edge.from), name(&edge.to));
+            let what = if edge.sent {
+                format!(
+                    "made when {from} wrote to {to} on purpose: it shows that they talk and \
+                     carries nothing by itself"
+                )
+            } else if !edge.wired {
+                format!(
+                    "made when {from} started {to}: it shows who started whom and carries \
+                     nothing by itself"
+                )
+            } else {
+                let piped = if chat(&edge.from) {
+                    format!(
+                        "what {from} {} at the end of a turn",
+                        if from == "you" { "answer" } else { "answers" }
+                    )
+                } else {
+                    format!("what is sent from {from} on purpose")
+                };
+                match edge.mode {
+                    EdgeMode::Auto => format!("wired, auto: {piped} goes to {to} as a prompt"),
+                    EdgeMode::Approve => format!(
+                        "wired, approve: {piped} waits on {to} until the user lets it through"
+                    ),
+                    EdgeMode::Off => "wired, off: nothing goes along it by itself".to_owned(),
+                }
+            };
+            text.push_str(&format!("  {} -> {}\t{what}", edge.from, edge.to));
+            if let (true, Some(by)) = (edge.wired, &edge.by) {
+                text.push_str(&format!(" (wired by {}, not by the user)", name(by)));
+            }
+            if edge.waiting > 0 {
+                text.push_str(&format!(" ({} waiting for the user)", edge.waiting));
+            }
+            text.push('\n');
+        }
+    }
+    // Whose the tab's wires are to make, said to the pane itself.
+    if own {
+        text.push_str(if place.orchestrator {
+            "You are this tab's orchestrator: the user lets you wire its nodes together \
+             (edge add), change a wire's mode (edge set) and take wires away (edge rm). An auto \
+             wire brings every final answer of its start to its end as a prompt, so wire \
+             sparingly; a message passed on more than 6 times waits for the user.\n"
+        } else {
+            "The wires of this tab are the user's to make: you are not its orchestrator.\n"
+        });
+    }
+    if !place.notes.is_empty() {
+        text.push('\n');
+        text.push_str("Also on the canvas:\n");
+        for note in &place.notes {
+            let said = single_line(&note.text);
+            let said: String = if said.chars().count() > 240 {
+                said.chars().take(240).chain("...".chars()).collect()
+            } else {
+                said
+            };
+            text.push_str(&format!(
+                "  {}\t{}\t\"{}\"{}\n",
+                note.id,
+                note.kind,
+                single_line(&note.title),
+                if said.is_empty() {
+                    String::new()
+                } else {
+                    format!("\t{said}")
+                },
+            ));
+        }
+    }
+    text
 }
 
 /// One harness on one line: id, readiness, version, whether it runs natively,
@@ -1175,6 +1623,164 @@ fn single_line(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::protocol::{Activity, Layout, PaneKind, Session, Space, Tab};
+
+    #[test]
+    fn where_a_pane_is_reads_as_its_tab_its_neighbours_and_what_the_edges_carry() {
+        use crate::protocol::{Edge, Note};
+        let pane = |id: &str, kind: PaneKind, parent: Option<&str>| Pane {
+            id: id.into(),
+            session: "s1".into(),
+            harness: "claude".into(),
+            title: format!("Work of {id}"),
+            cwd: "/work".into(),
+            kind,
+            activity: Activity::Idle,
+            parent: parent.map(str::to_owned),
+            since_ms: 65_000,
+            model: (id == "p3").then(|| "opus".to_owned()),
+        };
+        let edge = |from: &str, to: &str, mode: EdgeMode, wired: bool, waiting: u32| Edge {
+            from: from.into(),
+            to: to.into(),
+            mode,
+            wired,
+            waiting,
+            ..Edge::default()
+        };
+        let place = Place {
+            pane: pane("p1", PaneKind::Thread, Some("p0")),
+            tab: Tab {
+                id: "t3".into(),
+                session: "s1".into(),
+                name: "api".into(),
+                layout: Layout::Canvas,
+                panes: vec!["p1".into(), "p2".into(), "p3".into()],
+                active: "p1".into(),
+                ..Tab::default()
+            },
+            session: "parser".into(),
+            space: "atlas".into(),
+            others: vec![
+                pane("p2", PaneKind::Terminal, Some("p1")),
+                pane("p3", PaneKind::Thread, None),
+            ],
+            edges: vec![
+                edge("p1", "p2", EdgeMode::Auto, false, 0),
+                edge("p3", "p1", EdgeMode::Auto, true, 0),
+                edge("p1", "p3", EdgeMode::Approve, true, 2),
+                edge("p2", "p3", EdgeMode::Off, true, 0),
+                edge("n7", "p1", EdgeMode::Auto, true, 0),
+                Edge {
+                    sent: true,
+                    by: Some("p1".into()),
+                    ..edge("p1", "p4", EdgeMode::Auto, false, 0)
+                },
+                Edge {
+                    by: Some("p3".into()),
+                    ..edge("p2", "p1", EdgeMode::Auto, true, 0)
+                },
+            ],
+            notes: vec![Note {
+                id: "n7".into(),
+                kind: "note".into(),
+                title: "Plan".into(),
+                text: "First the parser,\nthen the tests.".into(),
+            }],
+            orchestrator: false,
+        };
+        let said = describe_place(&place, true);
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(
+            lines[..4],
+            [
+                "You are pane p1: claude in a native chat, \"Work of p1\", idle.",
+                "Directory /work. Session \"parser\", space \"atlas\".",
+                "Started by p0: another agent started you.",
+                "Tab \"api\" (t3), which the user sees as a canvas: each pane of the tab is a node on it, and edges join the nodes.",
+            ]
+        );
+        // The panes beside it, as `pane list` writes them, and whose they are.
+        assert!(
+            said.contains(
+                "  p2\tidle\tclaude\tterminal\t1m\t/work\tWork of p2\t(you started it)\n"
+            )
+        );
+        assert!(said.contains("  p3\tidle\tclaude\tthread\t1m\t/work\tWork of p3\tmodel opus\n"));
+        // What each edge does, said to the pane that asks.
+        for edge in [
+            "  p1 -> p2\tmade when you started p2: it shows who started whom and carries nothing by itself\n",
+            "  p3 -> p1\twired, auto: what p3 answers at the end of a turn goes to you as a prompt\n",
+            "  p1 -> p3\twired, approve: what you answer at the end of a turn waits on p3 until the user lets it through (2 waiting for the user)\n",
+            "  p2 -> p3\twired, off: nothing goes along it by itself\n",
+            "  n7 -> p1\twired, auto: what is sent from n7 on purpose goes to you as a prompt\n",
+            "  p1 -> p4\tmade when you wrote to p4 on purpose: it shows that they talk and carries nothing by itself\n",
+            "  p2 -> p1\twired, auto: what is sent from p2 on purpose goes to you as a prompt (wired by p3, not by the user)\n",
+        ] {
+            assert!(said.contains(edge), "{edge:?} is not in:\n{said}");
+        }
+        // Whose the wires are to make: the user's, until the user says
+        // otherwise of this pane.
+        assert!(said.contains("you are not its orchestrator.\n"), "{said}");
+        let lead = Place {
+            orchestrator: true,
+            ..place.clone()
+        };
+        let said_lead = describe_place(&lead, true);
+        assert!(
+            said_lead.contains("You are this tab's orchestrator")
+                && said_lead.contains("edge add")
+                && said_lead.contains("edge rm"),
+            "{said_lead}"
+        );
+        // Of another pane, nothing is said of whose wires they are.
+        assert!(!describe_place(&lead, false).contains("orchestrator"));
+        // The edges alone, as `edge list` prints them, with what else was said.
+        assert_eq!(
+            describe_edges(
+                &place.edges[5..],
+                &["That closes a ring: p1 -> p2 -> p1.".to_owned()]
+            ),
+            "p1 -> p4\tsent: one wrote to the other on purpose; carries nothing by itself\n\
+             p2 -> p1\twired, auto\tby p3\n\
+             That closes a ring: p1 -> p2 -> p1.\n"
+        );
+        assert_eq!(describe_edges(&[], &[]), "The tab's canvas has no edges.\n");
+        // And a harness's models, the default marked.
+        use crate::protocol::Model;
+        let models = [
+            Model {
+                id: "opus".into(),
+                name: "Opus 5.5".into(),
+            },
+            Model {
+                id: "sonnet".into(),
+                name: "Sonnet 5.5".into(),
+            },
+        ];
+        assert_eq!(
+            describe_models("claude", &models, Some("sonnet")),
+            "opus\t-\tOpus 5.5\nsonnet\tdefault\tSonnet 5.5\n"
+        );
+        assert!(describe_models("shell", &[], None).contains("names no models"));
+        assert!(said.contains("  n7\tnote\t\"Plan\"\tFirst the parser, then the tests.\n"));
+        // Of another pane, and of a tab shown as panes with nothing in it.
+        let alone = Place {
+            pane: pane("p5", PaneKind::Terminal, None),
+            tab: Tab {
+                id: "t4".into(),
+                name: "notes".into(),
+                ..Tab::default()
+            },
+            ..Place::default()
+        };
+        let said = describe_place(&alone, false);
+        assert!(
+            said.starts_with("This is pane p5: claude in its terminal, \"Work of p5\", idle.\n")
+        );
+        assert!(said.contains("which the user sees as panes side by side; it has a canvas too"));
+        assert!(said.contains("No other pane is in this tab.\n"));
+        assert!(said.contains("The tab's canvas has no edges.\n"));
+    }
 
     fn args(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_owned).collect()
@@ -1233,8 +1839,87 @@ mod tests {
                 below: false,
                 share: None,
                 native: false,
+                terminal: false,
             }
         );
+        // A chat, or the harness's own terminal: one or the other.
+        assert!(matches!(
+            command("pane spawn claude --terminal"),
+            Command::PaneSpawn {
+                terminal: true,
+                native: false,
+                ..
+            }
+        ));
+        assert!(parse(&args("pane spawn claude --native --terminal")).is_err());
+        // The edges of the caller's tab, and the wiring of them.
+        assert_eq!(command("edge list"), Command::EdgeList);
+        assert_eq!(
+            command("edge add p2 me --mode approve"),
+            Command::EdgeAdd {
+                from: "p2".into(),
+                to: "me".into(),
+                mode: Some(EdgeMode::Approve),
+            }
+        );
+        assert_eq!(
+            command("edge add p2 p3"),
+            Command::EdgeAdd {
+                from: "p2".into(),
+                to: "p3".into(),
+                mode: None
+            }
+        );
+        assert_eq!(
+            command("edge set p2 p3 --mode off"),
+            Command::EdgeSet {
+                from: "p2".into(),
+                to: "p3".into(),
+                mode: EdgeMode::Off
+            }
+        );
+        assert_eq!(
+            command("edge rm p2 p3"),
+            Command::EdgeRemove {
+                from: "p2".into(),
+                to: "p3".into()
+            }
+        );
+        for bad in [
+            "edge",
+            "edge add p2",
+            "edge add p2 p3 p4",
+            "edge add p2 p3 --mode loud",
+            "edge set p2 p3",
+            "edge rm p2 p3 --mode off",
+            "edge list p2",
+            "edge cut p2 p3",
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad}");
+        }
+        // A question whose answer comes back, and a harness's models.
+        assert_eq!(
+            command("pane ask p7 how far are you"),
+            Command::PaneAsk {
+                pane: "p7".into(),
+                text: Text::Inline("how far are you".into())
+            }
+        );
+        assert_eq!(
+            command("pane ask p7 -"),
+            Command::PaneAsk {
+                pane: "p7".into(),
+                text: Text::Stdin
+            }
+        );
+        assert!(parse(&args("pane ask p7")).is_err());
+        assert_eq!(
+            command("harness models claude"),
+            Command::HarnessModels {
+                harness: "claude".into()
+            }
+        );
+        assert!(parse(&args("harness models")).is_err());
         let spawn = [
             "pane",
             "spawn",
@@ -1263,6 +1948,7 @@ mod tests {
                 below: false,
                 share: None,
                 native: true,
+                terminal: false,
             }
         );
         // A split to the right or below, with the share of the caller's
@@ -1696,6 +2382,55 @@ mod tests {
         assert_eq!(
             build("pane info", ""),
             Request::PaneInfo { pane: "p1".into() }
+        );
+        // Where the caller is, or another pane.
+        assert_eq!(build("where", ""), Request::Where { pane: "p1".into() });
+        assert_eq!(build("where p9", ""), Request::Where { pane: "p9".into() });
+        // An edge is asked for by the pane that asks, and `me` is that pane.
+        assert_eq!(
+            build("edge list", ""),
+            Request::EdgeList { pane: "p1".into() }
+        );
+        assert_eq!(
+            build("edge add p2 me", ""),
+            Request::EdgeAdd {
+                pane: "p1".into(),
+                from: "p2".into(),
+                to: "p1".into(),
+                mode: None,
+            }
+        );
+        assert_eq!(
+            build("edge set me p2 --mode off", ""),
+            Request::EdgeSet {
+                pane: "p1".into(),
+                from: "p1".into(),
+                to: "p2".into(),
+                mode: EdgeMode::Off,
+            }
+        );
+        assert_eq!(
+            build("edge rm p2 p3", ""),
+            Request::EdgeRemove {
+                pane: "p1".into(),
+                from: "p2".into(),
+                to: "p3".into()
+            }
+        );
+        // A question comes from the pane that asks, and may be piped in.
+        assert_eq!(
+            build("pane ask p7 -", "how far are you\n"),
+            Request::PaneAsk {
+                pane: "p7".into(),
+                text: "how far are you\n".into(),
+                from: "p1".into(),
+            }
+        );
+        assert_eq!(
+            build("harness models codex", ""),
+            Request::HarnessModels {
+                harness: "codex".into()
+            }
         );
         assert_eq!(
             build("pane list", ""),
@@ -2143,6 +2878,7 @@ mod tests {
             activity: Activity::Blocked,
             parent: Some("p1".into()),
             since_ms: 125_000,
+            model: None,
         };
         assert_eq!(
             pane_line(&pane),

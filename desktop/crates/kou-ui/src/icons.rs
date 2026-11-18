@@ -1,6 +1,9 @@
-//! The icon set: drawn for this app on a 16px grid with square caps and mitred
-//! joins, to match the square, hairline character of kou's web cockpit rather
-//! than borrow a library's rounded strokes.
+//! The icon set: Lucide's (ISC, see `icons/LICENSE-lucide`), on its 24px grid
+//! with round caps and joins, drawn at 16px so that its 2px line comes out at
+//! the 1.3px hairline of the rest of the app. `icons/README.md` says which of
+//! Lucide's each one is; the few that Lucide has no drawing for (`stop`,
+//! `cursor`, `zoom-actual`, `appearance`, `folder-fill`) are drawn here in the
+//! same line.
 
 use crate::scale::px;
 use gpui::{AssetSource, SharedString, Svg, svg};
@@ -199,8 +202,8 @@ pub fn tab_icon(name: &str) -> Option<Icon> {
 macro_rules! pictures {
     ($($(#[$doc:meta])* $name:ident => $file:literal),* $(,)?) => {
         /// A drawing for a screen that has nothing on it yet: the same hairline,
-        /// square caps and mitred joins as the icons, on a 48px grid, each of
-        /// the thing the screen is about rather than a mood.
+        /// round caps and joins as the icons, on a 48px grid, each of the
+        /// thing the screen is about rather than a mood.
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum Picture { $($(#[$doc])* $name,)* }
         impl Picture {
@@ -295,7 +298,15 @@ mod tests {
             };
             let text = std::str::from_utf8(&bytes).unwrap();
             assert!(text.starts_with("<svg "), "{}", icon.path());
-            assert!(text.contains("viewBox=\"0 0 16 16\""), "{}", icon.path());
+            assert!(text.contains("viewBox=\"0 0 24 24\""), "{}", icon.path());
+            // One line for all of them: round caps and joins.
+            assert!(text.contains("stroke-width=\"2\""), "{}", icon.path());
+            assert!(
+                text.contains("stroke-linecap=\"round\"")
+                    && text.contains("stroke-linejoin=\"round\""),
+                "{}",
+                icon.path()
+            );
         }
         assert_eq!(Assets.list("icons/").unwrap().len(), Icon::ALL.len());
         assert!(Assets.load("icons/nope.svg").unwrap().is_none());
@@ -310,10 +321,10 @@ mod tests {
             let text = std::str::from_utf8(&bytes).unwrap();
             assert!(text.starts_with("<svg "), "{}", picture.path());
             assert!(text.contains("viewBox=\"0 0 48 48\""), "{}", picture.path());
-            // The icons' line: one hairline weight, square caps, mitred joins.
+            // The icons' line: one hairline weight, round caps and joins.
             assert!(text.contains("stroke-width=\"1.3\""), "{}", picture.path());
             assert!(
-                text.contains("stroke-linecap=\"square\""),
+                text.contains("stroke-linecap=\"round\""),
                 "{}",
                 picture.path()
             );

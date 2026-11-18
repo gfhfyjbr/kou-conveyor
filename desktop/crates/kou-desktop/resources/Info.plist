@@ -4,6 +4,11 @@
 <dict>
     <key>CFBundleIdentifier</key>
     <string>{identifier}</string>
+    <key>CFBundleURLTypes</key>
+    <array><dict>
+        <key>CFBundleURLName</key><string>kou theme</string>
+        <key>CFBundleURLSchemes</key><array><string>kou-theme</string></array>
+    </dict></array>
     <key>CFBundleName</key>
     <string>kou</string>
     <key>CFBundleDisplayName</key>

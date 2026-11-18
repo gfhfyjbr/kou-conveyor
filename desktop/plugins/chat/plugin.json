@@ -1,0 +1,5 @@
+{
+  "name": "chat",
+  "description": "A chat's transcript: how its entries look beside their nodes on the rail (a prompt, the agent's words, thinking, tool calls with the answers they wait for, plans, notices, the card of a surface the agent made, the line after the last entry, what /clear left), and the lists and the card over its field (the list of commands, files and earlier prompts, the modes' list, the model picker, the help card), around what the app still draws itself (the text, the output, what moves, what takes the keys).",
+  "desktop": {"script": "desktop/chat.js"}
+}

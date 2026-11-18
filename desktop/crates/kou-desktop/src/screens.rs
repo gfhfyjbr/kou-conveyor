@@ -8,6 +8,7 @@
 //! The full-window screens lie on the pane surface with its grain.
 
 use crate::{
+    plugins::icon_file,
     rail::row,
     shell::{Resuming, Shell, abbreviate},
     state::{Pane, PaneKind, Session},
@@ -18,9 +19,10 @@ use gpui::{
     prelude::FluentBuilder as _, px,
 };
 use kou_ui::{
-    Icon, MONOGRAM_LARGE, Picture, Theme, button, button_with_icon, grain, icon, key_hint, metric,
+    Icon, MONOGRAM_LARGE, Picture, Theme, button_with_icon, grain, icon, key_hint, metric,
     monogram, monogram_absent, monogram_sized, picture, theme, tip,
 };
+use serde_json::{Value, json};
 
 #[cfg(target_os = "macos")]
 pub(crate) const APP_KEY: &str = "Cmd";
@@ -110,19 +112,396 @@ fn list_heading(text: impl Into<SharedString>, theme: &Theme) -> Div {
 }
 
 /// A settings section's heading: its picture and its name.
-fn section(glyph: Icon, name: &'static str, theme: &Theme) -> Div {
-    div()
-        .h(px(metric::ROW))
-        .mt(px(metric::UNIT * 6.))
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap(px(metric::GAP + 2.))
-        .text_size(px(metric::TEXT))
-        .font_weight(FontWeight::MEDIUM)
-        .text_color(theme.fg)
-        .child(icon(glyph, theme.fg_muted))
-        .child(name)
+/// How a pane opens, as a plugin's script names it.
+fn kind_name(kind: PaneKind) -> &'static str {
+    match kind {
+        PaneKind::Thread => "thread",
+        PaneKind::Terminal => "terminal",
+    }
+}
+
+/// How a pane opens, from its name in a script.
+pub(crate) fn kind_named(name: Option<&str>) -> Option<PaneKind> {
+    match name? {
+        "thread" => Some(PaneKind::Thread),
+        "terminal" => Some(PaneKind::Terminal),
+        _ => None,
+    }
+}
+
+// The screens as the `screens` plugin draws them (see `plugins/screens`),
+// each around the parts that stay the app's own; when the plugin cannot,
+// as the app draws them itself, below.
+impl Shell {
+    /// The prompt field of an empty screen, for a screen's `field` slot.
+    fn field_slot(&self) -> Vec<(&'static str, AnyElement)> {
+        self.prompt
+            .clone()
+            .map(|prompt| ("field", prompt.into_any_element()))
+            .into_iter()
+            .collect()
+    }
+
+    /// Nothing has been added yet: the first thing to do.
+    pub(crate) fn no_spaces(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let field = || self.field_slot();
+        self.chrome("noSpaces", "", json!({}), field, theme, cx)
+            .unwrap_or_else(|| self.native_no_spaces(theme, cx))
+    }
+
+    /// There are spaces, and none of their sessions is on screen.
+    pub(crate) fn no_session(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        self.chrome("noSession", "", json!({}), Vec::new, theme, cx)
+            .unwrap_or_else(|| self.native_no_session(theme))
+    }
+
+    /// The picker as a screen of its own, for a session.
+    pub(crate) fn picker_screen(
+        &self,
+        session: &Session,
+        parent: Option<&Pane>,
+        dismissable: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        // As a tab of its own Escape closes it; over a canvas it goes back.
+        let escape = dismissable.then(|| {
+            if self.pending_tab(&session.id).is_some() {
+                "to close this tab"
+            } else {
+                "to go back"
+            }
+        });
+        let data = json!({
+            "menu": self.ask_menu.then(|| self.picker_data("", true)),
+            "escape": escape,
+        });
+        let field = || self.field_slot();
+        self.chrome("pickerScreen", "", data, field, theme, cx)
+            .unwrap_or_else(|| self.native_picker_screen(session, parent, dismissable, theme, cx))
+    }
+
+    /// What a pane shows when nothing runs in it, and the way to start it again.
+    pub(crate) fn stopped(
+        &self,
+        pane: &Pane,
+        reason: Option<SharedString>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let data = json!({
+            "pane": pane.id,
+            "title": pane.title,
+            "reason": reason.as_ref().map(SharedString::as_ref),
+        });
+        self.chrome("stopped", &pane.id, data, Vec::new, theme, cx)
+            .unwrap_or_else(|| self.native_stopped(pane, reason, theme, cx))
+    }
+
+    /// What can be started, as a list (see [`Shell::picker`]): `instance`
+    /// tells apart the places it is drawn in.
+    pub(crate) fn picker_element(
+        &self,
+        heading: SharedString,
+        choosing: bool,
+        instance: &str,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let data = self.picker_data(&heading, choosing);
+        self.chrome("picker", instance, data, Vec::new, theme, cx)
+            .unwrap_or_else(|| self.picker(heading, choosing, theme, cx).into_any_element())
+    }
+
+    /// What the picker lists, as its plugin is given it.
+    fn picker_data(&self, heading: &str, choosing: bool) -> Value {
+        let chosen = self
+            .asked()
+            .filter(|_| choosing)
+            .map(|(harness, kind)| (harness.id.clone(), kind));
+        let asked_account = self
+            .asked_profile()
+            .filter(|_| choosing)
+            .map(|profile| profile.id.clone());
+        let ready: Vec<Value> = self
+            .harnesses
+            .iter()
+            .filter(|harness| harness.ready)
+            .map(|harness| {
+                let default = self.default_kind(&harness.id);
+                // The other way to open it, when there is one; opened the
+                // other way, its second button is the way it is not.
+                let other = match default {
+                    PaneKind::Thread => {
+                        Some((PaneKind::Terminal, Icon::Terminal, "In its terminal"))
+                    }
+                    PaneKind::Terminal if harness.native => {
+                        Some((PaneKind::Thread, Icon::Thread, "As a thread"))
+                    }
+                    PaneKind::Terminal => None,
+                };
+                let other = match (&chosen, other) {
+                    (Some((id, kind)), Some(_)) if *id == harness.id && *kind != default => {
+                        match default {
+                            PaneKind::Thread => Some((PaneKind::Thread, Icon::Thread, "As a chat")),
+                            PaneKind::Terminal => {
+                                Some((PaneKind::Terminal, Icon::Terminal, "In its terminal"))
+                            }
+                        }
+                    }
+                    (_, other) => other,
+                };
+                let of_harness = chosen.as_ref().is_some_and(|(id, _)| *id == harness.id);
+                json!({
+                    "id": harness.id,
+                    "code": harness.code,
+                    "name": harness.name,
+                    "version": harness.version,
+                    "kind": kind_name(default),
+                    "selected": of_harness && asked_account.is_none(),
+                    "other": other.map(|(kind, glyph, label)| json!({
+                        "kind": kind_name(kind),
+                        "icon": icon_file(glyph),
+                        "label": label,
+                    })),
+                    "adapter": harness
+                        .adapter
+                        .as_ref()
+                        .filter(|_| !harness.native)
+                        .map(|(message, install)| json!({
+                            "message": message,
+                            "installable": install.is_some(),
+                            "busy": self.installing.as_deref() == Some(harness.id.as_str()),
+                        })),
+                })
+            })
+            .collect();
+        let accounts: Vec<Value> = self
+            .store
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                let harness = self
+                    .harness(&profile.harness)
+                    .filter(|harness| harness.ready)?;
+                let selected = choosing
+                    && chosen.as_ref().is_some_and(|(id, _)| *id == harness.id)
+                    && self
+                        .asked_profile()
+                        .is_some_and(|asked| asked.id == profile.id);
+                Some(json!({
+                    "harness": harness.id,
+                    "code": harness.code,
+                    "name": harness.name,
+                    "account": profile.id,
+                    "accountName": profile.name,
+                    "kind": kind_name(self.default_kind(&harness.id)),
+                    "selected": selected,
+                }))
+            })
+            .collect();
+        let missing: Vec<Value> = self
+            .harnesses
+            .iter()
+            .filter(|harness| !harness.ready)
+            .map(|harness| {
+                json!({
+                    "code": harness.code,
+                    "name": harness.name,
+                    "message": harness.message.as_deref().unwrap_or("not installed"),
+                })
+            })
+            .collect();
+        json!({
+            "heading": heading,
+            "choosing": choosing,
+            "scanning": self.scanning,
+            "empty": self.harnesses.is_empty(),
+            "ready": ready,
+            "accounts": accounts,
+            "missing": missing,
+        })
+    }
+
+    pub(crate) fn settings(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let content = if self.appearance.page == crate::appearance::Page::Appearance {
+            self.appearance_settings(theme, cx)
+        } else {
+            self.settings_body(theme, cx)
+        };
+        self.core_chrome(
+            "settingsFrame",
+            json!({"page": self.appearance.page.id()}),
+            || vec![("body", content)],
+            theme,
+            cx,
+        )
+    }
+
+    fn direct_setting(&self, id: &str) -> Option<&'static str> {
+        self.harnesses
+            .iter()
+            .any(|harness| harness.id == id && harness.ready)
+            .then_some(if self.store.direct(id) {
+                "direct"
+            } else {
+                "adapter"
+            })
+    }
+
+    fn settings_body(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        use crate::state::Orchestration as Way;
+        let chosen = self.store.accent_rgb();
+        let accents: Vec<Value> = kou_ui::ACCENTS
+            .into_iter()
+            .enumerate()
+            .map(|(at, (name, rgb))| {
+                // The first is the palette's own: taking it is choosing none.
+                let value = (at > 0).then_some(rgb);
+                json!({
+                    "name": name,
+                    "value": value,
+                    "color": crate::rail::hex(kou_ui::accent_in(theme.dark, value)),
+                    "chosen": chosen == value,
+                })
+            })
+            .collect();
+        let harnesses: Vec<Value> = self
+            .harnesses
+            .iter()
+            .map(|harness| {
+                let state = match (&harness.message, harness.ready) {
+                    (Some(message), _) => message.clone(),
+                    (None, true) => "ready".to_owned(),
+                    (None, false) => "not installed".to_owned(),
+                };
+                let variable = kou_usage::home_variable(&harness.id).filter(|_| harness.ready);
+                let accounts: Vec<Value> = self
+                    .store
+                    .profiles_of(&harness.id)
+                    .map(|profile| {
+                        let state = self.account_state(&harness.id, Some(&profile.id));
+                        json!({
+                            "id": profile.id,
+                            "name": profile.name,
+                            "home": abbreviate(&profile.home),
+                            "proxy": profile.proxy,
+                            "signedOut": state == "not signed in",
+                            "state": state,
+                        })
+                    })
+                    .collect();
+                json!({
+                    "id": harness.id,
+                    "code": harness.code,
+                    "name": harness.name,
+                    "ready": harness.ready,
+                    "version": harness.version,
+                    "state": state,
+                    "variable": variable,
+                    "own": self.account_state(&harness.id, None),
+                    "accounts": accounts,
+                })
+            })
+            .collect();
+        let shortcuts: Vec<Value> = shortcuts()
+            .into_iter()
+            .map(|(keys, what)| json!([keys, what]))
+            .collect();
+        let data = json!({
+            "page": self.appearance.page.id(),
+            "smoothCursor": self.store.smooth_cursor,
+            "orchestration": match self.store.orchestration {
+                Way::Skills => "skills",
+                Way::Mcp => "mcp",
+                Way::Off => "off",
+            },
+            "notifyDone": self.store.notify_done,
+            "notifyAsks": self.store.notify_asks,
+            "refused": self.notice_permission == crate::notify::Permission::Refused
+                && (self.store.notify_done || self.store.notify_asks),
+            "dark": theme.dark,
+            "accents": accents,
+            "scanning": self.scanning,
+            "harnesses": harnesses,
+            "balance": self.store.balance,
+            // How Claude Code's chat is held, when Claude Code is here.
+            "claudeKeep": self.store.claude_keep,
+            "claude": self.direct_setting("claude"),
+            "codex": self.direct_setting("codex"),
+            "codexKeep": cfg!(unix).then_some(self.store.codex_keep),
+            "form": self.account_form.as_ref().map(|form| json!({
+                "harness": form.harness,
+                "editing": form.editing,
+                "onProxy": form.on_proxy,
+                "problem": form.problem,
+            })),
+            "shortcuts": shortcuts,
+        });
+        // The form's two fields are the app's own: they take the keys.
+        let fields = || match self.account_form {
+            Some(_) => vec![
+                ("accountName", self.account_field(false, theme, cx)),
+                ("accountProxy", self.account_field(true, theme, cx)),
+            ],
+            None => Vec::new(),
+        };
+        self.core_chrome("settings", data, fields, theme, cx)
+    }
+
+    /// A pane's earlier conversations: pick one to go back to it.
+    pub(crate) fn sessions(
+        &self,
+        open: &Resuming,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let folder = self
+            .store
+            .pane(&open.pane)
+            .map_or_else(String::new, |pane| abbreviate(&pane.cwd));
+        let now = std::time::SystemTime::now();
+        let sessions: Option<Vec<Value>> = open.sessions.as_ref().map(|sessions| {
+            sessions
+                .iter()
+                .map(|session| {
+                    let untitled = session.title.is_empty();
+                    // What is known of it: how much was said, and how long ago.
+                    let ago = session.updated.map(|updated| {
+                        crate::state::age(
+                            now.duration_since(updated)
+                                .map_or(0, |ago| ago.as_millis() as u64),
+                        )
+                    });
+                    let said = session.prompts.map(|prompts| {
+                        format!(
+                            "{prompts} {}",
+                            if prompts == 1 { "prompt" } else { "prompts" }
+                        )
+                    });
+                    let about = [said, ago]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join(" \u{b7} ");
+                    json!({
+                        "id": session.id,
+                        "name": if untitled { "No prompt yet" } else { session.title.as_str() },
+                        "untitled": untitled,
+                        "running": session.running,
+                        "about": about,
+                    })
+                })
+                .collect()
+        });
+        let data = json!({
+            "pane": open.pane,
+            "heading": format!("Sessions in {folder}"),
+            "sessions": sessions,
+        });
+        self.chrome("sessions", "", data, Vec::new, theme, cx)
+            .unwrap_or_else(|| self.native_sessions(open, theme, cx).into_any_element())
+    }
 }
 
 impl Shell {
@@ -143,6 +522,27 @@ impl Shell {
     /// field's foot: it opens the list of what can be started. Built by the
     /// field while it draws, hence from outside the shell.
     pub(crate) fn ask_chooser(shell: &Entity<Shell>, cx: &mut App) -> AnyElement {
+        let theme = theme(cx).clone();
+        let this = shell.read(cx);
+        let asked = this.asked().map(|(harness, kind)| {
+            // Said only when it is not how this harness opens by itself.
+            let way = (kind != this.default_kind(&harness.id)).then_some(match kind {
+                PaneKind::Terminal => "in its terminal",
+                PaneKind::Thread => "as a chat",
+            });
+            json!({ "code": harness.code, "name": harness.name, "way": way })
+        });
+        let data = json!({
+            "here": this.store.current().is_some(),
+            "harness": asked,
+            "account": this.asked_account_shown(),
+            "open": this.ask_menu,
+        });
+        Shell::chrome_of(shell, "askChooser", data, &theme, cx)
+            .unwrap_or_else(|| Self::native_ask_chooser(shell, cx))
+    }
+
+    fn native_ask_chooser(shell: &Entity<Shell>, cx: &mut App) -> AnyElement {
         let theme = theme(cx);
         let this = shell.read(cx);
         let here = this.store.current().is_some();
@@ -192,12 +592,12 @@ impl Shell {
                     .child(SharedString::from(harness.name.clone())),
             )
             // Which of its accounts, when not its own.
-            .when_some(this.asked_profile(), |chip, profile| {
+            .when_some(this.asked_account_shown(), |chip, account| {
                 chip.child(
                     div()
                         .text_size(px(metric::TEXT_SMALL))
                         .text_color(theme.fg_dim)
-                        .child(SharedString::from(profile.name.clone())),
+                        .child(SharedString::from(account)),
                 )
             })
             .when_some(way, |chip, way| {
@@ -208,11 +608,11 @@ impl Shell {
                         .child(way),
                 )
             })
-            .child(icon(Icon::ChevronDown, theme.fg_muted))
+            .child(icon(Icon::ChevronDown, theme.fg_muted).size(px(metric::ICON_SMALL)))
             .into_any_element()
     }
 
-    pub(crate) fn no_spaces(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+    fn native_no_spaces(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
         screen(theme)
             .child(self.ask_field(theme, cx).mb(px(metric::UNIT * 4.)))
             .child(
@@ -238,8 +638,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// There are spaces, and none of their sessions is on screen.
-    pub(crate) fn no_session(&self, theme: &Theme) -> AnyElement {
+    fn native_no_session(&self, theme: &Theme) -> AnyElement {
         screen(theme)
             .child(empty(
                 Picture::Rail,
@@ -250,8 +649,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The picker as a screen of its own, for a session.
-    pub(crate) fn picker_screen(
+    fn native_picker_screen(
         &self,
         session: &Session,
         parent: Option<&Pane>,
@@ -304,8 +702,7 @@ impl Shell {
             .into_any_element()
     }
 
-    /// What a pane shows when nothing runs in it, and the way to start it again.
-    pub(crate) fn stopped(
+    fn native_stopped(
         &self,
         pane: &Pane,
         reason: Option<SharedString>,
@@ -625,465 +1022,72 @@ impl Shell {
 
     // Whether one of the two notifications is posted, as a button that says
     // which it is and changes it.
-    fn notice_toggle(&self, asks: bool, theme: &Theme, cx: &Context<Self>) -> AnyElement {
-        let on = if asks {
-            self.store.notify_asks
-        } else {
-            self.store.notify_done
-        };
-        button(
-            if asks {
-                "settings-notify-asks"
+    pub(crate) fn account_field(
+        &self,
+        proxy: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let form = self.account_form.as_ref();
+        let on = form.is_some_and(|form| form.on_proxy == proxy);
+        let field = form.map(|form| if proxy { &form.proxy } else { &form.name });
+        let shown = div()
+            .id(if proxy {
+                "account-proxy"
             } else {
-                "settings-notify-done"
-            },
-            if on { "Notify me" } else { "Stay quiet" },
-            false,
-            theme,
-        )
-        .on_click(cx.listener(move |this, _, _, cx| this.toggle_notice(asks, cx)))
-        .into_any_element()
-    }
-
-    // The three ways an agent can be given the means to work with the
-    // others, as buttons side by side with the chosen one filled.
-    fn orchestration_choice(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
-        use crate::state::Orchestration as Way;
-        let chosen = self.store.orchestration;
-        let way = |id: &'static str, label: &'static str, way: Way| {
-            button(id, label, false, theme)
-                .when(chosen == way, |button| {
-                    button.bg(theme.selected).border_color(theme.accent)
-                })
-                .on_click(cx.listener(move |this, _, _, cx| this.set_orchestration(way, cx)))
-        };
-        div()
+                "account-name"
+            })
+            .debug_selector(move || {
+                if proxy {
+                    "account-proxy"
+                } else {
+                    "account-name"
+                }
+                .to_owned()
+            })
+            .size_full()
             .flex()
             .items_center()
-            .gap(px(metric::GAP))
-            .child(way(
-                "settings-together-skills",
-                "A skill and the command line",
-                Way::Skills,
-            ))
-            .child(way("settings-together-mcp", "MCP tools", Way::Mcp))
-            .child(way("settings-together-off", "Nothing", Way::Off))
-            .into_any_element()
-    }
-
-    /// The accents on offer as discs, the one in force ringed: a press takes
-    /// it for links, focus, what is selected and an agent at work.
-    fn accent_choice(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
-        let chosen = self.store.accent_rgb();
-        let (ring, focus) = (theme.fg, theme.fg_muted);
-        let mut row = div().flex().items_center().gap(px(metric::GAP));
-        for (at, (name, rgb)) in kou_ui::ACCENTS.into_iter().enumerate() {
-            // The first is the palette's own: taking it is choosing none.
-            let value = (at > 0).then_some(rgb);
-            row = row.child(
-                div()
-                    .id(("settings-accent", at))
-                    .size(px(22.))
-                    .flex_none()
-                    .rounded_full()
-                    .border_2()
-                    .border_color(if chosen == value {
-                        ring
-                    } else {
-                        gpui::transparent_black()
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .tab_index(0)
-                    .focus_visible(move |style| style.border_color(focus))
-                    .tooltip(tip(name))
-                    .on_click(cx.listener(move |this, _, _, cx| this.set_accent(value, cx)))
-                    .child(
-                        div()
-                            .size(px(12.))
-                            .rounded_full()
-                            .bg(gpui::rgb(kou_ui::accent_in(theme.dark, value))),
-                    ),
+            .overflow_hidden()
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(move |this, _, window, cx| this.account_form_at(proxy, window, cx)),
             );
-        }
-        row.into_any_element()
-    }
-
-    pub(crate) fn settings(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
-        // A setting: its picture and name in one column, its value in the next.
-        let setting = |glyph: Icon, name: &'static str, value: AnyElement| {
+        let said = |text: &str, ink: gpui::Hsla| {
             div()
-                .h(px(40.))
-                .flex()
-                .flex_none()
-                .items_center()
-                .gap(px(metric::GAP + 2.))
-                .child(icon(glyph, theme.fg_muted))
-                .child(
-                    div()
-                        .w(px(160.))
-                        .flex_none()
-                        .text_color(theme.fg)
-                        .child(name),
-                )
-                .child(value)
+                .truncate()
+                .text_color(ink)
+                .child(SharedString::from(text.to_owned()))
         };
-        // The columns of a harness row and of a key row start where a
-        // setting's value does.
-        let value_edge = metric::ICON + metric::GAP + 2.;
-        let mut harnesses = div().flex().flex_col().pl(px(value_edge));
-        for harness in &self.harnesses {
-            let state = match (&harness.message, harness.ready) {
-                (Some(message), _) => message.clone(),
-                (None, true) => "ready".to_owned(),
-                (None, false) => "not installed".to_owned(),
-            };
-            harnesses = harnesses.child(
-                div()
-                    .h(px(32.))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .gap(px(metric::GAP + 2.))
-                    .child(if harness.ready {
-                        monogram_sized(
-                            &harness.code,
-                            theme.hue(&harness.code),
-                            MONOGRAM_LARGE,
-                            theme,
-                        )
+        match field {
+            Some(field) if on => shown
+                .key_context(crate::accounts::FORM)
+                .track_focus(&self.account_focus)
+                .on_action(cx.listener(Self::account_form_next))
+                .on_key_down(cx.listener(Self::account_form_key))
+                .child(kou_canvas::field_lines(
+                    if proxy {
+                        "account-proxy-field"
                     } else {
-                        monogram_absent(&harness.code, MONOGRAM_LARGE, theme)
-                    })
-                    .child(
-                        div()
-                            .w(px(132.))
-                            .flex_none()
-                            .truncate()
-                            .text_color(if harness.ready {
-                                theme.fg
-                            } else {
-                                theme.fg_muted
-                            })
-                            .child(SharedString::from(harness.name.clone())),
-                    )
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .flex_none()
-                            .truncate()
-                            .font_family(theme.mono_font.clone())
-                            .text_size(px(metric::TEXT_SMALL))
-                            .text_color(theme.fg_muted)
-                            .child(SharedString::from(
-                                harness.version.clone().unwrap_or_default(),
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(metric::GAP))
-                            .when(harness.ready, |state| {
-                                state.child(icon(Icon::Check, theme.ok))
-                            })
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(metric::TEXT_SMALL))
-                                    .text_color(theme.fg_muted)
-                                    .child(SharedString::from(state)),
-                            ),
-                    ),
-            );
-            // Its other accounts, and the way to add one: the same program
-            // with its home in another folder.
-            let Some(variable) = kou_usage::home_variable(&harness.id).filter(|_| harness.ready)
-            else {
-                continue;
-            };
-            let indent = MONOGRAM_LARGE + metric::GAP + 2.;
-            for profile in self.store.profiles_of(&harness.id) {
-                let number = self
-                    .store
-                    .profiles
-                    .iter()
-                    .position(|known| known.id == profile.id)
-                    .unwrap_or_default();
-                let account = profile.id.clone();
-                harnesses = harnesses.child(
-                    div()
-                        .h(px(metric::ROW))
-                        .pl(px(indent))
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .gap(px(metric::GAP + 2.))
-                        .child(
-                            div()
-                                .w(px(132.))
-                                .flex_none()
-                                .truncate()
-                                .text_color(theme.fg_dim)
-                                .child(SharedString::from(profile.name.clone())),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .font_family(theme.mono_font.clone())
-                                .text_size(px(metric::TEXT_SMALL))
-                                .text_color(theme.fg_muted)
-                                .child(SharedString::from(abbreviate(&profile.home))),
-                        )
-                        .child(
-                            kou_ui::icon_button(("account-remove", number), Icon::Close, theme)
-                                .tooltip(tip("Forget this account (its folder is left as it is)"))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.remove_account(&account, cx)
-                                })),
-                        ),
-                );
+                        "account-name-field"
+                    },
+                    field,
+                    theme,
+                    px(16.),
+                ))
+                .into_any_element(),
+            Some(field) if !field.text().is_empty() => {
+                shown.child(said(field.text(), theme.fg)).into_any_element()
             }
-            let id = harness.id.clone();
-            let number = self
-                .harnesses
-                .iter()
-                .position(|known| known.id == harness.id)
-                .unwrap_or_default();
-            harnesses = harnesses.child(
-                div()
-                    .h(px(metric::ROW))
-                    .pl(px(indent))
-                    .mb(px(metric::UNIT))
-                    .flex()
-                    .flex_none()
-                    .items_center()
-                    .child(
-                        button_with_icon(
-                            ("account-add", number),
-                            Icon::Plus,
-                            "Add an account",
-                            false,
-                            theme,
-                        )
-                        .h(px(metric::CONTROL_SMALL))
-                        .text_size(px(metric::TEXT_SMALL))
-                        .tooltip(tip(format!(
-                            "Another folder for its home ({variable}): its own login and sessions"
-                        )))
-                        .on_click(
-                            cx.listener(move |this, _, window, cx| {
-                                this.add_account(&id, window, cx)
-                            }),
-                        ),
-                    ),
-            );
+            _ => shown
+                .child(said(
+                    if proxy { "proxy (optional)" } else { "name" },
+                    theme.fg_muted,
+                ))
+                .into_any_element(),
         }
-        div()
-            .id("settings")
-            .size_full()
-            .relative()
-            .overflow_y_scroll()
-            .bg(theme.pane)
-            .child(grain(theme))
-            .child(
-                div()
-                    .max_w(px(680.))
-                    .px(px(32.))
-                    .pt(px(24.))
-                    .pb(px(40.))
-                    .flex()
-                    .flex_col()
-                    .child(title("Settings", theme).mb(px(metric::UNIT * 2.)))
-                    .child(setting(
-                        Icon::Cursor,
-                        "Terminal cursor",
-                        button(
-                            "settings-cursor",
-                            if self.store.smooth_cursor {
-                                "Glides and stretches"
-                            } else {
-                                "Jumps"
-                            },
-                            false,
-                            theme,
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| this.toggle_cursor(cx)))
-                        .into_any_element(),
-                    ))
-                    .child(setting(
-                        Icon::Branch,
-                        "Working together",
-                        self.orchestration_choice(theme, cx),
-                    ))
-                    .child(
-                        div()
-                            .pl(px(value_edge + 160. + metric::GAP + 2.))
-                            .mt(px(-4.))
-                            .mb(px(metric::UNIT))
-                            .max_w(px(560.))
-                            .text_size(px(metric::TEXT_SMALL))
-                            .text_color(theme.fg_muted)
-                            .child(match self.store.orchestration {
-                                crate::state::Orchestration::Skills => {
-                                    "An agent started in a pane is given a skill on working with \
-                                     the other agents, and does it through the app's command line. \
-                                     Nothing is added to its context until it needs it."
-                                }
-                                crate::state::Orchestration::Mcp => {
-                                    "An agent started in a pane is given the app's tools through \
-                                     an MCP server. They are in its context in every session."
-                                }
-                                crate::state::Orchestration::Off => {
-                                    "A harness is started as it is. An agent can still be told \
-                                     about the app's command line in a prompt."
-                                }
-                            })
-                            .child(
-                                div()
-                                    .mt(px(2.))
-                                    .child("For agents started from now on. Nothing is written into a harness's own settings."),
-                            ),
-                    )
-                    .child(setting(
-                        Icon::Check,
-                        "When an agent is done",
-                        self.notice_toggle(false, theme, cx),
-                    ))
-                    .child(setting(
-                        Icon::Eye,
-                        "When an agent asks",
-                        self.notice_toggle(true, theme, cx),
-                    ))
-                    .child(
-                        div()
-                            .pl(px(value_edge + 160. + metric::GAP + 2.))
-                            .mt(px(-4.))
-                            .mb(px(metric::UNIT))
-                            .max_w(px(560.))
-                            .text_size(px(metric::TEXT_SMALL))
-                            .text_color(theme.fg_muted)
-                            .child(
-                                "A notification when you are not looking at the agent's pane: \
-                                 when one you started finishes its turn, and when any agent \
-                                 stops for an answer or a permission.",
-                            )
-                            // Refused by the system, the two above do nothing:
-                            // said here, with the way to where it is allowed.
-                            .when(
-                                self.notice_permission == crate::notify::Permission::Refused
-                                    && (self.store.notify_done || self.store.notify_asks),
-                                |note| {
-                                    note.child(
-                                        div()
-                                            .mt(px(metric::GAP))
-                                            .flex()
-                                            .items_center()
-                                            .gap(px(metric::GAP))
-                                            .child(icon(Icon::Info, theme.blocked))
-                                            .child(
-                                                div().text_color(theme.fg).child(
-                                                    "The system is not letting kou show \
-                                                     notifications.",
-                                                ),
-                                            )
-                                            .child(
-                                                button(
-                                                    "settings-notify-allow",
-                                                    "Open System Settings",
-                                                    false,
-                                                    theme,
-                                                )
-                                                .on_click(|_, _, _| {
-                                                    crate::notify::open_system_settings()
-                                                }),
-                                            ),
-                                    )
-                                },
-                            ),
-                    )
-                    .child(setting(
-                        Icon::Appearance,
-                        "Appearance",
-                        div()
-                            .text_color(theme.fg_muted)
-                            .child(if theme.dark {
-                                "Dark, following the system"
-                            } else {
-                                "Light, following the system"
-                            })
-                            .into_any_element(),
-                    ))
-                    .child(setting(
-                        Icon::Target,
-                        "Accent",
-                        self.accent_choice(theme, cx),
-                    ))
-                    .child(
-                        section(Icon::Terminal, "Harnesses", theme).child(
-                            button_with_icon(
-                                "settings-scan",
-                                Icon::Search,
-                                if self.scanning {
-                                    "Checking..."
-                                } else {
-                                    "Check again"
-                                },
-                                false,
-                                theme,
-                            )
-                            .ml(px(metric::UNIT))
-                            .on_click(cx.listener(|this, _, _, cx| this.scan(cx))),
-                        ),
-                    )
-                    .child(
-                        div()
-                            .pl(px(value_edge))
-                            .mb(px(metric::UNIT * 2.))
-                            .text_color(theme.fg_muted)
-                            .child(
-                                "Found by looking for each command on your PATH and asking it for its version.",
-                            ),
-                    )
-                    .child(harnesses)
-                    .when(self.harnesses.is_empty(), |settings| {
-                        settings.child(
-                            div()
-                                .pl(px(value_edge))
-                                .text_color(theme.fg_muted)
-                                .child(if self.scanning {
-                                    "Looking for harnesses..."
-                                } else {
-                                    "None found. Install one and press Check again."
-                                }),
-                        )
-                    })
-                    .child(section(Icon::Keyboard, "Keys", theme).mb(px(metric::UNIT)))
-                    .children(shortcuts().into_iter().map(|(keys, what)| {
-                        div()
-                            .h(px(28.))
-                            .pl(px(value_edge))
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(px(metric::GAP + 2.))
-                            // Ends where a harness's name column does, so the
-                            // descriptions start under the versions and the values.
-                            .child(div().w(px(160.)).flex_none().flex().child(key_hint(keys, theme)))
-                            .child(div().text_color(theme.fg).child(what))
-                    })),
-            )
-            .into_any_element()
     }
 
-    // The list of earlier conversations, when it is open for a pane of this session.
     pub(crate) fn resuming_here(&self, session: &str) -> Option<&Resuming> {
         self.resuming.as_ref().filter(|open| {
             self.store
@@ -1092,8 +1096,7 @@ impl Shell {
         })
     }
 
-    // A pane's earlier conversations: pick one to go back to it.
-    pub(crate) fn sessions(&self, open: &Resuming, theme: &Theme, cx: &Context<Self>) -> Div {
+    fn native_sessions(&self, open: &Resuming, theme: &Theme, cx: &Context<Self>) -> Div {
         let folder = self
             .store
             .pane(&open.pane)

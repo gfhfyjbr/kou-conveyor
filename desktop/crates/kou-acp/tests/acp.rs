@@ -179,6 +179,14 @@ impl Fake {
             .expect("the backend takes requests");
     }
 
+    /// Hand a message to the running turn the way the interface does.
+    fn steer(&mut self, text: &str) {
+        self.backend()
+            .requests
+            .try_send(Request::Steer(vec![Block::Text(text.into())]))
+            .expect("the backend takes requests");
+    }
+
     /// Send a prompt the scripted agent answers by repeating it, and see it
     /// named `prompt-<n>` and answered.
     fn exchange(&mut self, text: &str, n: usize) {
@@ -281,6 +289,15 @@ fn air_fork() -> serde_json::Map<String, Value> {
 }
 
 /// What a backend that edits prompts offers.
+/// What an agent that edits no prompts says when it begins, or ceases, to
+/// take a prompt with a turn open.
+fn listening(listening: bool) -> Update {
+    Update::Offers(Offers {
+        listening,
+        ..Offers::default()
+    })
+}
+
 fn offers() -> Update {
     Update::Offers(Offers {
         rewind: true,
@@ -619,6 +636,8 @@ fn a_command_left_running_is_told_apart_and_the_agent_s_own_turn_shows_as_one() 
         // the cost of its cycle is said, not at a count in the middle.
         Update::TurnStarted,
         said("The server stopped."),
+        // (A prompt sent while it goes on by itself is taken.)
+        listening(true),
         Update::Tool(ToolCall {
             id: "r1".into(),
             title: "Read server.log".into(),
@@ -639,6 +658,7 @@ fn a_command_left_running_is_told_apart_and_the_agent_s_own_turn_shows_as_one() 
             ..Usage::default()
         }),
         Update::TurnEnded(Stop::Finished),
+        listening(false),
     ]);
     assert_eq!(fake.thread.state(), &ThreadState::Idle);
     let work = |at: usize| match &fake.thread.entries()[at] {
@@ -676,12 +696,44 @@ fn a_turn_of_the_agent_s_own_is_stopped_or_gives_way_to_a_prompt() {
         Update::TurnEnded(Stop::Finished),
         Update::TurnStarted,
         said("Something came up."),
+        listening(true),
     ]);
     assert_eq!(fake.thread.state(), &ThreadState::Working);
-    // The user stops it, as any turn.
+    // The user stops it, as any turn: it is over at once, and the agent is
+    // told a moment later.
     fake.send(Command::Cancel);
-    fake.expect([Update::TurnEnded(Stop::Cancelled)]);
+    fake.expect([Update::TurnEnded(Stop::Cancelled), listening(false)]);
     assert_eq!(fake.thread.state(), &ThreadState::Idle);
+    std::thread::sleep(Duration::from_millis(1100));
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(fake.next_json()["cancels"], 1);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+    // Stopped to make way for a prompt, which is how the interface forces
+    // one in: the prompt is taken, and the agent is not told to stop, which
+    // would stop the prompt and whatever the agent left running.
+    fake.prompt("wake");
+    fake.expect([
+        Update::TurnStarted,
+        Update::TurnEnded(Stop::Finished),
+        Update::TurnStarted,
+        said("Something came up."),
+        listening(true),
+    ]);
+    fake.send(Command::Cancel);
+    fake.prompt("inspect");
+    fake.expect([
+        Update::TurnEnded(Stop::Cancelled),
+        listening(false),
+        Update::TurnStarted,
+    ]);
+    assert_eq!(fake.next_json()["cancels"], 1);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+    std::thread::sleep(Duration::from_millis(1100));
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(fake.next_json()["cancels"], 1);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
     // Again; this time a prompt is sent while it is open: it gives way.
     fake.prompt("wake");
     fake.expect([
@@ -689,15 +741,306 @@ fn a_turn_of_the_agent_s_own_is_stopped_or_gives_way_to_a_prompt() {
         Update::TurnEnded(Stop::Finished),
         Update::TurnStarted,
         said("Something came up."),
+        listening(true),
     ]);
     fake.prompt("hello");
     fake.expect([
         Update::TurnEnded(Stop::Finished),
         Update::TurnStarted,
+        listening(false),
         said("You said: hello"),
         Update::TurnEnded(Stop::Finished),
     ]);
     assert_eq!(fake.thread.state(), &ThreadState::Idle);
+}
+
+#[test]
+fn a_question_asked_in_a_turn_that_gives_way_to_a_prompt_is_asked_again_in_the_prompt_s_turn() {
+    let mut fake = Fake::start(&[]);
+    fake.expect_ready();
+    // After its turn the agent asks for leave by itself: with no turn open
+    // the question opens one of the agent's own, so there is a turn to end.
+    fake.prompt("wake-ask");
+    fake.expect([Update::TurnStarted, Update::TurnEnded(Stop::Finished)]);
+    let mut opened = false;
+    let request = loop {
+        match fake.next() {
+            Update::TurnStarted => opened = true,
+            Update::Permission(request) => break request.id,
+            _ => {}
+        }
+    };
+    assert!(opened, "a turn of the agent's own, for the question");
+    assert_eq!(fake.thread.state(), &ThreadState::Blocked);
+    // A prompt is sent meanwhile: the agent's turn gives way to it. The
+    // question is still the agent's to have answered: it is asked again in
+    // the turn that takes over, where it would otherwise be refused at the
+    // end without the user having seen it.
+    fake.prompt("hello");
+    let mut ended = false;
+    loop {
+        match fake.next() {
+            Update::TurnEnded(Stop::Finished) => ended = true,
+            Update::Permission(again) => {
+                assert_eq!(again.id, request);
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(ended, "the agent's own turn gave way");
+    assert_eq!(fake.thread.state(), &ThreadState::Blocked);
+    assert_eq!(fake.thread.permissions().len(), 1);
+    // Answered, the agent goes on, and then takes the prompt.
+    fake.send(Command::Permit {
+        request,
+        option: "allow".into(),
+    });
+    let mut said_all = String::new();
+    loop {
+        match fake.next() {
+            Update::AssistantChunk(text) => said_all.push_str(&text),
+            Update::TurnEnded(_) if said_all.contains("You said: hello") => break,
+            _ => {}
+        }
+    }
+    assert!(said_all.contains("selected: allow"), "{said_all}");
+    assert_eq!(fake.thread.state(), &ThreadState::Idle);
+}
+
+#[test]
+fn an_agent_in_the_background_that_ended_is_told_from_one_that_runs_on() {
+    // The agent's program says when an agent is started in the background
+    // and never that one ended; the turn stays open for the last of them.
+    let mut fake = Fake::start_configured(&[], |options| options.holds_turns = true);
+    fake.expect_ready();
+    fake.prompt("behind");
+    let ended = |update: &Update, id: &str, ended: bool| matches!(update, Update::ToolPatch(patch) if patch.id == id && patch.ended == Some(ended));
+    // The agent runs a cycle of its own because something in the
+    // background ended: it was the one that spoke last before that cycle
+    // and has no call running. The other, in the middle of a call, runs on.
+    let mut seen = Vec::new();
+    loop {
+        let update = fake.next();
+        let done = ended(&update, "b1", true);
+        seen.push(update);
+        if done {
+            break;
+        }
+    }
+    assert!(
+        !seen.iter().any(|update| ended(update, "b2", true)),
+        "the one at work is not taken for done"
+    );
+    let state = |fake: &Fake, id: &str| {
+        fake.thread.entries().iter().find_map(|entry| match entry {
+            Entry::Tool(call) if call.id == id => Some((call.work.background, call.work.ended)),
+            _ => None,
+        })
+    };
+    assert_eq!(state(&fake, "b1"), Some((true, true)));
+    assert_eq!(state(&fake, "b2"), Some((true, false)));
+    assert_eq!(
+        fake.thread.state(),
+        &ThreadState::Working,
+        "the turn is held on"
+    );
+    // Heard of again, it is at work again.
+    loop {
+        if ended(&fake.next(), "b1", false) {
+            break;
+        }
+    }
+    assert_eq!(state(&fake, "b1"), Some((true, false)));
+    fake.send(Command::Cancel);
+    loop {
+        if matches!(fake.next(), Update::TurnEnded(_)) {
+            break;
+        }
+    }
+}
+
+#[test]
+fn a_prompt_goes_at_once_to_an_agent_that_holds_its_turn_open_for_what_it_left_running() {
+    let cost = Update::Usage(Usage {
+        context_used: Some(1000),
+        context_limit: Some(200000),
+        cost_usd: Some(0.01),
+        ..Usage::default()
+    });
+    let mut fake = Fake::start_configured(&[], |options| options.holds_turns = true);
+    fake.expect_ready();
+    // The agent answers, and holds the turn open: something it started
+    // still runs. The interface is told that a prompt is taken meanwhile.
+    fake.prompt("hold");
+    fake.expect([
+        Update::TurnStarted,
+        said("Started it."),
+        cost.clone(),
+        listening(true),
+    ]);
+    assert_eq!(fake.thread.state(), &ThreadState::Working);
+    // One is sent: the held turn is over, the prompt runs, and the answer
+    // to the first prompt, which the agent gives now, ends nothing.
+    fake.prompt("hello");
+    fake.expect([
+        Update::TurnEnded(Stop::Finished),
+        Update::TurnStarted,
+        listening(false),
+        said("You said: hello"),
+        Update::TurnEnded(Stop::Finished),
+    ]);
+    assert_eq!(fake.thread.state(), &ThreadState::Idle);
+    // The agent was never told to stop: that would end what it left running.
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(fake.next_json()["cancels"], 0);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+    // A stop of a held turn is still a stop.
+    fake.prompt("hold");
+    fake.expect([
+        Update::TurnStarted,
+        said("Started it."),
+        cost,
+        listening(true),
+    ]);
+    fake.send(Command::Cancel);
+    fake.expect([listening(false), Update::TurnEnded(Stop::Cancelled)]);
+    assert_eq!(fake.thread.state(), &ThreadState::Idle);
+}
+
+#[test]
+fn a_prompt_goes_into_the_turn_an_agent_holds_open_and_the_turn_is_held_on() {
+    let offers = |listening| {
+        Update::Offers(Offers {
+            steer: true,
+            listening,
+            ..Offers::default()
+        })
+    };
+    let cost = Update::Usage(Usage {
+        context_used: Some(1000),
+        context_limit: Some(200000),
+        cost_usd: Some(0.01),
+        ..Usage::default()
+    });
+    let mut fake = Fake::start_configured(&["--steer"], |options| options.holds_turns = true);
+    fake.expect([
+        ready("sess-1", false),
+        providers(),
+        offers(false),
+        commands(),
+    ]);
+    // The agent answers, and holds the turn open for what it left running.
+    fake.prompt("hold");
+    fake.expect([
+        Update::TurnStarted,
+        said("Started it."),
+        cost.clone(),
+        offers(true),
+    ]);
+    // A prompt sent now goes into that turn: no turn ends and none begins,
+    // the agent answers it, and holds the turn on. What it left running is
+    // still work of a turn that runs.
+    fake.prompt("hello");
+    fake.expect([
+        offers(false),
+        said("Steered: hello"),
+        cost.clone(),
+        offers(true),
+    ]);
+    assert_eq!(fake.thread.state(), &ThreadState::Working);
+    assert_eq!(fake.thread.turn_from(), Some(1));
+    // A stop is the one thing that stops it.
+    fake.send(Command::Cancel);
+    fake.expect([offers(false), Update::TurnEnded(Stop::Cancelled)]);
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(fake.next_json()["cancels"], 1);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+}
+
+#[test]
+fn a_message_is_handed_to_the_running_turn_of_an_agent_that_takes_one_there() {
+    let mut fake = Fake::start(&["--steer"]);
+    // The agent said at the handshake that it takes one: the interface is told.
+    fake.expect([
+        ready("sess-1", false),
+        providers(),
+        Update::Offers(Offers {
+            steer: true,
+            ..Offers::default()
+        }),
+        commands(),
+    ]);
+    assert!(fake.thread.offers.steer);
+    fake.prompt("steerable");
+    fake.expect([Update::TurnStarted, said("Working.")]);
+    // Handed over while the turn runs: the agent has it, the thread shows
+    // it where it came in, and the same turn goes on and answers it.
+    fake.steer("go left instead");
+    fake.expect([
+        Update::UserChunk(Block::Text("go left instead".into())),
+        said("Steered: go left instead"),
+        Update::TurnEnded(Stop::Finished),
+    ]);
+    assert_eq!(fake.thread.state(), &ThreadState::Idle);
+    // One for a turn that is over is not sent: the interface still holds
+    // it, and sends it as a prompt.
+    fake.steer("too late");
+    // Nothing was stopped for any of it.
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(fake.next_json()["cancels"], 0);
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+}
+
+#[test]
+fn an_agent_that_takes_no_instructions_is_told_with_its_first_prompt() {
+    let note = "<kou-desktop>\nA note from the app this session runs in, not from the user:\n\
+                You run in a pane of kou desktop.\n</kou-desktop>";
+    let configure = |options: &mut Options| {
+        options.instructions = Some("The whole guidance.".into());
+        options.preface = Some("You run in a pane of kou desktop.".into());
+    };
+    // It does not take instructions: the note goes before its first prompt,
+    // once, and the thread shows the prompt as the user wrote it.
+    let mut fake = Fake::start_configured(&[], configure);
+    fake.expect_ready();
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    let seen = fake.next_json();
+    assert_eq!(seen["opened"]["params"].get("systemPrompt"), None);
+    assert_eq!(
+        seen["prompt"],
+        json!([{"type": "text", "text": note}, {"type": "text", "text": "inspect"}])
+    );
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    assert_eq!(
+        fake.next_json()["prompt"],
+        json!([{"type": "text", "text": "inspect"}])
+    );
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
+    assert_eq!(
+        fake.thread.entries()[0],
+        user("inspect"),
+        "the note is no part of what the user said"
+    );
+    // One that takes instructions gets those when its session opens, and
+    // no note with a prompt.
+    let mut fake = Fake::start_configured(&["--instructions"], configure);
+    fake.expect_ready();
+    fake.prompt("inspect");
+    fake.expect([Update::TurnStarted]);
+    let seen = fake.next_json();
+    assert_eq!(
+        seen["opened"]["params"]["systemPrompt"]["content"][0]["text"],
+        "The whole guidance."
+    );
+    assert_eq!(seen["prompt"], json!([{"type": "text", "text": "inspect"}]));
+    fake.expect([Update::TurnEnded(Stop::Finished)]);
 }
 
 fn rm_call() -> ToolCall {
@@ -718,6 +1061,7 @@ fn rm_permission(id: u64) -> Update {
         kind,
     };
     Update::Permission(PermissionRequest {
+        questions: Vec::new(),
         id,
         // The agent named only the call's id; the rest is what it announced.
         tool: rm_call(),
@@ -1185,6 +1529,7 @@ fn cancelling_answers_the_open_question_and_ends_the_turn_as_cancelled() {
         Update::TurnStarted,
         Update::Tool(thinking.clone()),
         Update::Permission(PermissionRequest {
+            questions: Vec::new(),
             id: 1,
             tool: asked.clone(),
             options: vec![PermissionOption {

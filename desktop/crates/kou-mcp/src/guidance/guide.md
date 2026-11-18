@@ -1,3 +1,32 @@
+## Where you are
+
+::: tools
+where_am_i says it: your pane, your tab and how the user sees it (as panes side by side, or as a canvas), the other panes of the tab, and the edges of the tab's canvas. Call it when the user speaks of the canvas, a node, an edge, "the agent next to you" or "what you are connected to", and before you act on a pane you did not start.
+::: commands
+`"$KOU_BIN" where` prints it: your pane, your tab and how the user sees it (as panes side by side, or as a canvas), the other panes of the tab, and the edges of the tab's canvas. Run it when the user speaks of the canvas, a node, an edge, "the agent next to you" or "what you are connected to", and before you act on a pane you did not start.
+:::
+
+A tab's panes are the nodes of its canvas, whichever way the user looks at the tab. What the canvas adds is edges, each from one node's output to another's input:
+
+- A pane you start joins your tab's canvas beside yours, with an edge from you to it. That edge shows who started whom and carries nothing by itself.
+- What you send to a pane of your own tab with {{send}} travels the edge from you to it. If there was none, a line is drawn that shows you wrote to it; it carries nothing by itself, and your answers do not start going there.
+- A wired edge carries by itself: when a native chat at its start ends a turn, its answer goes to the pane at its end as a prompt. Such a prompt begins with a line `[canvas] from «title»`: it is another pane's answer arriving along an edge, not the user typing. Answer what it asks; do not send the same thing back along an edge that returns to its sender, or the two of you will go round. The app counts: from the second time a message is passed on, agent to agent, the line says so (`hop 3 of 6`), and past 6 the message waits on its target for the user.
+- A wired edge has a mode: auto (what it carries goes at once), approve (it waits on its target until the user lets it through) or off (nothing goes by itself; what you send on purpose still arrives).
+- The user draws, removes and switches edges, on the canvas. So may the tab's orchestrator: an agent whose node the user gave that right, which {{where}} tells you of yourself. As the orchestrator, {{edge_add}} wires what one node answers into another, {{edge_set}} changes a wire's mode, {{edge_rm}} takes one away and {{edge_list}} lists them; a wire you made says on the canvas that you made it. Wire sparingly: an auto wire brings every final answer of its start to its end, so take it away when the work it was for is done. If you are not the orchestrator and a task needs a wire ("send your answers to the reviewer"), tell the user which edge and which mode.
+- To hear one answer from another native chat with no wire, and without waiting on it: {{ask}}. What its agent answers at the end of that turn comes to you once, as a message beginning `[canvas] answer from`. Use it instead of {{send}}, {{wait}} and {{read}} when you have other work to go on with, or want to end your turn meanwhile.
+- Notes and sources on the canvas are the user's; {{where}} lists them with what they say.
+
+::: commands only wiring
+An orchestrator's wires, and a question whose answer comes back by itself. `me` is your own pane:
+
+```sh
+"$KOU_BIN" edge add p7 me --mode approve
+"$KOU_BIN" edge set p7 me --mode auto
+"$KOU_BIN" edge rm p7 me
+"$KOU_BIN" pane ask p7 "Which files did you change, and what is left?"
+```
+:::
+
 ## Decide whether to delegate
 
 Delegate when the work splits into parts that do not need each other's results, when an independent second look is worth having (a review, a test pass, a reproduction), or when a long job would fill your context with output you do not need. Do it yourself when:
@@ -211,8 +240,8 @@ If every command fails with "Operation not permitted" while connecting to the ap
 - By default, use the harness you are running in: you know how it behaves.
 - For a review or a second opinion, prefer a different harness or model.
 - For commands, servers and builds, use shell.
-- {{model}} takes a model in the harness's own naming. Leave it out unless the task calls for one: a cheaper model for mechanical work, a stronger one for a hard bug.
-- {{native}} runs the harness as the app's native chat when it can, which reads back cleanly; the default terminal interface is the one the user knows.
+- {{model}} takes a model in the harness's own naming; {{models}} lists the ids a harness has, and one it does not have is refused. Leave it out unless the task calls for one: a cheaper model for mechanical work, a stronger one for a hard bug.
+- A harness that has a native chat opens as one, which reads back cleanly. {{terminal}} asks for its own terminal interface instead, {{native}} for the chat.
 
 ## Keep the workspace tidy
 

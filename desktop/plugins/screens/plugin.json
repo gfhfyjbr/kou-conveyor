@@ -1,0 +1,5 @@
+{
+  "name": "screens",
+  "description": "The screens that stand in for a session's panes: what an empty window and a stopped pane say, what can be started, the settings, and a pane's earlier conversations.",
+  "desktop": {"script": "desktop/screens.js"}
+}

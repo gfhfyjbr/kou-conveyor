@@ -47,7 +47,13 @@
     text: (value, props) => ui.el("text", { ...(props || {}), value: String(value) }),
     icon: (name, props) => ui.el("icon", { ...(props || {}), name }),
     button: (label, props) => ui.el("button", { ...(props || {}), label: String(label) }),
+    iconButton: (name, props) => ui.el("iconButton", { ...(props || {}), name }),
+    // A part that stays the app's own to draw, placed here: which ones
+    // there are is said where a view is given them.
+    slot: (name) => ui.el("slot", { name: String(name) }),
     monogram: (code, props) => ui.el("monogram", { ...(props || {}), code: String(code) }),
+    // A harness's mark (by its name, or its `code`), in its maker's colour.
+    brand: (harness, props) => ui.el("brand", { ...(props || {}), harness: String(harness) }),
     mark: (state, props) => ui.el("mark", { ...(props || {}), state: String(state) }),
     // A colour (a name of the theme's, or `#rrggbb`) at `share` of its strength.
     alpha(color, share) {
@@ -73,7 +79,17 @@
       if (!page || typeof page.id !== "string" || typeof page.render !== "function") {
         throw new TypeError("kou.page takes { id, render(ctx) }");
       }
-      pages.set(page.id, page);
+      pages.set(page.id, { ...page, kind: "page" });
+    },
+    // Adds a view: `{ id, render(ctx) }`, something the app draws where it
+    // has a place for it (a surface in a chat, say), as many times as it
+    // has things to show: each is drawn from its own data and keeps its
+    // own state.
+    view(view) {
+      if (!view || typeof view.id !== "string" || typeof view.render !== "function") {
+        throw new TypeError("kou.view takes { id, render(ctx) }");
+      }
+      pages.set(view.id, { ...view, kind: "view" });
     },
     get theme() {
       return theme;
@@ -113,10 +129,12 @@
           id: page.id,
           title: typeof page.title === "string" ? page.title : page.id,
           icon: typeof page.icon === "string" ? page.icon : null,
+          page: page.kind === "page",
         })),
       );
     },
-    render(id, input, state) {
+    // `instance` tells apart the things one view is drawn for.
+    render(id, input, state, instance) {
       const page = pages.get(id);
       if (!page) throw new Error('no page "' + id + '"');
       const given = JSON.parse(input);
@@ -128,11 +146,17 @@
         state: JSON.parse(state),
       });
       const tree = seal(built, handlers) || { type: "box", children: [] };
-      drawn.set(id, handlers);
+      // (The handlers of a few hundred drawings are kept, the oldest let go.)
+      const key = id + "\n" + (instance || "");
+      drawn.delete(key);
+      drawn.set(key, handlers);
+      // More than the app keeps trees for (`DRAWN` in host.rs): a tree it
+      // still holds must find its handlers here, or its clicks do nothing.
+      if (drawn.size > 1024) drawn.delete(drawn.keys().next().value);
       return JSON.stringify(tree);
     },
-    dispatch(id, handler, event, state) {
-      const handlers = drawn.get(id);
+    dispatch(id, handler, event, state, instance) {
+      const handlers = drawn.get(id + "\n" + (instance || ""));
       const run = handlers && handlers[handler];
       const told = { acts: [], state: null };
       if (typeof run !== "function") return JSON.stringify(told);

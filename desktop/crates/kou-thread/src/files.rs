@@ -488,8 +488,12 @@ impl Listing {
         entries.extend(folders);
         entries.sort();
         entries.dedup();
-        let lower = entries.iter().map(|entry| entry.to_lowercase()).collect();
-        let names = entries
+        let lower: Vec<String> = entries.iter().map(|entry| entry.to_lowercase()).collect();
+        // Where the last part starts in the lower-case form, which is the
+        // one a query is held against: a name can be longer or shorter in
+        // bytes once it is lower case (`İ`, the Kelvin sign), so a place
+        // taken in the path as written may be none in it at all.
+        let names = lower
             .iter()
             .map(|entry| {
                 let trimmed = entry.trim_end_matches('/');
@@ -1144,6 +1148,30 @@ mod tests {
         assert_eq!(query("$src done"), None, "the reference ended");
         assert_eq!(query("пишу $фа"), Some((9, "фа".into(), false)));
         assert_eq!(query(""), None);
+    }
+
+    #[test]
+    fn a_name_that_changes_length_in_lower_case_is_matched_and_does_not_panic() {
+        // `İ` is two bytes and three in lower case; the Kelvin sign is three
+        // and one.
+        let listing = Listing::of(vec![
+            "BİLGİ/notes.md".to_owned(),
+            "\u{212a}elvin/scale.md".to_owned(),
+            "plain/notes.md".to_owned(),
+        ]);
+        let found: Vec<String> = listing
+            .matches("notes", 10)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert!(found.contains(&"BİLGİ/notes.md".to_owned()), "{found:?}");
+        assert!(found.contains(&"plain/notes.md".to_owned()), "{found:?}");
+        let found: Vec<String> = listing
+            .matches("scale", 10)
+            .into_iter()
+            .map(|entry| entry.path)
+            .collect();
+        assert_eq!(found, ["\u{212a}elvin/scale.md"]);
     }
 
     #[test]

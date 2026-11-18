@@ -35,6 +35,60 @@ use std::{cell::Cell, path::PathBuf, rc::Rc};
 /// What the app draws at the start of the field's foot, built every frame.
 pub(crate) type Foot = Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
+/// Takes the files dropped on a field.
+pub type FieldDrop = Rc<dyn Fn(&gpui::ExternalPaths, &mut Window, &mut App)>;
+
+/// Does something of a field's, by name.
+pub type FieldAct = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
+/// The prompt field in parts, for an app that draws its frame itself: how
+/// the field stands, and the parts that stay the view's own to draw, which
+/// the app places where it likes.
+pub struct FieldParts {
+    /// Presentation requested by the thread: `cockpit` or `studio`.
+    pub look: &'static str,
+    /// Which field this is, of all the ones drawn: the same for its life.
+    pub key: SharedString,
+    /// The keys are in it.
+    pub focused: bool,
+    /// Its agent is at work.
+    pub busy: bool,
+    /// Its agent is gone.
+    pub closed: bool,
+    /// It has no room for the names of its controls.
+    pub narrow: bool,
+    /// It stands alone, with no conversation over it.
+    pub standalone: bool,
+    /// How the field's own controls stand, for a frame that draws them
+    /// itself instead of placing the view's: `buttons` (`send`; while the
+    /// agent works, `stop`, or `force` once something is typed), `ready`
+    /// (what is typed can be sent), `attach` (the paperclip is there),
+    /// `model` (`{ name, open, dot }`, the dot its provider's colour) and
+    /// `mode` (`{ name, open, effort }`, `effort` being `{ level, bars }`
+    /// where the modes are efforts). `effort` and `access` describe separate
+    /// level and permission controls. Each picker is `null` when unavailable.
+    pub controls: serde_json::Value,
+    /// The view's own parts by name, each to be placed once: `editor` (what
+    /// is typed, with its chips, pictures and menus), `foot` (what the app
+    /// puts at the foot's start), `attach`, `model`, `effort`, `mode`, `access`, and
+    /// `controls` (the buttons that send and stop). A frame drawing its own
+    /// picker control places its open list in the matching `*Menu` slot.
+    /// One the field has none of now is not among them.
+    pub slots: Vec<(&'static str, AnyElement)>,
+    /// Takes files dropped on the field.
+    pub dropped: FieldDrop,
+    /// Does something of the field's, by name: `attach` (asks for files),
+    /// `send` (what is typed; while the agent works, it is queued),
+    /// `force` (what is typed, into the running turn), `stop` (the running
+    /// turn), `focus`, and the picker names (open or close their lists).
+    pub act: FieldAct,
+}
+
+/// Draws the field's frame from its parts, in place of the view's own.
+/// `None` leaves it to the view, which then draws the field as it always
+/// did: an app whose drawing fails still has a field to type in.
+pub type FieldFace = Rc<dyn Fn(FieldParts, &Window, &App) -> Option<AnyElement>>;
+
 /// A prompt the field hands over.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Prompt {
@@ -57,6 +111,8 @@ pub enum PromptFieldEvent {
     /// A model was chosen in the field's own list (see
     /// [`PromptField::set_models`]): its id. The field shows it as chosen.
     Model(String),
+    /// The permissions selected before the first prompt.
+    Access(String),
     /// The field's height as drawn, in unzoomed pixels, once it has settled
     /// after it changed: a line more, a picture's strip, a notice.
     Height(f32),
@@ -119,6 +175,7 @@ impl PromptField {
                 })),
                 DockEvent::Blank => cx.emit(PromptFieldEvent::Empty),
                 DockEvent::SetModel(model) => cx.emit(PromptFieldEvent::Model(model.clone())),
+                DockEvent::SetAccess(id) => cx.emit(PromptFieldEvent::Access(id.clone())),
                 DockEvent::Height(height) => cx.emit(PromptFieldEvent::Height(*height)),
                 _ => {}
             }),
@@ -149,6 +206,28 @@ impl PromptField {
         let foot = foot.map(|foot| Rc::new(foot) as Foot);
         self.dock.update(cx, |dock, cx| {
             dock.foot = foot;
+            cx.notify();
+        });
+    }
+
+    /// Lets the app draw the field's frame and arrange its parts: see
+    /// [`FieldFace`]. `None` gives it back to the view.
+    pub fn set_face(&mut self, face: Option<FieldFace>, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| {
+            dock.face = face;
+            cx.notify();
+        });
+    }
+
+    /// Lets the app draw the lists over the field and the help card, as a
+    /// chat's are drawn: see [`crate::ChatFace`]. `None` gives them back.
+    pub fn set_chat_face(&mut self, face: Option<crate::ChatFace>, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| {
+            dock.composer.update(cx, |composer, cx| {
+                composer.chat_face = face.clone();
+                cx.notify();
+            });
+            dock.chat_face = face;
             cx.notify();
         });
     }
@@ -186,6 +265,19 @@ impl PromptField {
             dock.composer
                 .update(cx, |composer, _| composer.set_project(project));
             dock.set_history_file(history, cx);
+        });
+    }
+
+    /// The permission presets offered for the next conversation.
+    pub fn set_access(&mut self, access: kou_thread::Access, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| {
+            dock.sync(
+                Sync {
+                    access,
+                    ..dock.synced().clone()
+                },
+                cx,
+            );
         });
     }
 

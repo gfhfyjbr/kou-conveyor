@@ -1,0 +1,5 @@
+{
+  "name": "canvas",
+  "description": "The canvas's chrome: the bar in the board's corner, what an empty board offers, the open menu, and the bar that takes a deletion back.",
+  "desktop": {"script": "desktop/canvas.js"}
+}

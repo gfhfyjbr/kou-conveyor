@@ -621,7 +621,7 @@ impl CanvasView {
         cx.notify();
     }
 
-    fn hover_row(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn hover_row(&mut self, index: usize, cx: &mut Context<Self>) {
         let clock = self.clock;
         let Some(menu) = &mut self.menu else {
             return;
@@ -699,6 +699,43 @@ impl CanvasView {
             motion::ease_in(self.clock.progress(closing, motion::QUICK))
         });
         let highlight = menu.travel.value(&self.clock);
+        // The highlight travels between the rows rather than jumping.
+        let lit = || {
+            div()
+                .absolute()
+                .left(px(PAD))
+                .right(px(PAD))
+                .top(px(highlight))
+                .h(px(ROW))
+                .rounded(px(metric::RADIUS))
+                .bg(theme.selected)
+        };
+        // As the app draws it, when it does: the canvas keeps its fading
+        // in and out, its keys and its travelling highlight.
+        let data = serde_json::json!({
+            "x": x,
+            "y": y.max(8.),
+            "width": WIDTH,
+            "height": height,
+            "title": menu.title.as_ref().map(SharedString::as_ref),
+            "highlight": menu.highlight,
+            "items": menu.items.iter().map(|item| self.item_data(item)).collect::<Vec<_>>(),
+        });
+        let slots = || vec![("highlight", lit().into_any_element())];
+        if let Some(drawn) = self.faced("canvasMenu", data, slots, cx) {
+            return Some(
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .opacity(open * (1. - gone))
+                    .track_focus(&self.menu_focus)
+                    .on_key_down(cx.listener(Self::menu_key))
+                    .child(drawn)
+                    .into_any_element(),
+            );
+        }
         let rows: Vec<AnyElement> = menu
             .items
             .iter()
@@ -723,17 +760,7 @@ impl CanvasView {
                 .track_focus(&self.menu_focus)
                 .on_key_down(cx.listener(Self::menu_key))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close_menu(cx)))
-                // The highlight travels between the rows rather than jumping.
-                .child(
-                    div()
-                        .absolute()
-                        .left(px(PAD))
-                        .right(px(PAD))
-                        .top(px(highlight))
-                        .h(px(ROW))
-                        .rounded(px(metric::RADIUS))
-                        .bg(theme.selected),
-                )
+                .child(lit())
                 .child(
                     div()
                         .absolute()
@@ -759,6 +786,31 @@ impl CanvasView {
                 )
                 .into_any_element(),
         )
+    }
+
+    /// A menu's row, as a drawing is given it.
+    fn item_data(&self, item: &Item) -> serde_json::Value {
+        let mark = match (
+            &item.code,
+            item.node.and_then(|id| self.mark_of_node(id)),
+            item.icon,
+        ) {
+            (Some(code), _, _) => serde_json::json!({ "code": code.as_ref() }),
+            (None, Some(mark), _) => mark,
+            (None, None, Some(glyph)) => {
+                serde_json::json!({ "icon": crate::face::icon_name(glyph) })
+            }
+            (None, None, None) => serde_json::Value::Null,
+        };
+        serde_json::json!({
+            "label": item.label.as_ref(),
+            "detail": item.detail.as_ref().map(SharedString::as_ref),
+            "hint": item.hint,
+            "mark": mark,
+            "danger": item.danger,
+            "enabled": item.enabled,
+            "separator": item.separator,
+        })
     }
 
     fn menu_row(
@@ -852,8 +904,56 @@ impl CanvasView {
             .into_any_element()
     }
 
-    /// The bar in the board's corner: add, zoom, fit.
-    pub(crate) fn toolbar(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement + use<> {
+    /// The bar's Add: what can be added, in a menu over the bar, for the
+    /// middle of the board.
+    pub(crate) fn add_from_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (w, h) = self.viewport();
+        let world = self.camera.to_world(w / 2., h / 2.);
+        self.open_add_menu((BAR_INSET, h / 2.), world, None, window, cx);
+        self.lift_menu_above_bar(BAR_INSET);
+    }
+
+    /// The bar's zoom: the zooms to go to, in a menu over the bar.
+    pub(crate) fn zoom_menu_from_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (w, h) = self.viewport();
+        self.open_zoom_menu((w / 2., h / 2.), window, cx);
+        self.lift_menu_above_bar(BAR_INSET + 64.);
+    }
+
+    /// One of an empty board's offers, taken, in the middle of the board.
+    pub(crate) fn offer_from_empty(
+        &mut self,
+        action: Action,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (w, h) = self.viewport();
+        let local = (w / 2. - 128., h / 2.);
+        let world = self.camera.to_world(w / 2., h / 2.);
+        match action {
+            Action::StartAgent if !self.offers.is_empty() => {
+                self.open_add_menu(local, world, None, window, cx)
+            }
+            Action::Note => self.add_note(world.0 - 140., world.1 - 90., window, cx),
+            Action::StartAgent => cx.emit(crate::CanvasEvent::CreateRequested {
+                x: world.0,
+                y: world.1,
+            }),
+            other => self.run(other, window, cx),
+        }
+    }
+
+    /// The bar in the board's corner: add, zoom, fit. As the app draws it,
+    /// around the zoom's percentage, when it does (see [`crate::Face`]).
+    pub(crate) fn toolbar(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let percent =
+            SharedString::from(format!("{}%", (self.target_camera().zoom * 100.).round()));
+        let slots = || vec![("percent", kou_ui::scale::text(percent.clone()))];
+        self.faced("canvasBar", serde_json::json!({}), slots, cx)
+            .unwrap_or_else(|| self.native_toolbar(theme, cx).into_any_element())
+    }
+
+    fn native_toolbar(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement + use<> {
         let percent =
             SharedString::from(format!("{}%", (self.target_camera().zoom * 100.).round()));
         let clear = gpui::transparent_black();
@@ -875,12 +975,7 @@ impl CanvasView {
                 button_with_icon("canvas-add", Icon::Plus, "Add", false, theme)
                     .border_color(clear)
                     .tooltip(tip("Add a node here (A)"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let (w, h) = this.viewport();
-                        let world = this.camera.to_world(w / 2., h / 2.);
-                        this.open_add_menu((BAR_INSET, h / 2.), world, None, window, cx);
-                        this.lift_menu_above_bar(BAR_INSET);
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.add_from_bar(window, cx))),
             )
             .child(div().w(px(1.)).h(px(16.)).mx(px(3.)).bg(theme.line))
             .child(
@@ -897,11 +992,9 @@ impl CanvasView {
                     .text_size(px(metric::TEXT_SMALL))
                     .text_color(theme.fg_dim)
                     .tooltip(tip("Zoom to 100%, the selection, or everything"))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        let (w, h) = this.viewport();
-                        this.open_zoom_menu((w / 2., h / 2.), window, cx);
-                        this.lift_menu_above_bar(BAR_INSET + 64.);
-                    })),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.zoom_menu_from_bar(window, cx)),
+                    ),
             )
             .child(
                 icon_button("canvas-zoom-in", Icon::Plus, theme)
@@ -916,11 +1009,49 @@ impl CanvasView {
     }
 
     /// What an empty canvas offers: its templates, a first agent, a note.
-    pub(crate) fn empty_state(
-        &self,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> impl IntoElement + use<> {
+    /// As the app draws it, when it does (see [`crate::Face`]).
+    pub(crate) fn empty_state(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let list = templates(&self.offers);
+        let templates: Vec<serde_json::Value> = list
+            .iter()
+            .map(|template| {
+                serde_json::json!({
+                    "title": template.title,
+                    "text": template.description,
+                    "detail": self.template_detail(template),
+                })
+            })
+            .collect();
+        let data = serde_json::json!({
+            "templates": templates,
+            "offers": !self.offers.is_empty(),
+        });
+        self.faced("canvasEmpty", data, Vec::new, cx)
+            .unwrap_or_else(|| self.native_empty_state(theme, cx).into_any_element())
+    }
+
+    /// What a template makes: how many nodes and edges, and of what.
+    fn template_detail(&self, template: &crate::Template) -> String {
+        let names: Vec<String> = template
+            .nodes
+            .iter()
+            .filter_map(|node| self.offers.iter().find(|offer| offer.id == node.offer))
+            .map(|offer| offer.title.clone())
+            .fold(Vec::new(), |mut names, name| {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+                names
+            });
+        format!(
+            "{} nodes, {} edges: {}",
+            template.nodes.len(),
+            template.edges.len(),
+            names.join(", ")
+        )
+    }
+
+    fn native_empty_state(&self, theme: &Theme, cx: &Context<Self>) -> impl IntoElement + use<> {
         struct Card {
             glyph: Icon,
             title: SharedString,
@@ -933,34 +1064,13 @@ impl CanvasView {
         let mut cards: Vec<Card> = list
             .iter()
             .enumerate()
-            .map(|(index, template)| {
-                let names: Vec<String> = template
-                    .nodes
-                    .iter()
-                    .filter_map(|node| self.offers.iter().find(|offer| offer.id == node.offer))
-                    .map(|offer| offer.title.clone())
-                    .fold(Vec::new(), |mut names, name| {
-                        if !names.contains(&name) {
-                            names.push(name);
-                        }
-                        names
-                    });
-                Card {
-                    glyph: Icon::Canvas,
-                    title: template.title.clone().into(),
-                    text: template.description.clone().into(),
-                    detail: Some(
-                        format!(
-                            "{} nodes, {} edges: {}",
-                            template.nodes.len(),
-                            template.edges.len(),
-                            names.join(", ")
-                        )
-                        .into(),
-                    ),
-                    action: Action::Template(index),
-                    quiet: false,
-                }
+            .map(|(index, template)| Card {
+                glyph: Icon::Canvas,
+                title: template.title.clone().into(),
+                text: template.description.clone().into(),
+                detail: Some(self.template_detail(template).into()),
+                action: Action::Template(index),
+                quiet: false,
             })
             .collect();
         cards.push(Card {
@@ -1011,22 +1121,7 @@ impl CanvasView {
                     .focus_visible(move |style| style.border_color(accent))
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        let (w, h) = this.viewport();
-                        let local = (w / 2. - 128., h / 2.);
-                        let world = this.camera.to_world(w / 2., h / 2.);
-                        match &action {
-                            Action::StartAgent if !this.offers.is_empty() => {
-                                this.open_add_menu(local, world, None, window, cx)
-                            }
-                            Action::Note => {
-                                this.add_note(world.0 - 140., world.1 - 90., window, cx)
-                            }
-                            Action::StartAgent => cx.emit(crate::CanvasEvent::CreateRequested {
-                                x: world.0,
-                                y: world.1,
-                            }),
-                            other => this.run(other.clone(), window, cx),
-                        }
+                        this.offer_from_empty(action.clone(), window, cx)
                     }))
                     .child(
                         div()
@@ -1132,15 +1227,42 @@ impl CanvasView {
     }
 
     /// The labels of edges: off, waiting for approval, how many went along it.
-    pub(crate) fn edge_labels(&self, theme: &Theme, cx: &Context<Self>) -> Vec<AnyElement> {
+    pub(crate) fn edge_labels(
+        &self,
+        theme: &Theme,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Vec<AnyElement> {
         if !labels_show(self.camera.zoom) {
             return Vec::new();
         }
         let camera = self.camera;
+        let label_style = gpui::TextStyle {
+            font_family: theme.mono_font.clone(),
+            font_weight: FontWeight::MEDIUM,
+            ..Default::default()
+        };
         let mut labels = Vec::new();
         for edge in self.board.edges() {
             let traffic = self.traffic.get(&edge.id).copied().unwrap_or_default();
             let mut words = Vec::new();
+            // A wire an agent drew says whose it is: not the user's own.
+            let by = (edge.origin == crate::model::EdgeOrigin::Wired)
+                .then_some(edge.by)
+                .flatten()
+                .map(|by| {
+                    self.board
+                        .node(by)
+                        .map_or("an agent", |node| node.title.as_str())
+                });
+            if let Some(title) = by {
+                let short: String = title
+                    .chars()
+                    .take(14)
+                    .map(|c| if c.is_control() { ' ' } else { c })
+                    .collect();
+                words.push(format!("by {short}"));
+            }
             if edge.mode == EdgeMode::Off {
                 words.push("off".to_owned());
             }
@@ -1168,8 +1290,53 @@ impl CanvasView {
             let text = words.join(" · ");
             // In world units, as the web canvas draws its labels in the board's SVG.
             let unit = camera.zoom;
-            let width = (14. + text.chars().count() as f32 * 6.2) * unit;
+            let run = label_style.to_run(text.len());
+            let line = window
+                .text_system()
+                .layout_line(&text, px(10.), &[run], None);
+            let width = (14. + f32::from(line.width)) * unit;
             let selected = self.edge_selected == Some(edge.id);
+            let id = edge.id;
+            let pressed = cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                window.focus(&this.focus, cx);
+                if event.click_count == 2 {
+                    this.open_inspector_for_edge(id, cx);
+                } else {
+                    this.set_selection(Vec::new(), Some(id), cx);
+                }
+            });
+            // As the app draws it, when it does (see [`crate::Face`]): the
+            // pill and what it says, at the zoom; the canvas puts it on its
+            // edge, as large as its words.
+            let shows = crate::face::Shows::Label {
+                text: text.clone(),
+                waiting: traffic.waiting > 0,
+                selected,
+            };
+            let data = || {
+                serde_json::json!({
+                    "edge": id,
+                    "text": text,
+                    "waiting": traffic.waiting > 0,
+                    "selected": selected,
+                })
+            };
+            if let Some(pill) = self.node_faced(id, "canvasLabel", shows, data, Vec::new, unit, cx)
+            {
+                labels.push(
+                    div()
+                        .absolute()
+                        .left(px(x - width / 2.))
+                        .top(px(y - 9. * unit))
+                        .w(px(width))
+                        .h(px(18. * unit))
+                        .on_mouse_down(MouseButton::Left, pressed)
+                        .child(pill)
+                        .into_any_element(),
+                );
+                continue;
+            }
             let color = if selected {
                 theme.accent
             } else if traffic.waiting > 0 {
@@ -1204,19 +1371,8 @@ impl CanvasView {
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(color)
                     .cursor_pointer()
-                    .child(text)
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            window.focus(&this.focus, cx);
-                            if event.click_count == 2 {
-                                this.open_inspector_for_edge(id, cx);
-                            } else {
-                                this.set_selection(Vec::new(), Some(id), cx);
-                            }
-                        }),
-                    )
+                    .child(crate::card::zoomed(text, unit))
+                    .on_mouse_down(MouseButton::Left, pressed)
                     .into_any_element(),
             );
         }
@@ -1309,6 +1465,23 @@ impl CanvasView {
         } else {
             0.
         };
+        // As the app draws it, when it does: the canvas keeps it rising
+        // and fading in, and fading out.
+        let data = serde_json::json!({ "text": toast.text, "undo": toast.undo });
+        if let Some(bar) = self.faced("canvasToast", data, Vec::new, cx) {
+            return Some(
+                div()
+                    .absolute()
+                    .bottom(px(16. + (1. - t) * 10.))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center()
+                    .opacity(t * (1. - out))
+                    .child(bar)
+                    .into_any_element(),
+            );
+        }
         Some(
             div()
                 .absolute()

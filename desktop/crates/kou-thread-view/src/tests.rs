@@ -35,6 +35,7 @@ impl Pane {
         cwd: &std::path::Path,
     ) -> (Self, &'a mut VisualTestContext) {
         cx.update(|cx| {
+            kou_ui::init(cx);
             cx.set_global(kou_ui::Theme::new(true));
             // Tests have no frames for animations to run on: everything takes
             // its end state at once, as it does for a user who asks for less motion.
@@ -153,6 +154,7 @@ fn ask(id: u64, tool_id: &str) -> Update {
         kind,
     };
     Update::Permission(PermissionRequest {
+        questions: Vec::new(),
         id,
         tool: tool(tool_id, ToolStatus::Pending),
         options: vec![
@@ -224,6 +226,49 @@ fn a_prompt_written_while_a_turn_runs_waits_in_the_queue(cx: &mut TestAppContext
     pane.click("queue-resume", cx);
     assert_eq!(pane.heard(), [Command::Prompt(text("next"))]);
     assert!(pane.queued(cx).is_empty());
+}
+
+#[gpui::test]
+fn a_prompt_goes_at_once_while_the_agent_only_waits_for_what_it_left_running(
+    cx: &mut TestAppContext,
+) {
+    let listening = |listening| {
+        Update::Offers(Offers {
+            listening,
+            ..Offers::default()
+        })
+    };
+    let (pane, cx) = Pane::open(cx);
+    // The agent works on a prompt: what is written waits, as ever.
+    pane.say([ready(), Update::TurnStarted], cx);
+    cx.simulate_input("first");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), []);
+    assert_eq!(pane.queued(cx), [("first".to_owned(), false)]);
+    // It has answered, and holds the turn open for what it left running:
+    // what waited goes, with nothing stopped.
+    pane.say([listening(true)], cx);
+    assert_eq!(pane.heard(), [Command::Prompt(text("first"))]);
+    assert!(pane.queued(cx).is_empty());
+    // And what is written now is sent, by Enter and by the force key alike:
+    // the buttons are those of a field nothing keeps waiting.
+    cx.simulate_input("second");
+    assert!(cx.debug_bounds("force").is_none());
+    assert!(cx.debug_bounds("send").is_some());
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), [Command::Prompt(text("second"))]);
+    cx.simulate_input("third");
+    cx.simulate_keystrokes(force_key());
+    assert_eq!(pane.heard(), [Command::Prompt(text("third"))]);
+    assert!(pane.queued(cx).is_empty());
+    // With nothing written the button still stops the agent and its work.
+    assert!(cx.debug_bounds("stop").is_some());
+    // At work again, what is written waits again.
+    pane.say([listening(false)], cx);
+    cx.simulate_input("fourth");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), []);
+    assert_eq!(pane.queued(cx), [("fourth".to_owned(), false)]);
 }
 
 #[gpui::test]
@@ -674,20 +719,20 @@ fn reasoning_is_a_line_that_opens_on_a_click(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
-fn links_open_in_the_browser_and_only_web_links_do(cx: &mut TestAppContext) {
+fn web_links_open_and_unsupported_schemes_are_inert(cx: &mut TestAppContext) {
     let (pane, cx) = Pane::open(cx);
     pane.say(
         [
             ready(),
             Update::AssistantChunk(
-                "Not this [local file](file:///etc/passwd), but [the docs](https://example.com/docs) \
+                "Not this [script](javascript:alert%281%29), but [the docs](https://example.com/docs) \
                  and https://example.com/issues/412."
                     .into(),
             ),
         ],
         cx,
     );
-    // The file link is text; the two controls are the web links.
+    // The script link is text; the two controls are the web links.
     let docs: Bounds<Pixels> = cx
         .debug_bounds("link-0")
         .expect("the web link is a control");
@@ -717,6 +762,70 @@ fn links_open_in_the_browser_and_only_web_links_do(cx: &mut TestAppContext) {
         "typed",
         "Enter went to the link, not the field"
     );
+}
+
+#[gpui::test]
+fn file_links_work_with_the_mouse_and_keyboard_in_both_chat_looks(cx: &mut TestAppContext) {
+    for look in [crate::Look::Cockpit, crate::Look::Studio] {
+        let (pane, cx) = Pane::open(cx);
+        pane.look(look, cx);
+        pane.say([
+            ready(),
+            Update::AssistantChunk("[JS UI](/work/project/desktop/docs/js-ui.md) and [Source](<./My Project/main.rs:42:7>)".into()),
+        ], cx);
+        let file = cx.debug_bounds("link-0").expect("local path is clickable");
+        cx.simulate_click(file.center(), Modifiers::none());
+        assert!(pane.events.borrow().contains(&ThreadViewEvent::OpenFile(
+            "/work/project/desktop/docs/js-ui.md".into()
+        )));
+        assert!(
+            cx.opened_url().is_none(),
+            "a local path is not handed to the browser"
+        );
+        cx.simulate_input("still typing");
+        assert_eq!(pane.draft(cx), "still typing");
+        pane.events.borrow_mut().clear();
+        // Studio puts the answer's Copy control after its prose in tab order.
+        if look == crate::Look::Studio {
+            cx.simulate_keystrokes("shift-tab");
+        }
+        cx.simulate_keystrokes("shift-tab");
+        let enter = Keystroke::parse("enter").unwrap();
+        cx.simulate_event(KeyDownEvent {
+            keystroke: enter.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        });
+        cx.simulate_event(KeyUpEvent { keystroke: enter });
+        assert_eq!(
+            *pane.events.borrow(),
+            [ThreadViewEvent::OpenFile(
+                "/work/project/./My Project/main.rs".into()
+            )],
+            "{look:?}"
+        );
+        assert_eq!(pane.draft(cx), "still typing");
+    }
+}
+
+#[gpui::test]
+fn shared_theme_links_are_sent_to_the_app_for_preview(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    let link = kou_ui::themes::Preset::Charcoal.document().link().unwrap();
+    pane.say(
+        [
+            ready(),
+            Update::AssistantChunk(format!("[Shared theme]({link})")),
+        ],
+        cx,
+    );
+    pane.click("link-0", cx);
+    assert!(
+        pane.events
+            .borrow()
+            .contains(&ThreadViewEvent::OpenTheme(link))
+    );
+    assert!(cx.opened_url().is_none());
 }
 
 #[gpui::test]
@@ -1146,6 +1255,7 @@ fn a_slash_runs_the_view_s_commands_and_sends_the_backend_s(cx: &mut TestAppCont
                 choice("continue", "continue"),
             ]),
             Update::Offers(Offers {
+                listening: false,
                 steer: false,
                 rewind: false,
                 arguments: vec![("compact".into(), "[focus]".into())],
@@ -1440,6 +1550,28 @@ fn an_agent_the_agent_started_itself_shows_as_an_agent_with_how_it_goes(cx: &mut
             .iter()
             .all(|event| !matches!(event, ThreadViewEvent::OpenNested(_)))
     );
+    // A message of the user's that the turn takes in ends nothing: the
+    // agent started in this turn runs on.
+    pane.say(
+        [Update::UserChunk(Block::Text("and the linter?".into()))],
+        cx,
+    );
+    assert_eq!(goes(cx).0, NestedState::Running);
+    // Its backend takes it to have ended while the turn is held on (for
+    // another agent, say): it is done, and nobody waits on it. Heard of
+    // again, it is at work again.
+    let ended = |ended: bool| {
+        Update::ToolPatch(kou_thread::ToolPatch {
+            id: "a1".into(),
+            ended: Some(ended),
+            ..Default::default()
+        })
+    };
+    pane.say([ended(true)], cx);
+    assert_eq!(goes(cx).0, NestedState::Finished);
+    assert_eq!(waited(cx), Vec::<String>::new());
+    pane.say([ended(false)], cx);
+    assert_eq!(goes(cx).0, NestedState::Running);
     // The turn over, it is done: no row of it beside, nobody waited on.
     pane.say([Update::TurnEnded(Stop::Finished)], cx);
     assert_eq!(goes(cx).0, NestedState::Finished);
@@ -1826,6 +1958,7 @@ fn the_queue_reorders_drops_and_runs_when_the_turn_ends(cx: &mut TestAppContext)
         [
             ready(),
             Update::Offers(Offers {
+                listening: false,
                 steer: true,
                 rewind: false,
                 arguments: Vec::new(),
@@ -1878,6 +2011,7 @@ fn force_in_hands_the_running_turn_a_message(cx: &mut TestAppContext) {
         [
             ready(),
             Update::Offers(Offers {
+                listening: false,
                 steer: true,
                 rewind: false,
                 arguments: Vec::new(),
@@ -1959,6 +2093,7 @@ fn the_force_key_over_an_empty_field_forces_what_heads_the_queue(cx: &mut TestAp
             [
                 ready(),
                 Update::Offers(Offers {
+                    listening: false,
                     steer: steers,
                     rewind: false,
                     arguments: Vec::new(),
@@ -2427,15 +2562,20 @@ fn a_zoom_gesture_moves_everything_every_frame_and_no_word_to_another_line(
         );
     }
     // And so does every paragraph in it, however many lines and gaps are above it.
-    let scaled: Vec<&(f32, Bounds<Pixels>, Vec<f32>)> = frames
-        .iter()
-        .filter(|(_, _, tops)| !tops.is_empty())
-        .collect();
-    let zooms: Vec<f32> = scaled.iter().map(|(zoom, _, _)| *zoom).collect();
-    for paragraph in 0..6 {
-        let tops: Vec<f32> = scaled.iter().map(|(_, _, tops)| tops[paragraph]).collect();
-        let off = off_the_line(&zooms, &tops);
-        assert!(off <= 1., "paragraph {paragraph} is {off} px off its place");
+    // At an integer zoom the plan's pixel edges scale exactly. At fractional
+    // zooms the paragraph and the reply top can each round by half a pixel.
+    zoom.set(2.);
+    cx.simulate_resize(size(px(1800.), px(TALL * 2.)));
+    let (_, reference) = measure(cx);
+    assert_eq!(reference.len(), 6);
+    for (zoom, _, tops) in frames {
+        for (paragraph, (top, at_two)) in tops.iter().zip(&reference).enumerate() {
+            let off = (top - at_two * (zoom / 2.)).abs();
+            assert!(
+                off <= 1.,
+                "paragraph {paragraph} is {off} px off at zoom {zoom}"
+            );
+        }
     }
 }
 
@@ -2853,6 +2993,77 @@ fn the_model_picker_opens_on_the_providers_closed_with_the_current_one_marked(
     assert_eq!(picker_lines(&pane, cx).map(|lines| lines.len()), Some(3));
 }
 
+#[gpui::test]
+fn a_click_on_a_list_s_own_control_closes_the_list(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say(kou_models(), cx);
+    pane.click("model-picker", cx);
+    assert!(picker_lines(&pane, cx).is_some());
+    // The press is outside the list, which closes it; the click it ends in
+    // is on the control, and does not open the list again.
+    pane.click("model-picker", cx);
+    assert!(picker_lines(&pane, cx).is_none(), "pressed to close it");
+    // A click of its own, later, opens it.
+    cx.executor()
+        .advance_clock(std::time::Duration::from_secs(1));
+    pane.click("model-picker", cx);
+    assert!(picker_lines(&pane, cx).is_some());
+}
+
+#[gpui::test]
+fn the_open_model_picker_follows_a_list_of_models_that_changes_under_it(cx: &mut TestAppContext) {
+    use crate::models::Line;
+    let (pane, cx) = Pane::open(cx);
+    pane.say(kou_models(), cx);
+    pane.click("model-picker", cx);
+    // Open on the last provider, the third: its model is the fifth.
+    pane.click("model-line-2", cx);
+    assert_eq!(
+        picker_lines(&pane, cx),
+        Some(vec![Line::Back(2), Line::Model(4)])
+    );
+    // The agent says its models again, fewer of them (a new session, or
+    // the list asked for again): the picker was made of places in the old
+    // list, which the new one does not have.
+    pane.say(
+        vec![
+            Update::Ready {
+                session: "s2".into(),
+                capabilities: Capabilities::default(),
+                modes: Vec::new(),
+                mode: None,
+                models: vec![Choice {
+                    id: "claude-opus-5".into(),
+                    name: "Claude Opus 5".into(),
+                    description: None,
+                }],
+                model: Some("claude-opus-5".into()),
+            },
+            Update::Providers(Vec::new()),
+        ],
+        cx,
+    );
+    // Drawn again, of the list as it is now.
+    let lines = picker_lines(&pane, cx).expect("the picker stays open");
+    assert!(
+        lines.contains(&Line::Model(0)) && !lines.contains(&Line::Model(4)),
+        "{lines:?}"
+    );
+    // And none at all.
+    pane.say(
+        vec![Update::Ready {
+            session: "s3".into(),
+            capabilities: Capabilities::default(),
+            modes: Vec::new(),
+            mode: None,
+            models: Vec::new(),
+            model: None,
+        }],
+        cx,
+    );
+    cx.run_until_parked();
+}
+
 #[test]
 fn the_quieter_look_draws_with_the_app_s_theme_accent_and_all() {
     use crate::studio::{chrome_theme, studio_theme};
@@ -2893,18 +3104,19 @@ fn the_model_picker_rises_from_the_model_s_control_in_each_look(cx: &mut TestApp
             list.bottom(),
             control.top()
         );
-        // The cockpit's control is at the left of the foot, and its list
-        // stands over the field at that end; the studio's is at the right,
-        // and its list rises from the control itself and ends where it does.
+        // It rises from the control itself, as the modes' list does from
+        // the mode's, not from the top of the field with what is typed in
+        // between: a few pixels over it, and in line with it. The cockpit's
+        // control is at the left of the foot and its list begins where the
+        // control does; the studio's is at the right, and its list ends
+        // where the control does.
+        assert!(
+            control.top() - list.bottom() < px(12.),
+            "{look:?}: list {list:?}, control {control:?}"
+        );
         match look {
-            Look::Cockpit => assert!(
-                list.left() <= control.left() && control.left() - list.left() < px(64.),
-                "{look:?}: list {list:?}, control {control:?}"
-            ),
-            Look::Studio => {
-                assert!(control.top() - list.bottom() < px(12.), "{look:?}");
-                assert_eq!(list.right(), control.right(), "{look:?}");
-            }
+            Look::Cockpit => assert_eq!(list.left(), control.left(), "{look:?}"),
+            Look::Studio => assert_eq!(list.right(), control.right(), "{look:?}"),
         }
         pane.click("model-picker", cx);
         cx.run_until_parked();
@@ -3444,6 +3656,7 @@ fn a_picture_dropped_on_the_field_alone_is_attached(cx: &mut TestAppContext) {
 
 fn rewinds() -> Update {
     Update::Offers(Offers {
+        listening: false,
         steer: false,
         rewind: true,
         arguments: Vec::new(),
@@ -4162,12 +4375,14 @@ fn work_folded_away_is_neither_read_nor_slow_to_scroll_past(cx: &mut TestAppCont
 }
 
 #[gpui::test]
-fn the_field_stands_under_the_text_from_edge_to_edge(cx: &mut TestAppContext) {
+fn the_field_spans_the_transcript_s_column_with_the_same_room_on_both_sides(
+    cx: &mut TestAppContext,
+) {
     // With the card beside the transcript and without: the field goes with
-    // the text, which the card never moves.
+    // the column, which the card never moves.
     let mut moved_over = false;
     for beside in [false, true] {
-        for width in [1400., 1150., 1000., 900., 620.] {
+        for width in [1400., 1150., 1000., 900., 620., 360.] {
             let (pane, cx) = Pane::open(cx);
             cx.simulate_resize(size(px(width), px(800.)));
             pane.say(
@@ -4176,6 +4391,7 @@ fn the_field_stands_under_the_text_from_edge_to_edge(cx: &mut TestAppContext) {
                     Update::UserChunk(Block::Text("run it".into())),
                     Update::TurnStarted,
                     Update::Tool(tool("t1", ToolStatus::Done)),
+                    Update::Tool(tool("t2", ToolStatus::Done)),
                 ],
                 cx,
             );
@@ -4195,16 +4411,31 @@ fn the_field_stands_under_the_text_from_edge_to_edge(cx: &mut TestAppContext) {
                 });
             }
             cx.run_until_parked();
-            // A tool call's card spans the text's column, a pixel of border
-            // around its head.
+            // The field and card align on both edges. The card has a 1px border.
             let head = cx.debug_bounds("tool-1").expect("the call's card");
+            let next = cx.debug_bounds("tool-2").expect("the next call");
+            assert_eq!(head.size.height, px(crate::entries::HEAD));
+            assert_eq!(
+                next.top() - head.bottom(),
+                px(6.),
+                "two borders and the gap"
+            );
             let field = cx.debug_bounds("frame").expect("the field");
             assert!(
                 (field.left() - (head.left() - px(1.))).abs() <= px(0.5),
-                "{width}, beside {beside}: the field begins at {:?}, the text at {:?}",
+                "{width}, beside {beside}: the field begins at {:?}, the column at {:?}",
                 field.left(),
                 head.left() - px(1.)
             );
+            // In a pane no wider than the column, that is the pane's edges.
+            if !beside && width <= crate::entries::MEASURE {
+                let (left, right) = (field.left(), px(width) - field.right());
+                assert!(
+                    (left - right).abs() <= px(0.5)
+                        && (left - px(crate::entries::EDGE)).abs() <= px(0.5),
+                    "{width}: {left:?} on the left, {right:?} on the right"
+                );
+            }
             assert!(
                 (field.right() - (head.right() + px(1.))).abs() <= px(0.5),
                 "{width}, beside {beside}: the field ends at {:?}, the text at {:?}",
@@ -4591,8 +4822,7 @@ fn the_studio_look_folds_finished_work_into_a_line_that_opens(cx: &mut TestAppCo
         cx,
     );
     assert!(cx.debug_bounds("tool-4").is_some());
-    // The cockpit folds what is over in the same way, into a line on its
-    // rail, and shows the work of the turn that runs.
+    // The cockpit also folds finished work and shows the current turn.
     pane.look(Look::Cockpit, cx);
     assert!(cx.debug_bounds("tool-1").is_none());
     assert!(cx.debug_bounds("worked-1").is_some());
@@ -4654,6 +4884,14 @@ fn the_cockpit_draws_as_before_until_it_is_told_of_agents(cx: &mut TestAppContex
     assert!(
         cx.debug_bounds("ticks").is_some(),
         "told of agents, it has them"
+    );
+    cx.simulate_resize(size(px(420.), px(700.)));
+    cx.run_until_parked();
+    let tick = cx.debug_bounds("tick-0").unwrap();
+    let answer = cx.debug_bounds("reply-2").unwrap();
+    assert!(
+        tick.right() <= answer.left(),
+        "a prompt shortcut covers the text"
     );
 }
 
@@ -4742,4 +4980,1060 @@ fn a_prompt_s_bubble_is_one_flat_fill_even_under_the_top_edge(cx: &mut TestAppCo
         assert!(bubble.top() >= px(0.), "{offset}: {bubble:?}");
         flat_over(cx, at);
     }
+}
+
+/// A call of kou's `UI` tool: what it answers names the version it made.
+fn surface_call(id: &str, surface: &str, version: u32) -> ToolCall {
+    ToolCall {
+        id: id.into(),
+        title: "UI".into(),
+        kind: ToolKind::Execute,
+        status: ToolStatus::Done,
+        content: vec![ToolContent::Text(format!(
+            "UI {surface} v{version} (.harness/ui/s-1/{surface}/v{version}.json)\n\n◇ {surface}"
+        ))],
+        ..ToolCall::default()
+    }
+}
+
+#[gpui::test]
+fn a_surface_s_newest_call_is_a_card_of_the_app_s_that_stays_out_of_the_folded_work(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _};
+    let (pane, cx) = Pane::open(cx);
+    // The app draws the cards of the calls that made a surface, and says
+    // of each whether it is the surface's newest.
+    let asked: Rc<RefCell<Vec<(String, bool)>>> = Rc::default();
+    let seen = asked.clone();
+    pane.view.update(cx, |view, cx| {
+        view.set_tool_view(
+            Some(Rc::new(move |call, aids, _| {
+                seen.borrow_mut().push((call.id.clone(), aids.newest));
+                let id = call.id.clone();
+                Some(crate::ToolFace {
+                    title: "Benchmarks".into(),
+                    tag: "bench".into(),
+                    status: if aids.newest { "live" } else { "snapshot" }.into(),
+                    live: aids.newest,
+                    body: gpui::div()
+                        .debug_selector(move || format!("face-{id}"))
+                        .h(px(120.))
+                        .child((aids.markdown)("**p99** 41.6 ms"))
+                        .child((aids.code)("let x = 1;", Some("rust")))
+                        .into_any_element(),
+                })
+            })),
+            cx,
+        )
+    });
+    pane.say(
+        [
+            ready(),
+            Update::UserChunk(Block::Text("how fast is it".into())),
+            Update::TurnStarted,
+            Update::Tool(surface_call("u1", "bench", 1)),
+            Update::Tool(tool("r1", ToolStatus::Done)),
+            Update::Tool(surface_call("u2", "bench", 2)),
+            Update::AssistantChunk("Here it is.".into()),
+            Update::TurnEnded(Stop::Finished),
+        ],
+        cx,
+    );
+    // The turn is over: its work is folded into one line, the first
+    // version of the surface with it; the newest stays, open.
+    assert!(cx.debug_bounds("worked-1").is_some(), "the work folds");
+    assert!(cx.debug_bounds("face-u1").is_none());
+    let face = cx.debug_bounds("face-u2").expect("the surface shows");
+    assert_eq!(face.size.height, px(120.));
+    assert!(cx.debug_bounds("surface-status-3").is_some());
+    assert!(asked.borrow().contains(&("u2".to_owned(), true)));
+    // A call that made no surface is the view's own to draw.
+    assert!(asked.borrow().iter().all(|(id, _)| id != "r1"));
+    // Its head folds it like any card's.
+    pane.click("tool-3", cx);
+    assert!(cx.debug_bounds("face-u2").is_none());
+    pane.click("tool-3", cx);
+    assert!(cx.debug_bounds("face-u2").is_some());
+    // Opened, the work shows the earlier version as a row that opens to
+    // what it was.
+    pane.click("worked-1", cx);
+    assert!(cx.debug_bounds("tool-1").is_some());
+    assert!(
+        cx.debug_bounds("face-u1").is_none(),
+        "an earlier version is closed"
+    );
+    pane.click("tool-1", cx);
+    assert!(cx.debug_bounds("face-u1").is_some());
+    assert!(asked.borrow().contains(&("u1".to_owned(), false)));
+    pane.click("worked-1", cx);
+    // The surface is made again in a later turn: the call that was its
+    // newest is history now, and folds with the work around it.
+    pane.say(
+        [
+            Update::UserChunk(Block::Text("and now".into())),
+            Update::TurnStarted,
+            Update::Tool(surface_call("u3", "bench", 3)),
+            Update::AssistantChunk("Updated.".into()),
+            Update::TurnEnded(Stop::Finished),
+        ],
+        cx,
+    );
+    assert!(cx.debug_bounds("face-u3").is_some());
+    assert!(cx.debug_bounds("face-u2").is_none(), "no longer the newest");
+    // What the app drew for a call changed (a file it reads): the card is
+    // drawn again.
+    let before = asked.borrow().len();
+    pane.view.update(cx, |view, cx| view.tool_changed("u3", cx));
+    cx.run_until_parked();
+    assert!(asked.borrow().len() > before);
+    // Without the app's face a surface's call is an ordinary card, open
+    // on what the tool answered.
+    pane.view
+        .update(cx, |view, cx| view.set_tool_view(None, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("face-u3").is_none());
+}
+
+#[gpui::test]
+fn the_app_can_draw_the_field_s_frame_from_the_view_s_own_parts(cx: &mut TestAppContext) {
+    use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _};
+    let (pane, cx) = Pane::open(cx);
+    pane.say([ready()], cx);
+    let own = cx.debug_bounds("frame").expect("the view's own frame");
+    let attach = cx.debug_bounds("attach").expect("the paperclip");
+    // The app's frame: the parts it was given, the paperclip last.
+    let seen: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+    let (names, draws) = (seen.clone(), Rc::new(std::cell::Cell::new(true)));
+    let drawing = draws.clone();
+    pane.view.update(cx, |view, cx| {
+        view.set_field_face(
+            Some(Rc::new(move |parts, _, _| {
+                if !drawing.get() {
+                    return None;
+                }
+                *names.borrow_mut() = parts.slots.iter().map(|(name, _)| *name).collect();
+                let mut slots = parts.slots;
+                slots.sort_by_key(|(name, _)| *name == "attach");
+                Some(
+                    gpui::div()
+                        .debug_selector(|| "app-frame".into())
+                        .p(px(24.))
+                        .children(slots.into_iter().map(|(_, part)| part))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("frame").is_none(),
+        "the view's frame is gone"
+    );
+    assert!(cx.debug_bounds("app-frame").is_some());
+    assert_eq!(*seen.borrow(), ["editor", "attach", "controls"]);
+    // The paperclip stands where the app put it: after the buttons that
+    // send, under them, not beside what the view's own frame has it by.
+    let placed = cx.debug_bounds("attach").expect("the paperclip");
+    let send = cx.debug_bounds("send").expect("the button that sends");
+    assert_ne!(placed.origin, attach.origin);
+    assert!(placed.origin.y >= send.origin.y + send.size.height);
+    // The parts work as they did: what is typed is sent by the view's button.
+    cx.simulate_input("hello");
+    pane.click("send", cx);
+    assert_eq!(pane.heard(), [Command::Prompt(text("hello"))]);
+    // An app that cannot draw it leaves the field as the view draws it.
+    draws.set(false);
+    pane.view.update(cx, |_, cx| cx.notify());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("app-frame").is_none());
+    assert_eq!(
+        cx.debug_bounds("frame").map(|frame| frame.size.width),
+        Some(own.size.width)
+    );
+}
+
+#[gpui::test]
+fn the_app_can_draw_the_prompt_area_s_parts_from_what_the_view_tells_it(cx: &mut TestAppContext) {
+    use gpui::{InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _};
+    let (pane, cx) = Pane::open(cx);
+    pane.say(
+        [
+            Update::Ready {
+                session: "s1".into(),
+                capabilities: Capabilities::default(),
+                modes: vec![choice("low", "Effort: low"), choice("high", "Effort: high")],
+                mode: Some("high".into()),
+                models: vec![choice("opus", "Opus")],
+                model: Some("opus".into()),
+            },
+            Update::TurnStarted,
+            Update::Usage(Usage {
+                cost_usd: Some(1.37),
+                ..Usage::default()
+            }),
+        ],
+        cx,
+    );
+    cx.simulate_input("then run the tests");
+    cx.simulate_keystrokes("enter");
+    assert!(cx.debug_bounds("usage").is_some() && cx.debug_bounds("queue-count").is_some());
+    // The app draws each part it is handed, from the data it is given, and
+    // asks the view for what its drawing does.
+    type Seen = Rc<RefCell<Vec<(&'static str, serde_json::Value, Vec<&'static str>)>>>;
+    let seen: Seen = Rc::default();
+    let acts: Rc<RefCell<Vec<crate::ChatAct>>> = Rc::default();
+    let (noted, kept) = (seen.clone(), acts.clone());
+    let draws = Rc::new(std::cell::Cell::new(true));
+    let drawing = draws.clone();
+    pane.view.update(cx, |view, cx| {
+        view.set_chat_face(
+            Some(Rc::new(move |part: crate::ChatPart, _| {
+                if !drawing.get() {
+                    return None;
+                }
+                let names = part.slots.iter().map(|(name, _)| *name).collect();
+                noted.borrow_mut().push((part.view, (part.data)(), names));
+                kept.borrow_mut().push(part.act);
+                Some(
+                    gpui::div()
+                        .debug_selector(move || format!("app-{}", part.view))
+                        .h(px(10.))
+                        .children(part.slots.into_iter().map(|(_, piece)| piece))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    for drawn in [
+        "app-composer-activity",
+        "app-composer-queue",
+        "app-composer-usage",
+    ] {
+        assert!(cx.debug_bounds(drawn).is_some(), "{drawn}");
+    }
+    assert!(cx.debug_bounds("usage").is_none() && cx.debug_bounds("queue-count").is_none());
+    let seen_now = seen.borrow().clone();
+    let data = |view: &str| {
+        seen_now
+            .iter()
+            .rev()
+            .find(|(drawn, _, _)| *drawn == view)
+            .map(|(_, data, names)| (data.clone(), names.clone()))
+            .unwrap()
+    };
+    // The line over the field: the meter stays the view's, and moves.
+    let (activity, names) = data("composer-activity");
+    assert_eq!(names, ["meter"]);
+    assert_eq!(activity["doing"], "Working");
+    assert_eq!(activity["hint"], true);
+    assert_eq!(activity["queued"], true);
+    // The queue's tray: its rows stay the view's (they take the keys).
+    let (queue, names) = data("composer-queue");
+    assert_eq!(names, ["rows"]);
+    assert_eq!(queue["count"], 1);
+    assert_eq!(queue["queued"], 1);
+    assert_eq!(queue["waiting"], false);
+    assert!(
+        cx.debug_bounds("queued-1").is_some(),
+        "the row is in the tray"
+    );
+    // The figures under the field.
+    let (usage, names) = data("composer-usage");
+    assert!(names.is_empty());
+    assert_eq!(usage["figures"][0]["key"], "COST");
+    // What the drawing asks of the view is done: the queue pauses.
+    let pause = acts.borrow().last().unwrap().clone();
+    cx.update(|window, cx| pause(vec![("pause".into(), serde_json::Value::Null)], window, cx));
+    cx.run_until_parked();
+    let (queue, _) = {
+        let seen = seen.borrow();
+        let (_, data, names) = seen
+            .iter()
+            .rev()
+            .find(|(drawn, _, _)| *drawn == "composer-queue")
+            .unwrap();
+        (data.clone(), names.clone())
+    };
+    assert_eq!(queue["paused"], true);
+    assert_eq!(queue["waiting"], true);
+    // An app that cannot draw them leaves them to the view.
+    draws.set(false);
+    pane.view.update(cx, |_, cx| cx.notify());
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("usage").is_some() && cx.debug_bounds("queue-count").is_some());
+    assert!(cx.debug_bounds("app-composer-usage").is_none());
+}
+
+#[gpui::test]
+fn the_field_tells_an_app_that_draws_its_frame_how_its_controls_stand(cx: &mut TestAppContext) {
+    use gpui::{IntoElement as _, ParentElement as _};
+    let (pane, cx) = Pane::open(cx);
+    // How the controls stood each time the frame was drawn, and the parts.
+    type Told = Rc<RefCell<Vec<(serde_json::Value, Vec<&'static str>)>>>;
+    let told: Told = Rc::default();
+    let noted = told.clone();
+    pane.view.update(cx, |view, cx| {
+        view.set_field_face(
+            Some(Rc::new(move |parts, _, _| {
+                let names = parts.slots.iter().map(|(name, _)| *name).collect();
+                noted.borrow_mut().push((parts.controls, names));
+                Some(
+                    gpui::div()
+                        .children(parts.slots.into_iter().map(|(_, part)| part))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    let last = |cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        told.borrow().last().cloned().unwrap()
+    };
+    pane.say(
+        [Update::Ready {
+            session: "s1".into(),
+            capabilities: Capabilities::default(),
+            modes: vec![choice("low", "Effort: low"), choice("high", "Effort: high")],
+            mode: Some("low".into()),
+            models: vec![choice("opus", "Opus")],
+            model: Some("opus".into()),
+        }],
+        cx,
+    );
+    let (controls, _) = last(cx);
+    assert_eq!(controls["buttons"], "send");
+    assert_eq!(controls["ready"], false);
+    assert_eq!(controls["attach"], true);
+    assert_eq!(controls["model"]["name"], "Opus");
+    assert_eq!(controls["mode"]["name"], "low");
+    assert_eq!(
+        controls["mode"]["effort"],
+        serde_json::json!({ "level": 1, "bars": 2 })
+    );
+    cx.simulate_input("hello");
+    assert_eq!(last(cx).0["ready"], true);
+    // At work: force and queue once something is typed, stop otherwise.
+    pane.say([Update::TurnStarted], cx);
+    assert_eq!(last(cx).0["buttons"], "force");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(last(cx).0["buttons"], "stop");
+    // The modes' list, while it is open, is a part of its own as well, for
+    // a mode's control the app draws itself.
+    pane.click("mode-picker", cx);
+    let (controls, names) = last(cx);
+    assert_eq!(controls["mode"]["open"], true);
+    assert!(names.contains(&"modeMenu"), "{names:?}");
+}
+
+#[gpui::test]
+fn the_app_draws_the_entries_beside_their_nodes_from_data_that_does_not_stream(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{IntoElement as _, ParentElement as _, Styled as _};
+    let (pane, cx) = Pane::open(cx);
+    type Seen = Rc<RefCell<Vec<(&'static str, String, serde_json::Value, Vec<&'static str>)>>>;
+    let seen: Seen = Rc::default();
+    let acts: Rc<RefCell<Option<crate::ChatAct>>> = Rc::default();
+    let (noted, kept) = (seen.clone(), acts.clone());
+    pane.view.update(cx, |view, cx| {
+        view.set_chat_face(
+            Some(Rc::new(move |part: crate::ChatPart, _| {
+                if !part.view.starts_with("chat-") {
+                    return None;
+                }
+                let names = part.slots.iter().map(|(name, _)| *name).collect();
+                noted
+                    .borrow_mut()
+                    .push((part.view, part.key.to_string(), (part.data)(), names));
+                if part.view == "chat-tool" {
+                    *kept.borrow_mut() = Some(part.act);
+                }
+                Some(
+                    gpui::div()
+                        .h(px(30.))
+                        .children(part.slots.into_iter().map(|(_, piece)| piece))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    let mut call = tool("t9", ToolStatus::Running);
+    call.content = vec![ToolContent::Terminal {
+        id: "term".into(),
+        output: "building\n".into(),
+        exit: None,
+    }];
+    pane.say(
+        [
+            ready(),
+            Update::UserChunk(Block::Text("build it".into())),
+            Update::TurnStarted,
+            Update::Tool(call),
+        ],
+        cx,
+    );
+    let last = |view: &str| {
+        seen.borrow()
+            .iter()
+            .rev()
+            .find(|(drawn, ..)| *drawn == view)
+            .cloned()
+            .unwrap()
+    };
+    // A tool call is known by its own id; what moves in it (its mark, as
+    // it runs) and what it printed stay the view's.
+    let (_, key, data, slots) = last("chat-tool");
+    assert!(key.ends_with(":t9"), "{key}");
+    assert_eq!(data["glyph"], serde_json::Value::Null);
+    assert_eq!(data["verb"], "Run");
+    assert_eq!(data["border"], "working");
+    assert!(
+        slots.contains(&"glyph") && slots.contains(&"live"),
+        "{slots:?}"
+    );
+    // The prompt's head and card are the app's too, by the prompt's place.
+    let (_, key, data, _) = last("chat-user-head");
+    assert!(key.ends_with(":0"), "{key}");
+    assert_eq!(data["copied"], false);
+    // What the card asks is done: it opens.
+    let toggle = acts.borrow().clone().unwrap();
+    cx.update(|window, cx| {
+        toggle(
+            vec![(
+                "toggle".into(),
+                serde_json::json!({ "index": 1, "open": true, "keyboard": true }),
+            )],
+            window,
+            cx,
+        )
+    });
+    cx.run_until_parked();
+    let (_, _, data, slots) = last("chat-tool");
+    assert_eq!(data["open"], true);
+    assert!(slots.contains(&"body"), "{slots:?}");
+    // The output it streams changes none of what the app is given.
+    let before = seen.borrow().len();
+    let drawn_data = last("chat-tool").2;
+    pane.say(
+        [Update::ToolPatch(ToolPatch {
+            id: "t9".into(),
+            content: Some(vec![ToolContent::Terminal {
+                id: "term".into(),
+                output: "building\nlinking\n".into(),
+                exit: None,
+            }]),
+            ..ToolPatch::default()
+        })],
+        cx,
+    );
+    assert!(seen.borrow().len() > before, "drawn again");
+    assert_eq!(last("chat-tool").2, drawn_data);
+}
+
+// ------------------------------------------------------------ questions
+
+/// A question of an agent's: options as labels with what each means.
+fn question(
+    header: Option<&str>,
+    text: &str,
+    options: &[(&str, Option<&str>)],
+    multiple: bool,
+    free: bool,
+) -> kou_thread::Question {
+    kou_thread::Question {
+        header: header.map(str::to_owned),
+        text: text.into(),
+        options: options
+            .iter()
+            .map(|(label, description)| kou_thread::QuestionOption {
+                label: (*label).into(),
+                description: description.map(str::to_owned),
+            })
+            .collect(),
+        multiple,
+        free,
+    }
+}
+
+/// Call `tool_id` asks these questions, with these ways to refuse.
+fn asks(
+    id: u64,
+    tool_id: &str,
+    questions: Vec<kou_thread::Question>,
+    refusals: &[(&str, &str)],
+) -> Update {
+    let mut call = tool(tool_id, ToolStatus::Pending);
+    call.title = "AskUserQuestion".into();
+    call.kind = ToolKind::Other;
+    call.content.clear();
+    Update::Permission(PermissionRequest {
+        id,
+        tool: call,
+        options: refusals
+            .iter()
+            .map(|(id, label)| PermissionOption {
+                id: (*id).into(),
+                label: (*label).into(),
+                kind: PermissionKind::RejectOnce,
+            })
+            .collect(),
+        questions,
+    })
+}
+
+fn answered(request: u64, lists: &[&[&str]]) -> Command {
+    Command::Answer {
+        request,
+        answers: lists
+            .iter()
+            .map(|list| list.iter().map(|label| (*label).to_owned()).collect())
+            .collect(),
+    }
+}
+
+/// What the empty field says when it is narrow.
+fn placeholder(pane: &Pane, cx: &mut VisualTestContext) -> String {
+    pane.view.read_with(cx, |view, cx| {
+        view.dock
+            .read(cx)
+            .composer
+            .read(cx)
+            .placeholders()
+            .1
+            .to_string()
+    })
+}
+
+fn store() -> kou_thread::Question {
+    question(
+        Some("Store"),
+        "Which store should it use?",
+        &[
+            ("SQLite", Some("A file beside the binary")),
+            ("Postgres", Some("Needs a server")),
+        ],
+        false,
+        false,
+    )
+}
+
+#[gpui::test]
+fn a_click_on_an_option_answers_the_question_and_the_card_closes(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say(
+        [
+            ready(),
+            Update::TurnStarted,
+            asks(7, "q1", vec![store()], &[("skip", "Skip")]),
+        ],
+        cx,
+    );
+    assert_eq!(pane.state(cx), ThreadState::Blocked);
+    let first = cx.debug_bounds("ask-option-0").expect("an option");
+    let second = cx.debug_bounds("ask-option-1").expect("another");
+    assert!(first.top() < second.top(), "one under the other");
+    assert!(cx.debug_bounds("answer-skip").is_some(), "the refusal");
+    assert!(
+        cx.debug_bounds("ask-confirm").is_none(),
+        "one option answers it"
+    );
+    // What the call was given says the same: it stays folded.
+    assert!(cx.debug_bounds("ask-back").is_none());
+    pane.click("ask-option-1", cx);
+    assert_eq!(pane.heard(), [answered(7, &[&["Postgres"]])]);
+    assert_eq!(pane.state(cx), ThreadState::Working);
+    assert!(cx.debug_bounds("ask-option-0").is_none(), "the card closed");
+    // The keys are in the field again.
+    cx.simulate_input("ok");
+    assert_eq!(pane.draft(cx), "ok");
+    assert!(pane.view.read_with(cx, |view, _| view.answering.is_empty()));
+}
+
+#[gpui::test]
+fn a_refusal_answers_the_request_as_a_permission_s_button_does(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say(
+        [
+            ready(),
+            Update::TurnStarted,
+            asks(
+                7,
+                "q1",
+                vec![store()],
+                &[("skip", "Skip"), ("no", "Decline")],
+            ),
+        ],
+        cx,
+    );
+    let skip = cx.debug_bounds("answer-skip").expect("skip");
+    let decline = cx.debug_bounds("answer-no").expect("decline");
+    assert!(skip.left() < decline.left());
+    pane.click("answer-no", cx);
+    assert_eq!(
+        pane.heard(),
+        [Command::Permit {
+            request: 7,
+            option: "no".into()
+        }]
+    );
+    assert_eq!(pane.state(cx), ThreadState::Working);
+    assert!(cx.debug_bounds("ask-option-0").is_none());
+}
+
+#[gpui::test]
+fn options_of_a_question_that_takes_several_are_toggled_and_confirmed(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    let several = question(
+        Some("Checks"),
+        "Which checks should run?",
+        &[("Lint", None), ("Tests", None), ("Bench", None)],
+        true,
+        false,
+    );
+    pane.say(
+        [
+            ready(),
+            Update::TurnStarted,
+            asks(3, "q1", vec![several], &[]),
+        ],
+        cx,
+    );
+    // Nothing chosen: Confirm is there and does nothing.
+    pane.click("ask-confirm", cx);
+    assert_eq!(pane.heard(), []);
+    for option in [
+        "ask-option-2",
+        "ask-option-0",
+        "ask-option-2",
+        "ask-option-1",
+    ] {
+        pane.click(option, cx);
+    }
+    assert_eq!(pane.heard(), [], "choosing sends nothing");
+    assert!(pane.view.read_with(cx, |view, _| {
+        let answering = &view.answering[&3];
+        answering.is_chosen(0) && answering.is_chosen(1) && !answering.is_chosen(2)
+    }));
+    assert_eq!(pane.state(cx), ThreadState::Blocked);
+    pane.click("ask-confirm", cx);
+    // In the options' order, whatever the order they were chosen in.
+    assert_eq!(pane.heard(), [answered(3, &[&["Lint", "Tests"]])]);
+    assert_eq!(pane.state(cx), ThreadState::Working);
+}
+
+#[gpui::test]
+fn words_sent_from_the_field_answer_the_question_at_hand(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say([ready(), Update::TurnStarted], cx);
+    let at_work = placeholder(&pane, cx);
+    let mut free = store();
+    free.free = true;
+    pane.say([asks(1, "q1", vec![free], &[])], cx);
+    // The field says what it is for now.
+    assert_eq!(placeholder(&pane, cx), "Type your answer");
+    cx.simulate_input("neither: Redis");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), [answered(1, &[&["neither: Redis"]])]);
+    assert_eq!(pane.draft(cx), "");
+    assert!(pane.queued(cx).is_empty(), "no prompt waits");
+    assert!(
+        !pane
+            .entries(cx)
+            .iter()
+            .any(|entry| matches!(entry, Entry::User(_))),
+        "an answer is no message"
+    );
+    assert_eq!(placeholder(&pane, cx), at_work);
+
+    // Of one that takes several, the words go with what is chosen; the
+    // send button sends them as Enter does, and Confirm is live once
+    // something is typed.
+    let several = question(
+        None,
+        "Which logs?",
+        &[("App", None), ("Proxy", None)],
+        true,
+        true,
+    );
+    pane.say([asks(2, "q2", vec![several.clone()], &[])], cx);
+    pane.click("ask-option-1", cx);
+    cx.simulate_input("and the kernel's");
+    pane.click("send", cx);
+    assert_eq!(
+        pane.heard(),
+        [answered(2, &[&["Proxy", "and the kernel's"]])]
+    );
+    pane.say([asks(3, "q3", vec![several], &[])], cx);
+    cx.simulate_input("only mine");
+    pane.click("ask-confirm", cx);
+    assert_eq!(pane.heard(), [answered(3, &[&["only mine"]])]);
+    assert_eq!(pane.draft(cx), "", "the words went with Confirm");
+
+    // One with no options is answered in words alone; the view's own
+    // commands still work meanwhile.
+    let words = question(None, "What should the branch be called?", &[], false, true);
+    pane.say([asks(4, "q4", vec![words], &[])], cx);
+    assert!(cx.debug_bounds("ask-option-0").is_none());
+    cx.simulate_input("/help");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), []);
+    assert!(cx.debug_bounds("help").is_some(), "the help card opened");
+    cx.simulate_keystrokes("escape");
+    cx.simulate_input("retry-queue");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), [answered(4, &[&["retry-queue"]])]);
+}
+
+#[gpui::test]
+fn several_questions_are_asked_one_after_another_and_back_goes_to_the_one_before(
+    cx: &mut TestAppContext,
+) {
+    let (pane, cx) = Pane::open(cx);
+    let questions = vec![
+        store(),
+        question(
+            Some("Checks"),
+            "Which checks?",
+            &[("Lint", None), ("Tests", None)],
+            true,
+            false,
+        ),
+        question(Some("Name"), "What is it called?", &[], false, true),
+    ];
+    pane.say(
+        [ready(), Update::TurnStarted, asks(5, "q1", questions, &[])],
+        cx,
+    );
+    assert!(
+        cx.debug_bounds("ask-back").is_none(),
+        "nothing before the first"
+    );
+    pane.click("ask-option-0", cx);
+    assert_eq!(pane.heard(), [], "answered together, at the end");
+    // The second: Back is there.
+    pane.click("ask-option-1", cx);
+    pane.click("ask-confirm", cx);
+    // The third takes words; back to the second, with its answer chosen.
+    pane.click("ask-back", cx);
+    assert!(pane.view.read_with(cx, |view, _| {
+        let answering = &view.answering[&5];
+        answering.at() == 1 && answering.is_chosen(1) && !answering.is_chosen(0)
+    }));
+    pane.click("ask-option-0", cx);
+    pane.click("ask-confirm", cx);
+    cx.simulate_input("relay");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        pane.heard(),
+        [answered(5, &[&["SQLite"], &["Lint", "Tests"], &["relay"]])]
+    );
+    assert_eq!(pane.state(cx), ThreadState::Working);
+}
+
+#[gpui::test]
+fn digits_over_the_empty_field_choose_and_enter_confirms(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say(
+        [
+            ready(),
+            Update::TurnStarted,
+            asks(1, "q1", vec![store()], &[]),
+        ],
+        cx,
+    );
+    cx.simulate_keystrokes("2");
+    assert_eq!(pane.heard(), [answered(1, &[&["Postgres"]])]);
+    assert_eq!(pane.draft(cx), "", "the digit was not typed");
+
+    let several = question(
+        None,
+        "Which?",
+        &[("a", None), ("b", None), ("c", None)],
+        true,
+        true,
+    );
+    pane.say([asks(2, "q2", vec![several], &[])], cx);
+    cx.simulate_keystrokes("1 3 3 3 enter");
+    assert_eq!(pane.heard(), [answered(2, &[&["a", "c"]])]);
+
+    // Over a field that holds something, or past the options, a digit is
+    // a digit.
+    pane.say([asks(3, "q3", vec![store()], &[])], cx);
+    cx.simulate_keystrokes("9");
+    cx.simulate_input("x");
+    cx.simulate_keystrokes("1");
+    assert_eq!(pane.draft(cx), "9x1");
+    assert_eq!(pane.heard(), []);
+    assert_eq!(pane.state(cx), ThreadState::Blocked);
+}
+
+#[gpui::test]
+fn a_request_taken_back_half_answered_closes_its_card_and_leaves_the_field_as_it_was(
+    cx: &mut TestAppContext,
+) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say([ready(), Update::TurnStarted], cx);
+    let at_work = placeholder(&pane, cx);
+    let mut free = store();
+    free.free = true;
+    pane.say([asks(7, "q1", vec![store(), free], &[])], cx);
+    pane.click("ask-option-0", cx);
+    assert_eq!(placeholder(&pane, cx), "Type your answer");
+    cx.simulate_input("half");
+    pane.say([Update::Withdrawn(7)], cx);
+    assert_eq!(pane.state(cx), ThreadState::Working);
+    assert!(cx.debug_bounds("ask-option-0").is_none(), "the card closed");
+    assert!(pane.view.read_with(cx, |view, _| view.answering.is_empty()));
+    assert_eq!(placeholder(&pane, cx), at_work);
+    // What was typed is a prompt again: it waits for the turn to end.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), []);
+    assert_eq!(pane.queued(cx), [("half".to_owned(), false)]);
+    // A digit is typed as ever.
+    cx.simulate_keystrokes("1");
+    assert_eq!(pane.draft(cx), "1");
+}
+
+#[gpui::test]
+fn the_app_draws_a_question_from_what_the_view_tells_it_and_its_acts_answer(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{IntoElement as _, ParentElement as _, Styled as _};
+    let (pane, cx) = Pane::open(cx);
+    type Seen = Rc<RefCell<Vec<serde_json::Value>>>;
+    let seen: Seen = Rc::default();
+    let acts: Rc<RefCell<Option<crate::ChatAct>>> = Rc::default();
+    let (noted, kept) = (seen.clone(), acts.clone());
+    pane.view.update(cx, |view, cx| {
+        view.set_chat_face(
+            Some(Rc::new(move |part: crate::ChatPart, _| {
+                if part.view != "chat-tool" {
+                    return None;
+                }
+                noted.borrow_mut().push((part.data)());
+                *kept.borrow_mut() = Some(part.act);
+                Some(
+                    gpui::div()
+                        .h(px(30.))
+                        .children(part.slots.into_iter().map(|(_, piece)| piece))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    let several = question(
+        Some("Checks"),
+        "Which checks?",
+        &[("Lint", Some("Fast")), ("Tests", None)],
+        true,
+        true,
+    );
+    pane.say(
+        [
+            ready(),
+            Update::TurnStarted,
+            asks(4, "q1", vec![store(), several], &[("skip", "Skip")]),
+        ],
+        cx,
+    );
+    let last = || seen.borrow().last().cloned().unwrap();
+    let asked = last()["asks"].clone();
+    assert_eq!(asked["request"], 4);
+    assert_eq!(
+        (asked["at"].clone(), asked["count"].clone()),
+        (0.into(), 2.into())
+    );
+    assert_eq!(asked["header"], "Store");
+    assert_eq!(asked["options"][1]["description"], "Needs a server");
+    assert_eq!(asked["options"][0]["key"], "1", "its digit");
+    assert_eq!(asked["words"], serde_json::Value::Null);
+    assert_eq!(asked["confirm"], serde_json::Value::Null);
+    assert_eq!(asked["refusals"][0]["label"], "Skip");
+    let act = |name: &str, given: serde_json::Value, cx: &mut VisualTestContext| {
+        let act = acts.borrow().clone().unwrap();
+        cx.update(|window, cx| act(vec![(name.into(), given)], window, cx));
+        cx.run_until_parked();
+    };
+    act(
+        "choose",
+        serde_json::json!({ "request": 4, "option": 0 }),
+        cx,
+    );
+    let asked = last()["asks"].clone();
+    assert_eq!(asked["at"], 1);
+    assert_eq!(
+        asked["answered"][0],
+        serde_json::json!({ "name": "Store", "answer": "SQLite" })
+    );
+    assert_eq!(asked["back"], true);
+    assert_eq!(asked["confirm"], false);
+    assert!(asked["words"].is_string());
+    act(
+        "choose",
+        serde_json::json!({ "request": 4, "option": 1 }),
+        cx,
+    );
+    let asked = last()["asks"].clone();
+    assert_eq!(asked["options"][1]["chosen"], true);
+    assert_eq!(asked["confirm"], true);
+    act("confirm", serde_json::json!({ "request": 4 }), cx);
+    assert_eq!(pane.heard(), [answered(4, &[&["SQLite"], &["Tests"]])]);
+    assert_eq!(last()["asks"], serde_json::Value::Null);
+}
+
+#[gpui::test]
+fn access_is_selected_independently_and_full_access_requires_confirmation(cx: &mut TestAppContext) {
+    let (pane, cx) = Pane::open(cx);
+    pane.say(
+        [
+            ready(),
+            Update::Access(kou_thread::Access {
+                choices: vec![choice("auto", "Auto"), choice("full-access", "Full Access")],
+                current: Some("auto".into()),
+                confirm: vec!["full-access".into()],
+            }),
+        ],
+        cx,
+    );
+    pane.click("access-picker", cx);
+    pane.click("choice-1", cx);
+    assert!(pane.heard().is_empty());
+    cx.simulate_prompt_answer("Cancel");
+    cx.run_until_parked();
+    assert!(pane.heard().is_empty());
+    cx.simulate_input("/permissions full-access");
+    cx.simulate_keystrokes("enter");
+    cx.simulate_prompt_answer("Enable");
+    cx.run_until_parked();
+    assert_eq!(pane.heard(), [Command::SetAccess("full-access".into())]);
+    assert_eq!(
+        pane.view
+            .read_with(cx, |v, _| v.thread().access.current.clone()),
+        Some("auto".into())
+    );
+    pane.say([Update::Mode("plan".into())], cx);
+    assert_eq!(
+        pane.view
+            .read_with(cx, |v, _| v.thread().access.current.clone()),
+        Some("auto".into())
+    );
+}
+
+#[gpui::test]
+fn the_level_of_effort_is_a_control_of_its_own_that_sends_the_level_chosen(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{IntoElement as _, ParentElement as _};
+    let (pane, cx) = Pane::open(cx);
+    let level = |id: &str, name: &str| Choice {
+        id: id.into(),
+        name: name.into(),
+        description: None,
+    };
+    pane.say(
+        [
+            Update::Ready {
+                session: "s1".into(),
+                capabilities: Capabilities::default(),
+                modes: vec![choice("default", "Ask"), choice("plan", "Plan")],
+                mode: Some("default".into()),
+                models: vec![choice("opus", "Opus")],
+                model: Some("opus".into()),
+            },
+            Update::Efforts {
+                levels: vec![
+                    level("low", "Low"),
+                    level("medium", "Medium"),
+                    level("high", "High"),
+                ],
+                current: Some("high".into()),
+            },
+        ],
+        cx,
+    );
+    let model = cx.debug_bounds("model-picker").expect("the model's");
+    let effort = cx.debug_bounds("effort-picker").expect("the effort's");
+    let mode = cx.debug_bounds("mode-picker").expect("the mode's");
+    assert!(model.left() < effort.left() && effort.left() < mode.left());
+    pane.click("effort-picker", cx);
+    pane.click("choice-0", cx);
+    assert_eq!(pane.heard(), [Command::SetEffort("low".into())]);
+    assert_eq!(
+        pane.view
+            .read_with(cx, |view, _| view.thread().effort.clone()),
+        Some("low".into()),
+        "shown at once"
+    );
+    assert!(cx.debug_bounds("choice-0").is_none(), "the list closed");
+    // By its command too, and the mode's is the mode's.
+    cx.simulate_input("/effort medium");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), [Command::SetEffort("medium".into())]);
+    cx.simulate_input("/mode plan");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(pane.heard(), [Command::SetMode("plan".into())]);
+
+    // An app that draws the field is told how the control stands.
+    type Told = Rc<RefCell<Vec<(serde_json::Value, Vec<&'static str>)>>>;
+    let told: Told = Rc::default();
+    let noted = told.clone();
+    pane.view.update(cx, |view, cx| {
+        view.set_field_face(
+            Some(Rc::new(move |parts, _, _| {
+                let names = parts.slots.iter().map(|(name, _)| *name).collect();
+                noted.borrow_mut().push((parts.controls, names));
+                Some(
+                    gpui::div()
+                        .children(parts.slots.into_iter().map(|(_, part)| part))
+                        .into_any_element(),
+                )
+            })),
+            cx,
+        )
+    });
+    pane.say(
+        [Update::Efforts {
+            levels: vec![level("low", "Low"), level("high", "High")],
+            current: Some("high".into()),
+        }],
+        cx,
+    );
+    let (controls, names) = told.borrow().last().cloned().unwrap();
+    assert_eq!(
+        controls["effort"],
+        serde_json::json!({
+            "name": "High",
+            "open": false,
+            "effort": { "level": 2, "bars": 2 },
+        })
+    );
+    assert_eq!(controls["mode"]["name"], "Plan");
+    assert!(names.contains(&"effort"), "{names:?}");
+    pane.click("effort-picker", cx);
+    let (controls, names) = told.borrow().last().cloned().unwrap();
+    assert_eq!(controls["effort"]["open"], true);
+    assert!(names.contains(&"effortMenu"), "{names:?}");
+    cx.simulate_keystrokes("escape");
+    // A model with no such choice: no control.
+    pane.say(
+        [Update::Efforts {
+            levels: Vec::new(),
+            current: None,
+        }],
+        cx,
+    );
+    assert_eq!(
+        told.borrow().last().unwrap().0["effort"],
+        serde_json::Value::Null
+    );
+    assert!(cx.debug_bounds("effort-picker").is_none());
 }

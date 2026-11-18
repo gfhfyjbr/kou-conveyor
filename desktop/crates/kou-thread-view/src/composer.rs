@@ -297,6 +297,9 @@ pub(crate) struct Composer {
     inline: bool,
     /// How the view it is the field of looks. See [`crate::nested::Around`].
     around: Rc<crate::nested::Around>,
+    /// What draws the list over the field, when the app does (see
+    /// [`crate::face`]): the chat's, set by the view.
+    pub(crate) chat_face: Option<crate::face::ChatFace>,
     /// The caret's blink.
     blink: kou_ui::Blink,
     /// Any key pressed while the field has the keys lights the caret at once,
@@ -593,6 +596,7 @@ impl Composer {
             bounds: Rc::new(Cell::new(Bounds::default())),
             scale: Rc::new(Cell::new(1.)),
             around: Rc::default(),
+            chat_face: None,
             trace: None,
             inline: false,
             blink: kou_ui::Blink::new(cx.background_executor().now()),
@@ -664,6 +668,12 @@ impl Composer {
             self.short_placeholder = short;
             cx.notify();
         }
+    }
+
+    /// What the empty field says, at length and short, for tests.
+    #[cfg(test)]
+    pub(crate) fn placeholders(&self) -> (SharedString, SharedString) {
+        (self.placeholder.clone(), self.short_placeholder.clone())
     }
 
     /// The placeholder for the field's width as last drawn.
@@ -982,8 +992,8 @@ impl Composer {
         self.menu.as_ref().map_or(&[], |menu| &menu.items)
     }
 
-    /// Whether a list is open over the field.
-    #[cfg(test)]
+    /// Whether a list is open over the field: commands, files, earlier
+    /// prompts.
     pub(crate) fn menu_open(&self) -> bool {
         self.menu
             .as_ref()

@@ -3,14 +3,20 @@
 A native window for running several coding agents at once, drawn by GPUI. The
 agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around it.
 
+- **Themes.** Settings → Appearance offers Charcoal, AMOLED Black and White.
+  Create a theme, edit its colours with a preview, then save it to your library.
+  Copy a theme link to share it; import a link to preview and apply someone
+  else's palette. Existing installations keep their system appearance until
+  a theme is selected. [Architecture and theme format](docs/themes.md).
+
 - **Spaces and sessions.** A space is a project folder. A session is a piece of
   work there, with the agents working on it.
 - **Panes.** Each agent has a pane. An agent opens as a chat in the app's own
   conversation view wherever it can be driven that way: kou's own agent
   through its runner, the others through the Agent Client Protocol (OpenCode,
   Gemini and more speak it themselves; Claude Code and Codex through an
-  adapter, which the app offers to install into a folder of its own). The
-  harness's own terminal interface is one click away in the pane's header
+  adapter by default). Settings → General also offers a direct connection
+  to either CLI. The harness's own terminal interface is one click away in the pane's header
   (Cmd+Shift+I), with the conversation carried over where the harness keeps
   one session for both; a chat nobody has said anything in yet has no
   conversation to carry, and its terminal starts anew. A plain shell is a
@@ -61,11 +67,26 @@ agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around 
   board, rename, duplicate, undo.
 - **Orchestration.** An agent in a pane starts, prompts, reads and waits for
   agents in other panes. How it is given the means is a setting: a skill and
-  the app's command line (the default: nothing sits in its context until it
-  is needed), the app's tools through an MCP server (`kou-desktop mcp`), or
+  the app's command line (the default: the guide is read when a task calls
+  for it), the app's tools through an MCP server (`kou-desktop mcp`), or
   nothing. Either is attached to that one launch; a harness's own
   configuration is never written to, and a harness started outside the app
-  sees none of it.
+  sees none of it. Whichever it is, an agent is told from the start, in a few
+  lines, where it runs: that it is a pane of this app, that a tab is also a
+  canvas whose nodes are the tab's panes, and how to look (`"$KOU_BIN"
+  where`, or the `where_am_i` tool). A skill alone would not say so: a
+  harness lists a skill by its description and reads it only when a task
+  seems to fit, so an agent asked about "the canvas" had nothing to go on.
+  This holds for an agent in any tab, shown as panes or as a canvas, and
+  reaches a harness the way that harness takes it: with the guidance it is
+  given at launch (Codex, OpenCode, Copilot, and the terminal interfaces of
+  Cursor, Pi, Aider and Grok Build), as a few lines beside its skill (Claude
+  Code, Grok Build's chat), and for any other chat as added instructions
+  when its session opens or, where the agent takes none, as a marked note
+  with its first prompt, which the chat does not show as yours. Not reached
+  yet: kou's own agent, whose runner has no way to be given instructions for
+  one run, and the terminal interfaces of Gemini CLI, Qwen Code, Amp, Droid,
+  Goose and Kiro, which take none at launch either.
 - **An agent's own agents.** An agent that a harness starts by itself (Claude
   Code's Agent tool) is shown in its chat as an agent, not as a tool call: a
   card with what it was started for, its kind, how many calls it has made, how
@@ -90,21 +111,129 @@ agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around 
   on by itself after something it left running ends, with no prompt of yours,
   that is a turn like any other: the chat shows it at work, and it can be
   stopped.
+- **Claude Code, directly.** Settings has "Claude Code's chat": through its
+  adapter (as it is by default), or directly. Directly, the app runs `claude`
+  itself and speaks its stream of JSON lines, as the Agent SDK does
+  (`kou-claude`): no adapter is needed or started. What the adapter had to be
+  asked for, or the app had to guess, is said there outright: which calls
+  went to the background and when each ends (an agent as exactly as a
+  command), when the session goes on by itself after one ends, and when it is
+  done for good, which is where the turn ends. Between the answer and that
+  end a prompt goes at once and stops nothing. A message sent into a turn at
+  work is taken into it; a sent prompt is edited by starting Claude Code anew
+  from the message before it; earlier conversations are listed and shown from
+  Claude Code's own records (all of a long conversation, across its
+  compactions). The pane's account, proxy, the app's tools and its skill go
+  to it as they go to its terminal. The choice holds for chats opened from
+  then on. Its modes are Claude Code's own, "Auto" where the model takes it
+  and "Bypass permissions" as through the adapter (Claude Code refuses it
+  where its settings forbid it); the levels of effort the model takes have a
+  control of their own in the field. What Claude Code asks you with its
+  question tool, and what an MCP server asks with a form, is asked in the
+  call's card and answered there or in the field; the name Claude Code gives
+  the conversation is the chat's; a search or a page the API fetches itself
+  is a call like any other.
+- **Codex, directly.** Choose **Settings → General → Codex's chat → Directly**
+  for new chats. The pane starts `codex app-server` with its working folder,
+  account, proxy and orchestration settings. It uses `thread/start` or
+  `thread/resume` for the conversation and `turn/start`, `turn/steer` and
+  `turn/interrupt` for input. Messages, tool output, approvals, questions
+  and token usage appear in the native chat. Pick **Permissions** in the
+  launcher to set access before the first prompt. In a chat, the access
+  control or `/permissions` changes it for subsequent turns. **Auto** allows
+  workspace edits and asks about additional access. **Approve for me** uses
+  Codex's automatic reviewer where available. **Read Only**, **Full Access**
+  and named profiles follow the account and project policy. The separate
+  **Default** and **Plan** control sets the collaboration mode. The CLI also
+  supplies models, reasoning efforts and session history. Editing the
+  first prompt of a turn branches the conversation at that turn. Codex
+  accepts additional messages during a turn and can fork only at turn
+  boundaries. On Unix, **With the app closed → Keeps working** lets a turn
+  finish or wait for an answer while kou is closed. Reopening the pane
+  restores the thread and any outstanding requests.
+- **With the app closed.** A Claude Code the app talks to directly is
+  started by a keeper, a small process of its own (`kou-desktop
+  claude-host`, see `kou-claude`'s `host`), not as the app's child. Quitting
+  the app, or rebuilding its window, only lets go of it: a turn under way is
+  finished, what runs in the background runs on, a question waits. Opened
+  again, the app finds each pane's keeper by the name the pane has for it
+  (sockets beside the app's own, `<socket>.hosts/`), shows the conversation
+  from Claude Code's record and stands where Claude Code stands: at work,
+  waiting for an answer, or idle. Closing the pane, `/new`, another
+  conversation or the terminal view end it. With nobody there, a Claude
+  Code that only waits is let go after ten minutes (it is gone on with from
+  its record) and any after a day. Settings, "With the app closed", turns
+  this off: Claude Code is then the app's child and ends with it. Quitting
+  does not warn of agents at work that are kept this way. A chat whose
+  connection to its keeper is lost (the keeper died, or dropped an app that
+  took nothing from it for a minute) is opened again by itself, once a
+  minute at most: it finds the keeper if it still runs, else goes on from
+  the record. Keepers run from a copy of the app's program that is that
+  build's alone (`bin/claude-host-<size>-<time>` under the app's home), so
+  another build of the app started under the same home cannot leave them
+  unable to start. What befalls each keeper (started, a client came, left,
+  was replaced or dropped, stopped, ended, and why) is written to
+  `<socket>.hosts/keepers.log`.
 - **Plugins.** Parts of the interface are drawn by scripts that the app reads
   from disk and reads again as they change, in a release build as in any
   other: see [Plugins](#plugins).
+- **Surfaces.** What kou's agent shows with its `UI` tool (the
+  [genui](../examples/plugins/genui) plugin of the runner: metrics, charts,
+  tables, diffs, inputs, buttons, and boxes and text laid out as the agent
+  likes) is drawn in the chat, in the card of the call that made it. The
+  newest version of a surface is live: it reads its files again every second
+  and a half while it is on screen, its fields are typed in where they stand,
+  and a button tells the agent, as a message of yours
+  (`[UI bench v1] apply {…}`). It stays in sight when the turn's work folds
+  away; earlier versions fold with the work and open to what their call read.
+  A chart says what is under the pointer. An `Html` component, a page of the
+  agent's own, is not drawn (the app has no web view): it shows what the
+  agent said it is. Only an agent with the `UI` tool makes surfaces, which
+  today is kou's own with the plugin installed.
 - **Told when it matters.** A notification when an agent you started finishes
   out of sight, and when any agent stops for an answer; each can be turned
   off. They are the system's own, in the app's name, and a click on one
   brings the app forward on the pane it is about. A space and a session show
   in the rail that something in them works or waits.
-- **Several accounts of a harness.** Settings, Harnesses, "Add an account"
-  takes a folder: the harness run with its home there (`CLAUDE_CONFIG_DIR` for
-  Claude Code, `CODEX_HOME` for Codex, `GROK_HOME` for Grok Build) has a login,
-  sessions and settings of its own. The app writes nothing into that folder;
-  signing in is done once, in a pane of that account. Each account is a row of
-  its own where an agent is chosen, a pane's header names the one it runs
-  under, and a prompt goes to the account used last until another is chosen.
+- **Several accounts of a harness, as one pool.** Settings, Harnesses, "Add
+  an account" under a harness that keeps its home in a folder it can be told
+  (Claude Code: `CLAUDE_CONFIG_DIR`; Codex: `CODEX_HOME`; Grok Build:
+  `GROK_HOME`) opens a small form: a name, and a proxy if the account is to
+  go out through one of its own. "Add and sign in" makes the account's folder
+  in the app's own (`accounts/<harness>-<id>`), and opens the harness's own
+  sign-in (`claude auth login`, `codex login`) in a pane, with that home and
+  that proxy: the page it opens in the browser and the code it may ask for
+  are yours to deal with there. "Use a folder I have" takes a home that is
+  signed in to already. An account's row says what is left of its limits or
+  that nobody is signed in, and has its sign-in, the pencil that changes its
+  name and proxy, and the cross that forgets it (its folder stays).
+  - *The proxy* is an HTTP or HTTPS one, written `host:port`,
+    `host:port:login:password`, `login:password@host:port` or as an address;
+    SOCKS is refused, since the agents do not take it. Everything started
+    under the account gets it in its environment (`HTTPS_PROXY`, `HTTP_PROXY`,
+    both cases, with `NO_PROXY` for what is local): the chat, the terminal
+    interface, the question about its limits, the sign-in, and whatever
+    those programs start. The address is shown and saved without its
+    password; with one it is kept whole in `accounts/secrets.json`, a file
+    only you can read, apart from the state. A program that ignores these
+    variables goes out directly, and so does the page a sign-in opens in
+    your browser.
+  - *One store of conversations.* A folder the app makes for a Claude Code
+    account has `projects`, `file-history` and `todos` linked to those of
+    Claude Code's own home (nothing is written there by the app). A
+    conversation begun under one account can so be gone on with under
+    another: the account in a pane's header is a button that moves the pane
+    to the account with the most left and opens the same conversation there.
+    A folder of your own keeps its conversations to itself, and its panes
+    stay where they are.
+  - *Who runs what.* With "Accounts: One pool" (the default) a new agent,
+    yours or one an agent starts with `pane spawn`, runs under the account
+    with the most left of its tightest limit (the five hours, the week), less
+    what that account already runs, so several started together are spread;
+    an account that is spent or signed out is taken only when all are, and
+    one named in the field's list is used as named. The empty page's field
+    says `auto` then. With "As chosen" a prompt goes to the account you
+    choose, else to the one the harness started last.
 - **Usage.** Cmd+U, or Usage in the rail, shows a page where the workspace is,
   as Settings does (the same key, or Escape, goes back). It has a part for each
   provider: a card for each of the plan's limits (the 5-hour window where the
@@ -178,6 +307,13 @@ Harnesses are shown by their own marks where Simple Icons has one (Claude,
 OpenAI for Codex, Gemini, OpenCode, Cursor, GitHub Copilot, Qwen; CC0, see
 `crates/kou-ui/brands/README.md`), and by two letters otherwise.
 
+The icons are Lucide's (ISC; `crates/kou-ui/icons/README.md` says which of
+Lucide's each file is, and its licence is beside it): round caps and joins,
+drawn at 16 pixels where an icon leads a row or fills a toolbar's button,
+and at 14 where it is a detail of a row (what closes a tab, what opens a
+group, a row's own action, the icon in a text button). The few Lucide has no
+drawing for are drawn in the same line.
+
 ## The prompt field
 
 A native conversation pane has what kou's web cockpit has:
@@ -185,12 +321,41 @@ A native conversation pane has what kou's web cockpit has:
 - `$` links a file of the project (ranked as you type, `$path:120-160` for
   lines, folders open); linked files are chips over the text.
 - `/` lists commands: the agent's own, then the view's (`/model`, `/mode`,
-  `/queue`, `/stop`, `/edit`, `/history`, `/copy`, `/clear`, `/help`) and the
-  app's (`/new`, `/sessions`, `/resume`, `/rename`, `/settings`).
+  `/effort`, `/queue`, `/stop`, `/edit`, `/history`, `/copy`, `/clear`,
+  `/help`) and the app's (`/new`, `/sessions`, `/resume`, `/rename`,
+  `/settings`).
+- The model's and the mode's controls stand in the field's foot. An agent
+  that offers levels of effort apart from its modes (Claude Code, directly)
+  has a third between them: the level in force as bars filled to it, drawn
+  as kou's own efforts are, which opens the list of levels (`/effort`, or
+  `/effort high`). kou offers its efforts as its modes, and `/effort` is its
+  `/mode`.
+- A call that asks you questions (Claude Code's question tool, directly)
+  shows them in its card, where a request's buttons stand: one at a time
+  ("2 of 3"), what was answered before it a line each above it, with Back.
+  A click on an option answers a question that takes one; one that takes
+  several toggles them and has Confirm. Over the empty field, digits 1 to 9
+  choose (or toggle) the option of that number and Enter confirms. Where a
+  question takes your own words, what you send from the field is its answer
+  (with the options chosen), and the field says so; the view's and the
+  app's commands and the stop work as ever. Its refusals ("Skip") are
+  quiet buttons. Once the last question is answered all the answers go
+  back together; a request the agent takes back closes its card.
 - Cmd/Ctrl+V pastes a picture; so do a drop and the paperclip. Pictures are
   `[Image n]` in the text with thumbnails above it.
 - Up and Down walk the prompt history kou's cockpits share; Ctrl+R searches it.
 - Enter during a turn queues the prompt; Cmd/Ctrl+Enter forces it into the turn.
+  kou's own agent and Claude Code take it there (Claude's adapter through its
+  steering request, `_session/steering`): nothing is stopped, the agent reads
+  it at its next step, and what it left running goes on. An agent that takes
+  nothing while it works is stopped to take it, and the prompt goes into the
+  same session. Once the agent has given its answer and
+  only waits for, or works on, what it left running in the background (the
+  agents and commands Claude Code starts), a prompt goes at once, by Enter as
+  by the force key, and nothing is stopped for it: that work goes on. Claude
+  Code takes such a prompt into the turn it holds open, which stays open for
+  that work afterwards: the chat goes on showing the agent at work and the
+  agents it started as running. Stop still stops all of it.
 - Edit on a prompt you sent (or `/edit`, `/edit n`) opens it where it stands,
   with its pictures; what comes after it fades. Enter runs the edited prompt
   from there: the session goes back to before it, as in the web cockpit
@@ -198,7 +363,8 @@ A native conversation pane has what kou's web cockpit has:
   was. kou's own agent does it in its session. Claude Code and Codex do it
   through their adapters, by branching: the session is forked just before
   that prompt and the conversation goes on in the fork, so the pane has a
-  new session id and the old session stays in the harness's own list. An
+  new session id and the old session stays in the harness's own list (the
+  "(fork)" Claude Code puts after the fork's title is not shown). An
   agent that can do neither (OpenCode, which only copies whole sessions,
   and the rest) offers Reuse instead, which puts the prompt back in the
   field.
@@ -307,20 +473,105 @@ kou.page({
 
 `ui.box`, `ui.row`, `ui.col`, `ui.text`, `ui.icon`, `ui.button`,
 `ui.monogram` and `ui.mark` build a tree that the app turns into its own
-elements; the properties it reads (flex layout, sizes, padding, colours by
-the theme's names or `#rrggbb`, borders, corners, text, `hover`, `tooltip`,
-`onClick`) are listed at the top of `kou-desktop/src/plugin_view.rs`. A
-handler gets `api.setState(patch)`, which is kept across reloads, and
-`api.act(name, args)` for what the app does itself: `usage.refresh`,
-`pane.focus`, `page.show`, `page.close`, `notice`.
+elements; the properties it reads (flex and grid layout, sizes, padding,
+colours by the theme's names or `#rrggbb`, borders, corners, text, `hover`,
+`tooltip`, `onClick`, `onPoint`) and the other kinds of element
+(`ui.el("input", …)`, a field typed in where it stands; `"plot"`, a chart's
+marks; `"image"`; `"markdown"` and `"code"`) are listed at the top of
+`kou-desktop/src/plugin_view.rs`. A handler gets `api.setState(patch)`, which
+is kept across reloads, and `api.act(name, args)` for what the app does
+itself: `usage.refresh`, `pane.focus`, `page.show`, `page.close`, `notice`,
+`clipboard.copy`.
+
+A plugin of several files lists them, `"desktop": { "scripts": ["shared/
+data.js", "desktop/main.js"] }`: they run in that order as one program, and
+a file written as a module of exports (one shared with the browser cockpit)
+runs with its exports as plain names. A script cannot `import`.
+
+Besides pages a plugin can add a view, `kou.view({ id, render(ctx) })`:
+something the app draws where it has a place for it, once for each thing it
+has to show, each with its own data and state. The surfaces in a chat are
+the `genui` view of the app's own plugin `desktop/plugins/genui`: the app
+gives it a surface's version and files, and it builds the card's inside.
+Put a folder named `genui` in your plugins to draw surfaces your way.
+
+The app's own interface is drawn the same way, by plugins of its own in
+`desktop/plugins`, each a folder you replace with one of yours of the same
+name. The app decides what is shown and does what is asked; the script
+decides how it looks and where everything goes. What a script cannot draw
+stays the app's and is placed with `ui.slot(name)`: what is typed, a
+terminal, prose and code as they are shaped, and whatever moves as it is
+watched (a mark that blinks, a card opening, the highlight a list's keys
+move). Each script says at its top what its views are given in `ctx.data`,
+which slots they have, and what they ask of the app with `api.act`.
+
+| Plugin | Its views |
+|---|---|
+| `rail` | the rail (`rail`) |
+| `workspace` | the window layout (`shell`), plugin page wrapper (`pluginPage`); the tab strip (`tabs`); a pane's header and frame (`paneHeader`, `paneFrame`); the panel a tab is named in (`tabEditor`); the header of a split's half that waits for its agent (`choosing`); the line the window says things on (`notice`); a tooltip's body (`tip`) |
+| `screens` | what an empty window and a stopped pane say (`noSpaces`, `noSession`, `stopped`); what can be started (`picker`, `pickerScreen`, `askChooser`); a pane's earlier conversations (`sessions`); the settings and their navigation (`settings`, `settingsFrame`) |
+| `canvas` | the bar in a canvas's corner (`canvasBar`); the empty board (`canvasEmpty`); menus (`canvasMenu`); the bar that takes a deletion back (`canvasToast`); the inspector (`canvasInspector`); a node's header, footer and own text, and the tab of what waits for it (`canvasHead`, `canvasFoot`, `canvasBody`, `canvasPending`); an edge's label (`canvasLabel`) |
+| `composer` | the prompt field's frame and controls (`composer`); the line over it while the agent works (`composer-activity`); the queue's tray (`composer-queue`); the figures under it (`composer-usage`) |
+| `chat` | a transcript's entries (`chat-user-head`, `chat-user-card`, `chat-answer-head`, `chat-thought`, `chat-tool`, `chat-plan`, `chat-notice`, `chat-worked`); a surface's card (`chat-app-card`); the line after the last entry and what `/clear` left (`chat-tail`, `chat-cleared`); the list that `/`, `$` and Ctrl+R open (`chat-menu`); the modes' list (`chat-choices`, `chat-choice`); the model picker's card and each of its lines (`chat-models`, `chat-model-line`); the help card (`chat-help`); the cards of agents the conversation started, by a call or in a pane (`chat-agent`, `chat-nested`); the card beside the transcript and the handle that pulls it out (`chat-beside`, `chat-beside-handle`); the ticks down the transcript's edge, one for each prompt (`chat-ticks`); the frames of what a tool call gave: a change's header and foot, the head of a command's output and of raw input or output (`chat-tool-piece`) |
+| `appearance` | the theme library, colour editor, previews and theme links (`appearance`) |
+| `studio` | Studio messages, answers, thought/tool headings, plans, notices, folded work, empty states, activity, usage and dock layout (`studio-*`) |
+| `genui` | a surface's inside (`genui`) |
+| `usage` | the Usage page |
+
+The prompt field's `composer` view, for a chat's field and the empty page's
+alike, is told its `look` (`cockpit` or `studio`), how the field stands (`focused`, `busy`, `closed`, `narrow`,
+`standalone`) and, in `ctx.data.controls`, how its controls do: which
+buttons there are (`send`, `stop`, `force`), whether what is typed can be
+sent, the model's name and its provider's colour, the mode's name or the
+effort's level, and the level of effort offered apart from the modes
+(`effort`, its list the slot `effortMenu`). An open list stands over its own
+control, a few pixels above it: the model picker is the slot `modelMenu`,
+the modes' list `modeMenu`. A control asks the field with
+`api.act("field.send")` (queued while the agent works), `field.force`,
+`field.stop`, `field.attach`, `field.focus`, `field.model`, `field.mode` or
+`field.effort`. What is typed is `ui.slot("editor")`. A view of the chat's
+asks it with `toggle`, `worked`, `permit`, `choose`, `confirm` and `back`
+(an option of a question a call asks, its Confirm, the question before;
+the card is told the questions as `asks`), `copy`, `edit`, `reuse`,
+`unclear`, `unfold` (keep more of what a command printed), `nested` and
+`show` (open an agent's pane, or its card), `beside` and `folder` (the card
+beside, and its project's folder), `tick` (go to a prompt), or `back` from a
+line of the model picker.
+
+The app's own parts use more of the vocabulary than a page does, all of it
+listed in the same place: `key` (which element this is from one drawing to
+the next), `group` and `groupHover`, `float` (a panel over the rest),
+`spring` and `drop`, `ring` (how a control looks while the keys are on it)
+and `active` (while it is pressed), `onPress`, `onHover` and `onOutside`, a
+border in the screen's pixels (`border: "1px"`, a hairline at any zoom; a
+border given as a number grows and shrinks with a canvas's zoom, which the
+app's own hairlines do not), colours written `mix(line, error, 0.6)`,
+`alpha(accent, 0.12)` or `provider(openai)` (a provider's or a harness's own
+colour), `ui.brand(harness, { code, size })` for a harness's mark, an
+icon turned with `rotate` (degrees), and an icon button's two sizes: `size`,
+its square (24 unless said), and `glyph`, the icon in it (16; 14, which is
+`theme.metric.iconSmall`, in a square smaller than 24 unless said).
+
+A script is run again only when what it is given changes: never at each
+frame of a pan, a zoom or a scroll, and not as an answer's words come (what
+streams is a slot). A canvas's parts are made once at 100% and drawn at the
+board's zoom; the rail and the tab strip are drawn again only when what they
+show changed. Required window and settings views fall back to their embedded
+JavaScript when an override is missing or fails. Other views retain their
+native fallback, so a broken script leaves the editor usable.
+[JS UI architecture and action contracts](docs/js-ui.md).
 
 A script reaches nothing but this: no files, no network, no other programs.
 It is stopped when it draws for longer than a quarter of a second or when
-the plugins together hold more than 96 MB.
+an interpreter holds more than 96 MB.
 
-So far a plugin adds or replaces a page. The rest of the window (the rail,
-panes, the chat, the terminal) is still the app's own code, which takes a
-build to change.
+What is still the app's own code, which takes a build to change: the insides
+of panes (the terminal, what is said in a transcript, what is typed), the
+lines of a change, of a command's output and of an agent's steps, the rows
+of the queue, the lines between split panes and the rail's edge (they are
+dragged), and on a canvas its zoomed-out placeholders, ports, edges and the
+grid. The question asked before busy
+panes are closed is the system's own dialog.
 
 ## Agents talking to agents
 
@@ -343,6 +594,13 @@ parent's right (`--split-down` below it, `--share 30` that many percent of the
 room rather than half), and `--tab` makes it a tab and brings it to the front. `pane wait` exits 4 when it runs
 out of time.
 
+A harness that has a native chat opens as one; `--terminal` asks for its own
+terminal interface, `--native` for the chat. `--title` names the pane, and
+the name stays: what the agent later calls its session does not replace it.
+`--model` takes one of the ids `harness models <harness>` lists, and an id
+the harness does not have is refused; `pane info`, `pane list` and `where`
+show the model a pane was given.
+
 An agent can also name what it works in, so that you can tell the tabs apart:
 
 ```sh
@@ -354,10 +612,54 @@ An agent can also name what it works in, so that you can tell the tabs apart:
 "$KOU_BIN" tab list --all                 # and `session list`, `space list`
 ```
 
+An agent can ask where it is, which is what it does first when you speak of
+the canvas, a node or an edge:
+
+```sh
+"$KOU_BIN" where          # or: where p7, for another pane; --json for the data
+```
+
+It prints the pane itself, its tab and how you see it (as panes, or as a
+canvas), the other panes of the tab, and each edge of the tab's canvas with
+what it does: made when one agent started another (it shows that and
+carries nothing by itself), or wired, with its mode and whose answers it
+carries to whom, and how many messages wait on it for you. Notes and sources
+on the canvas are listed with what they say.
+
+Edges are yours to draw, remove and switch. An agent sees them (`edge list`)
+and cannot change them, unless you make its node the tab's orchestrator: a
+switch in the node's inspector on the canvas, which you can turn off again.
+An orchestrator wires the nodes of its own tab:
+
+```sh
+"$KOU_BIN" edge add p7 me --mode approve   # what p7 answers waits on me for you; me is its own pane
+"$KOU_BIN" edge set p7 me --mode auto      # auto, approve or off
+"$KOU_BIN" edge rm p7 me
+```
+
+A wire an agent drew says so on the canvas ("by lead" on the edge, and in the
+edge's inspector), so you can tell it from your own. A wire that closes a ring
+is made with a warning, and the ring cannot run away: a message knows how
+many times it was passed on, agent to agent, says so from the second time
+(`[canvas] from «lead» (p3), hop 3 of 6:`), and past six waits on its target
+for you, as on an edge that asks first.
+
+To hear one answer from another agent without a wire:
+
+```sh
+"$KOU_BIN" pane ask p7 "Which files did you change?"
+```
+
+The question goes to the pane, and what its agent answers at the end of that
+turn comes back to the asker once, as a message beginning `[canvas] answer
+from`. Nothing is wired, and the asker does not wait.
+
 A `pane send` from one pane to another of the same tab travels the edge
-between their nodes on that tab's canvas (one is made if they had none): the
-board counts it, shows it on its way, and holds it on an edge you set to ask
-first until you let it through from the node's badge. Between panes of
+between their nodes on that tab's canvas: the board counts it, shows it on
+its way, and holds it on an edge you set to ask first until you let it
+through from the node's badge. If they had no edge, a line is drawn that
+shows one wrote to the other; it carries nothing by itself, so the sender's
+later answers do not start going to the receiver. Between panes of
 different tabs there is no edge, and the message simply arrives. An edge wired by hand also carries by itself: when a native
 conversation ends a turn, its answer goes to every node its output is wired to.
 The edge made when one agent starts another only shows who made whom.
@@ -376,6 +678,8 @@ The edge made when one agent starts another only shows who made whom.
 | `kou-thread` | the conversation model a native pane renders, the backend channels, and the project file index |
 | `kou-thread-view` | the native conversation view and its prompt field: links, commands, pictures, history, queue |
 | `kou-acp` | an Agent Client Protocol client as a `kou-thread` backend |
+| `kou-claude` | Claude Code as a `kou-thread` backend with no adapter: its own stream protocol, and its records read for the session list and history |
+| `kou-codex` | Codex app-server as a `kou-thread` backend, including live events, thread history and the model catalog |
 | `kou-native` | kou's Go runner as a `kou-thread` backend |
 | `kou-usage` | an account's plan limits, asked of the agent's own program (Claude Code's control protocol, Codex's app server, `grok usage`), and several accounts put together |
 | `kou-plugins` | plugins: scripts read from disk, run in an interpreter inside the app, loaded anew as they change |

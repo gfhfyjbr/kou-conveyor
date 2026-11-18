@@ -66,10 +66,10 @@ pub(crate) fn bindings() -> Vec<KeyBinding> {
     ]
 }
 
-/// The widest the picker gets (`place()`: 520px).
-const WIDTH: f32 = 520.;
-/// The most its list takes before it scrolls.
-const LIST_MAX: f32 = 340.;
+/// The widest the picker gets.
+const WIDTH: f32 = 420.;
+/// The most its list takes before it scrolls: eleven models.
+const LIST_MAX: f32 = 316.;
 
 /// The picker while it is open.
 pub(crate) struct ModelPicker {
@@ -91,16 +91,19 @@ struct Swap {
     old_height: f32,
 }
 
-/// How tall a line of the picker is (`.mp-row`, `.mp-prov`, `.mp-back`, `.mp-group`).
+/// How tall a line of the picker is: a list's row, and the row back with
+/// the gap under it.
 fn height(line: &Line) -> f32 {
     match line {
-        Line::Provider(_) => 48.,
-        Line::Back(_) => 41.,
-        Line::Heading(_) => 26.,
-        Line::Model(_) | Line::Free(_) => 34.,
-        Line::Nothing => 36.,
+        Line::Provider(_) | Line::Model(_) | Line::Free(_) => metric::ROW,
+        Line::Back(_) => BACK + 4.,
+        Line::Heading(_) => 24.,
+        Line::Nothing => 30.,
     }
 }
+
+/// The row that goes back to the providers.
+const BACK: f32 = 32.;
 
 fn pane_height(lines: &[Line]) -> f32 {
     (lines.iter().map(height).sum::<f32>() + 8.).min(LIST_MAX)
@@ -124,6 +127,25 @@ impl ModelPicker {
             swap: None,
             scroll: ScrollHandle::new(),
         }
+    }
+
+    /// The list of models changed under the open picker. Its catalogue holds
+    /// places in the list it was made from, which mean other models in the
+    /// new one or none at all: it is made again, on the model in force, and
+    /// what was typed is kept.
+    pub(crate) fn refill(
+        &mut self,
+        models: &[Choice],
+        providers: &[kou_thread::Provider],
+        current: Option<&str>,
+    ) {
+        let query = std::mem::take(&mut self.browse.query);
+        self.catalog = Catalog::of(models, providers);
+        self.browse = Browse::opening(&self.catalog, models, current);
+        if !query.is_empty() {
+            self.browse.typed(query);
+        }
+        self.swap = None;
     }
 }
 
@@ -266,6 +288,20 @@ impl Dock {
         }
     }
 
+    /// What a line of the picker the app draws asks: `back` (to the
+    /// providers).
+    fn line_asked(
+        &mut self,
+        name: &str,
+        _: &serde_json::Value,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if name == "back" {
+            self.picker_back(window, cx);
+        }
+    }
+
     /// The picker over the model's control, laid out after everything else:
     /// its `corner` stands where the element is placed, so that it rises
     /// from the control whichever end of the foot the control is at.
@@ -279,6 +315,9 @@ impl Dock {
         let still = cx.reduce_motion();
         let models = self.sync.models.clone();
         let current = self.sync.model.clone();
+        // The app draws what each line says when it can (`chat-model-line`).
+        let face = self.chat_face.clone().filter(|_| !self.around.studio());
+        let entity = cx.entity_id().as_u64();
         let picker = self.model_picker.as_mut()?;
         // What moves: the box rising, a pane sliding in, its rows one by one.
         let progress = |since: Instant, delay: f32, length: f32| -> f32 {
@@ -318,6 +357,7 @@ impl Dock {
         });
         let unit = px(1.);
         let cx = &*cx;
+        let trace = &self.trace;
         let theme = crate::studio::chrome_look_theme(self.around.look.get(), cx);
         let holds_current = |group: usize| {
             current.as_deref().is_some_and(|current| {
@@ -334,42 +374,104 @@ impl Dock {
             let mut rows: Vec<AnyElement> = Vec::new();
             for (at, line) in lines.iter().enumerate() {
                 let selected = live && line.choosable() && nth == cursor;
-                let element = match line {
-                    Line::Provider(group) => provider_row(
-                        &groups[*group],
-                        &models,
-                        holds_current(*group),
-                        selected,
-                        theme,
-                    )
-                    .into_any_element(),
-                    Line::Back(group) => {
-                        back_row(&groups[*group], theme, live, cx).into_any_element()
-                    }
-                    Line::Heading(group) => {
-                        let hits = lines[at + 1..]
-                            .iter()
-                            .take_while(|line| matches!(line, Line::Model(_)))
-                            .count();
-                        heading_row(&groups[*group], hits, theme).into_any_element()
-                    }
-                    Line::Model(index) => model_row(
-                        &models[*index],
-                        current.as_deref() == Some(models[*index].id.as_str()),
-                        selected,
-                        theme,
-                    )
-                    .into_any_element(),
-                    Line::Free(id) => free_row(id, selected, theme).into_any_element(),
-                    Line::Nothing => div()
-                        .h(px(36.))
-                        .px(px(14.))
-                        .flex()
-                        .items_center()
-                        .text_size(px(12.5))
-                        .text_color(theme.fg_muted)
-                        .child(scale::text("No model matches."))
+                // How many models a heading stands over.
+                let hits = || {
+                    lines[at + 1..]
+                        .iter()
+                        .take_while(|line| matches!(line, Line::Model(_)))
+                        .count()
+                };
+                let said = face.as_ref().and_then(|face| {
+                    let what = match line {
+                        Line::Provider(group) => ModelLine::Provider {
+                            id: &groups[*group].id,
+                            name: &groups[*group].name,
+                            newest: newest(&groups[*group], &models),
+                            current: holds_current(*group),
+                            count: groups[*group].models.len(),
+                            selected,
+                        },
+                        Line::Back(group) => ModelLine::Back {
+                            id: &groups[*group].id,
+                            name: &groups[*group].name,
+                            count: groups[*group].models.len(),
+                            live,
+                        },
+                        Line::Heading(group) => ModelLine::Heading {
+                            id: &groups[*group].id,
+                            name: &groups[*group].name,
+                            hits: hits(),
+                        },
+                        Line::Model(index) => {
+                            let model = &models[*index];
+                            ModelLine::Model {
+                                provider: crate::models::provider_of(&model.id, &[])
+                                    .unwrap_or_default(),
+                                name: &model.name,
+                                id: (model.name != model.id).then_some(model.id.as_str()),
+                                current: current.as_deref() == Some(model.id.as_str()),
+                                media: makes_media(model),
+                                selected,
+                            }
+                        }
+                        Line::Free(id) => ModelLine::Free { id, selected },
+                        Line::Nothing => ModelLine::Nothing,
+                    };
+                    let pane = if live { "new" } else { "old" };
+                    let key = format!("model-line-{entity}-{pane}-{at}");
+                    let part = crate::face::Handed::of("chat-model-line", key, what);
+                    let asked = Self::line_asked as crate::face::Asked<Self>;
+                    crate::face::drawn(face, part, Vec::new(), cx.weak_entity(), asked, trace, cx)
+                });
+                // A line the keys move through keeps its shape and its
+                // highlight; what it says is the app's.
+                let element = match (line, said) {
+                    (Line::Provider(group), Some(said)) => line_box(height(line), selected, theme)
+                        .debug_selector({
+                            let id = groups[*group].id.clone();
+                            move || format!("provider-{id}")
+                        })
+                        .child(said)
                         .into_any_element(),
+                    (Line::Model(_) | Line::Free(_), Some(said)) => {
+                        line_box(height(line), selected, theme)
+                            .child(said)
+                            .into_any_element()
+                    }
+                    (_, Some(said)) => said,
+                    (_, None) => match line {
+                        Line::Provider(group) => provider_row(
+                            &groups[*group],
+                            &models,
+                            holds_current(*group),
+                            selected,
+                            theme,
+                        )
+                        .into_any_element(),
+                        Line::Back(group) => {
+                            back_row(&groups[*group], theme, live, cx).into_any_element()
+                        }
+                        Line::Heading(group) => {
+                            heading_row(&groups[*group], hits(), theme).into_any_element()
+                        }
+                        Line::Model(index) => model_row(
+                            &models[*index],
+                            current.as_deref() == Some(models[*index].id.as_str()),
+                            selected,
+                            theme,
+                        )
+                        .into_any_element(),
+                        Line::Free(id) => free_row(id, selected, theme).into_any_element(),
+                        Line::Nothing => div()
+                            .h(px(30.))
+                            .px(px(14.))
+                            .flex()
+                            .items_center()
+                            .text_size(px(12.5))
+                            .text_color(theme.fg_muted)
+                            .child(scale::text("No model matches."))
+                            .into_any_element(),
+                    },
                 };
                 let element = if live && line.choosable() {
                     let index = nth;
@@ -411,33 +513,35 @@ impl Dock {
             }
             rows
         };
-        let rows = render_lines(&lines, true);
         let new_height = pane_height(&lines);
-        let (list_height, ghost, offset_in, fade_in) = match &swap {
+        // The pane on its way out, and the new one's height, place and fade.
+        let (list_height, ghost_out, offset_in, fade_in) = match &swap {
             Some((direction, since, old, old_height)) => {
                 let t_in = cockpit::glide(progress(*since, 0., cockpit::PANE_IN.as_secs_f32()));
                 let t_out = cockpit::glide(progress(*since, 0., cockpit::PANE_OUT.as_secs_f32()));
                 let t_height =
                     cockpit::glide(progress(*since, 0., cockpit::PANE_HEIGHT.as_secs_f32()));
                 let shift = cockpit::PANE_SHIFT * direction;
-                let ghost = (t_out < 1.).then(|| {
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(unit * (-shift * t_out))
-                        .w_full()
-                        .py(px(4.))
-                        .opacity(1. - t_out)
-                        .children(render_lines(old, false))
-                });
                 (
                     old_height + (new_height - old_height) * t_height,
-                    ghost,
+                    (t_out < 1.).then_some((old, shift, t_out)),
                     shift * (1. - t_in),
                     t_in,
                 )
             }
             None => (new_height, None, 0., 1.),
+        };
+        let ghost = || {
+            ghost_out.map(|(old, shift, t_out)| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left(unit * (-shift * t_out))
+                    .w_full()
+                    .py(px(4.))
+                    .opacity(1. - t_out)
+                    .children(render_lines(old, false))
+            })
         };
 
         let models_count = models.len();
@@ -447,71 +551,100 @@ impl Dock {
         } else {
             format!("{models_count} models · {providers_count} providers").into()
         };
-        let keys: Vec<(&str, &str)> = if open.is_some() {
+        let keys: Vec<(&'static str, &'static str)> = if open.is_some() {
             vec![("←", "back"), ("↑↓", ""), ("↵", "")]
         } else {
             vec![("↑↓", ""), ("↵", "open"), ("esc", "")]
         };
         let view = cx.entity();
-        let search = div()
-            .h(px(40.))
-            .px(px(14.))
-            .flex()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.line)
-            .font_family(theme.mono_font.clone())
-            .text_size(px(13.))
-            .child(if query.is_empty() {
-                div().flex().items_center().child(caret(theme)).child(
+        let search = || {
+            let (focus, view) = (focus.clone(), view.clone());
+            div()
+                .h(px(34.))
+                .px(px(14.))
+                .flex()
+                .items_center()
+                .border_b_1()
+                .border_color(theme.line)
+                .font_family(theme.mono_font.clone())
+                .text_size(px(12.5))
+                .child(if query.is_empty() {
+                    div().flex().items_center().child(caret(theme)).child(
+                        div()
+                            .ml(px(3.))
+                            .text_color(theme.fg_muted)
+                            .child(scale::text("Search models, or type a model ID")),
+                    )
+                } else {
                     div()
-                        .ml(px(3.))
-                        .text_color(theme.fg_muted)
-                        .child(scale::text(
-                            "Search models and providers, or type a model ID",
-                        )),
+                        .flex()
+                        .items_center()
+                        .text_color(theme.fg)
+                        .child(scale::text(query.clone()))
+                        .child(caret(theme))
+                })
+                .child(
+                    // The field takes what is typed, in any script, through the
+                    // platform's input as the prompt field does.
+                    canvas(
+                        |_, _, _| {},
+                        move |bounds, _, window, cx| {
+                            window.handle_input(
+                                &focus,
+                                ElementInputHandler::new(bounds, view.clone()),
+                                cx,
+                            );
+                        },
+                    )
+                    .absolute()
+                    .size_0(),
                 )
-            } else {
-                div()
-                    .flex()
-                    .items_center()
-                    .text_color(theme.fg)
-                    .child(scale::text(query.clone()))
-                    .child(caret(theme))
-            })
-            .child(
-                // The field takes what is typed, in any script, through the
-                // platform's input as the prompt field does.
-                canvas(
-                    |_, _, _| {},
-                    move |bounds, _, window, cx| {
-                        window.handle_input(
-                            &focus,
-                            ElementInputHandler::new(bounds, view.clone()),
-                            cx,
-                        );
-                    },
+        };
+        let list = || {
+            div()
+                .relative()
+                .h(unit * list_height)
+                .overflow_hidden()
+                .children(ghost())
+                .child(
+                    div()
+                        .id("model-lines")
+                        .relative()
+                        .left(unit * offset_in)
+                        .opacity(fade_in)
+                        .size_full()
+                        .py(px(4.))
+                        .overflow_y_scroll()
+                        .track_scroll(&scroll)
+                        .children(render_lines(&lines, true)),
                 )
-                .absolute()
-                .size_0(),
-            );
-        let list = div()
-            .relative()
-            .h(unit * list_height)
-            .overflow_hidden()
-            .children(ghost)
-            .child(
-                div()
-                    .id("model-lines")
-                    .relative()
-                    .left(unit * offset_in)
-                    .opacity(fade_in)
-                    .size_full()
-                    .py(px(4.))
-                    .overflow_y_scroll()
-                    .track_scroll(&scroll)
-                    .children(rows),
-            );
+        };
+        // The app draws the card, its head and its foot when it can
+        // (`chat-models`); the search field, which takes what is typed, and
+        // the list, which scrolls and slides, stay the view's, as do where
+        // the card stands and how it rises.
+        let drawn = self
+            .chat_face
+            .clone()
+            .filter(|_| !self.around.studio())
+            .and_then(|face| {
+                let what = Models {
+                    keys: keys.clone(),
+                    count: count.to_string(),
+                };
+                let key = format!("models-{}", cx.entity_id().as_u64());
+                let part = crate::face::Handed::of("chat-models", key, what);
+                let slots = vec![
+                    ("search", search().into_any_element()),
+                    ("list", list().into_any_element()),
+                ];
+                let asked = |_: &mut Self,
+                             _: &str,
+                             _: &serde_json::Value,
+                             _: &mut Window,
+                             _: &mut Context<Self>| {};
+                crate::face::drawn(&face, part, slots, cx.weak_entity(), asked, &self.trace, cx)
+            });
         let picker = self.model_picker.as_ref()?;
         let width = window.viewport_size().width.as_f32() / scale::factor() - 16.;
         let card = div()
@@ -520,9 +653,9 @@ impl Dock {
             .key_context(PICKER_CONTEXT)
             .track_focus(&picker.focus)
             .occlude()
-            .on_mouse_down_out(
-                cx.listener(|this, _, window, cx| this.close_model_picker(window, cx)),
-            )
+            .on_mouse_down_out(cx.listener(|this, _, window, cx| {
+                this.press_outside(crate::dock::PickerKind::Model, window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &PickUp, window, cx| this.picker_key("up", window, cx)),
             )
@@ -558,70 +691,11 @@ impl Dock {
             .relative()
             .top(unit * (6. * (1. - rise)))
             .opacity(rise)
-            .w(px(WIDTH.min(width.max(240.))))
-            .rounded(px(metric::RADIUS_LARGE))
-            .border_1()
-            .border_color(theme.line_strong)
-            .bg(theme.raised)
-            .shadow(shadow(theme))
-            .overflow_hidden()
-            .flex()
-            .flex_col()
-            .text_color(theme.fg)
-            .child(
-                // `.mp-head`: what it is for, and its keys.
-                div()
-                    .px(px(14.))
-                    .pt(px(10.))
-                    .flex()
-                    .items_center()
-                    .gap(px(12.))
-                    .child(label("Model", theme.fg_muted, theme))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .flex_1()
-                            .truncate()
-                            .font_family(theme.mono_font.clone())
-                            .text_size(px(11.))
-                            .text_color(theme.fg_muted)
-                            .child(scale::text("for this session's next prompts")),
-                    )
-                    .child(
-                        div()
-                            .flex_none()
-                            .flex()
-                            .items_center()
-                            .gap(px(4.))
-                            .font_family(theme.mono_font.clone())
-                            .text_size(px(10.5))
-                            .text_color(theme.fg_muted)
-                            .children(keys.into_iter().map(|(key, word)| {
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(3.))
-                                    .child(key_hint(key, theme))
-                                    .children((!word.is_empty()).then(|| scale::text(word)))
-                            })),
-                    ),
-            )
-            .child(search)
-            .child(list)
-            .child(
-                // `.mp-foot`: how many there are.
-                div()
-                    .h(px(36.))
-                    .px(px(14.))
-                    .flex()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(theme.line)
-                    .font_family(theme.mono_font.clone())
-                    .text_size(px(10.5))
-                    .text_color(theme.fg_muted)
-                    .child(scale::text(count)),
-            );
+            .w(px(WIDTH.min(width.max(240.))));
+        let card = match drawn {
+            Some(drawn) => card.child(drawn),
+            None => self.models_card(card, keys, count, search(), list(), theme),
+        };
         Some(
             deferred(
                 anchored()
@@ -634,6 +708,144 @@ impl Dock {
             .into_any_element(),
         )
     }
+
+    /// The picker's card as the view draws it: `card` framed, with `search`,
+    /// `list` and its foot.
+    fn models_card(
+        &self,
+        card: gpui::Stateful<Div>,
+        keys: Vec<(&'static str, &'static str)>,
+        count: SharedString,
+        search: Div,
+        list: Div,
+        theme: &Theme,
+    ) -> gpui::Stateful<Div> {
+        card.rounded(px(metric::RADIUS_LARGE))
+            .border_1()
+            .border_color(theme.line_strong)
+            .bg(theme.raised)
+            .shadow(shadow(theme))
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .text_color(theme.fg)
+            .child(search)
+            .child(list)
+            .child(
+                // Its foot: how many there are, and its keys.
+                div()
+                    .h(px(28.))
+                    .pl(px(14.))
+                    .pr(px(10.))
+                    .flex()
+                    .items_center()
+                    .gap(px(10.))
+                    .border_t_1()
+                    .border_color(theme.line)
+                    .font_family(theme.mono_font.clone())
+                    .text_size(px(10.5))
+                    .text_color(theme.fg_muted)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(scale::text(count)),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .gap(px(4.))
+                            .children(keys.into_iter().map(|(key, word)| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(3.))
+                                    .child(key_hint(key, theme))
+                                    .children((!word.is_empty()).then(|| scale::text(word)))
+                            })),
+                    ),
+            )
+    }
+}
+
+/// The picker as the app draws it (`chat-models`): how many models and
+/// providers there are, and its keys, each with what it does.
+#[derive(Hash, serde::Serialize)]
+struct Models {
+    keys: Vec<(&'static str, &'static str)>,
+    count: String,
+}
+
+/// A line of the picker as the app draws it (`chat-model-line`), by its
+/// `kind`: a provider (its id, name, newest models, whether it holds the
+/// model in use, how many it has, and whether the keys are on it); the row
+/// that goes back to the providers (`live`: the pane shown, not one on its
+/// way out); a provider's heading over what a search found in it; a model
+/// (its provider, name, id where that is not its name, whether it is the
+/// one in use, whether it makes media); a model ID typed in (`free`); or
+/// nothing found. Each colour of a provider's is `provider(id)`.
+#[derive(Hash, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum ModelLine<'a> {
+    Provider {
+        id: &'a str,
+        name: &'a str,
+        newest: String,
+        current: bool,
+        count: usize,
+        selected: bool,
+    },
+    Back {
+        id: &'a str,
+        name: &'a str,
+        count: usize,
+        live: bool,
+    },
+    Heading {
+        id: &'a str,
+        name: &'a str,
+        hits: usize,
+    },
+    Model {
+        provider: String,
+        name: &'a str,
+        id: Option<&'a str>,
+        current: bool,
+        media: bool,
+        selected: bool,
+    },
+    Free {
+        id: &'a str,
+        selected: bool,
+    },
+    Nothing,
+}
+
+/// A provider's newest three models, and a mark when it has more.
+fn newest(group: &crate::models::Group, models: &[Choice]) -> String {
+    let newest: Vec<&str> = group
+        .models
+        .iter()
+        .take(3)
+        .map(|at| models[*at].name.as_str())
+        .collect();
+    let more = if group.models.len() > newest.len() {
+        " …"
+    } else {
+        ""
+    };
+    format!("{}{more}", newest.join(" · "))
+}
+
+/// Whether a model makes pictures or sound rather than text.
+fn makes_media(model: &Choice) -> bool {
+    model
+        .description
+        .as_deref()
+        .is_some_and(|description| description.contains("makes media"))
 }
 
 /// The picker's search caret.
@@ -663,8 +875,8 @@ pub(crate) fn label(text: &str, color: Hsla, theme: &Theme) -> Div {
         .child(scale::text(text.to_uppercase()))
 }
 
-/// A chip that flags a line: current, media (`.mp-flag`).
-fn flag(text: &str, accent: bool, theme: &Theme) -> Div {
+/// A chip that flags a line: media.
+fn flag(text: &str, theme: &Theme) -> Div {
     div()
         .flex_none()
         .px(px(5.))
@@ -673,15 +885,16 @@ fn flag(text: &str, accent: bool, theme: &Theme) -> Div {
         .items_center()
         .rounded(px(metric::RADIUS_SMALL))
         .border_1()
-        .border_color(if accent {
-            mix(theme.line_strong, theme.accent, 0.5)
-        } else {
-            theme.line_strong
-        })
+        .border_color(theme.line_strong)
         .font_family(theme.mono_font.clone())
         .text_size(px(10.))
-        .text_color(if accent { theme.accent } else { theme.fg_muted })
+        .text_color(theme.fg_muted)
         .child(scale::text(text.to_uppercase()))
+}
+
+/// The mark of the model in use, and of the provider that has it.
+fn current_mark(theme: &Theme) -> gpui::Svg {
+    icon(Icon::Check, theme.accent).size(px(14.))
 }
 
 /// The dot of a provider's colour.
@@ -702,7 +915,7 @@ fn line_box(height: f32, selected: bool, theme: &Theme) -> Div {
         .pr(px(8.))
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(px(8.))
         .rounded(px(metric::RADIUS))
         .when(selected, |line| line.bg(theme.hover))
 }
@@ -714,17 +927,6 @@ fn provider_row(
     selected: bool,
     theme: &Theme,
 ) -> Div {
-    let newest: Vec<&str> = group
-        .models
-        .iter()
-        .take(3)
-        .map(|at| models[*at].name.as_str())
-        .collect();
-    let more = if group.models.len() > newest.len() {
-        " …"
-    } else {
-        ""
-    };
     let arrow = icon(
         Icon::ChevronRight,
         if selected {
@@ -734,25 +936,27 @@ fn provider_row(
         },
     )
     .size(px(12.));
-    line_box(48., selected, theme)
+    line_box(metric::ROW, selected, theme)
         .debug_selector({
             let id = group.id.clone();
             move || format!("provider-{id}")
         })
-        .child(dot(&group.id, 9., theme))
+        .child(dot(&group.id, 8., theme))
         .child(
+            // Its name, and its newest models after it on the same line.
             div()
                 .min_w_0()
                 .flex_1()
                 .flex()
-                .flex_col()
-                .gap(px(3.))
+                .items_baseline()
+                .gap(px(8.))
                 .child(
                     div()
+                        .flex_none()
+                        .max_w(px(160.))
                         .truncate()
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_size(px(13.5))
-                        .line_height(px(16.))
+                        .text_size(px(13.))
                         .text_color(if selected {
                             mix(theme.fg, theme.provider(&group.id), 0.72)
                         } else {
@@ -762,19 +966,20 @@ fn provider_row(
                 )
                 .child(
                     div()
+                        .min_w_0()
+                        .flex_1()
                         .truncate()
                         .font_family(theme.mono_font.clone())
                         .text_size(px(11.))
-                        .line_height(px(14.))
                         .text_color(if selected {
                             theme.fg_dim
                         } else {
                             theme.fg_muted
                         })
-                        .child(scale::text(format!("{}{more}", newest.join(" · ")))),
+                        .child(scale::text(newest(group, models))),
                 ),
         )
-        .children(current.then(|| flag("current", true, theme)))
+        .children(current.then(|| current_mark(theme)))
         .child(
             div()
                 .flex_none()
@@ -783,7 +988,7 @@ fn provider_row(
                 .justify_end()
                 .font_family(theme.mono_font.clone())
                 .font_weight(FontWeight::BOLD)
-                .text_size(px(12.))
+                .text_size(px(11.5))
                 .text_color(theme.fg_muted)
                 .child(scale::text(group.models.len().to_string())),
         )
@@ -793,7 +998,6 @@ fn provider_row(
                 .w(px(14.))
                 .flex()
                 .justify_center()
-                .when(selected, |arrow| arrow.ml(px(3.)))
                 .child(arrow),
         )
 }
@@ -804,12 +1008,12 @@ fn back_row(group: &crate::models::Group, theme: &Theme, live: bool, cx: &Contex
         .id(if live { "model-back" } else { "model-back-old" })
         .debug_selector(|| "model-back".into())
         .flex_none()
-        .h(px(24.))
-        .pl(px(6.))
-        .pr(px(9.))
+        .h(px(22.))
+        .pl(px(5.))
+        .pr(px(8.))
         .flex()
         .items_center()
-        .gap(px(5.))
+        .gap(px(4.))
         .rounded(px(metric::RADIUS))
         .border_1()
         .border_color(theme.line_strong)
@@ -821,7 +1025,7 @@ fn back_row(group: &crate::models::Group, theme: &Theme, live: bool, cx: &Contex
         .hover(move |style| style.border_color(frame).text_color(lit))
         .child(
             icon(Icon::ChevronRight, theme.fg_muted)
-                .size(px(11.))
+                .size(px(12.))
                 .with_transformation(Transformation::rotate(radians(std::f32::consts::PI))),
         )
         .child(scale::text("PROVIDERS"))
@@ -830,24 +1034,24 @@ fn back_row(group: &crate::models::Group, theme: &Theme, live: bool, cx: &Contex
         });
     let count = group.models.len();
     div()
-        .h(px(41.))
+        .h(px(BACK))
         .pl(px(8.))
         .pr(px(14.))
         .flex()
         .items_center()
-        .gap(px(10.))
+        .gap(px(8.))
         .border_b_1()
         .border_color(theme.line)
         .mb(px(4.))
         .child(back)
-        .child(dot(&group.id, 9., theme))
+        .child(dot(&group.id, 8., theme))
         .child(
             div()
                 .min_w_0()
                 .flex_1()
                 .truncate()
                 .font_weight(FontWeight::SEMIBOLD)
-                .text_size(px(13.5))
+                .text_size(px(13.))
                 .text_color(mix(theme.fg, theme.provider(&group.id), 0.72))
                 .child(scale::text(group.name.clone())),
         )
@@ -866,9 +1070,9 @@ fn back_row(group: &crate::models::Group, theme: &Theme, live: bool, cx: &Contex
 
 fn heading_row(group: &crate::models::Group, hits: usize, theme: &Theme) -> Div {
     div()
-        .h(px(26.))
+        .h(px(24.))
         .px(px(14.))
-        .pt(px(6.))
+        .pt(px(4.))
         .flex()
         .items_center()
         .gap(px(8.))
@@ -887,11 +1091,8 @@ fn heading_row(group: &crate::models::Group, hits: usize, theme: &Theme) -> Div 
 
 fn model_row(model: &Choice, current: bool, selected: bool, theme: &Theme) -> Div {
     let provider = crate::models::provider_of(&model.id, &[]).unwrap_or_default();
-    let media = model
-        .description
-        .as_deref()
-        .is_some_and(|description| description.contains("makes media"));
-    line_box(34., selected, theme)
+    let media = makes_media(model);
+    line_box(metric::ROW, selected, theme)
         .child(dot(&provider, 7., theme))
         .child(
             div()
@@ -920,12 +1121,12 @@ fn model_row(model: &Choice, current: bool, selected: bool, theme: &Theme) -> Di
                         .child(scale::text(model.id.clone()))
                 })),
         )
-        .children(current.then(|| flag("current", true, theme)))
-        .children(media.then(|| flag("media", false, theme)))
+        .children(media.then(|| flag("media", theme)))
+        .children(current.then(|| current_mark(theme)))
 }
 
 fn free_row(id: &str, selected: bool, theme: &Theme) -> Div {
-    line_box(34., selected, theme)
+    line_box(metric::ROW, selected, theme)
         .child(dot("", 7., theme))
         .child(
             div()

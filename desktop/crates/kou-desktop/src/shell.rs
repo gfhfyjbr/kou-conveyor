@@ -27,6 +27,8 @@ actions!(
     [
         /// Show or hide the rail.
         ToggleRail,
+        /// From one field of the account form to the other.
+        AccountNext,
         /// Choose a harness to start in this session.
         NewAgent,
         NewShell,
@@ -133,6 +135,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new(key("e"), LeavePane, None),
         KeyBinding::new("tab", FocusNext, Some("!Terminal")),
         KeyBinding::new("shift-tab", FocusPrevious, Some("!Terminal")),
+        // In the account form Tab goes from one field to the other. (After
+        // the two above: of bindings that match alike the later one is taken.)
+        KeyBinding::new("tab", AccountNext, Some(crate::accounts::FORM)),
+        KeyBinding::new("shift-tab", AccountNext, Some(crate::accounts::FORM)),
         // Wherever the keys are: a pane's own Escape is bound deeper and wins there.
         KeyBinding::new("escape", Dismiss, None),
     ]);
@@ -247,6 +253,9 @@ pub(crate) struct Held {
     pub from: Id,
     pub to: Id,
     pub text: String,
+    /// How many times it will have been passed on once it is let through
+    /// (see `wires.rs`).
+    pub hops: u32,
 }
 
 /// The harness picker: where the new agent goes. Asked for as a new tab, it
@@ -293,9 +302,20 @@ pub struct Offered {
     pub providers: Vec<kou_thread::Provider>,
     /// The one a new session starts with.
     pub current: Option<String>,
+    pub access: kou_thread::Access,
+    pub account: Option<Id>,
     /// The folder they were asked for, and when.
     pub cwd: PathBuf,
     pub at: Option<Instant>,
+}
+
+#[derive(PartialEq)]
+struct PromptChoices {
+    harness: Id,
+    kind: PaneKind,
+    revision: u64,
+    model: Option<String>,
+    access: Option<String>,
 }
 
 /// An earlier conversation of a harness's, as the list shows it.
@@ -353,9 +373,23 @@ pub struct Shell {
     pub(crate) focus: FocusHandle,
     pub(crate) picker: Option<Picker>,
     pub(crate) settings_open: bool,
+    pub(crate) appearance: crate::appearance::Appearance,
     pub(crate) idle_open: bool,
     pub(crate) notice: Option<SharedString>,
-    close_requested: Option<Id>,
+    /// The notice is of a save that failed.
+    save_failed: bool,
+    /// The account being added or changed in the settings.
+    pub(crate) account_form: Option<crate::accounts::AccountForm>,
+    /// What has the keys while that form is open.
+    pub(crate) account_focus: FocusHandle,
+    /// The panes that run a sign-in, with the account each is for.
+    pub(crate) signing_in: HashMap<Id, Id>,
+    /// Where a harness's own home is, when it is not where the harness
+    /// has it by itself (see `accounts::own_home`): the tests' own folders.
+    pub(crate) own_homes: HashMap<String, PathBuf>,
+    /// The panes the canvas asked to close since the last frame: every node
+    /// of a selection that was deleted, not the last of them alone.
+    close_requested: Vec<Id>,
     /// When quitting was asked for with agents at work: asked again within
     /// [`QUIT_TWICE`], the app quits.
     quit_armed: Option<Instant>,
@@ -371,6 +405,11 @@ pub struct Shell {
     pub(crate) waits: Vec<crate::panes::Wait>,
     /// The socket panes reach the app through.
     pub(crate) socket: PathBuf,
+    /// Where the keepers of this window's Claude Codes listen (see
+    /// `panes.rs`): set once the window listens on its own socket. `None`
+    /// for one that does not (a scene, a test, a second instance of the
+    /// app), which keeps nothing and ends nothing that is kept.
+    pub(crate) keepers: Option<PathBuf>,
     /// Where the app keeps what it writes: the store, and each pane's
     /// generated harness settings.
     pub(crate) home: PathBuf,
@@ -387,6 +426,15 @@ pub struct Shell {
     board_events: Vec<(Id, BoardEvent)>,
     /// Messages waiting on edges set to ask first.
     pub(crate) held: Vec<Held>,
+    /// How many times the message that started each pane's turn had been
+    /// passed on, agent to agent; a pane the user wrote to is not here.
+    pub(crate) hops: HashMap<Id, u32>,
+    /// The questions panes asked each other, whose answers are still owed.
+    pub(crate) asks: Vec<crate::wires::Ask>,
+    /// The requests that wait for a harness to say its models, and what
+    /// looks, a few times a second, whether it has.
+    pub(crate) deferred: Vec<crate::wires::Deferred>,
+    pub(crate) deferred_poll: Option<gpui::Task<()>>,
     /// How much has gone along each edge since the app started.
     pub(crate) traffic: HashMap<(Id, EdgeId), Traffic>,
     /// The list of earlier conversations, when one is open.
@@ -412,6 +460,15 @@ pub struct Shell {
     /// in a pane goes on working when the program the app was started from
     /// is moved, rebuilt or deleted. `None` falls back to that program.
     pub(crate) bin: Option<PathBuf>,
+    /// The app's own program as the keepers of its Claude Codes are started
+    /// from: a copy that is this build's alone (see `main::keeper_program`),
+    /// which no other build of the app replaces. `None` falls back to the
+    /// program the app was started from.
+    pub(crate) keeper_bin: Option<PathBuf>,
+    /// When each pane's conversation was last opened again by itself, for
+    /// a connection to its kept Claude Code that was lost (see
+    /// `panes::take_up_again`).
+    pub(crate) taken_up: HashMap<Id, std::time::Instant>,
     /// The guidance on working with the app's other agents that a harness
     /// started in a pane is given, as files under the app's home.
     pub(crate) guidance: Option<kou_mcp::Bundle>,
@@ -437,8 +494,9 @@ pub struct Shell {
     /// The model chosen in that control, and the harness it was chosen for:
     /// the agent started from the field runs with it.
     pub(crate) ask_model: Option<(Id, String)>,
+    pub(crate) ask_access: Option<(PathBuf, String)>,
     // What the field's model control was last told, to tell it only of a change.
-    prompt_models: Option<(Id, u64, Option<String>)>,
+    prompt_models: Option<PromptChoices>,
     // Counts every change in `offered`.
     pub(crate) offered_changes: u64,
     // Whether that field has been given the keys since it came on screen.
@@ -467,13 +525,20 @@ pub struct Shell {
     pub(crate) usage_now: Option<std::time::SystemTime>,
     /// Asks the accounts again while the page is open; gone with it.
     pub(crate) usage_tick: Option<gpui::Task<()>>,
-    /// The app's plugins (see `plugins.rs`), once they were asked for;
-    /// whether starting them was tried; and whether they are read from
-    /// disk and watched (not in a test or a capture).
-    pub(crate) plugins: Option<kou_plugins::Host>,
-    pub(crate) plugins_tried: bool,
+    /// The app's plugins (see `plugins.rs`), started when first asked for
+    /// and shared with the chats, which draw with them too; and whether
+    /// they are read from disk and watched (not in a test or a capture).
+    pub(crate) plugins: crate::plugins::SharedHost,
     pub(crate) plugins_live: bool,
     pub(crate) plugin_watch: Option<gpui::Task<()>>,
+    /// Where the keys go while a field a plugin drew is typed in, and what
+    /// keeps what was typed when they go elsewhere.
+    pub(crate) plugin_focus: FocusHandle,
+    pub(crate) plugin_blur: Option<Subscription>,
+    /// The surfaces agents show in their chats (see `surfaces.rs`), and
+    /// what looks at their files while they are on screen.
+    pub(crate) surfaces: Rc<RefCell<crate::surfaces::Surfaces>>,
+    pub(crate) surface_watch: Option<gpui::Task<()>>,
     /// The pages plugins add, as last listed, and the one of them that
     /// stands where the workspace would (the Usage page has its own flag).
     pub(crate) plugin_pages: Vec<kou_plugins::PageInfo>,
@@ -510,6 +575,13 @@ pub struct Shell {
     pub(crate) content_area: Rc<Cell<Bounds<Pixels>>>,
     /// Width and height the panes will have, from the window's size, until measured.
     pub(crate) area_guess: Cell<(f32, f32)>,
+    /// The rail and the tab strip, each a view of its own that is drawn
+    /// again only when what it shows changed (see `workspace.rs`), and what
+    /// each showed when last told to draw again.
+    pub(crate) rail_part: Entity<crate::workspace::Part>,
+    pub(crate) tabs_part: Entity<crate::workspace::Part>,
+    pub(crate) rail_shows: Option<crate::workspace::Shows>,
+    pub(crate) tabs_shows: Option<crate::workspace::Shows>,
 }
 
 impl Focusable for Shell {
@@ -521,6 +593,9 @@ impl Focusable for Shell {
 impl Shell {
     /// A window over a store. `path` is where changes are saved; `None` keeps them in memory.
     pub fn new(store: Store, path: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
+        // The plugins, which tooltips are drawn by too (see `plugins.rs`).
+        let plugins: crate::plugins::SharedHost = Rc::default();
+        kou_ui::set_tip_face(Some(crate::plugins::tip_face(plugins.clone())), cx);
         // Nothing survives a restart running: every restored pane starts stopped.
         let live = store
             .panes
@@ -548,9 +623,15 @@ impl Shell {
             focus: cx.focus_handle(),
             picker: None,
             settings_open: false,
+            appearance: crate::appearance::Appearance::new(cx),
             idle_open: false,
             notice: None,
-            close_requested: None,
+            save_failed: false,
+            account_form: None,
+            account_focus: cx.focus_handle(),
+            signing_in: HashMap::new(),
+            own_homes: HashMap::new(),
+            close_requested: Vec::new(),
             quit_armed: None,
             scanning: false,
             detected: Vec::new(),
@@ -558,6 +639,7 @@ impl Shell {
             threads: HashMap::new(),
             waits: Vec::new(),
             socket: kou_ipc::socket_path(),
+            keepers: None,
             home: crate::state::home(),
             server: None,
             scene_time: 0.,
@@ -565,12 +647,18 @@ impl Shell {
             mounted: Cell::new(false),
             board_events: Vec::new(),
             held: Vec::new(),
+            hops: HashMap::new(),
+            asks: Vec::new(),
+            deferred: Vec::new(),
+            deferred_poll: None,
             traffic: HashMap::new(),
             resuming: None,
             waiting_on: HashMap::new(),
             changed_lines: HashMap::new(),
             open_now: HashMap::new(),
             bin: None,
+            keeper_bin: None,
+            taken_up: HashMap::new(),
             notifies: false,
             notice_permission: crate::notify::Permission::Unknown,
             notice_tell: None,
@@ -583,6 +671,7 @@ impl Shell {
             probes: false,
             offered: HashMap::new(),
             ask_model: None,
+            ask_access: None,
             prompt_models: None,
             offered_changes: 0,
             asked: false,
@@ -595,10 +684,13 @@ impl Shell {
             usage_opened: None,
             usage_now: None,
             usage_tick: None,
-            plugins: None,
-            plugins_tried: false,
+            plugins,
             plugins_live: false,
             plugin_watch: None,
+            plugin_focus: cx.focus_handle(),
+            plugin_blur: None,
+            surfaces: Rc::default(),
+            surface_watch: None,
             plugin_pages: Vec::new(),
             plugin_page: None,
             plugin_said: None,
@@ -614,6 +706,10 @@ impl Shell {
             branches: RefCell::default(),
             content_area: Rc::default(),
             area_guess: Cell::new((0., 0.)),
+            rail_part: crate::workspace::Part::new(crate::workspace::Which::Rail, cx),
+            tabs_part: crate::workspace::Part::new(crate::workspace::Which::Tabs, cx),
+            rail_shows: None,
+            tabs_shows: None,
         }
     }
 
@@ -641,6 +737,8 @@ impl Shell {
     /// replaces it needs the socket's path free at once.
     pub(crate) fn let_go(&mut self) {
         self.server = None;
+        // (What is kept beside the socket is the next window's to find.)
+        self.keepers = None;
         self.waits.clear();
         self.running.clear();
         self.threads.clear();
@@ -679,12 +777,31 @@ impl Shell {
         let Some(path) = &self.path else {
             return;
         };
-        self.notice = self
-            .store
-            .save(path)
-            .err()
-            .map(|error| format!("Could not save to {}: {error}", path.display()).into());
+        // Only a save that fails has something to say, and only what it
+        // said is taken back by one that works: a notice of anything else
+        // (agents cannot reach this window, a message that waits) is not a
+        // save's to clear, and nearly every click saves.
+        match self.store.save(path) {
+            Err(error) => {
+                self.notice = Some(format!("Could not save to {}: {error}", path.display()).into());
+                self.save_failed = true;
+            }
+            Ok(()) => {
+                if std::mem::take(&mut self.save_failed) {
+                    self.notice = None;
+                }
+            }
+        }
         cx.notify();
+    }
+
+    /// Tells every canvas what can be started now.
+    pub(crate) fn offer_to_canvases(&mut self, cx: &mut Context<Self>) {
+        let offers = self.offers();
+        for (canvas, _) in self.canvases.values() {
+            let offers = offers.clone();
+            canvas.update(cx, |canvas, cx| canvas.set_offers(offers, cx));
+        }
     }
 
     /// The canvas of a tab, created from its saved board on first use.
@@ -705,8 +822,11 @@ impl Shell {
             .filter_map(|pane| Some((pane.node, self.live.get(&pane.id)?.shown())))
             .collect();
         let offers = self.offers();
+        // Its chrome is drawn by the `canvas` plugin (see `plugins.rs`).
+        let face = self.canvas_face(cx);
         let canvas = cx.new(|cx| {
             let mut canvas = CanvasView::new(board, cx);
+            canvas.set_face(Some(face), cx);
             if let Some(camera) = camera {
                 canvas.set_camera(camera, cx);
             }
@@ -844,7 +964,9 @@ impl Shell {
             }
             CanvasEvent::RemoveRequested(node) => {
                 if let Some(pane) = self.pane_of(tab, *node) {
-                    self.close_requested = Some(pane);
+                    if !self.close_requested.contains(&pane) {
+                        self.close_requested.push(pane);
+                    }
                     cx.notify();
                 }
             }
@@ -1057,13 +1179,16 @@ impl Shell {
         Some((harness, self.default_kind(&harness.id)))
     }
 
-    /// The account what is typed on an empty screen goes to, when it is not
-    /// the harness's own: the one chosen with the harness in the field's
-    /// list; without a choice, the one the harness started last ran under.
+    /// The account what is typed on an empty screen goes to, when one is
+    /// named: the one chosen with the harness in the field's list. Without
+    /// a choice it is the one the harness started last ran under, unless
+    /// the accounts are one pool ([`crate::state::Store::balance`]): then
+    /// none is named, and the start picks the one with the most left.
     pub(crate) fn asked_profile(&self) -> Option<&crate::state::Profile> {
         let (harness, _) = self.asked()?;
         let id = match &self.ask_choice {
             Some(_) => self.ask_profile.as_deref(),
+            None if self.store.balance => None,
             None => self.store.last_profile.as_deref(),
         }?;
         self.store
@@ -1086,54 +1211,28 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         self.ask_choice = Some((harness.to_owned(), kind));
+        self.ask_access = None;
+        self.prompt_models = None;
         self.ask_profile = profile;
         self.ask_menu = false;
         self.asked = false;
         cx.notify();
     }
 
-    /// Add an account of a harness: the folder its home is in is asked for.
-    /// Nothing is written there; signing in is the user's to do, once, in a
-    /// pane of that account.
-    pub(crate) fn add_account(
-        &mut self,
-        harness: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(variable) = kou_usage::home_variable(harness) else {
-            return;
-        };
-        let name = self
-            .harness(harness)
-            .map_or_else(|| harness.to_owned(), |harness| harness.name.clone());
-        let chosen = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(format!("Use as {name}'s home ({variable})").into()),
-        });
-        let harness = harness.to_owned();
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = chosen.await else {
-                return;
-            };
-            let Some(home) = paths.into_iter().next() else {
-                return;
-            };
-            this.update(cx, |this, cx| {
-                this.store.add_profile(&harness, home);
-                this.save(cx);
-                this.usage_changed(cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
     /// Forget an account (see [`Store::remove_profile`]).
     pub(crate) fn remove_account(&mut self, id: &str, cx: &mut Context<Self>) {
         self.store.remove_profile(id);
+        // Its proxy's password goes with it; its folder stays.
+        if let Err(error) = crate::accounts::set_secret(&self.home, id, None) {
+            log::warn!("an account's proxy was not forgotten: {error}");
+        }
+        if self
+            .account_form
+            .as_ref()
+            .is_some_and(|form| form.editing.as_deref() == Some(id))
+        {
+            self.account_form = None;
+        }
         if self.ask_profile.as_deref() == Some(id) {
             self.ask_profile = None;
         }
@@ -1147,12 +1246,15 @@ impl Shell {
         cx.notify();
     }
 
-    /// How many agents are at work or waiting for an answer: what quitting
-    /// would end.
+    /// How many agents are at work or waiting for an answer that quitting
+    /// would end: not those that go on without the app
+    /// (`Shell::outlives_app`).
     pub(crate) fn at_work(&self) -> usize {
         self.live
-            .values()
-            .filter(|live| matches!(live.mark, Mark::Working | Mark::Blocked))
+            .iter()
+            .filter(|(pane, live)| {
+                matches!(live.mark, Mark::Working | Mark::Blocked) && !self.outlives_app(pane)
+            })
             .count()
     }
 
@@ -1251,9 +1353,15 @@ impl Shell {
             return field.clone();
         }
         let shell = cx.entity().downgrade();
+        let face = self.field_face(cx);
+        let lists = self.chat_face(cx);
         let field = cx.new(|cx| {
             let mut field = kou_thread_view::PromptField::new(window, cx);
             field.set_placeholder("What should be done?", cx);
+            // Its frame is drawn as a chat's field's is: by the plugin.
+            field.set_face(Some(face), cx);
+            // And the lists over it, as a chat's are.
+            field.set_chat_face(Some(lists), cx);
             // Who gets the prompt stands in the field's own foot.
             field.set_foot(
                 Some(move |_: &mut Window, cx: &mut App| match shell.upgrade() {
@@ -1278,39 +1386,76 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         const FRESH: Duration = Duration::from_secs(600);
-        let (Some(harness), Some(cwd)) = (
-            self.asked().map(|(harness, _)| harness.id.clone()),
+        let (Some((harness, kind)), Some(cwd)) = (
+            self.asked()
+                .map(|(harness, kind)| (harness.id.clone(), kind)),
             self.prompt_project.clone(),
         ) else {
             return;
         };
         let known = self.offered.get(&harness);
+        let account = self.asked_profile().map(|p| p.id.clone());
         let stale = known.is_none_or(|known| {
-            known.cwd != cwd || known.at.is_some_and(|at| at.elapsed() > FRESH)
+            known.cwd != cwd
+                || known.account != account
+                || known.at.is_some_and(|at| at.elapsed() > FRESH)
         });
         if stale && self.probes {
             // Marked as asked for at once; what was known stays on show
             // until the answer comes.
             let mut asking = known.cloned().unwrap_or_default();
+            if asking.cwd != cwd || asking.account != account {
+                asking.access = Default::default();
+                self.prompt_models = None;
+            }
             asking.cwd = cwd.clone();
             asking.at = None;
             self.offered.insert(harness.clone(), asking);
-            self.ask_for_models(&harness, cwd, cx);
+            self.ask_for_models(&harness, cwd.clone(), cx);
         }
         let chosen = self
             .ask_model
             .as_ref()
             .filter(|(of, _)| *of == harness)
             .map(|(_, model)| model.clone());
-        let shown = (harness.clone(), self.offered_changes, chosen.clone());
+        let access_choice = self
+            .ask_access
+            .as_ref()
+            .filter(|(dir, _)| dir == &cwd)
+            .map(|(_, id)| id.clone());
+        let shown = PromptChoices {
+            harness: harness.clone(),
+            kind,
+            revision: self.offered_changes,
+            model: chosen.clone(),
+            access: access_choice.clone(),
+        };
         if self.prompt_models.as_ref() == Some(&shown) {
             return;
         }
         self.prompt_models = Some(shown);
         let offered = self.offered.get(&harness).cloned().unwrap_or_default();
         let model = chosen.or(offered.current);
+        let mut access =
+            if harness == "codex" && kind == PaneKind::Thread && self.store.codex_direct {
+                offered.access
+            } else {
+                Default::default()
+            };
+        if !access.choices.is_empty() {
+            access.choices.insert(
+                0,
+                kou_thread::Choice {
+                    id: "configured".into(),
+                    name: "Use Codex settings".into(),
+                    description: None,
+                },
+            );
+            access.current = access_choice;
+        }
         field.update(cx, |field, cx| {
-            field.set_models(offered.models, offered.providers, model, cx)
+            field.set_models(offered.models, offered.providers, model, cx);
+            field.set_access(access, cx);
         });
     }
 
@@ -1335,6 +1480,21 @@ impl Shell {
                 }
             }
             Event::Height(_) => {}
+            Event::Access(id) => {
+                if self.store.codex_direct
+                    && self
+                        .asked()
+                        .is_some_and(|(h, k)| h.id == "codex" && k == PaneKind::Thread)
+                {
+                    self.ask_access = self
+                        .prompt_project
+                        .clone()
+                        .filter(|_| id != "configured")
+                        .map(|cwd| (cwd, id.clone()));
+                    self.prompt_models = None;
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -1361,6 +1521,43 @@ impl Shell {
         self.first_prompt = prompt.map(|prompt| (prompt.text, prompt.blocks));
         self.launch_profile = self.asked_profile().map(|profile| profile.id.clone());
         self.start(&harness, kind, window, cx);
+    }
+
+    /// Whether the picker is of what the screen shows: the tab waiting in
+    /// front of the session on screen, the half being chosen in its front
+    /// tab, or a place asked for on a canvas of that session. A picker can
+    /// be none of these and still be kept: a tab that waits in a session
+    /// the user has left.
+    pub(crate) fn picker_shown(&self) -> bool {
+        let (Some(picker), Some(session)) = (self.picker.as_ref(), self.store.current()) else {
+            return false;
+        };
+        if picker.session != session.id || !picker.front {
+            return false;
+        }
+        match (&picker.beside, &picker.tab) {
+            (Some((at, _)), _) => session.front().is_some_and(|tab| tab.root.contains(at)),
+            // (Asked for on a canvas of this session: it joins that tab.)
+            (None, Some(tab)) => session.tabs.iter().any(|own| own.id == *tab),
+            (None, None) => true,
+        }
+    }
+
+    /// Runs `add`, which adds a pane that is not of the user's doing (an
+    /// agent's `pane spawn`), and leaves what the user has open as it was:
+    /// the page in front, a tab waiting for its agent, a half being chosen.
+    pub(crate) fn undisturbed<T>(&mut self, add: impl FnOnce(&mut Self) -> T) -> T {
+        let picker = self.picker.take();
+        let (settings, usage) = (self.settings_open, self.usage_open);
+        let plugin = self.plugin_page.take();
+        let tick = self.usage_tick.take();
+        let added = add(self);
+        self.picker = picker;
+        self.settings_open = settings;
+        self.usage_open = usage;
+        self.plugin_page = plugin;
+        self.usage_tick = tick;
+        added
     }
 
     /// The tab waiting for its agent, when the session has one.
@@ -2304,6 +2501,8 @@ impl Shell {
                     && let Some(saved) = self.store.pane_mut(&pane)
                 {
                     saved.title = title;
+                    // The user's own name for it: it stays.
+                    saved.titled = true;
                     self.save(cx);
                 }
             }
@@ -2388,13 +2587,24 @@ impl Shell {
         let edge = match existing {
             Some(edge) => edge,
             None => {
-                // Two panes that talk are connected: the board shows it.
+                // Two panes that talk are connected: the board shows it. The
+                // line carries nothing by itself: what the sender answers
+                // from then on is not the receiver's unless someone wires it.
                 let made = canvas.update(cx, |canvas, cx| {
-                    canvas.connect(
+                    let id = canvas.connect(
                         PortRef::new(from_node, "out"),
                         PortRef::new(to_node, "in"),
                         cx,
-                    )
+                    )?;
+                    canvas.update_edge(
+                        id,
+                        |edge| {
+                            edge.origin = kou_canvas::EdgeOrigin::Sent;
+                            edge.by = Some(from_node);
+                        },
+                        cx,
+                    );
+                    Some(id)
                 });
                 let Some(edge) = made.and_then(|id| canvas.read(cx).board().edge(id).cloned())
                 else {
@@ -2419,6 +2629,7 @@ impl Shell {
                 from: from.to_owned(),
                 to: to.to_owned(),
                 text: text.to_owned(),
+                hops: self.hops_from(from),
             });
             canvas.update(cx, |canvas, cx| canvas.set_traffic(edge.id, traffic, cx));
             self.show_pending(&tab, cx);
@@ -2434,7 +2645,7 @@ impl Shell {
     }
 
     // Show on each node how many messages wait for it.
-    fn show_pending(&mut self, tab: &str, cx: &mut Context<Self>) {
+    pub(crate) fn show_pending(&mut self, tab: &str, cx: &mut Context<Self>) {
         let Some((canvas, _)) = self.canvases.get(tab) else {
             return;
         };
@@ -2481,6 +2692,7 @@ impl Shell {
                     });
                 }
             }
+            self.hops.insert(held.to.clone(), held.hops);
             self.deliver(&held.to, &held.text, window, cx);
         }
         self.show_pending(tab, cx);
@@ -2493,30 +2705,59 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let busy = self
-            .live
-            .get(pane)
-            .is_some_and(|live| matches!(live.mark, Mark::Working | Mark::Blocked));
-        if !busy {
-            self.close_pane(pane, window, cx);
-            return;
+        self.request_close_of(vec![pane.to_owned()], window, cx);
+    }
+
+    /// Close several panes: the ones at rest at once, and the ones whose
+    /// agents are in the middle of something after asking, once for them all.
+    pub(crate) fn request_close_of(
+        &mut self,
+        panes: Vec<Id>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (busy, idle): (Vec<Id>, Vec<Id>) = panes.into_iter().partition(|pane| {
+            self.live
+                .get(pane)
+                .is_some_and(|live| matches!(live.mark, Mark::Working | Mark::Blocked))
+        });
+        for pane in idle {
+            self.close_pane(&pane, window, cx);
         }
-        let title = self
-            .store
-            .pane(pane)
-            .map_or_else(String::new, |pane| pane.title.clone());
+        let (question, detail, keep) = match busy.as_slice() {
+            [] => return,
+            [pane] => {
+                let title = self
+                    .store
+                    .pane(pane)
+                    .map_or_else(String::new, |pane| pane.title.clone());
+                (
+                    format!("Stop {title}?"),
+                    "It is still working. Closing the pane ends its process.",
+                    "Keep it",
+                )
+            }
+            several => (
+                format!("Stop {} agents?", several.len()),
+                "They are still working. Closing their panes ends their processes.",
+                "Keep them",
+            ),
+        };
         let answer = window.prompt(
             PromptLevel::Warning,
-            &format!("Stop {title}?"),
-            Some("It is still working. Closing the pane ends its process."),
-            &["Stop and close", "Keep it"],
+            &question,
+            Some(detail),
+            &["Stop and close", keep],
             cx,
         );
-        let pane = pane.to_owned();
         cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
-                this.update_in(cx, |this, window, cx| this.close_pane(&pane, window, cx))
-                    .ok();
+                this.update_in(cx, |this, window, cx| {
+                    for pane in &busy {
+                        this.close_pane(pane, window, cx);
+                    }
+                })
+                .ok();
             }
         })
         .detach();
@@ -2524,6 +2765,8 @@ impl Shell {
 
     /// Close a pane: its view is dropped, which ends its process.
     pub(crate) fn close_pane(&mut self, pane: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // Whoever asked it something is told that no answer will come.
+        self.forget_asks(pane, window, cx);
         self.forget(pane, cx);
         let canvas = self.canvas_of(pane);
         let Some(saved) = self.store.remove_pane(pane) else {
@@ -2573,7 +2816,7 @@ impl Shell {
 
     /// The theme for a ground, dark or light, with the accent the user chose.
     pub(crate) fn themed(&self, dark: bool) -> kou_ui::Theme {
-        kou_ui::Theme::new(dark).accented(self.store.accent_rgb())
+        self.appearance_theme(dark)
     }
 
     /// Take `accent` for links, focus, what is selected and an agent at
@@ -2608,6 +2851,10 @@ impl Shell {
     pub(crate) fn show_settings(&mut self, cx: &mut Context<Self>) {
         self.close_pages();
         self.settings_open = true;
+        // (What is left to each account, and whether anybody is signed in.)
+        if !self.store.profiles.is_empty() {
+            self.refresh_usage(false, cx);
+        }
         cx.notify();
     }
 
@@ -2624,8 +2871,12 @@ impl Shell {
     }
 
     pub(crate) fn dismiss(&mut self, cx: &mut Context<Self>) {
-        // A list closes before what it belongs to does.
-        if std::mem::take(&mut self.new_menu) || std::mem::take(&mut self.ask_menu) {
+        // A list closes before what it belongs to does, and the account
+        // form before the settings it is in.
+        if std::mem::take(&mut self.new_menu)
+            || std::mem::take(&mut self.ask_menu)
+            || self.account_form.take().is_some()
+        {
             cx.notify();
             return;
         }
@@ -2657,8 +2908,10 @@ impl Shell {
     /// Handle what could not be handled where it was asked for. Called at the
     /// start of each frame, where the window is at hand.
     pub(crate) fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(pane) = self.close_requested.take() {
-            self.request_close(&pane, window, cx);
+        self.answer_deferred(window, cx);
+        let closing = std::mem::take(&mut self.close_requested);
+        if !closing.is_empty() {
+            self.request_close_of(closing, window, cx);
         }
         for (session, event) in std::mem::take(&mut self.board_events) {
             self.board_event(&session, event, window, cx);
@@ -2669,11 +2922,13 @@ impl Shell {
         if asking {
             let field = self.prompt_field(window, cx);
             // Its file links are looked up in the folder the agent will work in.
-            let project = self
-                .store
-                .current()
-                .and_then(|session| self.store.space(&session.space))
-                .map(|space| space.path.clone());
+            let picker = self.picker.as_ref().filter(|_| self.picker_shown());
+            let project = picker
+                .and_then(|p| p.beside.as_ref())
+                .and_then(|(pane, _)| self.store.pane(pane))
+                .or_else(|| picker.and_then(|p| self.store.pane(p.parent.as_deref()?)))
+                .map(|pane| pane.cwd.clone())
+                .or_else(|| self.store.current().map(|session| session.cwd.clone()));
             if project != self.prompt_project {
                 self.prompt_project = project.clone();
                 field.update(cx, |field, cx| field.set_project(project, cx));
@@ -2692,16 +2947,35 @@ impl Shell {
             }
         }
         self.asked = asking;
-        // Conversations a rebuilt window is to carry on with: each is
-        // started again by its session, now that it is known what is installed.
+        self.revive_ready(window, cx);
+        self.give_keys(window, cx);
+    }
+
+    /// Start again the conversations a rebuilt window is to carry on with,
+    /// and those whose Claude Code went on while the app was closed: each
+    /// by its session, once it is known what is installed. One whose
+    /// harness has not been looked for yet waits for that: started before,
+    /// it would not be found.
+    pub(crate) fn revive_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.revive.is_empty() && !self.scanning && !self.harnesses.is_empty() {
-            for pane in std::mem::take(&mut self.revive) {
+            let (now, later): (Vec<Id>, Vec<Id>) = std::mem::take(&mut self.revive)
+                .into_iter()
+                .partition(|pane| {
+                    self.store.pane(pane).is_none_or(|saved| {
+                        saved.harness == "kou"
+                            || self
+                                .detected
+                                .iter()
+                                .any(|detected| detected.spec.id == saved.harness)
+                    })
+                });
+            self.revive = later;
+            for pane in now {
                 if self.store.pane(&pane).is_some() && !self.threads.contains_key(&pane) {
                     self.launch(&pane, None, window, cx);
                 }
             }
         }
-        self.give_keys(window, cx);
     }
 
     // The pane that should have the keys: the focused one of the tab on
@@ -2755,6 +3029,12 @@ impl Shell {
         // The tab in front is what closes: the one waiting for its agent
         // when that is it, not the pane behind it. A half that is still
         // being chosen for closes before the pane it was taken from.
+        // A page over the workspace is what is in front: it closes, not a
+        // pane behind it that cannot be seen.
+        if self.close_pages() {
+            cx.notify();
+            return;
+        }
         if self.pending_in_front() {
             return self.close_pending_tab(cx);
         }
@@ -2877,6 +3157,9 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         let (shell, cx, _) = open(cx);
+        shell.update(cx, |shell, _| {
+            shell.store.theme = kou_ui::themes::Selection::System
+        });
         let before = cx.update(|_, cx| kou_ui::theme(cx).palette);
         assert_eq!(before.accent, kou_ui::DARK.accent);
         shell.update(cx, |shell, cx| shell.set_accent(Some(0x4d9fe0), cx));
@@ -2956,6 +3239,429 @@ mod tests {
             let canvas = shell.canvas(&tab, cx).unwrap();
             (tab, canvas)
         })
+    }
+
+    #[gpui::test]
+    fn only_a_tab_s_orchestrator_wires_it_and_what_it_wires_says_so(cx: &mut TestAppContext) {
+        use crate::wires::EdgeChange;
+        use kou_ipc::Response;
+        let (shell, cx, session) = open(cx);
+        let a = start(&shell, &session, cx);
+        let b = start_beside(&shell, &a, cx);
+        let c = start_beside(&shell, &b, cx);
+        let (_, canvas) = canvas_with(&shell, &a, cx);
+        let node = |pane: &str, cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| shell.store.pane(pane).unwrap().node)
+        };
+        let change =
+            |by: &str, from: &str, to: &str, change: EdgeChange, cx: &mut VisualTestContext| {
+                shell.update(cx, |shell, cx| shell.change_edge(by, from, to, change, cx))
+            };
+        let edges = |response: Response| match response {
+            Response::Edges { edges, said } => (edges, said),
+            other => panic!("{other:?}"),
+        };
+        let refusal = |response: Response| match response {
+            Response::Error { message } => message,
+            other => panic!("{other:?}"),
+        };
+        // Nobody wires a tab but the user, until the user says who else may.
+        let said = refusal(change(&a, &b, &a, EdgeChange::Add(None), cx));
+        assert!(said.contains("not this tab's orchestrator"), "{said}");
+        assert!(canvas.read_with(cx, |canvas, _| canvas.board().edges().is_empty()));
+        // Anyone may look.
+        let (listed, _) = edges(shell.update(cx, |shell, cx| shell.list_edges(&b, cx)));
+        assert!(listed.is_empty());
+        assert!(!shell.update(cx, |shell, cx| shell.place(&a, cx).unwrap().orchestrator));
+        // The user makes one node the orchestrator: its agent wires the
+        // tab, any two nodes of it, and the wire says who drew it.
+        let lead = node(&a, cx);
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_node(lead, |node| node.orchestrator = true, cx)
+        });
+        assert!(shell.update(cx, |shell, cx| shell.place(&a, cx).unwrap().orchestrator));
+        let (listed, said) = edges(change(&a, &b, &c, EdgeChange::Add(None), cx));
+        assert!(said.is_empty(), "{said:?}");
+        assert_eq!(
+            listed,
+            [kou_ipc::Edge {
+                from: b.clone(),
+                to: c.clone(),
+                wired: true,
+                by: Some(a.clone()),
+                ..kou_ipc::Edge::default()
+            }]
+        );
+        canvas.read_with(cx, |canvas, _| {
+            let edge = &canvas.board().edges()[0];
+            assert_eq!(
+                (edge.origin, edge.by),
+                (kou_canvas::EdgeOrigin::Wired, Some(lead))
+            );
+        });
+        // Still nobody else's to change.
+        assert!(refusal(change(&b, &b, &c, EdgeChange::Remove, cx)).contains("orchestrator"));
+        // The wire back closes a ring: made, and said.
+        let (listed, said) = edges(change(&a, &c, &b, EdgeChange::Add(None), cx));
+        assert_eq!(listed.len(), 2);
+        assert!(
+            said.len() == 1
+                && said[0].contains(&format!("{b} -> {c} -> {b}"))
+                && said[0].contains("waits on its target for the user"),
+            "{said:?}"
+        );
+        // Asked for again, it is the same wire, in the mode asked for now.
+        let (listed, said) = edges(change(
+            &a,
+            &c,
+            &b,
+            EdgeChange::Add(Some(kou_ipc::EdgeMode::Approve)),
+            cx,
+        ));
+        assert_eq!(listed.len(), 2);
+        assert!(said[0].contains("was wired already"), "{said:?}");
+        assert_eq!(listed[1].mode, kou_ipc::EdgeMode::Approve);
+        // A mode is set on a wire that is there, and a wire taken away.
+        assert!(
+            refusal(change(
+                &a,
+                &a,
+                &c,
+                EdgeChange::Set(kou_ipc::EdgeMode::Off),
+                cx
+            ))
+            .contains("is not wired")
+        );
+        let (listed, _) = edges(change(
+            &a,
+            &b,
+            &c,
+            EdgeChange::Set(kou_ipc::EdgeMode::Off),
+            cx,
+        ));
+        assert_eq!(listed[0].mode, kou_ipc::EdgeMode::Off);
+        let (listed, _) = edges(change(&a, &b, &c, EdgeChange::Remove, cx));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            (listed[0].from.as_str(), listed[0].to.as_str()),
+            (c.as_str(), b.as_str())
+        );
+        // What is not on this tab's canvas is not its to wire.
+        assert!(refusal(change(&a, "p999", &b, EdgeChange::Add(None), cx)).contains("no p999"));
+        assert!(refusal(change(&a, &b, &b, EdgeChange::Add(None), cx)).contains("itself"));
+        // A line that shows one wrote to the other becomes the wire, and a
+        // wire between a starter and what it started goes back to the line.
+        assert!(shell.update(cx, |shell, cx| shell.pass_along(&a, &b, "hello", true, cx)));
+        let (listed, _) = edges(shell.update(cx, |shell, cx| shell.list_edges(&a, cx)));
+        assert!(
+            listed
+                .iter()
+                .any(|edge| edge.from == a && edge.to == b && edge.sent)
+        );
+        let child = node(&b, cx);
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_node(child, |node| node.parent = Some(lead), cx)
+        });
+        let (listed, _) = edges(change(&a, &a, &b, EdgeChange::Add(None), cx));
+        let wire = listed
+            .iter()
+            .find(|edge| edge.from == a && edge.to == b)
+            .unwrap();
+        assert!(wire.wired && !wire.sent && wire.by.as_deref() == Some(a.as_str()));
+        let (listed, _) = edges(change(&a, &a, &b, EdgeChange::Remove, cx));
+        let line = listed
+            .iter()
+            .find(|edge| edge.from == a && edge.to == b)
+            .unwrap();
+        assert!(!line.wired && !line.sent && line.by.is_none(), "{line:?}");
+        // The right is the user's to take back.
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_node(lead, |node| node.orchestrator = false, cx)
+        });
+        assert!(refusal(change(&a, &b, &c, EdgeChange::Add(None), cx)).contains("orchestrator"));
+    }
+
+    #[gpui::test]
+    fn a_question_is_answered_once_and_a_message_passed_on_too_often_waits_for_the_user(
+        cx: &mut TestAppContext,
+    ) {
+        use kou_thread::{Block, Capabilities, Command, Stop, Update};
+        let (shell, cx, session) = open(cx);
+        shell.update(cx, |shell, _| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: true,
+                adapter: None,
+            });
+        });
+        // Two chats in one tab, each with an agent the test plays.
+        let chat = |beside: Option<&str>, cx: &mut VisualTestContext| {
+            shell.update_in(cx, |shell, window, cx| {
+                let pane = match beside {
+                    None => shell
+                        .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                        .unwrap(),
+                    Some(at) => shell
+                        .add_pane_at(
+                            &session,
+                            "claude",
+                            None,
+                            PaneKind::Thread,
+                            Place::Auto,
+                            Seat::Beside {
+                                at: at.to_owned(),
+                                axis: Axis::Row,
+                            },
+                            window,
+                            cx,
+                        )
+                        .unwrap(),
+                };
+                let saved = shell.store.pane(&pane).unwrap().clone();
+                let (backend, end) = kou_thread::channel();
+                shell.install_thread(&saved, backend, "Claude Code".into(), window, cx);
+                let _ = end.updates.try_send(Update::Ready {
+                    session: format!("sess-{pane}"),
+                    capabilities: Capabilities::default(),
+                    modes: Vec::new(),
+                    mode: None,
+                    models: Vec::new(),
+                    model: None,
+                });
+                (pane, end)
+            })
+        };
+        let (p, p_end) = chat(None, cx);
+        let (q, q_end) = chat(Some(&p), cx);
+        cx.run_until_parked();
+        let prompts = |end: &kou_thread::BackendEnd| {
+            let mut texts = Vec::new();
+            while let Ok(command) = end.commands.try_recv() {
+                if let Command::Prompt(blocks) = command {
+                    texts.extend(blocks.into_iter().filter_map(|block| match block {
+                        Block::Text(text) => Some(text),
+                        _ => None,
+                    }));
+                }
+            }
+            texts
+        };
+        // (A turn begins, and later ends: the app sees it at work between.)
+        let answers = |end: &kou_thread::BackendEnd, text: &str, cx: &mut VisualTestContext| {
+            let _ = end.updates.try_send(Update::TurnStarted);
+            cx.run_until_parked();
+            let _ = end.updates.try_send(Update::AssistantChunk(text.into()));
+            let _ = end.updates.try_send(Update::TurnEnded(Stop::Finished));
+            cx.run_until_parked();
+        };
+        // One asks the other: the question arrives saying whose it is and
+        // that the answer goes back by itself; nothing is wired.
+        let asked = shell.update_in(cx, |shell, window, cx| {
+            shell.ask_pane(&p, &q, "How far are you?", window, cx)
+        });
+        assert!(matches!(asked, kou_ipc::Response::Text { .. }), "{asked:?}");
+        cx.run_until_parked();
+        let got = prompts(&q_end);
+        assert_eq!(got.len(), 1);
+        assert!(
+            got[0].starts_with(&format!("[canvas] question from «Claude Code» ({p}):\n"))
+                && got[0].ends_with("\nHow far are you?"),
+            "{got:?}"
+        );
+        let (_, canvas) = canvas_with(&shell, &p, cx);
+        assert!(canvas.read_with(cx, |canvas, _| canvas.board().edges().is_empty()));
+        // Its answer comes back once, as a message; the next does not.
+        answers(&q_end, "Half way.", cx);
+        assert_eq!(
+            prompts(&p_end),
+            [format!(
+                "[canvas] answer from «Claude Code» ({q}), hop 2 of 6:\nHalf way."
+            )]
+        );
+        answers(&q_end, "Done now.", cx);
+        assert!(prompts(&p_end).is_empty());
+        assert!(shell.read_with(cx, |shell, _| shell.asks.is_empty()));
+        // A pane that is gone before it answers says so to who asked.
+        // (Asked of a terminal, there is no answer to hand back at all.)
+        let terminal = start(&shell, &session, cx);
+        let refused = shell.update_in(cx, |shell, window, cx| {
+            shell.ask_pane(&p, &terminal, "?", window, cx)
+        });
+        assert!(
+            matches!(refused, kou_ipc::Response::Error { .. }),
+            "{refused:?}"
+        );
+
+        // The user wires the two into a ring. What one answers goes to the
+        // other, counted from the second time on, and past the limit it
+        // waits for the user instead of going round for ever.
+        let (pn, qn) = shell.read_with(cx, |shell, _| {
+            (
+                shell.store.pane(&p).unwrap().node,
+                shell.store.pane(&q).unwrap().node,
+            )
+        });
+        canvas.update(cx, |canvas, cx| {
+            canvas.connect(PortRef::new(pn, "out"), PortRef::new(qn, "in"), cx);
+            canvas.connect(PortRef::new(qn, "out"), PortRef::new(pn, "in"), cx);
+        });
+        let _ = prompts(&p_end);
+        let _ = prompts(&q_end);
+        // (What the first one answers now, it answers to the user: the
+        // answer it was sent above is behind it.)
+        shell.update(cx, |shell, _| shell.hops.clear());
+        answers(&p_end, "ping", cx);
+        let first = prompts(&q_end);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(
+            first[0].ends_with("):\nping") && !first[0].contains("hop"),
+            "{first:?}"
+        );
+        let mut said = Vec::new();
+        for round in 0..8 {
+            let (from, to) = if round % 2 == 0 {
+                (&q_end, &p_end)
+            } else {
+                (&p_end, &q_end)
+            };
+            answers(from, "pong", cx);
+            let got = prompts(to);
+            if got.is_empty() {
+                break;
+            }
+            said.extend(got);
+        }
+        // Hops 2 to 6 went round; the seventh was held.
+        assert_eq!(said.len(), 5, "{said:?}");
+        assert!(
+            said[0].contains(", hop 2 of 6:") && said[4].contains(", hop 6 of 6:"),
+            "{said:?}"
+        );
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.held.len(), 1);
+            assert!(shell.held[0].text.contains("hop 7 of 6"));
+            assert!(
+                shell
+                    .notice
+                    .as_ref()
+                    .is_some_and(|notice| notice.contains("waits on")),
+                "{:?}",
+                shell.notice
+            );
+        });
+        std::mem::forget((p_end, q_end));
+    }
+
+    #[gpui::test]
+    fn a_title_a_pane_was_given_stays_when_its_agent_names_the_session(cx: &mut TestAppContext) {
+        use kou_thread::{Capabilities, Update};
+        let (shell, cx, session) = open(cx);
+        shell.update(cx, |shell, _| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: true,
+                adapter: None,
+            });
+        });
+        let (pane, end) = shell.update_in(cx, |shell, window, cx| {
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            let saved = shell.store.pane(&pane).unwrap().clone();
+            let (backend, end) = kou_thread::channel();
+            shell.install_thread(&saved, backend, "Claude Code".into(), window, cx);
+            (pane, end)
+        });
+        let title = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| {
+                shell.store.pane(&pane).unwrap().title.clone()
+            })
+        };
+        let _ = end.updates.try_send(Update::Ready {
+            session: "sess-1".into(),
+            capabilities: Capabilities::default(),
+            modes: Vec::new(),
+            mode: None,
+            models: Vec::new(),
+            model: None,
+        });
+        // Left to itself, the pane is called what its agent calls the session.
+        let _ = end
+            .updates
+            .try_send(Update::Title("Fix the login test".into()));
+        cx.run_until_parked();
+        assert_eq!(title(cx), "Fix the login test");
+        // Given a name (by who started it, or by the user), it keeps it.
+        shell.update(cx, |shell, _| {
+            let saved = shell.store.pane_mut(&pane).unwrap();
+            saved.title = "Reviewer".into();
+            saved.titled = true;
+        });
+        let _ = end
+            .updates
+            .try_send(Update::Title("Branch agent-v2.1".into()));
+        cx.run_until_parked();
+        assert_eq!(title(cx), "Reviewer");
+        std::mem::forget(end);
+    }
+
+    #[gpui::test]
+    fn deleting_several_selected_nodes_closes_every_one_of_them(cx: &mut TestAppContext) {
+        let (shell, cx, session) = open(cx);
+        let first = start(&shell, &session, cx);
+        shell.update(cx, |shell, cx| shell.set_layout(Layout::Canvas, cx));
+        draw(cx);
+        let (tab, canvas) = canvas_with(&shell, &first, cx);
+        // Two more panes beside the first: three nodes on the tab's canvas.
+        for x in [1200., 2400.] {
+            canvas.update(cx, |_, cx| {
+                cx.emit(BoardEvent::AddRequested(AddRequest {
+                    offer: "shell".into(),
+                    x,
+                    y: 80.,
+                    wire: None,
+                }));
+            });
+            draw(cx);
+        }
+        let nodes: Vec<(Id, NodeId)> = shell.read_with(cx, |shell, _| {
+            shell
+                .store
+                .panes_in(&tab)
+                .into_iter()
+                .map(|pane| (pane.id.clone(), pane.node))
+                .collect()
+        });
+        assert_eq!(nodes.len(), 3);
+        // The canvas asks about each node of a deleted selection in turn,
+        // within one frame: both go, not the last one asked about alone.
+        canvas.update(cx, |_, cx| {
+            cx.emit(CanvasEvent::RemoveRequested(nodes[1].1));
+            cx.emit(CanvasEvent::RemoveRequested(nodes[2].1));
+        });
+        draw(cx);
+        shell.read_with(cx, |shell, _| {
+            let left: Vec<Id> = shell
+                .store
+                .panes_in(&tab)
+                .into_iter()
+                .map(|pane| pane.id.clone())
+                .collect();
+            assert_eq!(left, [nodes[0].0.clone()]);
+        });
+        canvas.read_with(cx, |canvas, _| {
+            assert_eq!(canvas.board().nodes().len(), 1);
+        });
     }
 
     #[gpui::test]
@@ -3107,6 +3813,94 @@ mod tests {
         assert_eq!(traffic(cx).delivered, 2);
         assert!(shell.update(cx, |shell, cx| shell.pass_along(&a, &b, "four", true, cx)));
         assert_eq!(traffic(cx).delivered, 3);
+    }
+
+    #[gpui::test]
+    fn an_agent_that_asks_is_told_its_tab_its_neighbours_and_the_canvas_s_edges(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        let a = start(&shell, &session, cx);
+        let b = start_beside(&shell, &a, cx);
+        let (tab, canvas) = canvas_with(&shell, &a, cx);
+        let place = |pane: &str, cx: &mut VisualTestContext| {
+            shell.update(cx, |shell, cx| shell.place(pane, cx))
+        };
+        // Its own pane, its tab with both panes, the other one beside it;
+        // nothing joins them yet.
+        let found = place(&a, cx).expect("a pane of the app's");
+        assert_eq!(
+            (found.pane.id.as_str(), found.tab.id.as_str()),
+            (a.as_str(), tab.as_str())
+        );
+        assert_eq!(found.tab.panes, [a.clone(), b.clone()]);
+        assert_eq!(
+            found
+                .others
+                .iter()
+                .map(|pane| pane.id.as_str())
+                .collect::<Vec<_>>(),
+            [b.as_str()]
+        );
+        assert_eq!(found.session, "atlas");
+        assert!(found.edges.is_empty() && found.notes.is_empty());
+        // One says something to the other: a line from it that shows they
+        // talk, which it made and which carries nothing by itself.
+        assert!(shell.update(cx, |shell, cx| shell.pass_along(&a, &b, "one", true, cx)));
+        let edge = canvas.read_with(cx, |canvas, _| canvas.board().edges()[0].id);
+        let made = place(&a, cx).unwrap().edges;
+        assert_eq!(
+            made,
+            [kou_ipc::Edge {
+                from: a.clone(),
+                to: b.clone(),
+                sent: true,
+                by: Some(a.clone()),
+                ..kou_ipc::Edge::default()
+            }]
+        );
+        assert!(
+            kou_ipc::cli::describe_place(&place(&a, cx).unwrap(), true)
+                .contains(&format!("made when you wrote to {b} on purpose"))
+        );
+        // Wired by the user and set to ask first, what comes next waits on
+        // it and is counted.
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_edge(
+                edge,
+                |edge| {
+                    edge.mode = EdgeMode::Approve;
+                    edge.origin = kou_canvas::EdgeOrigin::Wired;
+                    edge.by = None;
+                },
+                cx,
+            );
+        });
+        assert!(!shell.update(cx, |shell, cx| shell.pass_along(&a, &b, "two", true, cx)));
+        let wired = kou_ipc::Edge {
+            from: a.clone(),
+            to: b.clone(),
+            mode: kou_ipc::EdgeMode::Approve,
+            wired: true,
+            waiting: 1,
+            ..kou_ipc::Edge::default()
+        };
+        // Both ends are told of the same edge, each from where it stands.
+        assert_eq!(place(&a, cx).unwrap().edges, std::slice::from_ref(&wired));
+        let other = place(&b, cx).unwrap();
+        assert_eq!(other.edges, [wired]);
+        let said = kou_ipc::cli::describe_place(&other, true);
+        assert!(
+            said.contains(&format!("  {a} -> {b}\twired, approve: "))
+                && said.contains(" waits on you until"),
+            "{said}"
+        );
+        // A pane of another tab is on another canvas, with no edges of this one.
+        let apart = start(&shell, &session, cx);
+        let elsewhere = place(&apart, cx).unwrap();
+        assert!(elsewhere.others.is_empty() && elsewhere.edges.is_empty());
+        // A pane that is not there has no place.
+        assert!(place("p999", cx).is_none());
     }
 
     #[gpui::test]
@@ -3485,6 +4279,129 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_prompt_starts_its_agent_in_the_session_on_screen_whatever_waits_in_another(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, first) = open(cx);
+        let second = shell.update(cx, |shell, _| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: false,
+                adapter: None,
+            });
+            shell.store.sessions[1].id.clone()
+        });
+        // The first session has a pane, and a new tab that waits for its
+        // agent, in front.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.add_pane(&first, "shell", None, PaneKind::Terminal, window, cx);
+        });
+        draw(cx);
+        cx.simulate_keystrokes(&format!("{APP}-t"));
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.pending_in_front());
+            assert!(shell.picker_shown());
+        });
+        // The other session is shown: nothing in it, so its screen is the
+        // field. The tab that waits is not what this screen shows.
+        shell.update(cx, |shell, cx| {
+            shell.select_session(&second, cx);
+            shell.asked = false;
+        });
+        draw(cx);
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.asking());
+            assert!(
+                !shell.picker_shown(),
+                "it waits in the session that was left"
+            );
+        });
+        cx.simulate_input("fix the flaky test");
+        cx.simulate_keystrokes("enter");
+        shell.read_with(cx, |shell, _| {
+            // Its agent starts here, not where the tab waits.
+            let here: Vec<_> = shell.store.panes_of(&second).collect();
+            assert_eq!(here.len(), 1, "started in the session on screen");
+            assert_eq!(here[0].harness, "claude");
+            assert_eq!(shell.store.panes_of(&first).count(), 1);
+            // And the tab goes on waiting where it was asked for.
+            assert!(shell.pending_tab(&first).is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn a_pane_an_agent_asks_for_leaves_what_the_user_has_open(cx: &mut TestAppContext) {
+        let (shell, cx, session) = open(cx);
+        shell.update_in(cx, |shell, window, cx| {
+            shell.add_pane(&session, "shell", None, PaneKind::Terminal, window, cx);
+        });
+        // The settings are in front when an agent asks for a pane.
+        shell.update(cx, |shell, cx| shell.show_settings(cx));
+        shell.update_in(cx, |shell, window, cx| {
+            let seat = shell.seat_for(None);
+            let made = shell.undisturbed(|this| {
+                this.add_pane_at(
+                    &session,
+                    "shell",
+                    None,
+                    PaneKind::Terminal,
+                    Place::Auto,
+                    seat,
+                    window,
+                    cx,
+                )
+            });
+            assert!(made.is_some());
+        });
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.settings_open, "the page stays");
+            assert_eq!(shell.store.panes_of(&session).count(), 2);
+        });
+        // Cmd+W closes what is in front, the page, and no pane behind it.
+        cx.simulate_keystrokes(&format!("{APP}-w"));
+        shell.read_with(cx, |shell, _| {
+            assert!(!shell.settings_open);
+            assert_eq!(shell.store.panes_of(&session).count(), 2);
+        });
+    }
+
+    #[gpui::test]
+    fn a_save_that_works_leaves_a_notice_of_something_else_alone(cx: &mut TestAppContext) {
+        let (shell, cx, _) = open(cx);
+        let folder = std::env::temp_dir().join(format!("kou-save-notice-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        shell.update(cx, |shell, cx| {
+            shell.path = Some(folder.join("state.json"));
+            shell.notice = Some("Agents cannot reach this window".into());
+            shell.save(cx);
+            assert_eq!(
+                shell.notice.as_deref(),
+                Some("Agents cannot reach this window"),
+                "not a save's to clear"
+            );
+            // A save that fails says so, and one that works takes that back.
+            shell.path = Some(folder.join("state.json").join("under-a-file"));
+            shell.save(cx);
+            assert!(
+                shell
+                    .notice
+                    .as_deref()
+                    .unwrap()
+                    .starts_with("Could not save")
+            );
+            shell.path = Some(folder.join("state.json"));
+            shell.save(cx);
+            assert_eq!(shell.notice, None);
+        });
+        std::fs::remove_dir_all(&folder).ok();
+    }
+
+    #[gpui::test]
     fn an_empty_screen_takes_a_prompt_and_starts_an_agent_with_it(cx: &mut TestAppContext) {
         let (shell, cx, session) = open(cx);
         shell.update(cx, |shell, _| {
@@ -3607,6 +4524,8 @@ mod tests {
                 native: true,
                 adapter: None,
             });
+            // (Each test says whether the accounts are one pool.)
+            shell.store.balance = false;
             shell.store.add_profile("claude", "/accounts/work".into())
         });
         (shell, cx, session, account)
@@ -3676,6 +4595,267 @@ mod tests {
             assert_eq!(panes[0].profile, None);
             assert!(shell.store.profiles.is_empty());
         });
+    }
+
+    // A folder of a test's own for the app's home and a harness's own home.
+    fn account_homes(shell: &Entity<Shell>, cx: &mut VisualTestContext, name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("kou-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::create_dir_all(root.join("own").join("projects")).unwrap();
+        shell.update(cx, |shell, _| {
+            shell.home = root.join("app");
+            shell.own_homes.insert("claude".into(), root.join("own"));
+        });
+        root
+    }
+
+    #[gpui::test]
+    fn an_account_is_added_with_a_name_and_a_proxy_and_runs_through_it(cx: &mut TestAppContext) {
+        let (shell, cx, _, _) = with_an_account(cx);
+        let root = account_homes(&shell, cx, "account-form");
+        shell.update_in(cx, |shell, window, cx| {
+            shell.show_settings(cx);
+            shell.open_account_form("claude", None, window, cx);
+        });
+        draw(cx);
+        shell.update_in(cx, |shell, window, _| {
+            assert!(
+                shell.account_focus.is_focused(window),
+                "the form has the keys"
+            );
+        });
+        // The name, Tab, the proxy as it was sold; Enter takes them.
+        cx.simulate_input("work 2");
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.account_form.as_ref().unwrap().name.text(), "work 2");
+        });
+        cx.simulate_keystrokes("tab");
+        cx.simulate_input("socks5://10.0.0.7:1080");
+        cx.simulate_keystrokes("enter");
+        shell.read_with(cx, |shell, _| {
+            let form = shell.account_form.as_ref().expect("the form stays open");
+            assert!(form.problem.as_deref().unwrap().contains("SOCKS"));
+            assert_eq!(shell.store.profiles.len(), 1, "nothing is added");
+        });
+        cx.simulate_keystrokes("cmd-a");
+        cx.simulate_input("gate.example.com:3128:alice:p@ss");
+        cx.simulate_keystrokes("enter");
+        let account = shell.read_with(cx, |shell, _| {
+            assert!(shell.account_form.is_none());
+            let added = shell.store.profiles.last().unwrap().clone();
+            assert_eq!(added.name, "work 2");
+            // Its folder is the app's own, made for it, and shares the
+            // conversations of the harness's own home.
+            assert_eq!(
+                added.home,
+                root.join("app")
+                    .join("accounts")
+                    .join(format!("claude-{}", added.id))
+            );
+            assert!(added.home.join("projects").is_dir());
+            // What is kept with the account has no password in it.
+            assert_eq!(added.proxy.as_deref(), Some("http://gate.example.com:3128"));
+            let saved = serde_json::to_string(&shell.store).unwrap();
+            assert!(
+                !saved.contains("p%40ss") && !saved.contains("alice"),
+                "{saved}"
+            );
+            // What runs under it gets its home and goes out through the
+            // proxy, password and all.
+            let env = shell.account_env("claude", Some(&added.id));
+            let of = |name: &str| {
+                env.iter()
+                    .find(|(known, _)| known == name)
+                    .map(|(_, value)| value.clone())
+            };
+            assert_eq!(
+                of("CLAUDE_CONFIG_DIR"),
+                Some(added.home.to_string_lossy().into_owned())
+            );
+            assert_eq!(
+                of("HTTPS_PROXY").as_deref(),
+                Some("http://alice:p%40ss@gate.example.com:3128")
+            );
+            assert_eq!(of("http_proxy"), of("HTTPS_PROXY"));
+            assert!(of("NO_PROXY").unwrap().contains("localhost"));
+            // The harness's own account, and another account, do not.
+            assert!(shell.account_env("claude", None).is_empty());
+            added.id
+        });
+        // Changed: the proxy as it was given comes back to be edited, and
+        // one without a password leaves none kept.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.open_account_form("claude", Some(&account), window, cx);
+            let form = shell.account_form.as_ref().unwrap();
+            assert_eq!(
+                form.proxy.text(),
+                "http://alice:p%40ss@gate.example.com:3128"
+            );
+            assert_eq!(form.name.text(), "work 2");
+        });
+        draw(cx);
+        cx.simulate_keystrokes("tab cmd-a");
+        cx.simulate_input("10.0.0.9:8080");
+        cx.simulate_keystrokes("enter");
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(
+                shell.store.profile(&account).unwrap().proxy.as_deref(),
+                Some("http://10.0.0.9:8080")
+            );
+            assert_eq!(crate::accounts::secret(&shell.home, &account), None);
+            let env = shell.account_env("claude", Some(&account));
+            assert!(env.contains(&("HTTPS_PROXY".to_owned(), "http://10.0.0.9:8080".to_owned())));
+        });
+        // Escape closes the form, and only then the settings.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.open_account_form("claude", None, window, cx)
+        });
+        draw(cx);
+        cx.simulate_keystrokes("escape");
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.account_form.is_none());
+            assert!(shell.settings_open, "the page is still there");
+        });
+        // Forgotten, nothing of its proxy is left.
+        shell.update(cx, |shell, cx| shell.remove_account(&account, cx));
+        shell.read_with(cx, |shell, _| {
+            assert!(shell.store.profile(&account).is_none());
+            assert_eq!(crate::accounts::secret(&shell.home, &account), None);
+        });
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[gpui::test]
+    fn the_accounts_of_a_harness_are_one_pool_for_what_is_started(cx: &mut TestAppContext) {
+        use crate::usage::{Account, Asked};
+        use kou_usage::{Kind, Limits, Window as Limit};
+        let (shell, cx, session, work) = with_an_account(cx);
+        let left = |used: f32| Asked {
+            answer: Some(Ok(Limits {
+                plan: None,
+                windows: vec![Limit {
+                    kind: Kind::Session,
+                    used,
+                    resets: None,
+                }],
+            })),
+            at: Some(Instant::now()),
+            asking: false,
+        };
+        let of = |profile: Option<&Id>| Account {
+            harness: "claude".into(),
+            profile: profile.cloned(),
+        };
+        shell.update(cx, |shell, _| {
+            shell.store.balance = true;
+            // The harness's own account is nearly spent; the other is not.
+            shell.usage.insert(of(None), left(90.));
+            shell.usage.insert(of(Some(&work)), left(20.));
+            assert_eq!(shell.balanced_account("claude"), Some(work.clone()));
+            // Nothing is named on the empty page: the field says so.
+            assert!(shell.asked_profile().is_none());
+            assert_eq!(shell.asked_account_shown().as_deref(), Some("auto"));
+        });
+        // A prompt with no account named goes to the one with the most left.
+        shell.update_in(cx, |shell, window, cx| shell.ask(None, window, cx));
+        shell.read_with(cx, |shell, _| {
+            let panes: Vec<_> = shell.store.panes_of(&session).collect();
+            assert_eq!(panes.len(), 1);
+            assert_eq!(panes[0].profile.as_ref(), Some(&work));
+            assert_eq!(shell.account_shown(panes[0]).as_deref(), Some("work"));
+        });
+        // One named is used as named, whatever is left to it.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.launch_profile = None;
+            shell.usage.insert(of(None), left(99.));
+            shell.usage.insert(of(Some(&work)), left(10.));
+            shell.choose_account("claude", Some(work.clone()), PaneKind::Terminal, cx);
+            shell.ask(None, window, cx);
+        });
+        shell.read_with(cx, |shell, _| {
+            let panes: Vec<_> = shell.store.panes_of(&session).collect();
+            assert_eq!(panes[1].profile.as_ref(), Some(&work));
+        });
+        // What an account already has at work counts against it: with the
+        // same left to both, the next goes to the other.
+        shell.update(cx, |shell, _| {
+            shell.usage.insert(of(None), left(40.));
+            shell.usage.insert(of(Some(&work)), left(40.));
+            let busy = shell.store.panes_of(&session).next().unwrap().id.clone();
+            shell.live.get_mut(&busy).unwrap().mark = Mark::Working;
+            assert_eq!(shell.balanced_account("claude"), None, "the harness's own");
+            // And with the pool off nothing is picked for anybody: with
+            // no account named, none is shown.
+            shell.store.balance = false;
+            shell.ask_choice = None;
+            shell.store.last_profile = None;
+            assert_eq!(shell.asked_account_shown(), None);
+        });
+    }
+
+    #[gpui::test]
+    fn a_pane_goes_on_under_the_account_with_the_most_left(cx: &mut TestAppContext) {
+        use crate::usage::{Account, Asked};
+        use kou_usage::{Kind, Limits, Window as Limit};
+        let (shell, cx, session, apart) = with_an_account(cx);
+        let root = account_homes(&shell, cx, "account-move");
+        let left = |used: f32| Asked {
+            answer: Some(Ok(Limits {
+                plan: None,
+                windows: vec![Limit {
+                    kind: Kind::Weekly,
+                    used,
+                    resets: None,
+                }],
+            })),
+            at: Some(Instant::now()),
+            asking: false,
+        };
+        // A second account, made by the app: it shares the conversations
+        // of the harness's own home. (The first, a folder of the user's,
+        // keeps its own.)
+        let shared = shell.update_in(cx, |shell, window, cx| {
+            shell.store.balance = true;
+            shell.open_account_form("claude", None, window, cx);
+            shell.commit_account_form(window, cx);
+            shell.store.profiles.last().unwrap().id.clone()
+        });
+        let pane = shell.update_in(cx, |shell, window, cx| {
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            for (profile, used) in [(None, 97.), (Some(&shared), 30.), (Some(&apart), 5.)] {
+                shell.usage.insert(
+                    Account {
+                        harness: "claude".into(),
+                        profile: profile.cloned(),
+                    },
+                    left(used),
+                );
+            }
+            pane
+        });
+        // From the harness's own account, nearly spent, to the one that
+        // shares its conversations: not to the one with the most left of
+        // all, where this conversation would not be found.
+        shell.update_in(cx, |shell, window, cx| {
+            assert!(shell.move_to_best_account(&pane, window, cx));
+            assert_eq!(
+                shell.store.pane(&pane).unwrap().profile.as_ref(),
+                Some(&shared)
+            );
+            assert!(shell.notice.as_deref().unwrap().contains("goes on under"));
+        });
+        // A pane of the account that keeps to itself stays where it is.
+        shell.update_in(cx, |shell, window, cx| {
+            shell.store.pane_mut(&pane).unwrap().profile = Some(apart.clone());
+            assert!(!shell.move_to_best_account(&pane, window, cx));
+            assert_eq!(
+                shell.store.pane(&pane).unwrap().profile.as_ref(),
+                Some(&apart)
+            );
+        });
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[gpui::test]
@@ -3969,6 +5149,1144 @@ mod tests {
     }
 
     #[gpui::test]
+    fn a_surface_an_agent_shows_is_drawn_in_its_chat_follows_its_file_and_tells_the_agent(
+        cx: &mut TestAppContext,
+    ) {
+        use kou_thread::{Block, Capabilities, Command, ToolCall, ToolContent, ToolStatus, Update};
+        use serde_json::json;
+        let (shell, cx, session) = open(cx);
+        cx.simulate_resize(gpui::size(gpui::px(1100.), gpui::px(1500.)));
+        shell.update(cx, |shell, _| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: true,
+                adapter: None,
+            });
+        });
+        // The agent's workspace: a file of runs, and the surface over it as
+        // kou's `UI` tool writes one.
+        let work = tempfile::tempdir().unwrap();
+        let root = work.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".harness/ui/s-1/bench")).unwrap();
+        std::fs::create_dir_all(root.join("bench")).unwrap();
+        std::fs::write(root.join("bench/runs.jsonl"), "{\"p99_ms\": 50.0}\n").unwrap();
+        let version = json!({
+            "kou": "genui/v0", "surface": "bench", "version": 1, "session": "s-1",
+            "title": "Benchmarks", "glance": "",
+            "sources": { "runs": { "file": "bench/runs.jsonl", "format": "jsonl" } },
+            "data": {},
+            "components": [
+                { "id": "root", "component": "Column", "children": ["p99", "comment", "apply"] },
+                { "id": "p99", "component": "Metric", "label": "p99", "unit": "ms", "digits": 1,
+                  "value": { "path": "/sources/runs/last/p99_ms" } },
+                { "id": "comment", "component": "TextField", "label": "Comment",
+                  "value": { "path": "/comment" } },
+                { "id": "apply", "component": "Button", "label": "Apply", "once": true,
+                  "action": { "event": { "name": "apply",
+                      "data": { "comment": { "path": "/comment" } } } } },
+            ],
+            "snapshot": { "sources": {}, "sourceInfo": {}, "diffs": {} },
+            "text": "◇ Benchmarks",
+        });
+        let path = ".harness/ui/s-1/bench/v1.json";
+        std::fs::write(root.join(path), version.to_string()).unwrap();
+        let (pane, end) = shell.update_in(cx, |shell, window, cx| {
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            let mut saved = shell.store.pane(&pane).unwrap().clone();
+            saved.cwd = root.clone();
+            let (backend, end) = kou_thread::channel();
+            shell.install_thread(&saved, backend, "kou".into(), window, cx);
+            (pane, end)
+        });
+        for update in [
+            Update::Ready {
+                session: "s-1".into(),
+                capabilities: Capabilities::default(),
+                modes: Vec::new(),
+                mode: None,
+                models: Vec::new(),
+                model: None,
+            },
+            Update::UserChunk(Block::Text("how fast is it".into())),
+            Update::TurnStarted,
+            Update::Tool(ToolCall {
+                id: "u1".into(),
+                title: "UI".into(),
+                status: ToolStatus::Done,
+                content: vec![ToolContent::Text(format!(
+                    "UI bench v1 ({path})\n\n◇ Benchmarks"
+                ))],
+                ..ToolCall::default()
+            }),
+            Update::AssistantChunk("Here it is.".into()),
+            Update::TurnEnded(kou_thread::Stop::Finished),
+        ] {
+            let _ = end.updates.try_send(update);
+        }
+        cx.run_until_parked();
+        // The call's card is the surface, drawn by the app's own plugin
+        // from the file as it is now.
+        assert!(cx.debug_bounds("gu-p99").is_some(), "the surface is drawn");
+        let instance = format!("{pane}:{path}");
+        let said = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| {
+                let hosted = shell.plugins.borrow();
+                let tree = hosted.host.as_ref().unwrap().drawn("genui", &instance);
+                tree.map(|tree| tree.said()).unwrap_or_default()
+            })
+        };
+        assert!(said(cx).contains("P99 50.0 ms"), "{}", said(cx));
+        // The file grows: looked at again, the surface shows its new end.
+        std::fs::write(
+            root.join("bench/runs.jsonl"),
+            "{\"p99_ms\": 50.0}\n{\"p99_ms\": 41.6}\n",
+        )
+        .unwrap();
+        shell.update(cx, |shell, cx| shell.look_at_surfaces(cx));
+        cx.run_until_parked();
+        assert!(said(cx).contains("P99 41.6 ms"), "{}", said(cx));
+        // Its field is typed in where it stands; Enter keeps what was typed.
+        let field = cx.debug_bounds("gu-comment").expect("the field");
+        cx.simulate_click(field.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.plugins.borrow().editing.is_some()));
+        cx.simulate_input("tonight");
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(shell.read_with(cx, |shell, _| shell.plugins.borrow().editing.is_none()));
+        assert!(
+            said(cx).contains("tonight") || {
+                // (A field's text is its `value`, not what it says.)
+                shell.read_with(cx, |shell, _| {
+                    let hosted = shell.plugins.borrow();
+                    let tree = hosted
+                        .host
+                        .as_ref()
+                        .unwrap()
+                        .drawn("genui", &instance)
+                        .unwrap();
+                    tree.find("gu-comment").unwrap().text("value") == Some("tonight")
+                })
+            }
+        );
+        // Its button tells the agent, as a message of the user's.
+        let apply = cx.debug_bounds("gu-apply").expect("the button");
+        cx.simulate_click(apply.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        let mut prompts = Vec::new();
+        while let Ok(command) = end.commands.try_recv() {
+            if let Command::Prompt(blocks) = command {
+                prompts.push(blocks);
+            }
+        }
+        assert_eq!(
+            prompts,
+            [vec![Block::Text(
+                "[UI bench v1] apply {\"comment\":\"tonight\"}".into()
+            )]]
+        );
+        // It works once: a second press tells nothing.
+        let apply = cx.debug_bounds("gu-apply").expect("the button");
+        cx.simulate_click(apply.center(), gpui::Modifiers::none());
+        cx.run_until_parked();
+        assert!(end.commands.try_recv().is_err());
+        std::mem::forget(end);
+    }
+
+    #[gpui::test]
+    fn the_prompt_field_s_frame_is_a_plugin_s_to_draw_and_the_view_s_when_it_cannot(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, _) = open(cx);
+        cx.executor().allow_parking();
+        let home = tempfile::tempdir().unwrap();
+        shell.update(cx, |shell, cx| {
+            shell.home = home.path().to_owned();
+            shell.watch_plugins(cx);
+            // The empty page, with the field a prompt is typed in.
+            shell.pick(None, cx);
+        });
+        draw(cx);
+        // The app's own `composer` plugin draws the frame and places the
+        // field's parts in it: they are where they always were.
+        assert!(shell.read_with(cx, |shell, _| {
+            let hosted = shell.plugins.borrow();
+            hosted.host.as_ref().unwrap().has("composer") && !hosted.fields.is_empty()
+        }));
+        let frame = cx.debug_bounds("frame").expect("the field's frame");
+        let attach = cx.debug_bounds("attach").expect("the paperclip");
+        assert!(cx.debug_bounds("field-foot").is_some() && cx.debug_bounds("send").is_some());
+        assert!(frame.contains(&attach.center()));
+        let write = |script: &str| {
+            let folder = home.path().join("plugins/composer");
+            std::fs::create_dir_all(folder.join("desktop")).unwrap();
+            std::fs::write(
+                folder.join("plugin.json"),
+                r#"{"name": "composer", "desktop": {"script": "desktop/main.js"}}"#,
+            )
+            .unwrap();
+            std::fs::write(folder.join("desktop/main.js"), script).unwrap();
+        };
+        let until = |cx: &mut VisualTestContext, seen: &dyn Fn(&mut VisualTestContext) -> bool| {
+            for _ in 0..200 {
+                std::thread::sleep(Duration::from_millis(25));
+                cx.run_until_parked();
+                draw(cx);
+                if seen(cx) {
+                    return true;
+                }
+            }
+            false
+        };
+        // The user's own `composer` takes its place as it is saved: the
+        // paperclip above what is typed, in a frame with more room.
+        write(
+            r#"kou.view({ id: "composer", render: (ctx) => ui.col({ id: "frame", p: 30, gap: 6, border: 1, borderColor: "accent", bg: "raised" }, [
+                 ui.row({ gap: 8 }, [ui.slot("attach"), ctx.data.slots.includes("foot") ? ui.slot("foot") : null]),
+                 ui.slot("editor"),
+                 ui.row({ justify: "end" }, [ui.slot("controls")]),
+               ]) });"#,
+        );
+        assert!(
+            until(cx, &|cx| cx
+                .debug_bounds("attach")
+                .is_some_and(
+                    |now| now.origin.y < attach.origin.y - gpui::px(20.)
+                )),
+            "the field was not drawn again from the saved script"
+        );
+        let moved = cx.debug_bounds("frame").unwrap();
+        assert!(moved.size.height > frame.size.height + gpui::px(30.));
+        // Its parts are the same ones, and work as they did.
+        assert!(cx.debug_bounds("field-foot").is_some() && cx.debug_bounds("send").is_some());
+        // A `composer` that draws no field leaves the field to the app,
+        // which draws it as it always did.
+        write(r#"kou.page({ id: "other", title: "Other", render: () => ui.text("x") });"#);
+        assert!(
+            until(cx, &|cx| cx
+                .debug_bounds("frame")
+                .is_some_and(|now| now.size == frame.size)),
+            "the field was not given back to the app"
+        );
+        assert_eq!(cx.debug_bounds("attach").unwrap().origin, attach.origin);
+        // Taken away, the app's own plugin draws it again, the same.
+        std::fs::remove_dir_all(home.path().join("plugins/composer")).unwrap();
+        assert!(until(cx, &|cx| {
+            shell.read_with(cx, |shell, _| {
+                shell
+                    .plugins
+                    .borrow()
+                    .host
+                    .as_ref()
+                    .unwrap()
+                    .has("composer")
+            })
+        }));
+        draw(cx);
+        assert_eq!(cx.debug_bounds("frame").unwrap().size, frame.size);
+        assert_eq!(cx.debug_bounds("attach").unwrap().origin, attach.origin);
+    }
+
+    #[gpui::test]
+    fn the_rail_is_a_plugin_s_to_draw_and_the_app_s_when_it_cannot(cx: &mut TestAppContext) {
+        let (shell, cx, first) = open(cx);
+        cx.executor().allow_parking();
+        let home = tempfile::tempdir().unwrap();
+        shell.update(cx, |shell, cx| {
+            shell.home = home.path().to_owned();
+            shell.watch_plugins(cx);
+        });
+        draw(cx);
+        // The app's own `rail` plugin draws it.
+        assert!(cx.debug_bounds("rail").is_some());
+        assert!(cx.debug_bounds("rail-native").is_none());
+        // Its rows do what the app's did. The space's plus starts a session
+        // there, and the click goes no further: the space stays open.
+        let space = shell.read_with(cx, |shell, _| shell.store.spaces[0].id.clone());
+        let plus = cx
+            .debug_bounds(format!("space-new-{space}").leak())
+            .expect("the space's plus");
+        cx.simulate_click(plus.center(), gpui::Modifiers::none());
+        draw(cx);
+        shell.read_with(cx, |shell, _| {
+            assert_eq!(shell.store.sessions.len(), 3);
+            assert_ne!(shell.store.selected.as_ref(), Some(&first));
+            assert!(!shell.store.spaces[0].collapsed);
+        });
+        // A session's row selects it; twice, it opens its name.
+        let row = cx
+            .debug_bounds(format!("session-{first}").leak())
+            .expect("the first session's row");
+        cx.simulate_click(row.center(), gpui::Modifiers::none());
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.store.selected.clone()),
+            Some(first.clone())
+        );
+        for count in [1, 2] {
+            cx.simulate_event(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: row.center(),
+                modifiers: gpui::Modifiers::none(),
+                click_count: count,
+                first_mouse: false,
+            });
+            cx.simulate_event(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: row.center(),
+                modifiers: gpui::Modifiers::none(),
+                click_count: count,
+            });
+        }
+        assert!(shell.read_with(cx, |shell, _| {
+            shell
+                .name_edit
+                .as_ref()
+                .is_some_and(|edit| edit.what == Named::Session(first.clone()))
+        }));
+        cx.simulate_keystrokes("escape");
+        let write = |script: &str| {
+            let folder = home.path().join("plugins/rail");
+            std::fs::create_dir_all(folder.join("desktop")).unwrap();
+            std::fs::write(
+                folder.join("plugin.json"),
+                r#"{"name": "rail", "desktop": {"script": "desktop/main.js"}}"#,
+            )
+            .unwrap();
+            std::fs::write(folder.join("desktop/main.js"), script).unwrap();
+        };
+        let until = |cx: &mut VisualTestContext, seen: &dyn Fn(&mut VisualTestContext) -> bool| {
+            for _ in 0..200 {
+                std::thread::sleep(Duration::from_millis(25));
+                cx.run_until_parked();
+                draw(cx);
+                if seen(cx) {
+                    return true;
+                }
+            }
+            false
+        };
+        // The user's own `rail` takes its place as it is saved.
+        write(
+            r#"kou.view({ id: "rail", render: (ctx) => ui.col({ id: "my-rail", p: 12, gap: 4 },
+                 ctx.data.spaces.map((space) => ui.text(space.name + " (" + space.count + ")"))) });"#,
+        );
+        assert!(
+            until(cx, &|cx| cx.debug_bounds("my-rail").is_some()),
+            "the rail was not drawn from the saved script"
+        );
+        let said = shell.read_with(cx, |shell, _| {
+            let hosted = shell.plugins.borrow();
+            hosted
+                .host
+                .as_ref()
+                .unwrap()
+                .drawn("rail", "")
+                .unwrap()
+                .said()
+        });
+        assert_eq!(said, "atlas (3)");
+        // One that fails as it draws leaves the rail to the app, which draws
+        // it as it always did.
+        write(r#"kou.view({ id: "rail", render: (ctx) => ctx.data.nobody.home });"#);
+        assert!(
+            until(cx, &|cx| cx.debug_bounds("rail-native").is_some()),
+            "the rail was not given back to the app"
+        );
+        assert!(cx.debug_bounds("my-rail").is_none() && cx.debug_bounds("rail").is_none());
+        // Taken away, the app's own plugin draws it again.
+        std::fs::remove_dir_all(home.path().join("plugins/rail")).unwrap();
+        assert!(until(cx, &|cx| cx.debug_bounds("rail").is_some()));
+        assert!(cx.debug_bounds("rail-native").is_none());
+    }
+
+    #[gpui::test]
+    fn the_tab_strip_and_the_pane_headers_are_a_plugin_s_to_draw_and_work_as_the_app_s(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        let (a, b) = (start(&shell, &session, cx), start(&shell, &session, cx));
+        draw(cx);
+        // The app's own `workspace` plugin draws them.
+        let tab = cx
+            .debug_bounds(format!("tab-{a}").leak())
+            .expect("the first tab");
+        assert!(cx.debug_bounds("tabs-native").is_none());
+        let focused = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| {
+                shell.store.session(&session).unwrap().focused.clone()
+            })
+        };
+        assert_eq!(focused(cx), Some(b.clone()));
+        // A tab's click brings its pane to the front; a second opens the
+        // panel it is named in, where an icon is chosen.
+        cx.simulate_click(tab.center(), gpui::Modifiers::none());
+        assert_eq!(focused(cx), Some(a.clone()));
+        cx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: tab.center(),
+            modifiers: gpui::Modifiers::none(),
+            click_count: 2,
+            first_mouse: false,
+        });
+        cx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: tab.center(),
+            modifiers: gpui::Modifiers::none(),
+            click_count: 2,
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("tab-editor").is_some());
+        let bug = cx.debug_bounds("tab-icon-bug").expect("an icon to choose");
+        cx.simulate_click(bug.center(), gpui::Modifiers::none());
+        assert!(shell.read_with(cx, |shell, _| {
+            shell.tab_edit.as_ref().unwrap().icon.as_deref() == Some("bug")
+        }));
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(cx.debug_bounds("tab-editor").is_none());
+        // The plus opens what a new tab can be; a press elsewhere shuts it.
+        let plus = cx.debug_bounds("agent-new").expect("the plus");
+        cx.simulate_click(plus.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(shell.read_with(cx, |shell, _| shell.new_menu));
+        assert!(cx.debug_bounds("new-tab-menu").is_some());
+        cx.simulate_click(tab.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(!shell.read_with(cx, |shell, _| shell.new_menu));
+        // A pane's header closes it.
+        let close = cx
+            .debug_bounds(format!("pane-close-{a}").leak())
+            .expect("the pane's close");
+        cx.simulate_click(close.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(shell.read_with(cx, |shell, _| shell.store.pane(&a).is_none()));
+        assert_eq!(focused(cx), Some(b.clone()));
+        // What the window has to say is along its foot.
+        shell.update(cx, |shell, _| {
+            shell.notice = Some("Something to say".into())
+        });
+        draw(cx);
+        let notice = cx.debug_bounds("notice").expect("the notice");
+        // A `workspace` of the user's that fails as it draws leaves the
+        // strip to the app, which draws it as it always did.
+        cx.executor().allow_parking();
+        let home = tempfile::tempdir().unwrap();
+        let folder = home.path().join("plugins/workspace");
+        std::fs::create_dir_all(folder.join("desktop")).unwrap();
+        std::fs::write(
+            folder.join("plugin.json"),
+            r#"{"name": "workspace", "desktop": {"script": "desktop/main.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            folder.join("desktop/main.js"),
+            r#"kou.view({ id: "tabs", render: (ctx) => ctx.data.nobody.home });"#,
+        )
+        .unwrap();
+        shell.update(cx, |shell, cx| {
+            shell.home = home.path().to_owned();
+            shell.watch_plugins(cx);
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("tabs-native").is_some());
+        assert!(cx.debug_bounds(format!("tab-{b}").leak()).is_none());
+        // (The notice the same, where it was.)
+        assert_eq!(cx.debug_bounds("notice"), Some(notice));
+    }
+
+    #[gpui::test]
+    fn the_settings_and_the_picker_are_a_plugin_s_to_draw_and_their_controls_work(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        shell.update(cx, |shell, cx| shell.show_settings(cx));
+        draw(cx);
+        let general = cx.debug_bounds("settings-page-general").unwrap();
+        cx.simulate_click(general.center(), gpui::Modifiers::none());
+        draw(cx);
+        // The app's own `screens` plugin draws the settings.
+        assert!(cx.debug_bounds("settings").is_some());
+        let smooth = shell.read_with(cx, |shell, _| shell.store.smooth_cursor);
+        let cursor = cx
+            .debug_bounds("settings-cursor")
+            .expect("the cursor's button");
+        cx.simulate_click(cursor.center(), gpui::Modifiers::none());
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.store.smooth_cursor),
+            !smooth
+        );
+        draw(cx);
+        let mcp = cx.debug_bounds("settings-together-mcp").expect("a way");
+        cx.simulate_click(mcp.center(), gpui::Modifiers::none());
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.store.orchestration),
+            crate::state::Orchestration::Mcp
+        );
+        draw(cx);
+        let appearance = cx.debug_bounds("settings-page-appearance").unwrap();
+        cx.simulate_click(appearance.center(), gpui::Modifiers::none());
+        draw(cx);
+        let white = cx.debug_bounds("theme-preset-2").expect("a theme");
+        cx.simulate_click(white.center(), gpui::Modifiers::none());
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.store.theme.clone()),
+            kou_ui::themes::Selection::Preset(kou_ui::themes::Preset::White)
+        );
+        // The picker under the empty page's field: a shell takes no
+        // prompt, so chosen there it starts.
+        shell.update(cx, |shell, cx| {
+            shell.toggle_settings(cx);
+            shell.pick(None, cx);
+            shell.toggle_ask_menu(cx);
+        });
+        draw(cx);
+        // At the field's foot it says who gets the prompt: with a shell
+        // alone, nobody.
+        let said = shell.read_with(cx, |shell, _| {
+            let hosted = shell.plugins.borrow();
+            let host = hosted.host.as_ref().unwrap();
+            host.drawn("askChooser", "").map(|tree| tree.said())
+        });
+        assert_eq!(said.as_deref(), Some("No agent to start yet"));
+        assert!(cx.debug_bounds("pick-list").is_some());
+        let row = cx.debug_bounds("pick-shell").expect("the shell's row");
+        cx.simulate_click(row.center(), gpui::Modifiers::none());
+        assert_eq!(
+            shell.read_with(cx, |shell, _| shell.store.panes_of(&session).count()),
+            1
+        );
+    }
+
+    #[gpui::test]
+    fn a_canvas_s_chrome_is_a_plugin_s_to_draw_and_does_what_the_canvas_s_did(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        let pane = start(&shell, &session, cx);
+        shell.update(cx, |shell, cx| shell.set_layout(Layout::Canvas, cx));
+        draw(cx);
+        let (_, canvas) = canvas_with(&shell, &pane, cx);
+        let zoom =
+            |cx: &mut VisualTestContext| canvas.read_with(cx, |canvas, _| canvas.camera().zoom);
+        // The bar's percentage opens the zooms to go to, in a menu the
+        // `canvas` plugin draws.
+        let percent = cx.debug_bounds("canvas-zoom").expect("the bar's zoom");
+        cx.simulate_click(percent.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(cx.debug_bounds("canvas-menu").is_some());
+        // Its first row zooms in, as it is pressed.
+        let before = zoom(cx);
+        let row = cx.debug_bounds("menu-row-0").expect("the first row");
+        cx.simulate_mouse_down(
+            row.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            row.center(),
+            gpui::MouseButton::Left,
+            gpui::Modifiers::none(),
+        );
+        draw(cx);
+        let target = canvas.read_with(cx, |canvas, _| canvas.camera().zoom);
+        assert!(target >= before, "{before} -> {target}");
+        assert!(canvas.read_with(cx, |canvas, _| canvas.board().nodes().len()) == 1);
+        // A board with nothing on it offers a note, which is put there.
+        let node = canvas.read_with(cx, |canvas, _| canvas.board().nodes()[0].id);
+        canvas.update_in(cx, |canvas, window, cx| canvas.remove(node, window, cx));
+        draw(cx);
+        let note = (0..8)
+            .rev()
+            .find_map(|at| cx.debug_bounds(format!("canvas-card-{at}").leak()))
+            .expect("the last of an empty board's offers, the note");
+        cx.simulate_click(note.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert_eq!(
+            canvas.read_with(cx, |canvas, _| canvas
+                .board()
+                .nodes()
+                .iter()
+                .map(|node| node.kind)
+                .collect::<Vec<_>>()),
+            [kou_canvas::NodeKind::Note]
+        );
+    }
+
+    #[gpui::test]
+    fn the_inspector_is_a_plugin_s_to_draw_and_its_switch_and_notes_say_what_they_did(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::wires::EdgeChange;
+        let (shell, cx, session) = open(cx);
+        let a = start(&shell, &session, cx);
+        let b = start_beside(&shell, &a, cx);
+        shell.update(cx, |shell, cx| shell.set_layout(Layout::Canvas, cx));
+        let (_, canvas) = canvas_with(&shell, &a, cx);
+        let lead = shell.read_with(cx, |shell, _| shell.store.pane(&a).unwrap().node);
+        canvas.update(cx, |canvas, cx| {
+            // (An agent's node: a terminal's has no orchestrator to be.)
+            canvas.update_node(lead, |node| node.kind = kou_canvas::NodeKind::Agent, cx);
+            canvas.select(Some(lead), cx);
+            canvas.inspect(cx);
+        });
+        draw(cx);
+        // What the `canvas` plugin drew of it, as it says it.
+        let instance = format!("canvas-{}", canvas.entity_id().as_u64());
+        let said = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| {
+                let hosted = shell.plugins.borrow();
+                let host = hosted.host.as_ref().unwrap();
+                host.drawn("canvasInspector", &instance)
+                    .map(|tree| tree.said())
+                    .unwrap_or_default()
+            })
+        };
+        assert!(said(cx).contains("Only you wire this tab"), "{}", said(cx));
+        // Its switch makes the node the tab's orchestrator.
+        let on = cx
+            .debug_bounds("inspector-orchestrator-1")
+            .expect("the switch's On");
+        cx.simulate_click(on.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(canvas.read_with(cx, |canvas, _| {
+            canvas.board().node(lead).unwrap().orchestrator
+        }));
+        assert!(said(cx).contains("Its agent may wire"), "{}", said(cx));
+        // What its agent wires says who wired it.
+        shell.update(cx, |shell, cx| {
+            shell.change_edge(&a, &a, &b, EdgeChange::Add(None), cx)
+        });
+        let edge = canvas.read_with(cx, |canvas, _| canvas.board().edges()[0].id);
+        canvas.update(cx, |canvas, cx| {
+            canvas.select_edge(Some(edge), cx);
+            canvas.inspect(cx);
+        });
+        draw(cx);
+        let words = said(cx);
+        assert!(
+            words.contains("Wired by the agent in «") && words.contains("not by you"),
+            "{words}"
+        );
+    }
+
+    #[gpui::test]
+    fn a_node_s_chrome_is_a_plugin_s_to_draw_and_a_zoom_only_looks_its_drawing_up(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        let a = start(&shell, &session, cx);
+        start_beside(&shell, &a, cx);
+        shell.update(cx, |shell, cx| shell.set_layout(Layout::Canvas, cx));
+        draw(cx);
+        let (_, canvas) = canvas_with(&shell, &a, cx);
+        let node = shell.read_with(cx, |shell, _| shell.store.pane(&a).unwrap().node);
+        // And a note, which has no live body: what it says is drawn.
+        let note = canvas.update_in(cx, |canvas, window, cx| {
+            let spec = kou_canvas::NodeSpec {
+                kind: kou_canvas::NodeKind::Note,
+                title: "plan".into(),
+                tag: String::new(),
+                detail: "Ask for the schema first.\nThen wire the two.".into(),
+                size: None,
+            };
+            canvas.create_at(40., 400., spec, window, cx)
+        });
+        draw(cx);
+        // The `canvas` plugin draws a node's header and its footer, and the
+        // body of one that has no live view.
+        let key = canvas.entity_id().as_u64();
+        let drawn = |part: &str, node: u64, cx: &mut VisualTestContext| {
+            let instance = format!("canvas-{key}/{node}");
+            shell.read_with(cx, |shell, _| {
+                let hosted = shell.plugins.borrow();
+                let tree = hosted.host.as_ref().unwrap().drawn(part, &instance);
+                tree.map(|tree| tree.said())
+            })
+        };
+        assert!(drawn("canvasHead", node, cx).is_some());
+        assert!(drawn("canvasFoot", node, cx).is_some());
+        assert_eq!(
+            drawn("canvasBody", note, cx).as_deref(),
+            Some("Ask for the schema first. Then wire the two.")
+        );
+        let made = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| shell.plugins.borrow().faced_made)
+        };
+        let zoom_to = |zoom: f32, cx: &mut VisualTestContext| {
+            canvas.update(cx, |canvas, cx| {
+                canvas.set_camera(
+                    kou_canvas::Camera {
+                        x: 40.,
+                        y: 40.,
+                        zoom,
+                    },
+                    cx,
+                )
+            });
+            draw(cx);
+        };
+        // Twenty frames of a zoom, the lines they shaped: once through
+        // first, so that what any first pass costs is not counted.
+        let zoom = |cx: &mut VisualTestContext| {
+            zoom_to(0.9, cx);
+            cx.update(|window, _| window.reset_layout_stats());
+            for step in 1..=20 {
+                zoom_to(0.9 + step as f32 * 0.004, cx);
+            }
+            cx.update(|window, _| window.layout_stats().lines_shaped)
+        };
+        zoom(cx);
+        // With the canvas's own chrome, then with the plugin's: each node's
+        // parts are looked up, never made from their data again, and their
+        // text is shaped no more than the canvas's own is.
+        canvas.update(cx, |canvas, cx| canvas.set_face(None, cx));
+        let native = zoom(cx);
+        canvas.update(cx, |canvas, cx| {
+            let face = shell.update(cx, |shell, cx| shell.canvas_face(cx));
+            canvas.set_face(Some(face), cx);
+        });
+        zoom_to(0.9, cx);
+        let before = made(cx);
+        let shaped = zoom(cx);
+        assert_eq!(made(cx), before, "a part was made again during a zoom");
+        assert!(
+            shaped <= native,
+            "{shaped} lines shaped, {native} by the canvas's own"
+        );
+        // A change in what a part shows makes it again, once.
+        let at = made(cx);
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_node(node, |node| node.place = "/fixture/elsewhere".into(), cx)
+        });
+        draw(cx);
+        draw(cx);
+        assert_eq!(made(cx), at + 1);
+        canvas.update(cx, |canvas, cx| {
+            canvas.update_node(note, |node| node.detail = "Done.".into(), cx)
+        });
+        draw(cx);
+        assert_eq!(made(cx), at + 2);
+        assert_eq!(drawn("canvasBody", note, cx).as_deref(), Some("Done."));
+    }
+
+    #[gpui::test]
+    fn an_edge_s_label_and_a_tooltip_are_a_plugin_s_to_draw(cx: &mut TestAppContext) {
+        let (shell, cx, session) = open(cx);
+        let a = start(&shell, &session, cx);
+        let b = start_beside(&shell, &a, cx);
+        shell.update(cx, |shell, cx| shell.set_layout(Layout::Canvas, cx));
+        draw(cx);
+        let (_, canvas) = canvas_with(&shell, &a, cx);
+        let node = |pane: &str, cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| shell.store.pane(pane).unwrap().node)
+        };
+        let (from, to) = (node(&a, cx), node(&b, cx));
+        let edge = canvas.update(cx, |canvas, cx| {
+            let edge = canvas
+                .connect(
+                    kou_canvas::PortRef::new(from, "out"),
+                    kou_canvas::PortRef::new(to, "in"),
+                    cx,
+                )
+                .unwrap();
+            let traffic = kou_canvas::Traffic {
+                delivered: 2,
+                waiting: 0,
+            };
+            canvas.set_traffic(edge, traffic, cx);
+            edge
+        });
+        // The two in sight, and the edge between them.
+        let area = shell.read_with(cx, |shell, _| shell.content_area.get().size);
+        let viewport = (f32::from(area.width), f32::from(area.height));
+        canvas.update(cx, |canvas, cx| {
+            let rect = canvas.board().node(from).unwrap().rect;
+            let camera = kou_canvas::Camera::centre_on(&rect, viewport, 0.8);
+            canvas.set_camera(camera, cx);
+        });
+        draw(cx);
+        // The `canvas` plugin draws an edge's label, the canvas puts it on
+        // its edge, and a press on it selects the edge.
+        let instance = format!("canvas-{}/{edge}", canvas.entity_id().as_u64());
+        let said = shell.read_with(cx, |shell, _| {
+            let hosted = shell.plugins.borrow();
+            let host = hosted.host.as_ref().unwrap();
+            host.drawn("canvasLabel", &instance).map(|tree| tree.said())
+        });
+        assert_eq!(said.as_deref(), Some("2"));
+        let label = cx
+            .debug_bounds(format!("edge-label-{edge}").leak())
+            .expect("the edge's label");
+        cx.simulate_click(label.center(), gpui::Modifiers::none());
+        assert_eq!(
+            canvas.read_with(cx, |canvas, _| canvas.selection().1),
+            Some(edge)
+        );
+        // A tooltip's body is the `workspace` plugin's `tip`; without it, the
+        // app's own, in the same place and of the same size.
+        let tip = |cx: &mut VisualTestContext, selector: &'static str| {
+            let plus = cx.debug_bounds("agent-new").expect("the plus");
+            cx.simulate_mouse_move(
+                plus.center() + gpui::point(gpui::px(200.), gpui::px(200.)),
+                None,
+                gpui::Modifiers::none(),
+            );
+            draw(cx);
+            cx.simulate_mouse_move(plus.center(), None, gpui::Modifiers::none());
+            cx.executor().advance_clock(Duration::from_secs(2));
+            draw(cx);
+            cx.debug_bounds(selector)
+        };
+        let drawn = tip(cx, "tip").expect("the plugin's tip");
+        cx.update(|_, cx| kou_ui::set_tip_face(None, cx));
+        let own = tip(cx, "tip-native").expect("the app's own tip");
+        assert_eq!(drawn, own);
+    }
+
+    #[gpui::test]
+    fn the_rail_and_the_tab_strip_are_drawn_again_when_what_they_show_changes_and_only_then(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        start(&shell, &session, cx);
+        draw(cx);
+        let drawn = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, cx| {
+                let (rail, tabs) = (shell.rail_part.read(cx), shell.tabs_part.read(cx));
+                let said = rail.drawn.as_ref().map(|drawn| drawn.tree.said());
+                (rail.draws, tabs.draws, said.unwrap_or_default())
+            })
+        };
+        // A frame the window is told to draw, as each of a drag between
+        // panes is, where nothing they show changed: they are kept.
+        let frame = |cx: &mut VisualTestContext| {
+            shell.update(cx, |_, cx| cx.notify());
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        frame(cx);
+        let (rail, tabs, said) = drawn(cx);
+        for _ in 0..5 {
+            frame(cx);
+        }
+        assert_eq!(drawn(cx), (rail, tabs, said));
+        // A session renamed: the rail is drawn again, saying so; the strip
+        // is kept.
+        shell.update(cx, |shell, cx| {
+            shell.store.session_mut(&session).unwrap().name = "lexer".into();
+            cx.notify();
+        });
+        frame(cx);
+        frame(cx);
+        let (now, strip, said) = drawn(cx);
+        assert!(now > rail && strip == tabs, "{now} {strip}");
+        assert!(said.contains("lexer"), "{said}");
+        // And kept again from then on.
+        for _ in 0..5 {
+            frame(cx);
+        }
+        assert_eq!(drawn(cx).0, now);
+    }
+
+    /// What a render of the window costs, its parts drawn by the plugins and
+    /// by the app itself, on a store of a size a user has: four spaces,
+    /// thirty sessions, agents in a third of them, and the session on screen
+    /// with six tabs, four panes in the one in front. Debug numbers, in
+    /// microseconds a render: `cargo test -p kou-desktop -- --ignored
+    /// --nocapture what_a_render`.
+    #[gpui::test]
+    #[ignore = "a measurement, not a check: run it with --ignored --nocapture"]
+    fn what_a_render_of_the_window_costs(cx: &mut TestAppContext) {
+        use crate::state::{Axis, Seat};
+        cx.update(|cx| {
+            cx.set_global(kou_ui::Theme::new(true));
+            bind_keys(cx);
+        });
+        let mut store = Store::default();
+        let mut current = None;
+        for (space, sessions) in [8, 8, 7, 7].into_iter().enumerate() {
+            let id = store.add_space(format!("/fixture/space-{space}").into());
+            for at in 0..sessions {
+                let session = store.add_session(&id).unwrap();
+                let saved = store.session_mut(&session).unwrap();
+                saved.name = format!("session {space}.{at}");
+                saved.archived = at == sessions - 1;
+                if space == 0 && at == 0 {
+                    current = Some(session.clone());
+                } else if at % 3 == 1 {
+                    let (board, nodes) = board_for(&[("Codex", "CX", None)]);
+                    store.add_pane(
+                        &session,
+                        "codex",
+                        "Codex",
+                        format!("/fixture/space-{space}/worktree").into(),
+                        PaneKind::Terminal,
+                        None,
+                        nodes[0],
+                        Seat::Tab(board),
+                    );
+                }
+            }
+        }
+        let current = current.unwrap();
+        // The session on screen: a tab of four panes, then five of one.
+        let (board, nodes) = board_for(&[
+            ("lead", "CC", None),
+            ("schema", "CX", Some(0)),
+            ("callers", "OC", Some(0)),
+            ("tests", "CC", Some(0)),
+        ]);
+        let mut front: Vec<Id> = Vec::new();
+        let mut board = Some(board);
+        for (at, node) in nodes.into_iter().enumerate() {
+            let seat = match front.first() {
+                None => Seat::Tab(board.take().unwrap_or_default()),
+                Some(first) => Seat::Beside {
+                    at: front.last().unwrap_or(first).clone(),
+                    axis: if at % 2 == 1 { Axis::Row } else { Axis::Column },
+                },
+            };
+            front.push(store.add_pane(
+                &current,
+                "claude",
+                &format!("agent {at}"),
+                "/fixture/space-0".into(),
+                PaneKind::Terminal,
+                front.first().cloned(),
+                node,
+                seat,
+            ));
+        }
+        for at in 0..5 {
+            let (board, nodes) = board_for(&[("shell", "SH", None)]);
+            store.add_pane(
+                &current,
+                "shell",
+                &format!("shell {at}"),
+                "/fixture/space-0".into(),
+                PaneKind::Terminal,
+                None,
+                nodes[0],
+                Seat::Tab(board),
+            );
+        }
+        store.session_mut(&current).unwrap().focused = Some(front[0].clone());
+        store.selected = Some(current);
+        let (shell, cx) = cx.add_window_view(|_, cx| {
+            let mut shell = Shell::new(store, None, cx);
+            shell.home =
+                std::env::temp_dir().join(format!("kou-desktop-tests-{}", std::process::id()));
+            shell.notice = Some("A plugin asked for something the app does not do.".into());
+            shell
+        });
+        draw(cx);
+        draw(cx);
+        let theme = cx.update(|_, cx| kou_ui::theme(cx).clone());
+        let (session, panes) = shell.read_with(cx, |shell, _| {
+            let session = shell.store.current().cloned();
+            let panes: Vec<_> = front
+                .iter()
+                .filter_map(|id| shell.store.pane(id).cloned())
+                .collect();
+            (session, panes)
+        });
+        assert_eq!(panes.len(), 4);
+        const RENDERS: u32 = 300;
+        // Microseconds a time, after a few times not counted.
+        let time =
+            |cx: &mut VisualTestContext,
+             what: &mut dyn FnMut(&mut Shell, &mut Window, &mut Context<Shell>)| {
+                shell.update_in(cx, |shell, window, cx| {
+                    for _ in 0..20 {
+                        what(shell, window, cx);
+                    }
+                    let began = Instant::now();
+                    for _ in 0..RENDERS {
+                        what(shell, window, cx);
+                    }
+                    began.elapsed().as_secs_f64() * 1e6 / f64::from(RENDERS)
+                })
+            };
+        let measure = |cx: &mut VisualTestContext| -> Vec<(&'static str, f64)> {
+            let mut parts = Vec::new();
+            parts.push((
+                "rail",
+                time(cx, &mut |shell, _, cx| drop(shell.render_rail(&theme, cx))),
+            ));
+            parts.push((
+                "tab strip",
+                time(cx, &mut |shell, _, cx| {
+                    drop(shell.tab_strip(session.as_ref(), 1000., &theme, cx))
+                }),
+            ));
+            parts.push((
+                "4 pane headers",
+                time(cx, &mut |shell, _, cx| {
+                    for pane in &panes {
+                        drop(shell.pane_header(pane, true, &theme, cx));
+                    }
+                }),
+            ));
+            parts.push((
+                "4 panes (frame, header, body)",
+                time(cx, &mut |shell, _, cx| {
+                    for pane in &panes {
+                        drop(shell.pane(pane, true, Some(true), &theme, cx));
+                    }
+                }),
+            ));
+            parts.push((
+                "the shell's render",
+                time(cx, &mut |shell, window, cx| drop(shell.draw(window, cx))),
+            ));
+            // A whole frame: the render, then laying it out and painting it.
+            cx.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear(cx);
+            });
+            let began = Instant::now();
+            for _ in 0..RENDERS {
+                cx.update(|window, cx| {
+                    window.refresh();
+                    window.draw(cx).clear(cx);
+                });
+            }
+            parts.push((
+                "a whole frame, all drawn anew",
+                began.elapsed().as_secs_f64() * 1e6 / f64::from(RENDERS),
+            ));
+            // A frame of a drag between panes: the window told to draw
+            // again, what did not change kept from the frame before.
+            let parts_drawn = |cx: &mut VisualTestContext| {
+                shell.read_with(cx, |shell, cx| {
+                    shell.rail_part.read(cx).draws + shell.tabs_part.read(cx).draws
+                })
+            };
+            let drawn = parts_drawn(cx);
+            let began = Instant::now();
+            for _ in 0..RENDERS {
+                shell.update(cx, |_, cx| cx.notify());
+                cx.update(|window, cx| window.draw(cx).clear(cx));
+            }
+            parts.push((
+                "a frame of a drag",
+                began.elapsed().as_secs_f64() * 1e6 / f64::from(RENDERS),
+            ));
+            eprintln!(
+                "the rail and the tab strip drawn {} times in {RENDERS} frames of a drag",
+                parts_drawn(cx) - drawn,
+            );
+            parts
+        };
+        let runs = |cx: &mut VisualTestContext| {
+            shell.read_with(cx, |shell, _| {
+                shell
+                    .plugins
+                    .borrow()
+                    .host
+                    .as_ref()
+                    .map_or(0, |host| host.runs())
+            })
+        };
+        let before = runs(cx);
+        let with = measure(cx);
+        eprintln!("scripts run while measuring: {}", runs(cx) - before);
+        // Where a part's time goes: its theme and data put into words and
+        // looked up, and its drawing turned into elements.
+        let input = serde_json::json!({
+            "theme": crate::plugin_view::theme_json(&theme),
+            "data": { "probe": true },
+        });
+        let began = Instant::now();
+        for _ in 0..RENDERS {
+            std::hint::black_box(input.to_string());
+        }
+        eprintln!(
+            "the theme put into words: {:.1} µs",
+            began.elapsed().as_secs_f64() * 1e6 / f64::from(RENDERS)
+        );
+        // The rail's time, part by part.
+        let room = crate::rail::Room::at(kou_ui::metric::RAIL);
+        let data = time(cx, &mut |shell, _, _| drop(shell.rail_data(room)));
+        let themed = time(cx, &mut |_, _, _| {
+            drop(crate::plugin_view::theme_json(&theme))
+        });
+        let looked = time(cx, &mut |shell, _, _| {
+            let input = serde_json::json!({
+                "theme": crate::plugin_view::theme_json(&theme),
+                "data": shell.rail_data(room),
+            });
+            let mut hosted = shell.plugins.borrow_mut();
+            drop(
+                hosted
+                    .host
+                    .as_mut()
+                    .unwrap()
+                    .render_strict("rail", "", &input),
+            );
+        });
+        eprintln!(
+            "rail: its data {data:.1} µs, the theme's {themed:.1} µs, both and the lookup {looked:.1} µs"
+        );
+        let tree = shell.read_with(cx, |shell, _| {
+            shell
+                .plugins
+                .borrow()
+                .host
+                .as_ref()
+                .unwrap()
+                .drawn("rail", "")
+                .unwrap()
+        });
+        let converted = time(cx, &mut |_, _, _| {
+            let drawing = crate::plugin_view::Drawing {
+                page: "rail".into(),
+                theme: &theme,
+                made: std::cell::Cell::new(0),
+                on: std::rc::Rc::new(|_, _, _, _| {}),
+                aids: None,
+                root: None,
+                typing: None,
+                slots: std::cell::RefCell::default(),
+                dropped: None,
+            };
+            drop(crate::plugin_view::element(&tree, &drawing));
+        });
+        eprintln!(
+            "rail: {} nodes turned into elements in {converted:.1} µs",
+            tree.walk().len()
+        );
+        // The same with every part drawn by the app itself.
+        let host = shell.update(cx, |shell, cx| {
+            // (What the parts were handed goes too: drawn by the app, they
+            // are drawn again with the window, as before there were parts.)
+            shell.rail_shows = None;
+            shell.tabs_shows = None;
+            cx.notify();
+            shell.plugins.borrow_mut().host.take()
+        });
+        draw(cx);
+        let without = measure(cx);
+        shell.read_with(cx, |shell, _| shell.plugins.borrow_mut().host = host);
+        eprintln!(
+            "{:<32} {:>10} {:>10} {:>8}",
+            "µs a render (debug)", "plugins", "app's own", "added"
+        );
+        for ((part, plugins), (_, own)) in with.iter().zip(&without) {
+            eprintln!(
+                "{part:<32} {plugins:>10.1} {own:>10.1} {:>7.0}%",
+                (plugins / own - 1.) * 100.
+            );
+        }
+    }
+
+    #[gpui::test]
     fn a_plugin_s_page_is_drawn_again_as_its_file_is_saved(cx: &mut TestAppContext) {
         let (shell, cx, _) = open(cx);
         // The files are watched from a thread of the watcher's own, which
@@ -4092,8 +6410,8 @@ mod tests {
                 .into_iter()
                 .filter_map(kou_agents::detect_one)
                 .collect();
-            shell.harnesses = detected.iter().map(crate::panes::info).collect();
             shell.detected = detected;
+            shell.list_harnesses();
             shell.probes = true;
             shell.refresh_usage(true, cx);
             assert!(shell.usage.values().all(|asked| asked.asking));
@@ -4348,6 +6666,115 @@ mod tests {
     }
 
     #[gpui::test]
+    #[ignore = "requires the installed Codex CLI"]
+    fn the_launcher_starts_codex_with_the_permissions_chosen_before_the_first_prompt(
+        cx: &mut TestAppContext,
+    ) {
+        let (shell, cx, session) = open(cx);
+        cx.executor().allow_parking();
+        cx.update(|window, _| window.activate_window());
+        let dir = tempfile::tempdir().unwrap();
+        let cwd = dir.path().canonicalize().unwrap().join("project");
+        let home = dir.path().join("profile");
+        std::fs::create_dir(&cwd).unwrap();
+        std::fs::create_dir(&home).unwrap();
+        std::fs::write(
+            home.join("config.toml"),
+            r#"model_provider = "fixture"
+[model_providers.fixture]
+name = "Local fixture"
+base_url = "http://127.0.0.1:1/v1"
+wire_api = "responses"
+"#,
+        )
+        .unwrap();
+        let path = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join(format!("codex{}", std::env::consts::EXE_SUFFIX)))
+            .find(|path| path.is_file())
+            .expect("installed Codex CLI");
+        shell.update(cx, |shell, cx| {
+            shell.store.session_mut(&session).unwrap().cwd = cwd.clone();
+            let profile = shell.store.add_profile("codex", home);
+            shell.detected.push(kou_agents::Detected {
+                spec: kou_agents::spec("codex").unwrap(),
+                path: Some(path),
+                version: None,
+                readiness: kou_agents::Readiness::Ready,
+                message: None,
+                native: false,
+                acp: None,
+                hooks: false,
+                chat: kou_agents::Chat::None,
+            });
+            shell.probes = true;
+            shell.set_direct("codex", true, cx);
+            shell.choose_account("codex", Some(profile), PaneKind::Thread, cx);
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let at = loop {
+            draw(cx);
+            if let Some(at) = shell.read_with(cx, |shell, _| {
+                shell
+                    .offered
+                    .get("codex")
+                    .and_then(|o| o.access.choices.iter().position(|c| c.id == "auto"))
+            }) {
+                break at + 1;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "Codex did not offer access profiles"
+            );
+            std::thread::sleep(Duration::from_millis(15));
+        };
+        let button = cx
+            .debug_bounds("access-picker")
+            .expect("launcher permissions control");
+        cx.simulate_click(button.center(), gpui::Modifiers::none());
+        draw(cx);
+        assert!(
+            cx.debug_bounds("choice-0").is_some(),
+            "launcher permissions menu"
+        );
+        for _ in 0..at {
+            cx.simulate_keystrokes("down");
+        }
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert_eq!(
+            shell.read_with(cx, |s, _| s.ask_access.clone()),
+            Some((cwd, "auto".into()))
+        );
+        cx.simulate_keystrokes("enter");
+        let pane = shell.read_with(cx, |s, _| {
+            s.store.panes_of(&session).last().unwrap().id.clone()
+        });
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            draw(cx);
+            let access = shell.read_with(cx, |s, cx| {
+                let view = s.threads.get(&pane)?.view();
+                let thread = view.read(cx).thread();
+                assert!(
+                    !matches!(thread.state(), kou_thread::ThreadState::Closed(_)),
+                    "{:?}",
+                    thread.state()
+                );
+                thread.access.current.clone()
+            });
+            if access.as_deref() == Some("auto") {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the launched Codex did not confirm Auto"
+            );
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        shell.update_in(cx, |shell, window, cx| shell.close_pane(&pane, window, cx));
+    }
+
+    #[gpui::test]
     fn a_model_chosen_on_the_empty_screen_is_the_started_agents(cx: &mut TestAppContext) {
         let (shell, cx, session) = open(cx);
         let model = |id: &str| kou_thread::Choice {
@@ -4375,6 +6802,7 @@ mod tests {
                     current: Some("opus".into()),
                     cwd: "/fixture/atlas".into(),
                     at: Some(Instant::now()),
+                    ..Default::default()
                 },
             );
             shell.asked = false;
@@ -4419,6 +6847,317 @@ mod tests {
         cx.simulate_keystrokes(&format!("{APP}-t"));
         draw(cx);
         assert_eq!(started(cx), ("claude".to_owned(), None));
+    }
+
+    #[gpui::test]
+    fn claude_code_talked_to_directly_is_a_chat_without_its_adapter(cx: &mut TestAppContext) {
+        use serde_json::{Value, json};
+        let (shell, cx, session) = open(cx);
+        cx.executor().allow_parking();
+        let home = tempfile::tempdir().unwrap();
+        let pane = shell.update_in(cx, |shell, window, cx| {
+            // Found as a program that only ever fails, and with no adapter:
+            // no real harness is started here, or asked anything.
+            for (harness, version) in [("claude", "2.1.325"), ("codex", "0.169.0")] {
+                shell.detected.push(kou_agents::Detected {
+                    spec: kou_agents::spec(harness).unwrap(),
+                    path: Some("/usr/bin/false".into()),
+                    version: Some(version.into()),
+                    readiness: kou_agents::Readiness::Ready,
+                    message: None,
+                    native: false,
+                    acp: None,
+                    hooks: true,
+                    chat: kou_agents::Chat::NeedsAdapter {
+                        message: format!("{harness} needs its ACP adapter."),
+                        install: None,
+                    },
+                });
+            }
+            shell.list_harnesses();
+            // Through an adapter that is not here it is no chat, and says
+            // what it waits for.
+            let listed = shell.harness("claude").unwrap();
+            assert!(!listed.native && listed.adapter.is_some());
+            // Talked to directly it is one, and waits for nothing.
+            shell.set_direct("claude", true, cx);
+            let listed = shell.harness("claude").unwrap();
+            assert!(listed.native && listed.adapter.is_none());
+            let codex = shell.harness("codex").unwrap();
+            assert!(!codex.native && codex.adapter.is_some());
+            shell.set_direct("codex", true, cx);
+            let codex = shell.harness("codex").unwrap();
+            assert!(codex.native && codex.adapter.is_none());
+            shell.set_direct("codex", false, cx);
+            assert!(!shell.harness("codex").unwrap().native);
+            assert!(shell.harness("claude").unwrap().native);
+
+            // Its conversations are read from its records, under the
+            // account the pane runs as.
+            let account = shell.store.add_profile("claude", home.path().to_path_buf());
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            shell.store.pane_mut(&pane).unwrap().profile = Some(account);
+            let cwd = shell.store.pane(&pane).unwrap().cwd.clone();
+            let slug: String = cwd
+                .to_string_lossy()
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let folder = home.path().join("projects").join(slug);
+            std::fs::create_dir_all(&folder).unwrap();
+            let id = "0b6f7f3e-2a51-4c0e-9d6b-6f1c2c0e8a11";
+            let line = |kind: &str, uuid: &str, parent: Value, message: Value| {
+                json!({
+                    "parentUuid": parent,
+                    "isSidechain": false,
+                    "type": kind,
+                    "message": message,
+                    "uuid": uuid,
+                    "timestamp": "2026-11-15T10:00:00.000Z",
+                    "sessionId": id,
+                    "cwd": cwd,
+                    "version": "2.1.325",
+                })
+                .to_string()
+            };
+            let record = [
+                line(
+                    "user",
+                    "11111111-1111-4111-8111-111111111111",
+                    Value::Null,
+                    json!({ "role": "user", "content": "Why is it slow?" }),
+                ),
+                line(
+                    "assistant",
+                    "22222222-2222-4222-8222-222222222222",
+                    json!("11111111-1111-4111-8111-111111111111"),
+                    json!({
+                        "role": "assistant",
+                        "content": [{ "type": "text", "text": "The index is missing." }],
+                    }),
+                ),
+            ]
+            .join("\n");
+            std::fs::write(folder.join(format!("{id}.jsonl")), record + "\n").unwrap();
+            shell.open_sessions(&pane, cx);
+            pane
+        });
+        cx.run_until_parked();
+        let listed = (0..200).find_map(|_| {
+            let sessions = shell.read_with(cx, |shell, _| {
+                shell
+                    .resuming
+                    .as_ref()
+                    .filter(|open| open.pane == pane)
+                    .and_then(|open| open.sessions.clone())
+            });
+            if sessions.is_none() {
+                std::thread::sleep(Duration::from_millis(10));
+                cx.run_until_parked();
+            }
+            sessions
+        });
+        let listed = listed.expect("the records were read");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "0b6f7f3e-2a51-4c0e-9d6b-6f1c2c0e8a11");
+        assert_eq!(listed[0].title, "Why is it slow?");
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_claude_code_kept_apart_from_the_app_is_named_let_go_of_and_ended(cx: &mut TestAppContext) {
+        use kou_thread::{Capabilities, Command, Update};
+        let (shell, cx, session) = open(cx);
+        // (Short: a socket's address holds about a hundred bytes.)
+        let folder = tempfile::Builder::new()
+            .prefix("kk")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let (pane, end) = shell.update_in(cx, |shell, window, cx| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: true,
+                adapter: None,
+            });
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            // A window that listens on no socket of its own keeps nothing.
+            assert!(shell.keepers.is_none());
+            assert_eq!(shell.pane_keeper(&pane, cx), None);
+            assert_eq!(shell.store.pane(&pane).unwrap().keeper, None);
+
+            // One that does names what it keeps for the pane, once: the
+            // same name finds it again.
+            shell.keepers = Some(folder.path().to_path_buf());
+            let keeper = shell.pane_keeper(&pane, cx).expect("it is kept");
+            let name = shell.store.pane(&pane).unwrap().keeper.clone().unwrap();
+            assert!(name.starts_with(&format!("{pane}-")), "{name}");
+            assert_eq!(keeper.stem, folder.path().join(&name));
+            assert_eq!(keeper.host_args, ["claude-host"]);
+            assert_eq!(shell.pane_keeper(&pane, cx), Some(keeper));
+
+            // With a conversation in the pane, quitting would not end it.
+            let saved = shell.store.pane(&pane).unwrap().clone();
+            let (backend, end) = kou_thread::channel();
+            shell.install_thread(&saved, backend, "Claude Code".into(), window, cx);
+            let _ = end.updates.try_send(Update::Ready {
+                session: "sess-7".into(),
+                capabilities: Capabilities::default(),
+                modes: Vec::new(),
+                mode: None,
+                models: Vec::new(),
+                model: None,
+            });
+            let _ = end.updates.try_send(Update::TurnStarted);
+            (pane, end)
+        });
+        cx.run_until_parked();
+        shell.update_in(cx, |shell, _, cx| {
+            assert!(shell.outlives_app(&pane));
+            assert_eq!(
+                shell.live.get(&pane).map(|live| live.mark),
+                Some(Mark::Working)
+            );
+            assert_eq!(shell.at_work(), 0, "it works on without the app");
+            // Without a keeper the same pane's work would be lost.
+            let name = shell.store.pane_mut(&pane).unwrap().keeper.take();
+            assert_eq!(shell.at_work(), 1);
+            shell.store.pane_mut(&pane).unwrap().keeper = name;
+
+            // The pane forgotten, its conversation is told to end (let go
+            // of without a word, it would work on), and nothing is kept
+            // under its name any more.
+            shell.forget(&pane, cx);
+            assert_eq!(shell.store.pane(&pane).unwrap().keeper, None);
+            assert!(!shell.outlives_app(&pane));
+        });
+        let mut told = Vec::new();
+        while let Ok(command) = end.commands.try_recv() {
+            told.push(command);
+        }
+        assert_eq!(told.last(), Some(&Command::Close));
+
+        // Switched off, nothing is kept: a name the pane had is dropped.
+        shell.update_in(cx, |shell, _, cx| {
+            shell.store.pane_mut(&pane).unwrap().keeper = Some(format!("{pane}-0000beef"));
+            shell.store.claude_keep = false;
+            assert_eq!(shell.pane_keeper(&pane, cx), None);
+            assert_eq!(shell.store.pane(&pane).unwrap().keeper, None);
+        });
+    }
+
+    #[cfg(unix)]
+    #[gpui::test]
+    fn a_kept_chat_that_lost_its_keeper_is_opened_again_once_a_minute_and_a_move_ends_its_keeper(
+        cx: &mut TestAppContext,
+    ) {
+        use kou_thread::{Capabilities, Command, Update};
+        let (shell, cx, session) = open(cx);
+        let folder = tempfile::Builder::new()
+            .prefix("kt")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let start = |shell: &mut Shell, window: &mut Window, cx: &mut Context<Shell>| {
+            let pane = shell
+                .add_pane(&session, "claude", None, PaneKind::Thread, window, cx)
+                .unwrap();
+            shell.pane_keeper(&pane, cx).expect("it is kept");
+            let saved = shell.store.pane(&pane).unwrap().clone();
+            let (backend, end) = kou_thread::channel();
+            shell.install_thread(&saved, backend, "Claude Code".into(), window, cx);
+            let _ = end.updates.try_send(Update::Ready {
+                session: "sess-8".into(),
+                capabilities: Capabilities::default(),
+                modes: Vec::new(),
+                mode: None,
+                models: Vec::new(),
+                model: None,
+            });
+            (pane, end)
+        };
+        let (lost, lost_end, gone, gone_end) = shell.update_in(cx, |shell, window, cx| {
+            shell.harnesses.push(HarnessInfo {
+                id: "claude".into(),
+                name: "Claude Code".into(),
+                code: "CC".into(),
+                ready: true,
+                version: None,
+                message: None,
+                native: true,
+                adapter: None,
+            });
+            shell.keepers = Some(folder.path().to_path_buf());
+            let (lost, lost_end) = start(shell, window, cx);
+            let (gone, gone_end) = start(shell, window, cx);
+            // The first one's keeper is still there; the second one's ended
+            // and took its socket with it.
+            let name = shell.store.pane(&lost).unwrap().keeper.clone().unwrap();
+            std::fs::write(folder.path().join(format!("{name}-1.sock")), "").unwrap();
+            (lost, lost_end, gone, gone_end)
+        });
+        cx.run_until_parked();
+        for end in [&lost_end, &gone_end] {
+            let _ = end
+                .updates
+                .try_send(Update::Closed(Some("the connection was lost".into())));
+        }
+        cx.run_until_parked();
+        let log = folder.path().join(kou_claude::host::LOG);
+        shell.update_in(cx, |shell, _, _| {
+            // Opened again: here nothing can be started (no Claude Code is
+            // installed for the test), which its pane says.
+            assert!(shell.taken_up.contains_key(&lost));
+            assert!(!shell.taken_up.contains_key(&gone));
+            assert!(!shell.threads.contains_key(&lost));
+            assert!(shell.threads.contains_key(&gone));
+            let said = std::fs::read_to_string(&log).unwrap();
+            assert!(said.contains("app"), "{said}");
+            assert!(
+                said.trim_end().ends_with("the chat is opened again"),
+                "{said}"
+            );
+        });
+
+        // Once a minute at most.
+        let again = shell.update_in(cx, |shell, window, cx| {
+            let (backend, end) = kou_thread::channel();
+            let saved = shell.store.pane(&lost).unwrap().clone();
+            shell.install_thread(&saved, backend, "Claude Code".into(), window, cx);
+            end
+        });
+        let _ = again
+            .updates
+            .try_send(Update::Closed(Some("lost again".into())));
+        cx.run_until_parked();
+        shell.update_in(cx, |shell, _, cx| {
+            assert!(
+                shell.threads.contains_key(&lost),
+                "not opened again so soon"
+            );
+            assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+
+            // Moved to another account, the pane's Claude Code is ended and
+            // its conversation goes on under a new keeper's name.
+            shell.end_kept(&gone);
+            assert_eq!(shell.store.pane(&gone).unwrap().keeper, None);
+            assert!(!shell.threads.contains_key(&gone));
+            let keeper = shell.pane_keeper(&gone, cx).expect("kept anew");
+            assert!(keeper.stem.starts_with(folder.path()));
+        });
+        let mut told = Vec::new();
+        while let Ok(command) = gone_end.commands.try_recv() {
+            told.push(command);
+        }
+        assert_eq!(told.last(), Some(&Command::Close));
+        drop(lost_end);
     }
 
     #[gpui::test]

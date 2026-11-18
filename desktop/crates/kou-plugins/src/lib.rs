@@ -25,6 +25,6 @@ mod source;
 mod watch;
 
 pub use host::{Act, Host, PageInfo, Problem};
-pub use node::Node;
+pub use node::{Node, Props, tag, tags};
 pub use source::{File, Source};
 pub use watch::watch;

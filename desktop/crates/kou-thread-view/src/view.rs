@@ -75,6 +75,7 @@ actions!(
         AllowDefault,
         MenuUp,
         MenuDown,
+        MenuChoose,
     ]
 );
 
@@ -107,6 +108,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
         KeyBinding::new(allow, AllowDefault, Some(CONTEXT)),
         KeyBinding::new("up", MenuUp, Some(MENU_CONTEXT)),
         KeyBinding::new("down", MenuDown, Some(MENU_CONTEXT)),
+        KeyBinding::new("enter", MenuChoose, Some(MENU_CONTEXT)),
         KeyBinding::new("shift-tab", MenuUp, Some(MENU_CONTEXT)),
         KeyBinding::new("tab", MenuDown, Some(MENU_CONTEXT)),
     ]);
@@ -134,6 +136,36 @@ pub struct Header {
     pub cwd: PathBuf,
 }
 
+/// A tool call's card as the app draws it, in place of the view's own: a
+/// surface the agent made, say. The view keeps the card's frame and head
+/// (it folds and opens like any other) and puts `body` in it.
+pub struct ToolFace {
+    /// What it is called, on the card's head.
+    pub title: SharedString,
+    /// What stands beside the title, quieter: which one, which version.
+    pub tag: SharedString,
+    /// How it stands at the head's end, and whether that is a good state
+    /// (`live`) rather than one to look at (`unavailable`).
+    pub status: SharedString,
+    pub live: bool,
+    pub body: gpui::AnyElement,
+}
+
+/// What the view lends the app for drawing a card: text as the transcript
+/// draws it.
+pub struct ToolAids<'a> {
+    /// Markdown, as an answer's.
+    pub markdown: &'a dyn Fn(&str) -> gpui::AnyElement,
+    /// Code in a language, highlighted, as a fenced block's.
+    pub code: &'a dyn Fn(&str, Option<&str>) -> gpui::AnyElement,
+    /// Whether this call is the newest one of the surface it names.
+    pub newest: bool,
+}
+
+/// Draws the cards of the tool calls the app has a face of its own for;
+/// `None` for a call it has none for, which the view then draws itself.
+pub type ToolView = Rc<dyn Fn(&kou_thread::ToolCall, &ToolAids, &App) -> Option<ToolFace>>;
+
 /// How soon after an Escape a second one stops the running turn.
 pub(crate) const ESCAPE_TWICE: std::time::Duration = std::time::Duration::from_millis(1500);
 
@@ -149,6 +181,10 @@ pub enum ThreadViewEvent {
     OpenNested(String),
     /// The project's folder button beside the transcript was clicked.
     OpenFolder(PathBuf),
+    /// A file link in the conversation, resolved against this pane's project.
+    OpenFile(PathBuf),
+    /// A shared theme to preview in the app's settings.
+    OpenTheme(String),
     /// The model the next prompts go to changed during the session: chosen
     /// in the field or by a command, or changed by the agent. Not said for
     /// the model a session merely starts with.
@@ -188,7 +224,7 @@ pub(crate) enum Shot {
 /// The native agent pane: one conversation and the prompt area under it.
 pub struct ThreadView {
     pub(crate) thread: Thread,
-    commands: async_channel::Sender<Command>,
+    pub(crate) commands: async_channel::Sender<Command>,
     pub(crate) requests: async_channel::Sender<Request>,
     pub(crate) header: Header,
     pub(crate) dock: Entity<Dock>,
@@ -279,6 +315,19 @@ pub struct ThreadView {
     /// its rows at every frame. Emptied whenever what it follows from
     /// changes: the entries, the thread's state, what is open, the look.
     pub(crate) fold_memo: RefCell<HashMap<usize, Option<(crate::nested::Run, bool)>>>,
+    /// The app's own cards for some tool calls: see [`ToolView`].
+    pub(crate) tool_view: Option<ToolView>,
+    /// The app's own drawing of parts of the chat: see [`crate::ChatFace`].
+    pub(crate) chat_face: Option<crate::ChatFace>,
+    /// The entries that are the newest call of the surface they name,
+    /// worked out when first asked for after the entries changed.
+    pub(crate) surface_memo: RefCell<Option<Rc<HashSet<usize>>>>,
+    /// How far the user has come with the questions of each open request
+    /// that asks some. See [`crate::questions`].
+    pub(crate) answering: HashMap<u64, crate::questions::Answering>,
+    /// The field holds something typed, as last known: the Confirm of a
+    /// question that takes words is live over it.
+    pub(crate) field_typed: bool,
     /// How many times the pane was built, to check that a burst of updates is one frame.
     #[cfg(test)]
     pub(crate) frames: usize,
@@ -389,6 +438,11 @@ impl ThreadView {
             cache: Vec::new(),
             toggled: HashMap::new(),
             fold_memo: RefCell::default(),
+            tool_view: None,
+            chat_face: None,
+            surface_memo: RefCell::default(),
+            answering: HashMap::new(),
+            field_typed: false,
             unfold_heights: Rc::default(),
             unfolded: HashSet::new(),
             header_visible: true,
@@ -617,6 +671,93 @@ impl ThreadView {
             .update(cx, |dock, cx| dock.set_app_commands(answered, cx));
     }
 
+    /// Lets the app draw the prompt field's frame and arrange its parts:
+    /// see [`crate::FieldFace`]. `None` gives it back to the view.
+    pub fn set_field_face(&mut self, face: Option<crate::FieldFace>, cx: &mut Context<Self>) {
+        self.dock.update(cx, |dock, cx| {
+            dock.face = face;
+            cx.notify();
+        });
+    }
+
+    /// Lets the app draw parts of the chat itself: see [`crate::ChatFace`].
+    /// `None` gives them back to the view.
+    pub fn set_chat_face(&mut self, face: Option<crate::ChatFace>, cx: &mut Context<Self>) {
+        self.chat_face = face.clone();
+        self.dock.update(cx, |dock, cx| {
+            // The list over the field too.
+            dock.composer.update(cx, |composer, cx| {
+                composer.chat_face = face.clone();
+                cx.notify();
+            });
+            dock.chat_face = face;
+            cx.notify();
+        });
+        // The entries look another way: each is drawn and measured again.
+        let rows = self.list.item_count();
+        self.remeasure_rows(0..rows);
+        cx.notify();
+    }
+
+    /// Lets the app draw the cards of some tool calls itself: see
+    /// [`ToolView`].
+    pub fn set_tool_view(&mut self, view: Option<ToolView>, cx: &mut Context<Self>) {
+        self.tool_view = view;
+        self.forget_folds();
+        let rows = self.list.item_count();
+        self.cache.iter_mut().for_each(|parsed| *parsed = None);
+        self.remeasure_rows(0..rows);
+        cx.notify();
+    }
+
+    /// What the app draws in the card of tool call `id` has changed (a file
+    /// its surface reads, say): the card is drawn and measured again.
+    pub fn tool_changed(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(index) = self.thread.tool_entry(id) {
+            self.remeasure_rows(index..index + 1);
+            cx.notify();
+        }
+    }
+
+    /// The entries that are the newest call of the surface they name. An
+    /// earlier call of a surface is history; the newest one is the surface.
+    pub(crate) fn newest_surfaces(&self) -> Rc<HashSet<usize>> {
+        if let Some(known) = self.surface_memo.borrow().as_ref() {
+            return known.clone();
+        }
+        let mut newest: HashMap<String, usize> = HashMap::new();
+        if self.tool_view.is_some() {
+            for (index, entry) in self.thread.entries().iter().enumerate().skip(self.cleared) {
+                if let Entry::Tool(call) = entry
+                    && let Some(named) = call.surface()
+                {
+                    newest.insert(named.surface, index);
+                }
+            }
+        }
+        // (One that was taken away is nothing to keep in sight.)
+        let found: HashSet<usize> = newest
+            .into_values()
+            .filter(|index| match &self.thread.entries()[*index] {
+                Entry::Tool(call) => call.surface().is_some_and(|named| !named.deleted),
+                _ => false,
+            })
+            .collect();
+        let found = Rc::new(found);
+        *self.surface_memo.borrow_mut() = Some(found.clone());
+        found
+    }
+
+    /// Whether entry `index` is work that folds away once it is over. The
+    /// newest call of a surface is not: it is the surface, and stays.
+    pub(crate) fn folds_at(&self, index: usize) -> bool {
+        self.thread
+            .entries()
+            .get(index)
+            .is_some_and(crate::nested::folds)
+            && !self.newest_surfaces().contains(&index)
+    }
+
     /// The assistant's latest text, for another agent that reads this one.
     pub fn last_answer(&self) -> Option<String> {
         self.thread
@@ -657,6 +798,7 @@ impl ThreadView {
                 .map(|pending| pending.entry),
         );
         let now = cx.background_executor().now();
+        let surfaces = self.newest_surfaces();
         // A burst of entries is a session replayed, not one being written.
         let burst = updates
             .iter()
@@ -712,12 +854,16 @@ impl ThreadView {
                 }
             }
             if let Some(model) = model {
-                // The model a turn runs with is the one its prompt went to.
-                if let Some(prompt) = self
-                    .thread
-                    .entries()
-                    .iter()
-                    .rposition(|entry| matches!(entry, Entry::User(_)))
+                // The model a turn runs with is the one its prompt went to:
+                // while that turn runs. One chosen between turns is the
+                // next prompt's, and the last one keeps the name of what
+                // answered it.
+                if self.thread.turn_from().is_some()
+                    && let Some(prompt) = self
+                        .thread
+                        .entries()
+                        .iter()
+                        .rposition(|entry| matches!(entry, Entry::User(_)))
                 {
                     self.prompt_models.insert(prompt, model.clone());
                 }
@@ -731,9 +877,19 @@ impl ThreadView {
             }
         }
         self.follow_edit(started, cx);
+        // What was answered of requests no longer open goes with them; a
+        // question that comes finds the field as it is (its Confirm is
+        // live over words typed before it came).
+        self.forget_answering();
+        self.field_typed = !self.dock.read(cx).field_empty();
+        // A surface made again: the call that was its newest is history
+        // now, and folds with the work around it.
+        let newest = self.newest_surfaces();
+        let moved = *newest != *surfaces;
+        changed.extend(newest.symmetric_difference(&surfaces).copied());
         // A turn that began or ended, a prompt that came: the look folds
         // the work of a finished turn, so its rows are measured again.
-        if *self.thread.state() != state || messages > 0 || appended {
+        if *self.thread.state() != state || messages > 0 || appended || moved {
             self.restudy_last();
         }
         self.prune_lights();
@@ -780,10 +936,14 @@ impl ThreadView {
             offers: thread.offers.clone(),
             commands: thread.commands.clone(),
             modes: thread.modes.clone(),
+            access: thread.access.clone(),
             mode: thread.mode.clone(),
             models: thread.models.clone(),
             model: thread.model.clone(),
+            efforts: thread.efforts.clone(),
+            effort: thread.effort.clone(),
             providers: thread.providers.clone(),
+            asking: self.asking_for_field(),
             usage: thread.usage,
             answered: entries
                 .iter()
@@ -797,7 +957,7 @@ impl ThreadView {
         }
     }
 
-    fn sync_dock(&self, cx: &mut Context<Self>) {
+    pub(crate) fn sync_dock(&self, cx: &mut Context<Self>) {
         let sync = self.dock_sync();
         self.dock.update(cx, |dock, cx| dock.sync(sync, cx));
     }
@@ -1021,7 +1181,12 @@ impl ThreadView {
     }
 
     /// Tell whoever listens what changed outside the entries, and redraw.
-    fn after_change(&mut self, state: ThreadState, title: Option<String>, cx: &mut Context<Self>) {
+    pub(crate) fn after_change(
+        &mut self,
+        state: ThreadState,
+        title: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         if *self.thread.state() != state {
             // An Escape pressed in a turn does not count toward another's.
             self.stop_armed = None;
@@ -1047,6 +1212,7 @@ impl ThreadView {
         for index in changed {
             self.remeasure_rows(index..index + 1);
         }
+        self.forget_answering();
         self.sync_dock(cx);
     }
 
@@ -1106,13 +1272,17 @@ impl ThreadView {
             DockEvent::Cancel => {
                 self.cancel_turn();
             }
-            DockEvent::SetMode(id) => self.choose(true, id.clone(), cx),
-            DockEvent::SetModel(id) => self.choose(false, id.clone(), cx),
+            DockEvent::SetMode(id) => self.choose(Command::SetMode(id.clone()), cx),
+            DockEvent::SetAccess(id) => self.choose(Command::SetAccess(id.clone()), cx),
+            DockEvent::SetModel(id) => self.choose(Command::SetModel(id.clone()), cx),
+            DockEvent::SetEffort(id) => self.choose(Command::SetEffort(id.clone()), cx),
+            DockEvent::Answer(words) => self.answer_in_words(words.clone(), cx),
+            DockEvent::Typed(typed) => self.field_typed(*typed, cx),
             DockEvent::View(act) => self.view_command(*act, cx),
             DockEvent::Edit(number) => self.edit(*number, window, cx),
             DockEvent::Ask(request) => cx.emit(request.clone()),
-            // Only a field standing alone says so.
-            DockEvent::Blank => {}
+            // Enter over the empty field, under a question.
+            DockEvent::Blank => self.answer_blank(cx),
             DockEvent::Height(height) => {
                 if (self.dock_height - height).abs() > 0.5 {
                     self.dock_height = *height;
@@ -1401,6 +1571,7 @@ impl ThreadView {
     /// again when next asked for.
     pub(crate) fn forget_folds(&self) {
         self.fold_memo.borrow_mut().clear();
+        self.surface_memo.borrow_mut().take();
     }
 
     /// Show a terminal output from its first line.
@@ -1430,6 +1601,7 @@ impl ThreadView {
         }
         let state = self.thread.state().clone();
         self.thread.answered(request);
+        self.answering.remove(&request);
         let count = self.thread.entries().len();
         self.remeasure_rows(entry..entry + 1);
         self.remeasure_rows(count..count + 1);
@@ -1437,18 +1609,15 @@ impl ThreadView {
         self.after_change(state, self.thread.title.clone(), cx);
     }
 
-    fn choose(&mut self, mode: bool, id: String, cx: &mut Context<Self>) {
-        let command = if mode {
-            Command::SetMode(id.clone())
-        } else {
-            Command::SetModel(id.clone())
-        };
-        if self.commands.try_send(command).is_ok() {
-            // Shown at once; the backend's own report of the mode or model overrides it.
-            if mode {
-                self.thread.mode = Some(id);
-            } else {
-                self.thread.model = Some(id);
+    /// Switches the mode, the model or the level of effort.
+    fn choose(&mut self, command: Command, cx: &mut Context<Self>) {
+        if self.commands.try_send(command.clone()).is_ok() {
+            // Shown at once; the backend's own report of it overrides it.
+            match command {
+                Command::SetMode(id) => self.thread.mode = Some(id),
+                Command::SetModel(id) => self.thread.model = Some(id),
+                Command::SetEffort(id) => self.thread.effort = Some(id),
+                _ => {}
             }
             self.sync_dock(cx);
         }
@@ -1551,14 +1720,7 @@ impl ThreadView {
             .gap(px(6.))
             .border_b_1()
             .border_color(theme.line)
-            .child(
-                div()
-                    .flex_none()
-                    .w(px(crate::entries::GUTTER))
-                    .flex()
-                    .justify_center()
-                    .child(status_mark(mark, theme)),
-            )
+            .child(status_mark(mark, theme))
             .child(
                 div()
                     .flex_none()
@@ -1889,13 +2051,6 @@ impl ThreadView {
                             // As the column and the field are: clear of the
                             // room the card beside the transcript takes.
                             .pr(px(self.around.inset.get()))
-                            // The cockpit's field stands under the text,
-                            // clear of the rail: its middle is the text's.
-                            .pl(px(if studio {
-                                0.
-                            } else {
-                                crate::entries::TEXT_EDGE - crate::entries::EDGE
-                            }))
                             .flex()
                             .justify_center()
                             .child(
@@ -2168,25 +2323,22 @@ impl Render for ThreadView {
         let cx = &*cx;
         let theme = crate::studio::look_theme(self.around.look.get(), cx);
         let Some(zoom) = zoom else {
+            if self.trace.is_none() {
+                return self
+                    .pane(self.content(theme, cx), theme, cx)
+                    .into_any_element();
+            }
+            // Traced, a pane that follows no zoom is timed as one at 1: what
+            // a scroll or a stream costs a frame in a tab.
+            let started = trace::begin(&self.trace, 1., 1., false, || self.trace_state());
+            let content = trace::traced(&self.trace, Part::Content, self.content(theme, cx));
+            trace::built(&self.trace, started);
             return self
-                .pane(self.content(theme, cx), theme, cx)
+                .pane(div(), theme, cx)
+                .child(content)
                 .into_any_element();
         };
-        let started = trace::begin(&self.trace, zoom, factor, rescaled, || {
-            let top = self.list.logical_scroll_top();
-            format!(
-                "held={:.3} room={:.2} top={}:{:.2}{}",
-                self.held_width.get().map_or(0., f32::from),
-                self.dock_height,
-                top.item_ix,
-                f32::from(top.offset_in_item),
-                if self.list.is_following_tail() {
-                    " tail"
-                } else {
-                    ""
-                },
-            )
-        });
+        let started = trace::begin(&self.trace, zoom, factor, rescaled, || self.trace_state());
         // The content is built, laid out, prepainted and painted at the factor,
         // at the view's unzoomed width times the factor (the view's width,
         // give or take the rounding the width is held against): its
@@ -2217,6 +2369,25 @@ impl Render for ThreadView {
 }
 
 impl ThreadView {
+    /// What the view holds that moves things, for its trace: its unzoomed
+    /// width, the room the last row keeps for the prompt area, and where the
+    /// transcript is scrolled.
+    fn trace_state(&self) -> String {
+        let top = self.list.logical_scroll_top();
+        format!(
+            "held={:.3} room={:.2} top={}:{:.2}{}",
+            self.held_width.get().map_or(0., f32::from),
+            self.dock_height,
+            top.item_ix,
+            f32::from(top.offset_in_item),
+            if self.list.is_following_tail() {
+                " tail"
+            } else {
+                ""
+            },
+        )
+    }
+
     /// `element` as the pane: its focus, its keys, its surface.
     fn pane(&self, element: Div, theme: &Theme, cx: &Context<Self>) -> gpui::Stateful<Div> {
         element
@@ -2231,6 +2402,8 @@ impl ThreadView {
             .on_action(cx.listener(|_, _: &FocusPrevious, window, cx| window.focus_prev(cx)))
             .on_action(cx.listener(Self::cancel))
             .on_action(cx.listener(Self::allow_default))
+            // A digit over the empty field chooses an answer to a question.
+            .capture_key_down(cx.listener(Self::question_key))
             .size_full()
             .bg(theme.pane)
     }

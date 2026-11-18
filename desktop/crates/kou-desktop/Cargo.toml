@@ -31,6 +31,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 kou-acp.workspace = true
 kou-agents.workspace = true
 kou-canvas.workspace = true
+kou-claude.workspace = true
+kou-codex.workspace = true
 kou-ipc.workspace = true
 kou-mcp.workspace = true
 kou-native.workspace = true

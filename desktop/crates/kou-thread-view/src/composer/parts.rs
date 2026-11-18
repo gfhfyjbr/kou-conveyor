@@ -22,6 +22,45 @@ use std::{cell::Cell, rc::Rc, time::Instant};
 
 /// Height of a line of a list.
 const ROW: f32 = 28.;
+
+/// The list over the field as the app draws it (`chat-menu`): its height,
+/// whether the files are still being listed, its lines and
+/// its foot.
+#[derive(Hash, serde::Serialize)]
+struct MenuData {
+    height: u32,
+    loading: bool,
+    lines: Vec<MenuLine>,
+    footer: Option<MenuFoot>,
+}
+
+/// A line of the list: `kind` is `file`, `command`, `value`, `hint` or
+/// `prompt`; `on`, the keys are on it.
+#[derive(Default, Hash, serde::Serialize)]
+struct MenuLine {
+    kind: &'static str,
+    on: bool,
+    name: String,
+    detail: String,
+    /// A file's folder, before its name.
+    dir: Option<String>,
+    directory: bool,
+    /// A command's other name, and what it takes.
+    alias: Option<String>,
+    args: Option<String>,
+    /// A value that is the one in force.
+    current: bool,
+}
+
+/// The list's foot: what Tab (or Enter, `enter`) does, whether Enter runs
+/// (`run`), and its note.
+#[derive(Hash, serde::Serialize)]
+struct MenuFoot {
+    take: &'static str,
+    enter: bool,
+    run: bool,
+    note: String,
+}
 /// Height of a list's footer.
 const FOOTER: f32 = 28.;
 /// A spring that settles with a little give: what grows and what moves.
@@ -30,11 +69,11 @@ pub(crate) const SETTLE: SpringConfig = SpringConfig::new(420., 36., 1.);
 pub(crate) const GLIDE: SpringConfig = SpringConfig::new(900., 54., 1.);
 /// Where the text starts, from the field's left edge.
 const TEXT_LEFT: f32 = 0.;
-/// From the field's text to the frame's outer edges: its padding and border
+/// From the field's text to the frame's outer edges: its padding
 /// (`.composer`: `12px 10px 10px 14px`).
-const FRAME_LEFT: f32 = 15.;
-const FRAME_RIGHT: f32 = 11.;
-const FRAME_TOP: f32 = 13.;
+const FRAME_LEFT: f32 = 14.;
+const FRAME_RIGHT: f32 = 10.;
+const FRAME_TOP: f32 = 12.;
 
 /// A block whose height follows its content's over time: it grows from
 /// nothing as its content arrives and shrinks as it leaves. The content is
@@ -177,23 +216,122 @@ impl Composer {
             matches!(menu.kind, MenuKind::Files { .. } | MenuKind::History) || menu.choosable();
 
         // The line the keys are on: a rounded block under it (round corners).
-        let highlight = (!loading_row && menu.choosable()).then(|| {
-            let top = (menu.highlighted - first) as f32 * ROW + 4.;
-            div()
-                .absolute()
-                .left(px(4.))
-                .right(px(4.))
-                .top(unit * top)
-                .h(px(ROW))
-                .rounded(px(metric::RADIUS))
-                .bg(theme.hover)
-        });
+        let highlight = || {
+            (!loading_row && menu.choosable()).then(|| {
+                let top = (menu.highlighted - first) as f32 * ROW + 4.;
+                div()
+                    .absolute()
+                    .left(px(4.))
+                    .right(px(4.))
+                    .top(unit * top)
+                    .h(px(ROW))
+                    .rounded(px(metric::RADIUS))
+                    .bg(theme.hover)
+            })
+        };
 
         let prefix = match menu.kind {
             MenuKind::Files { .. } => "file-match",
             MenuKind::Commands => "slash-command",
             MenuKind::History => "history-item",
         };
+        let more = menu.items.len().saturating_sub(first + shown);
+        let still = cx.reduce_motion();
+        let duration = if still {
+            std::time::Duration::from_millis(1)
+        } else {
+            motion::cockpit::MENU
+        };
+        // The app draws the card, its lines and its foot when it can
+        // (`chat-menu`); the highlight that follows the keys and where each
+        // line takes the pointer stay the field's, over the lines.
+        let drawn =
+            self.chat_face
+                .as_ref()
+                .filter(|_| !self.around.studio())
+                .and_then(|face| {
+                    let hits = div().absolute().top_0().left_0().size_full().children(
+                        menu.items.iter().enumerate().skip(first).take(shown).map(
+                            |(index, item)| {
+                                let top = (index - first) as f32 * ROW + 4.;
+                                div()
+                                    .id((prefix, index))
+                                    .debug_selector(move || format!("{prefix}-{index}"))
+                                    .absolute()
+                                    .left_0()
+                                    .right_0()
+                                    .top(unit * top)
+                                    .h(px(ROW))
+                                    .when(item.what != What::Hint, |row| {
+                                        row.cursor_pointer()
+                                            .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                                                this.hover_menu(index, cx)
+                                            }))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.accept(index, true, cx)
+                                            }))
+                                    })
+                            },
+                        ),
+                    );
+                    let mut slots = vec![("hits", hits.into_any_element())];
+                    slots.extend(
+                        highlight().map(|highlight| ("highlight", highlight.into_any_element())),
+                    );
+                    let lines: Vec<MenuLine> = menu
+                        .items
+                        .iter()
+                        .enumerate()
+                        .skip(first)
+                        .take(shown)
+                        .map(|(index, item)| self.menu_line(menu, index, item))
+                        .collect();
+                    let (take, note) = match &menu.kind {
+                        MenuKind::Files { .. } => ("complete", "$path:10-40 links lines"),
+                        MenuKind::Commands => ("complete", ""),
+                        MenuKind::History => ("use", ""),
+                    };
+                    let footer = footer.then(|| MenuFoot {
+                        take,
+                        enter: matches!(menu.kind, MenuKind::History),
+                        run: matches!(menu.kind, MenuKind::Commands),
+                        note: if more > 0 {
+                            format!("{more} more below")
+                        } else {
+                            note.to_owned()
+                        },
+                    });
+                    let what = MenuData {
+                        // (A whole number of pixels: lines of 28 and 8 around.)
+                        height: list_height as u32,
+                        loading: loading_row,
+                        lines,
+                        footer,
+                    };
+                    let key = format!("menu-{}", cx.entity_id().as_u64());
+                    let part = crate::face::Handed::of("chat-menu", key, what);
+                    let asked = |_: &mut Self,
+                                 _: &str,
+                                 _: &serde_json::Value,
+                                 _: &mut Window,
+                                 _: &mut Context<Self>| {};
+                    crate::face::drawn(face, part, slots, cx.weak_entity(), asked, &self.trace, cx)
+                });
+        if let Some(drawn) = drawn {
+            let card = div()
+                .id(("menu", menu.id))
+                .occlude()
+                .w(px(width))
+                .child(drawn)
+                // `.commands`: `rise 0.1s ease-out`.
+                .with_animation(
+                    ("menu-in", menu.id),
+                    Animation::new(duration).with_easing(motion::cockpit::ease_out),
+                    move |this, t| this.opacity(t).mt(unit * (6. * (1. - t))),
+                );
+            return Some(Self::menu_placed(card.into_any_element()));
+        }
+        let highlight = highlight();
         let rows = menu
             .items
             .iter()
@@ -221,14 +359,7 @@ impl Composer {
                 )
             })
             .children(rows);
-        let more = menu.items.len().saturating_sub(first + shown);
         let footer = footer.then(|| self.menu_footer(menu, more, theme));
-        let still = cx.reduce_motion();
-        let duration = if still {
-            std::time::Duration::from_millis(1)
-        } else {
-            motion::cockpit::MENU
-        };
 
         let card = div()
             .id(("menu", menu.id))
@@ -253,23 +384,67 @@ impl Composer {
                 Animation::new(duration).with_easing(motion::cockpit::ease_out),
                 move |this, t| this.opacity(t).mt(unit * (6. * (1. - t))),
             );
-        Some(
-            div()
-                .absolute()
-                .top_0()
-                .left(px(-FRAME_LEFT))
-                .child(
-                    deferred(
-                        anchored()
-                            .anchor(Anchor::BottomLeft)
-                            .offset(point(px(0.), px(-(FRAME_TOP + 6.))))
-                            .snap_to_window_with_margin(px(8.))
-                            .child(card),
-                    )
-                    .with_priority(1),
+        Some(Self::menu_placed(card.into_any_element()))
+    }
+
+    /// The list's card where it stands: over the field, from its frame's
+    /// left edge, laid out after everything else.
+    fn menu_placed(card: AnyElement) -> AnyElement {
+        div()
+            .absolute()
+            .top_0()
+            .left(px(-FRAME_LEFT))
+            .child(
+                deferred(
+                    anchored()
+                        .anchor(Anchor::BottomLeft)
+                        .offset(point(px(0.), px(-(FRAME_TOP + 6.))))
+                        .snap_to_window_with_margin(px(8.))
+                        .child(card),
                 )
-                .into_any_element(),
-        )
+                .with_priority(1),
+            )
+            .into_any_element()
+    }
+
+    /// A line of the list as the app draws it (see [`MenuLine`]).
+    fn menu_line(&self, menu: &Menu, index: usize, item: &super::MenuItem) -> MenuLine {
+        let on = index == menu.highlighted && item.what != What::Hint;
+        let mut line = MenuLine {
+            kind: "hint",
+            on,
+            name: item.name.clone(),
+            detail: item.detail.clone(),
+            ..MenuLine::default()
+        };
+        match &item.what {
+            What::File { directory } => {
+                let trimmed = item.name.trim_end_matches('/');
+                let cut = trimmed.rfind('/').map_or(0, |at| at + 1);
+                let (dir, name) = item.name.split_at(cut);
+                line.kind = "file";
+                line.dir = Some(dir.to_owned());
+                line.name = name.to_owned();
+                line.directory = *directory;
+            }
+            What::Command { spec, alias } => {
+                let spec = &self.catalog.specs[*spec];
+                line.kind = "command";
+                line.name = format!("/{}", spec.name);
+                line.alias = alias.map(|alias| format!("/{alias}"));
+                line.args = spec.args.clone();
+            }
+            What::Value { current, .. } => {
+                line.kind = "value";
+                line.current = *current;
+            }
+            What::Hint => {}
+            What::Prompt => {
+                line.kind = "prompt";
+                line.name = item.name.split_whitespace().collect::<Vec<_>>().join(" ");
+            }
+        }
+        line
     }
 
     fn menu_row(

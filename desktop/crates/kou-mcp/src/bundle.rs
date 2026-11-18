@@ -51,9 +51,14 @@ pub struct Guidance {
     /// A plugin directory for `claude --plugin-dir`: `.claude-plugin/plugin.json`
     /// and `skills/orchestrate/SKILL.md`.
     pub claude_plugin: PathBuf,
+    /// Where the agent is, in a few lines ([`Flavour::place`]): what to put
+    /// into the context at launch for a harness that is given the plugin,
+    /// whose skill it reads only when its description fits the task.
+    pub place: PathBuf,
 }
 
 const BRIEF_FILE: &str = "brief.md";
+const PLACE_FILE: &str = "place.md";
 const GUIDE_FILE: &str = "kou-desktop.md";
 const PLUGIN_DIR: &str = "claude-plugin";
 
@@ -70,6 +75,7 @@ pub fn write_bundle(dir: &Path) -> io::Result<Bundle> {
             brief: base.join(BRIEF_FILE),
             guide: base.join(GUIDE_FILE),
             claude_plugin: base.join(PLUGIN_DIR),
+            place: base.join(PLACE_FILE),
         }
     };
     let bundle = Bundle {
@@ -107,6 +113,12 @@ pub(crate) fn brief(flavour: Flavour, guide: &Path) -> String {
     guidance::render(guidance::INSTRUCTIONS, flavour, Pointer::File(guide)).text
 }
 
+/// Where the agent is, in a few lines, naming `guide` as the full guide
+/// for a harness without skills.
+pub(crate) fn place(flavour: Flavour, guide: &Path) -> String {
+    guidance::render(guidance::PLACE, flavour, Pointer::File(guide)).text
+}
+
 /// The plain file: the rules, then the how-to.
 pub(crate) fn guide_file(flavour: Flavour) -> String {
     let rules = guidance::render(guidance::INSTRUCTIONS, flavour, Pointer::Omit).text;
@@ -122,7 +134,7 @@ pub(crate) fn guide_file(flavour: Flavour) -> String {
 pub(crate) fn skill_file(flavour: Flavour) -> String {
     let rules = match flavour {
         Flavour::Tools => "the kou server's instructions",
-        Flavour::Commands => "the kou desktop instructions you were started with",
+        Flavour::Commands => "the kou desktop instructions, if you were started with them,",
     };
     format!(
         "---\nname: {}\ndescription: {}\n---\n\n# Orchestrating agents in kou desktop\n\n\
@@ -158,6 +170,7 @@ fn files(root: &Path) -> Vec<(String, String)> {
         let base = flavour.word();
         let guide = root.join(base).join(GUIDE_FILE);
         files.push((format!("{base}/{BRIEF_FILE}"), brief(flavour, &guide)));
+        files.push((format!("{base}/{PLACE_FILE}"), place(flavour, &guide)));
         files.push((format!("{base}/{GUIDE_FILE}"), guide_file(flavour)));
         files.push((
             format!("{base}/{PLUGIN_DIR}/.claude-plugin/plugin.json"),

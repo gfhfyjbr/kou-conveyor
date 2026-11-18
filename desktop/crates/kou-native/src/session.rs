@@ -432,6 +432,7 @@ impl Session {
             },
         ]));
         self.send(Update::Offers(Offers {
+            listening: false,
             steer: self.features.steer,
             // An edited prompt rewinds the session, as the cockpits do.
             rewind: true,
@@ -479,7 +480,13 @@ impl Session {
             Message::Command(Command::SetModel(model)) => self.set_model(&model),
             Message::Command(Command::SetMode(mode)) => self.set_effort(&mode),
             // The runner asks no permission: there is nothing to answer.
-            Message::Command(Command::Permit { .. }) => {}
+            // (Its efforts are offered as its modes.)
+            Message::Command(
+                Command::Permit { .. }
+                | Command::Answer { .. }
+                | Command::SetEffort(_)
+                | Command::SetAccess(_),
+            ) => {}
             Message::Runner { generation, output } => {
                 let current = matches!(&self.run, Some(Run::Own { generation: own, .. }) if *own == generation);
                 if current {

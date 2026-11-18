@@ -1087,6 +1087,7 @@ fn main() {
     gpui_platform::application()
         .with_assets(kou_ui::Assets)
         .run(move |cx: &mut App| {
+            kou_ui::init(cx);
             cx.spawn(async move |cx| {
                 if wrap_report {
                     if let Err(error) = report_wrapping(cx) {
@@ -1868,7 +1869,7 @@ fn long_conversation(entries: usize) -> Vec<Update> {
     updates
 }
 
-/// Two paragraphs of the system font and one of the monospace, at 13 pixels
+/// Two paragraphs of the interface font and one of the monospace, at 13 pixels
 /// times the zoom, or times its step.
 struct Prose {
     zoom: Rc<Cell<f32>>,
@@ -1876,8 +1877,9 @@ struct Prose {
 }
 
 impl gpui::Render for Prose {
-    fn render(&mut self, _: &mut gpui::Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut gpui::Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
         use gpui::{ParentElement as _, Styled as _};
+        let theme = kou_ui::theme(cx);
         let zoom = self.zoom.get();
         let factor = if self.exact {
             zoom
@@ -1886,6 +1888,7 @@ impl gpui::Render for Prose {
         };
         gpui::div()
             .w(px(420. * factor))
+            .font_family(theme.ui_font.clone())
             .flex()
             .flex_col()
             .text_size(px(13. * factor))
@@ -1899,7 +1902,7 @@ impl gpui::Render for Prose {
                 "The task stays in the queue until a worker acknowledges it; if the worker dies, \
                  the lease runs out and the next worker takes it. 0123456789",
             )
-            .child(gpui::div().font_family("Menlo").child(
+            .child(gpui::div().font_family(theme.mono_font.clone()).child(
                 "fn backoff(attempt: u32) -> Duration { Duration::from_secs(1 << attempt) }",
             ))
     }
@@ -1907,7 +1910,7 @@ impl gpui::Render for Prose {
 
 /// Prints how many lines paragraphs take at several zooms, set at the zoomed
 /// size (as GPUI's text sets them) and laid out at the unscaled size (as the
-/// zoomed view sets them), in a 520 pixel column of the system font.
+/// zoomed view sets them), in a 520 pixel column of the interface font.
 fn report_wrapping(cx: &mut AsyncApp) -> anyhow::Result<()> {
     let window = cx.update(|cx| {
         let bounds = Bounds::centered(None, size(px(400.), px(300.)), cx);
@@ -1934,9 +1937,10 @@ fn report_wrapping(cx: &mut AsyncApp) -> anyhow::Result<()> {
          so the expectation moves with `backoff` and the jitter it now adds to every delay.",
     ];
     let zooms = [0.6f32, 0.75, 1., 1.25, 1.5, 2., 2.5, 3., 4.];
-    window.update(cx, |_, window, _| {
-        let font = gpui::font(".SystemUIFont");
-        let mono = gpui::font("Menlo");
+    window.update(cx, |_, window, cx| {
+        let theme = kou_ui::theme(cx);
+        let font = gpui::font(theme.ui_font.clone());
+        let mono = gpui::font(theme.mono_font.clone());
         println!("lines of each paragraph in a 520px column of 13px text, by zoom:");
         println!(
             "{:>9} {}",
@@ -2550,6 +2554,7 @@ fn commands() -> Update {
 
 fn offers() -> Update {
     Update::Offers(Offers {
+        listening: false,
         steer: true,
         rewind: false,
         arguments: vec![("compact".into(), "[focus]".into())],
@@ -2721,6 +2726,7 @@ fn edit() -> Vec<Update> {
     updates.insert(
         1,
         Update::Offers(Offers {
+            listening: false,
             steer: true,
             rewind: true,
             arguments: Vec::new(),
@@ -2852,6 +2858,7 @@ fn permission() -> Vec<Update> {
         Update::Tool(read),
         Update::AssistantChunk("Задержка считается в одной функции. Меняю её и импорты:".into()),
         Update::Permission(PermissionRequest {
+            questions: Vec::new(),
             id: 7,
             tool: edit,
             options: vec![

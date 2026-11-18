@@ -8,7 +8,7 @@
 //! its 1.7 pixels to the point (see [`crate::studio`]).
 
 use crate::{
-    entries::{HEAD, MEASURE, Node, chevron, node, row},
+    entries::{EDGE, HEAD, MEASURE, chevron, row},
     lights::{Light, Lights, Spot, mark_spot},
     nested::{Look, Nested, NestedState, ran_for_short, tokens, words},
     studio::{COLUMN, SIDE},
@@ -65,15 +65,13 @@ const BESIDE_END: f32 = 17.6;
 /// The size of a row's words in the card beside (the picture's 146 pixels
 /// for "Previous agents"), and its icons.
 const BESIDE_SIZE: f32 = crate::studio::sized(11.5);
-const BESIDE_ICON: f32 = 17.;
+const BESIDE_ICON: f32 = 16.;
 /// The box a row's picture sits in.
 const BESIDE_SLOT: f32 = 18.;
-/// The ticks: how long, how thick, from one to the next, and how far from
-/// the pane's left edge (the picture's 11, 2.5, 12 and 18 pixels).
-const TICK: f32 = 6.5;
+/// Prompt shortcuts fit inside the transcript's side padding at every pane width.
+const TICK: f32 = 5.;
 const TICK_THICK: f32 = 1.5;
 const TICK_PITCH: f32 = 7.;
-const TICK_LEFT: f32 = 10.6;
 
 impl ThreadView {
     /// The cards of `agents`, one under the other, `above` under what is
@@ -303,8 +301,7 @@ impl ThreadView {
             .into_any_element()
     }
 
-    /// A card in the cockpit's manner: on the rail, a node that says how the
-    /// agent goes; a framed card with its harness's tile, its title, its
+    /// A cockpit card with the agent's tile, its title, its
     /// state in capitals and its time; its latest words under them.
     fn cockpit_card(
         &self,
@@ -323,14 +320,52 @@ impl ThreadView {
             NestedState::Gone => ("Closed", theme.fg_muted),
             NestedState::Failed => ("Failed", theme.error),
         };
-        let mark = match agent.state {
-            NestedState::Running => Node::Filled(theme.working),
-            NestedState::Asking => Node::Filled(theme.blocked),
-            NestedState::Failed => Node::Hollow(theme.error),
-            NestedState::Finished | NestedState::Gone => Node::Hollow(theme.fg_faint),
-        };
         // The time: how long it has run, or when it ended.
         let time = said.time.last().cloned().unwrap_or_default();
+        // The app draws the card when it can (`chat-nested`): its frame, its
+        // head and the frame of its latest words. Its time and those words,
+        // which count up and change as the agent works, stay the view's, as
+        // do its light and its coming in.
+        if self.chat_face.is_some() {
+            let tone = match agent.state {
+                NestedState::Running => "working",
+                NestedState::Asking => "blocked",
+                NestedState::Finished | NestedState::Gone => "fgMuted",
+                NestedState::Failed => "error",
+            };
+            let what = NestedCard {
+                id: &agent.id,
+                code: if agent.code.is_empty() {
+                    &agent.harness
+                } else {
+                    &agent.code
+                },
+                title: &agent.title,
+                word,
+                tone,
+                running: agent.state == NestedState::Running,
+            };
+            let mut slots: Vec<(&'static str, AnyElement)> = vec![
+                ("time", scale::text(time.clone()).into_any_element()),
+                (
+                    "detail",
+                    scale::text(said.detail.clone()).into_any_element(),
+                ),
+            ];
+            if said.counting {
+                slots.push(("counting", self.counting(cx).into_any_element()));
+            }
+            if let Some(spot) = spot {
+                slots.push(("spot", mark_spot(&self.spots, spot).into_any_element()));
+            }
+            let memo = crate::face::digest(&what);
+            let data = || serde_json::to_value(&what).unwrap_or_default();
+            if let Some(card) =
+                self.entry_face("chat-nested", &agent.id, Some(memo), data, slots, cx)
+            {
+                return row(card).into_any_element();
+            }
+        }
         let (hover, ring) = (theme.hover, theme.accent);
         let card = div()
             .id(SharedString::from(format!("nested-{id}")))
@@ -397,8 +432,7 @@ impl ThreadView {
                 div()
                     .pl(px(36.))
                     .pr(px(12.))
-                    .pb(px(9.))
-                    .mt(px(-4.))
+                    .pb(px(6.))
                     .truncate()
                     .font_family(theme.mono_font.clone())
                     .text_size(px(11.5))
@@ -408,7 +442,7 @@ impl ThreadView {
             .children(said.counting.then(|| self.counting(cx)))
             // Its light goes round it while the agent runs, as a call's does.
             .children(spot.map(|spot| mark_spot(&self.spots, spot)));
-        row(node(mark, 1., theme), HEAD, card).into_any_element()
+        row(card).into_any_element()
     }
 
     /// The card beside the transcript, at the pane's top right, while the
@@ -425,6 +459,120 @@ impl ThreadView {
         }
         let studio = self.around.studio();
         let wall = self.wall_now();
+        // Who started whom: the agents started in panes, and those the
+        // agent started by itself (by a call, whose card is in the
+        // transcript).
+        let native = self.native_agents(now);
+        // (With them, the commands it left running in the background.)
+        let commands = self.background_commands(now);
+        let own: Vec<&(usize, Nested)> = native
+            .iter()
+            .filter(|(_, agent)| agent.state.live())
+            .chain(commands.iter())
+            .collect();
+        let running = self
+            .nest
+            .agents
+            .iter()
+            .filter(|agent| agent.state.live())
+            .count()
+            + own.len();
+        // Those at work are listed; the others count as previous agents,
+        // with the ones gone for good.
+        let shown: Vec<&Nested> = self
+            .nest
+            .agents
+            .iter()
+            .filter(|agent| agent.state.live())
+            .collect();
+        let earlier = beside.earlier + self.nest.agents.len() - shown.len()
+            + native
+                .iter()
+                .filter(|(_, agent)| !agent.state.live())
+                .count();
+        let lineage =
+            beside.parent.is_some() || !shown.is_empty() || !own.is_empty() || earlier > 0;
+        // How full the context is, from the thread's own figures.
+        let usage = self.thread.usage;
+        let context = match (usage.context_used, usage.context_limit) {
+            (Some(used), Some(limit)) if limit > 0 => Some((used, limit)),
+            _ => None,
+        };
+        self.around.context_beside.set(context.is_some());
+        let measured = self.nest.beside_height.clone();
+        // Its height, measured as it is drawn, says whether it fits over
+        // the field.
+        let measure = move || {
+            let measured = measured.clone();
+            canvas(
+                move |bounds, _, _| {
+                    measured.set(bounds.size.height.as_f32() / scale::factor().max(0.01));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .size_full()
+        };
+        // On its way it slides from the pane's edge and fades in.
+        let slide = kou_ui::motion::studio::BESIDE_BY * (1. - level);
+        let placed = |card: AnyElement| {
+            div()
+                .absolute()
+                .top(px(crate::nested::BESIDE_TOP))
+                .right(px(crate::nested::BESIDE_EDGE - slide))
+                .opacity(level.clamp(0., 1.))
+                .child(card)
+                .into_any_element()
+        };
+        // The app draws the card when it can (`chat-beside`): its sections,
+        // rows, buttons and meter. Where it stands, how it comes in, its
+        // height measured and the times that count stay the view's.
+        if self.chat_face.is_some() {
+            let mut agents: Vec<LineageFace> = Vec::new();
+            if lineage {
+                let face = LineageFace::of;
+                agents.extend(
+                    beside
+                        .parent
+                        .iter()
+                        .map(|parent| face(parent, true, None, wall)),
+                );
+                agents.extend(shown.iter().map(|agent| face(agent, false, None, wall)));
+                agents.extend(
+                    own.iter()
+                        .map(|(index, agent)| face(agent, false, Some(*index), wall)),
+                );
+            }
+            let what = BesideFace {
+                project: &beside.project,
+                branch: beside.branch.as_deref(),
+                changes: beside.changes,
+                lineage,
+                running,
+                agents,
+                earlier,
+                context: context.map(|(used, limit)| ContextFace {
+                    used,
+                    limit,
+                    figures: format!("{} / {}", tokens(used), tokens(limit)),
+                }),
+                lifted: !self.beside_fits(),
+            };
+            let counting = what.agents.iter().any(|agent| agent.live);
+            let mut slots: Vec<(&'static str, AnyElement)> =
+                vec![("measure", measure().into_any_element())];
+            if counting {
+                slots.push(("counting", self.counting(cx).into_any_element()));
+            }
+            let memo = crate::face::digest(&what);
+            let data = || serde_json::to_value(&what).unwrap_or_default();
+            if let Some(card) = self.entry_face("chat-beside", "card", Some(memo), data, slots, cx)
+            {
+                return Some(placed(card));
+            }
+        }
         let mut sections: Vec<AnyElement> = Vec::new();
         // The project, and a button that opens its folder.
         let path = beside.path.clone();
@@ -472,38 +620,7 @@ impl ThreadView {
         if !work.is_empty() {
             sections.push(section(work, theme));
         }
-        // Who started whom: the agents started in panes, and those the
-        // agent started by itself (by a call, whose card is in the
-        // transcript).
-        let native = self.native_agents(now);
-        // (With them, the commands it left running in the background.)
-        let commands = self.background_commands(now);
-        let own: Vec<&(usize, Nested)> = native
-            .iter()
-            .filter(|(_, agent)| agent.state.live())
-            .chain(commands.iter())
-            .collect();
-        let running = self
-            .nest
-            .agents
-            .iter()
-            .filter(|agent| agent.state.live())
-            .count()
-            + own.len();
-        // Those at work are listed; the others count as previous agents,
-        // with the ones gone for good.
-        let shown: Vec<&Nested> = self
-            .nest
-            .agents
-            .iter()
-            .filter(|agent| agent.state.live())
-            .collect();
-        let earlier = beside.earlier + self.nest.agents.len() - shown.len()
-            + native
-                .iter()
-                .filter(|(_, agent)| !agent.state.live())
-                .count();
-        if beside.parent.is_some() || !shown.is_empty() || !own.is_empty() || earlier > 0 {
+        if lineage {
             let mut rows = vec![heading(
                 if running > 0 {
                     format!("Lineage · {running} running")
@@ -538,17 +655,9 @@ impl ThreadView {
             }
             sections.push(section(rows, theme));
         }
-        // How full the context is, from the thread's own figures.
-        let usage = self.thread.usage;
-        if let (Some(used), Some(limit)) = (usage.context_used, usage.context_limit)
-            && limit > 0
-        {
+        if let Some((used, limit)) = context {
             sections.push(context_meter(used, limit, studio, theme));
         }
-        self.around.context_beside.set(
-            usage.context_used.is_some() && usage.context_limit.is_some_and(|limit| limit > 0),
-        );
-        let measured = self.nest.beside_height.clone();
         let card = div()
             .id("beside")
             .debug_selector(|| "beside".into())
@@ -577,68 +686,63 @@ impl ThreadView {
                     .when(at > 0, |part| part.border_t_1().border_color(theme.line))
                     .child(part)
             }))
-            .child(
-                canvas(
-                    move |bounds, _, _| {
-                        measured.set(bounds.size.height.as_f32() / scale::factor().max(0.01));
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .top_0()
-                .left_0()
-                .size_full(),
-            );
-        // On its way it slides from the pane's edge and fades in.
-        let slide = kou_ui::motion::studio::BESIDE_BY * (1. - level);
-        Some(
-            div()
-                .absolute()
-                .top(px(crate::nested::BESIDE_TOP))
-                .right(px(crate::nested::BESIDE_EDGE - slide))
-                .opacity(level.clamp(0., 1.))
-                .child(card)
-                .into_any_element(),
-        )
+            .child(measure());
+        Some(placed(card.into_any_element()))
     }
 
     /// The handle at the pane's right edge, where the card beside would
     /// stand: it pulls the card out, whether the pane leaves it room or not.
     fn beside_handle(&self, theme: &Theme, cx: &Context<Self>) -> AnyElement {
+        let placed = |handle: AnyElement| {
+            div()
+                .absolute()
+                .top(px(crate::nested::BESIDE_TOP))
+                .right_0()
+                .child(handle)
+                .into_any_element()
+        };
+        // The app draws it when it can (`chat-beside-handle`).
+        let data = || serde_json::json!({});
+        if let Some(handle) = self.entry_face(
+            "chat-beside-handle",
+            "handle",
+            Some(0),
+            data,
+            Vec::new(),
+            cx,
+        ) {
+            return placed(handle);
+        }
         let (hover, ring) = (theme.selected, theme.accent);
-        div()
-            .absolute()
-            .top(px(crate::nested::BESIDE_TOP))
-            .right_0()
-            .child(
-                div()
-                    .id("beside-pull")
-                    .debug_selector(|| "beside-pull".into())
-                    .occlude()
-                    .w(px(20.))
-                    .h(px(BESIDE_ROW + 2. * BESIDE_PAD))
-                    .rounded_l(px(metric::RADIUS))
-                    .border_1()
-                    .border_color(theme.line_strong)
-                    .bg(theme.raised)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .tab_index(0)
-                    .hover(move |style| style.bg(hover))
-                    .focus_visible(move |style| style.border_color(ring))
-                    .tooltip(tip("Show the project card"))
-                    .on_click(cx.listener(|this, _, _, cx| this.pull_beside(true, cx)))
-                    .child(
-                        icon(Icon::ChevronRight, theme.fg_muted)
-                            .size(px(12.))
-                            .with_transformation(gpui::Transformation::rotate(gpui::radians(
-                                std::f32::consts::PI,
-                            ))),
-                    ),
-            )
-            .into_any_element()
+        placed(
+            div()
+                .id("beside-pull")
+                .debug_selector(|| "beside-pull".into())
+                .occlude()
+                .w(px(20.))
+                .h(px(BESIDE_ROW + 2. * BESIDE_PAD))
+                .rounded_l(px(metric::RADIUS))
+                .border_1()
+                .border_color(theme.line_strong)
+                .bg(theme.raised)
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .tab_index(0)
+                .hover(move |style| style.bg(hover))
+                .focus_visible(move |style| style.border_color(ring))
+                .tooltip(tip("Show the project card"))
+                .on_click(cx.listener(|this, _, _, cx| this.pull_beside(true, cx)))
+                .child(
+                    icon(Icon::ChevronRight, theme.fg_muted)
+                        .size(px(12.))
+                        .with_transformation(gpui::Transformation::rotate(gpui::radians(
+                            std::f32::consts::PI,
+                        ))),
+                )
+                .into_any_element(),
+        )
     }
 
     /// One of the agents in the card beside: its mark with its dot, its
@@ -745,6 +849,38 @@ impl ThreadView {
             return None;
         }
         let (from, to) = self.nest.shown.get();
+        // What a tick says under the pointer: the start of its prompt.
+        let said = |index: usize| -> String {
+            let text = match &entries[index] {
+                Entry::User(blocks) => crate::draft::shown(blocks).0,
+                _ => String::new(),
+            };
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(80)
+                .collect()
+        };
+        // The app draws them when it can (`chat-ticks`); the list they
+        // scroll stays the view's.
+        if self.chat_face.is_some() {
+            let ticks: Vec<TickFace> = prompts
+                .iter()
+                .map(|&index| TickFace {
+                    index,
+                    said: said(index),
+                    on: index >= from && index < to,
+                })
+                .collect();
+            let memo = crate::face::digest(&ticks);
+            let data = || serde_json::json!({ "ticks": ticks });
+            if let Some(ticks) =
+                self.entry_face("chat-ticks", "ticks", Some(memo), data, Vec::new(), cx)
+            {
+                return Some(ticks);
+            }
+        }
         let (bright, quiet, lit) = (theme.fg_faint, theme.fg_faint.opacity(0.5), theme.fg_dim);
         Some(
             div()
@@ -752,32 +888,22 @@ impl ThreadView {
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .left(px(TICK_LEFT - 3.))
+                .left_0()
                 .flex()
                 .flex_col()
                 .justify_center()
                 .children(prompts.into_iter().map(|index| {
-                    let text = match &entries[index] {
-                        Entry::User(blocks) => crate::draft::shown(blocks).0,
-                        _ => String::new(),
-                    };
-                    let first: String = text
-                        .split_whitespace()
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                        .chars()
-                        .take(80)
-                        .collect();
+                    let first = said(index);
                     let on_screen = index >= from && index < to;
                     let group = SharedString::from(format!("tick-{index}"));
                     div()
                         .id(("tick", index))
                         .debug_selector(move || format!("tick-{index}"))
                         .group(group.clone())
-                        .w(px(TICK + 6.))
+                        .w(px(EDGE))
                         .h(px(TICK_PITCH))
-                        .pl(px(3.))
                         .flex()
+                        .justify_center()
                         .items_center()
                         .cursor_pointer()
                         .tooltip(tip(first))
@@ -801,6 +927,129 @@ impl ThreadView {
                 .into_any_element(),
         )
     }
+}
+
+/// The card of an agent started in a pane as the app draws it
+/// (`chat-nested`): the app's name for the agent, the code its tile shows,
+/// its title, how it goes in a word with that word's colour (`tone`), and
+/// whether it runs (its border says so).
+#[derive(Hash, serde::Serialize)]
+struct NestedCard<'a> {
+    id: &'a str,
+    code: &'a str,
+    title: &'a str,
+    word: &'static str,
+    tone: &'static str,
+    running: bool,
+}
+
+/// The card beside as the app draws it (`chat-beside`): the project, its
+/// branch and its changes (lines added and removed); whether it lists who
+/// started whom, with how many of them run, the agents listed and how many
+/// went before; how full the context is; and whether it lies over the text
+/// (`lifted`: the pane has no room for it).
+#[derive(Hash, serde::Serialize)]
+struct BesideFace<'a> {
+    project: &'a str,
+    branch: Option<&'a str>,
+    changes: Option<(u32, u32)>,
+    lineage: bool,
+    running: usize,
+    agents: Vec<LineageFace<'a>>,
+    earlier: usize,
+    context: Option<ContextFace>,
+    lifted: bool,
+}
+
+/// An agent in the card beside, as the app draws it: the app's name for
+/// it, its title, how it goes in a word (`state`: how long it has run while
+/// it runs) with that word's colour (`tone`) and its dot's (`dot`); whether
+/// it is the agent that started this one (`parent`), or the call at entry
+/// `call` started it; and its picture (`mark`: `lineage`, `terminal`,
+/// `brand`, the mark of its `harness` or `code`, or `letters`).
+#[derive(Hash, serde::Serialize)]
+struct LineageFace<'a> {
+    id: &'a str,
+    title: &'a str,
+    state: String,
+    tone: &'static str,
+    dot: &'static str,
+    live: bool,
+    parent: bool,
+    call: Option<usize>,
+    mark: &'static str,
+    harness: &'a str,
+    code: &'a str,
+    letters: String,
+}
+
+impl<'a> LineageFace<'a> {
+    fn of(agent: &'a Nested, parent: bool, call: Option<usize>, wall: SystemTime) -> Self {
+        let state = match agent.state {
+            NestedState::Running => {
+                ran_for_short(wall.duration_since(agent.since).unwrap_or_default())
+            }
+            NestedState::Asking => "Asking".into(),
+            NestedState::Finished | NestedState::Gone => "Done".into(),
+            NestedState::Failed => "Failed".into(),
+        };
+        let tone = match agent.state {
+            NestedState::Asking => "blocked",
+            NestedState::Failed => "error",
+            _ => "fgMuted",
+        };
+        let dot = match agent.state {
+            NestedState::Running => "working",
+            NestedState::Asking => "blocked",
+            NestedState::Finished | NestedState::Gone => "done",
+            NestedState::Failed => "error",
+        };
+        let mark = if parent {
+            "lineage"
+        } else if agent.harness == "shell" {
+            "terminal"
+        } else if Brand::of_harness(&agent.harness)
+            .or_else(|| Brand::of(&agent.code))
+            .is_some()
+        {
+            "brand"
+        } else {
+            "letters"
+        };
+        Self {
+            id: &agent.id,
+            title: &agent.title,
+            state,
+            tone,
+            dot,
+            live: agent.state.live(),
+            parent,
+            call,
+            mark,
+            harness: &agent.harness,
+            code: &agent.code,
+            letters: letters(&agent.code),
+        }
+    }
+}
+
+/// How full the context is, as the card beside draws it: the tokens used
+/// of the limit, and the two as its figures say them.
+#[derive(Hash, serde::Serialize)]
+struct ContextFace {
+    used: u64,
+    limit: u64,
+    figures: String,
+}
+
+/// A tick down the transcript's edge as the app draws it (`chat-ticks`):
+/// the entry of its prompt, what that prompt asked, and whether it is on
+/// screen.
+#[derive(Hash, serde::Serialize)]
+struct TickFace {
+    index: usize,
+    said: String,
+    on: bool,
 }
 
 /// The light of the `at`th card of row `row`: kinds from 2 on are cards'.
@@ -1076,7 +1325,7 @@ fn beside_button(id: &'static str, glyph: Icon, theme: &Theme) -> gpui::Stateful
         .tab_index(0)
         .hover(move |style| style.bg(hover))
         .focus_visible(move |style| style.border_color(ring))
-        .child(icon(glyph, theme.fg_muted).size(px(15.)))
+        .child(icon(glyph, theme.fg_muted).size(px(14.)))
 }
 
 /// The context meter: its name, a track filled as far as the context is,

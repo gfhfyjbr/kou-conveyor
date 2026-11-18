@@ -1,9 +1,5 @@
-//! How each entry of the transcript looks, after the web cockpit's timeline
-//! (`plugins/timeline/web/timeline.css`, as it is with round corners): a rail
-//! down the left with a node for each entry, a line of capitals that says
-//! whose an entry is, and the entry under it. A prompt is a card of its own,
-//! an answer is prose, a tool call is a card whose head says what it does and
-//! how it went, reasoning is a line that opens.
+//! The cockpit transcript. Messages, work summaries and tool calls share
+//! the prompt field's left and right edges.
 
 use crate::{
     diff::{self, Diff},
@@ -32,16 +28,10 @@ use kou_ui::{
 };
 use std::{path::Path, rc::Rc, time::Instant};
 
-/// Space between the pane's edge and the rail's column.
+mod faces;
+
+/// Horizontal inset shared by the transcript and prompt field.
 pub(crate) const EDGE: f32 = 12.;
-/// Width of the rail's column, the nodes centred in it.
-pub(crate) const GUTTER: f32 = 14.;
-/// Space between the rail's column and what an entry shows.
-pub(crate) const MARK_GAP: f32 = 10.;
-/// Where the transcript's text begins, from the pane's edge: past the rail.
-/// The prompt field stands under the text, from this edge to the text's
-/// other one, not under the rail as well.
-pub(crate) const TEXT_EDGE: f32 = EDGE + GUTTER + MARK_GAP;
 /// The widest the transcript's column gets, centred in a wider pane
 /// (`--measure`).
 pub(crate) const MEASURE: f32 = 860.;
@@ -50,15 +40,13 @@ pub(crate) const LABEL: f32 = 10.5;
 /// Height of the line of capitals over an entry (`.meta`), and of a fold.
 pub(crate) const META: f32 = 22.;
 /// Height of a tool call's head (`.tool-head`).
-pub(crate) const HEAD: f32 = 34.;
-/// Side of a node on the rail (`.entry::before`).
-const NODE: f32 = 7.;
+pub(crate) const HEAD: f32 = metric::CONTROL;
 /// Lines of a terminal output shown until it is unfolded.
 const TERMINAL_TAIL: usize = 16;
 /// Lines of a terminal output shown at most: the end of it.
 const TERMINAL_MAX: usize = 2000;
 /// Lines a call that runs shows while it is closed (`timeline.js`, `TAIL`).
-const LIVE_TAIL: usize = 6;
+pub(crate) const LIVE_TAIL: usize = 3;
 /// Rows of a diff shown at most.
 const DIFF_MAX: usize = 400;
 /// Lines of a tool's raw arguments or result shown.
@@ -174,47 +162,9 @@ pub(crate) fn parse(entry: &Entry, open: bool, base: &Path) -> Option<Parsed> {
     })
 }
 
-/// A node on the rail: filled, hollow with a border, or the short rule of a notice.
-pub(crate) enum Node {
-    Filled(Hsla),
-    Hollow(Hsla),
-    Rule,
-}
-
-/// The node as drawn, as lit as what blinks is.
-pub(crate) fn node(node: Node, lit: f32, theme: &Theme) -> Div {
-    let base = div()
-        .flex_none()
-        .w(px(NODE))
-        .h(px(NODE))
-        .rounded(px(NODE / 2.));
-    match node {
-        Node::Filled(color) => base.bg(color.opacity(color.a * lit)),
-        Node::Hollow(color) => base.bg(theme.pane).border_1().border_color(color),
-        Node::Rule => div().flex_none().w(px(NODE)).h(px(1.)).bg(theme.fg_faint),
-    }
-}
-
-/// A row of the transcript: its node on the rail, centred on its first line
-/// (`first` tall), and its content from the text edge.
-pub(crate) fn row(node: impl IntoElement, first: f32, content: impl IntoElement) -> Div {
-    div()
-        .w_full()
-        .px(px(EDGE))
-        .flex()
-        .items_start()
-        .gap(px(MARK_GAP))
-        .child(
-            div()
-                .flex_none()
-                .w(px(GUTTER))
-                .h(px(first))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(node),
-        )
-        .child(div().flex_1().min_w_0().child(content))
+/// Align an entry with the prompt field, including in a split pane.
+pub(crate) fn row(content: impl IntoElement) -> Div {
+    div().w_full().px(px(EDGE)).child(content)
 }
 
 /// A label in capitals of the monospace (`.meta`, `.label`).
@@ -253,7 +203,7 @@ pub(crate) fn meta(theme: &Theme) -> Div {
 fn stream_header(name: impl Into<SharedString>, theme: &Theme) -> Div {
     let name: SharedString = name.into();
     div()
-        .h(px(28.))
+        .h(px(24.))
         .pl(px(12.))
         .pr(px(10.))
         .flex()
@@ -272,21 +222,21 @@ fn stream_header(name: impl Into<SharedString>, theme: &Theme) -> Div {
         )
 }
 
-/// What a tool call's head says it is: a verb in capitals (`.tname`) and what
+/// What a tool call's head says it is: the action (`.tname`) and what
 /// it was given (`.tinput`). A title that starts with a word of its own
 /// (`Run cargo test`, `Read src/main.rs`) gives both; otherwise the kind names it.
 pub(crate) fn split_title(call: &ToolCall) -> (String, String) {
     let title = call.title.trim();
     let kind = match call.kind {
-        ToolKind::Read => "read",
-        ToolKind::Edit => "edit",
-        ToolKind::Delete => "delete",
-        ToolKind::Move => "move",
-        ToolKind::Search => "search",
-        ToolKind::Execute => "run",
-        ToolKind::Think => "think",
-        ToolKind::Fetch => "fetch",
-        ToolKind::Other => "tool",
+        ToolKind::Read => "Read",
+        ToolKind::Edit => "Edit",
+        ToolKind::Delete => "Delete",
+        ToolKind::Move => "Move",
+        ToolKind::Search => "Search",
+        ToolKind::Execute => "Run",
+        ToolKind::Think => "Think",
+        ToolKind::Fetch => "Fetch",
+        ToolKind::Other => "Tool",
     };
     if let Some((first, rest)) = title.split_once(char::is_whitespace) {
         let word = first.trim_end_matches(':');
@@ -299,7 +249,14 @@ pub(crate) fn split_title(call: &ToolCall) -> (String, String) {
             return (word.to_owned(), rest.trim().to_owned());
         }
     }
-    (kind.to_owned(), title.to_owned())
+    (
+        kind.to_owned(),
+        if title.eq_ignore_ascii_case(kind) {
+            String::new()
+        } else {
+            title.to_owned()
+        },
+    )
 }
 
 impl ThreadView {
@@ -332,8 +289,7 @@ impl ThreadView {
         // (A run that is all a subagent's doing has no line to lead with:
         // its first row is as empty as the rest.)
         let leads = fold.is_some_and(|(run, _, first)| first && self.steps_of(&run) > 0);
-        let hidden = (fold.is_some_and(|(_, open, _)| !open)
-            && crate::nested::folds(&self.thread.entries()[index]))
+        let hidden = (fold.is_some_and(|(_, open, _)| !open) && self.folds_at(index))
             || self.kept_in_its_agent(index);
         if hidden && !leads {
             let (top, bottom) = self.cards_of(index);
@@ -424,6 +380,7 @@ impl ThreadView {
             (Entry::Assistant(text), Some(Parsed::Document(blocks))) => {
                 let writing = self.writing(index);
                 let look = Look::new(theme, Tone::answer(theme), self.field_focus())
+                    .with_links(&self.header.cwd, self.link_opener(cx))
                     .with_copy(index, self.copied.clone(), copy.clone())
                     .with_fades(if still {
                         Vec::new()
@@ -437,12 +394,7 @@ impl ThreadView {
                             self.motion.caret(index, now).0
                         }
                     }));
-                let node = if writing {
-                    Node::Filled(theme.working)
-                } else {
-                    Node::Filled(theme.fg)
-                };
-                self.answer(index, text, blocks, &look, node, lit, cx)
+                self.answer(index, text, blocks, &look, cx)
                     .into_any_element()
             }
             (Entry::Thought(_), Some(Parsed::Document(blocks))) => {
@@ -451,32 +403,36 @@ impl ThreadView {
                 } else {
                     self.motion.fades(index, now)
                 };
-                self.thought(index, blocks, fades, lights.shimmer, lit, theme, cx)
+                self.thought(index, blocks, fades, lights.shimmer, theme, cx)
                     .into_any_element()
             }
-            (Entry::Tool(call), Some(Parsed::Tool(pieces))) => self
-                .tool(index, call, pieces, lights.run, lit, now, theme, cx)
-                .into_any_element(),
-            (Entry::Plan(steps), _) => plan(steps, lit, theme).into_any_element(),
+            (Entry::Tool(call), Some(Parsed::Tool(pieces))) => {
+                let level = self.unfold_level(index, self.tool_open(index, call), now);
+                row(self.tool_card(index, call, pieces, lights.run, lit, now, level, theme, cx))
+                    .into_any_element()
+            }
+            (Entry::Plan(steps), _) => {
+                let drawn = self.plan_face(index, steps, lit, theme, cx);
+                plan(steps, lit, theme, drawn).into_any_element()
+            }
             (Entry::Notice(level, text), _) => {
                 // The thread records a failed turn as an error notice with the reason.
                 let turn = index + 1 == entries.len()
                     && matches!(&self.thread.last_stop, Some(Stop::Failed(reason)) if reason == text);
-                notice(*level, text, turn, theme).into_any_element()
+                let drawn = self.notice_face(index, *level, text, turn, cx);
+                notice(*level, text, turn, theme, drawn).into_any_element()
             }
             _ => div().into_any_element(),
         };
-        // `.entry { padding: 9px 0 }`: the same air between every two entries.
-        let first = index == self.cleared;
-        let above = if first { 14. } else { 18. };
-        // The rail, from the first node down through every entry.
-        let rail = div()
-            .absolute()
-            .left(px(EDGE + GUTTER / 2. - 0.5))
-            .top(px(if first { above + META / 2. } else { 0. }))
-            .bottom_0()
-            .w(px(1.))
-            .bg(theme.line);
+        let is_step =
+            |entry: &Entry| matches!(entry, Entry::Tool(_) | Entry::Thought(_) | Entry::Plan(_));
+        let above = if index == self.cleared {
+            14.
+        } else if !leads && is_step(&entries[index]) && is_step(&entries[index - 1]) {
+            4.
+        } else {
+            14.
+        };
         // The cards of the agents started before this entry and after it.
         let (top, bottom) = self.cards_of(index);
         let (top, bottom): (Vec<_>, Vec<_>) = (
@@ -489,7 +445,6 @@ impl ThreadView {
             .w_full()
             .max_w(px(MEASURE))
             .pt(px(above))
-            .child(rail)
             .when(!top.is_empty(), |column| {
                 column
                     .child(self.card_group(&top, index, 0, 0., theme, cx))
@@ -499,7 +454,7 @@ impl ThreadView {
                 // Opened, the work stands under its line, an entry's air away.
                 column
                     .child(line)
-                    .when(open && !hidden, |column| column.child(div().h(px(above))))
+                    .when(open && !hidden, |column| column.child(div().h(px(4.))))
             })
             .child(body)
             .when(!bottom.is_empty(), |column| {
@@ -534,7 +489,7 @@ impl ThreadView {
             .into_any_element()
     }
 
-    /// The line a run of work folds into once it is over, on the rail: how
+    /// The line a run of work folds into once it is over: how
     /// long it took or how many steps it was, and a chevron. A click opens
     /// the run under it, and closes it again.
     fn worked_row(
@@ -546,6 +501,14 @@ impl ThreadView {
     ) -> Div {
         let words = crate::nested::worked(self.worked_for(run), self.steps_of(run));
         let start = run.start;
+        // The app draws the line when it can (`chat-worked`).
+        // (The digest is of what the data is made from, and only that.)
+        let memo = crate::face::digest((start, &words, open));
+        let data = || serde_json::json!({ "start": start, "words": words, "open": open });
+        if let Some(line) = self.entry_face("chat-worked", start, Some(memo), data, Vec::new(), cx)
+        {
+            return row(line);
+        }
         let (hover, ring) = (theme.hover, theme.accent);
         let line = div()
             .id(("worked", start))
@@ -569,11 +532,7 @@ impl ThreadView {
             }))
             .child(label(words, theme.fg_muted, theme))
             .child(chevron(open, theme));
-        row(
-            self::node(Node::Hollow(theme.fg_faint), 1., theme),
-            META,
-            div().flex().child(line),
-        )
+        row(div().flex().child(line))
     }
 
     /// Whether entry `index` is being written now: the last entry, an answer
@@ -595,7 +554,13 @@ impl ThreadView {
         if let Some(open) = self.toggled.get(&index) {
             return *open;
         }
-        self.asking(index).is_some() || matches!(call.status, ToolStatus::Failed)
+        // (A call that asks the user questions shows them, and keeps what
+        // it was given, which says the same, folded.)
+        self.asking(index)
+            .is_some_and(|pending| pending.questions.is_empty())
+            || matches!(call.status, ToolStatus::Failed)
+            // A surface the agent made shows: its newest call is the surface.
+            || (self.tool_view.is_some() && self.newest_surfaces().contains(&index))
     }
 
     /// Whether reasoning shows in full: only when the user opens it, as in
@@ -648,7 +613,6 @@ impl ThreadView {
         blocks: &Rc<[Markdown]>,
         fades: Vec<(std::ops::Range<usize>, f32)>,
         shimmer: bool,
-        lit: f32,
         theme: &Theme,
         cx: &Context<Self>,
     ) -> Div {
@@ -661,6 +625,45 @@ impl ThreadView {
             Some(Entry::Thought(text)) if writing => latest_gist(text),
             _ => markdown::first_line(blocks).unwrap_or("").to_owned(),
         };
+        // The app draws it when it can (`chat-thought`). The light's label,
+        // the gist while it is written and the reasoning stay the view's.
+        if self.chat_face.is_some() {
+            let mut slots = Vec::new();
+            if shimmer {
+                let who = label("Thinking", gpui::transparent_black(), theme)
+                    .relative()
+                    .child(mark_spot(&self.spots, (index, 1)));
+                slots.push(("who", who.into_any_element()));
+            }
+            if writing {
+                let said = div()
+                    .min_w_0()
+                    .flex_1()
+                    .truncate()
+                    .italic()
+                    .child(scale::text(gist.replace("**", "")));
+                slots.push(("gist", said.into_any_element()));
+            }
+            if open {
+                let look = Look::new(theme, Tone::reasoning(theme), self.field_focus())
+                    .with_links(&self.header.cwd, self.link_opener(cx))
+                    .small()
+                    .with_fades(fades.clone());
+                slots.push(("prose", prose::document(blocks, &look).into_any_element()));
+            }
+            let memo = crate::face::digest((index, open, (!writing).then_some(&gist)));
+            let data = || {
+                serde_json::json!({
+                    "index": index,
+                    "open": open,
+                    "gist": (!writing).then(|| gist.replace("**", "")),
+                })
+            };
+            if let Some(drawn) = self.entry_face("chat-thought", index, Some(memo), data, slots, cx)
+            {
+                return row(drawn);
+            }
+        }
         // While it shimmers, the label is painted over the transcript by its
         // light; here it keeps its room and says where it is.
         let who: AnyElement = if shimmer {
@@ -712,61 +715,16 @@ impl ThreadView {
                 .child(prose::document(
                     blocks,
                     &Look::new(theme, Tone::reasoning(theme), self.field_focus())
+                        .with_links(&self.header.cwd, self.link_opener(cx))
                         .small()
                         .with_fades(fades),
                 ))
         }));
-        let node = if writing {
-            Node::Filled(theme.working)
-        } else {
-            Node::Hollow(theme.fg_faint)
-        };
-        row(self::node(node, lit, theme), META, content)
+        row(content)
     }
 
-    /// A tool call on the rail: its node, and its card.
-    #[allow(clippy::too_many_arguments)]
-    fn tool(
-        &self,
-        index: usize,
-        call: &ToolCall,
-        pieces: &Rc<[Piece]>,
-        light: bool,
-        lit: f32,
-        now: Instant,
-        theme: &Theme,
-        cx: &Context<Self>,
-    ) -> Div {
-        let asking = self.asking(index).is_some();
-        let level = self.unfold_level(index, self.tool_open(index, call), now);
-        let card = self.tool_card(index, call, pieces, light, lit, now, level, theme, cx);
-        // A call that starts a subagent says how the subagent goes: it may
-        // run on after the call that started it is over.
-        let (asking, status) = match call.agent {
-            Some(_) => match self.subagent_state(index, call) {
-                NestedState::Asking => (true, call.status),
-                NestedState::Running => (false, ToolStatus::Running),
-                NestedState::Failed => (false, ToolStatus::Failed),
-                NestedState::Finished | NestedState::Gone => (false, ToolStatus::Done),
-            },
-            // A command left running in the background runs on too.
-            None if runs_behind(call) => (asking, ToolStatus::Running),
-            None => (asking, call.status),
-        };
-        // (What runs in the background does not blink: it may run for hours.)
-        let running = status == ToolStatus::Running && !asking && !runs_behind(call);
-        let node = match (asking, status) {
-            (true, _) => Node::Filled(theme.blocked),
-            (false, ToolStatus::Running) => Node::Filled(theme.working),
-            (false, ToolStatus::Failed) => Node::Hollow(theme.error),
-            _ => Node::Hollow(theme.fg_faint),
-        };
-        let lit = if running { lit } else { 1. };
-        row(self::node(node, lit, theme), HEAD, card)
-    }
-
-    /// A tool call's card (`.tool`): its head says what was run, as a
-    /// command after a quiet `$`, and how it went; open, what it gave is
+    /// A tool call's card (`.tool`): its head names the action, input and
+    /// outcome. When opened, the output is
     /// under a rule in the same card, shown down to `level` of its height
     /// (0 to 1) while the card opens or closes.
     #[allow(clippy::too_many_arguments)]
@@ -781,10 +739,17 @@ impl ThreadView {
         level: f32,
         theme: &Theme,
         cx: &Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         // A call that starts a subagent is that agent's card.
         if call.agent.is_some() {
-            return self.agent_card(index, call, pieces, light, lit, now, level, theme, cx);
+            return self
+                .agent_card(index, call, pieces, light, lit, now, level, theme, cx)
+                .into_any_element();
+        }
+        // And one the app has a face of its own for (a surface the agent
+        // made) is drawn by the app, in the view's frame.
+        if let Some(card) = self.app_card(index, call, level, theme, cx) {
+            return card.into_any_element();
         }
         let asking = self.asking(index);
         let open = self.tool_open(index, call);
@@ -838,19 +803,151 @@ impl ThreadView {
             (_, Some(took)) => Some(*took),
             _ => None,
         };
+        // (Its colour by the name a drawing of the app's knows it by too.)
         let word = match (asking.is_some(), call.status) {
-            (true, _) => Some(("Needs you", theme.blocked)),
-            (false, ToolStatus::Failed) => Some(("Failed", theme.error)),
-            (false, ToolStatus::Cancelled) => Some(("Stopped", theme.fg_muted)),
-            (false, ToolStatus::Pending) => Some(("Queued", theme.fg_muted)),
-            _ if behind => Some(("In background", theme.working)),
+            (true, _) => Some(("Needs you", "blocked", theme.blocked)),
+            (false, ToolStatus::Failed) => Some(("Failed", "error", theme.error)),
+            (false, ToolStatus::Cancelled) => Some(("Stopped", "fgMuted", theme.fg_muted)),
+            (false, ToolStatus::Pending) => Some(("Queued", "fgMuted", theme.fg_muted)),
+            _ if behind => Some(("In background", "working", theme.working)),
             // It ran there and has ended: what its card holds is what its
             // call said as it left, not what it printed.
             _ if call.work.background && call.work.ended => {
-                Some(("Ran in background", theme.fg_muted))
+                Some(("Ran in background", "fgMuted", theme.fg_muted))
             }
             _ => None,
         };
+
+        // How long it ran, in the head: it counts while it runs.
+        let took_shown = |took: std::time::Duration| {
+            div()
+                .text_color(if running || behind {
+                    theme.accent
+                } else {
+                    theme.fg_muted
+                })
+                .child(scale::text(if behind {
+                    // To the second it would be drawn again
+                    // each second for as long as it runs.
+                    crate::nested::ran_for(took)
+                } else {
+                    motion::duration(took)
+                }))
+        };
+        // What the call asks the user, when it asks questions.
+        let asks = asking.and_then(|pending| self.asks_of(pending));
+        // The app draws the card when it can (`chat-tool`): its frame, its
+        // head and the answers it waits for, or the questions. What moves
+        // (the mark of a call that runs, its time, the card opening, its
+        // light) and what it gave stay the view's.
+        if self.chat_face.is_some() {
+            let glyph = match (asking.is_some(), call.status) {
+                _ if behind => Some("working"),
+                (true, _) => Some("asking"),
+                (false, ToolStatus::Running) => None,
+                (false, ToolStatus::Pending) => Some("pending"),
+                (false, ToolStatus::Done) => Some("done"),
+                (false, ToolStatus::Failed) => Some("failed"),
+                (false, ToolStatus::Cancelled) => Some("cancelled"),
+            };
+            let border = match (asking.is_some(), call.status) {
+                (true, _) => "blocked",
+                (false, ToolStatus::Running) => "working",
+                (false, ToolStatus::Failed) => "error",
+                _ if behind => "working",
+                _ => "line",
+            };
+            let answers = || {
+                asking.map(|pending| {
+                    let default = default_option(&pending.options);
+                    serde_json::json!({
+                        "request": pending.request,
+                        "options": pending.options.iter().enumerate().map(|(at, option)| {
+                            serde_json::json!({
+                                "id": option.id,
+                                "label": option.label,
+                                "primary": Some(at) == default,
+                            })
+                        }).collect::<Vec<_>>(),
+                        "hint": default.map(|at| pending.options[at].label.to_lowercase()),
+                        "key": allow_key(),
+                    })
+                })
+            };
+            let data = || {
+                serde_json::json!({
+                    "index": index,
+                    "glyph": glyph,
+                    "verb": verb,
+                    "input": input.lines().next().unwrap_or(""),
+                    "shell": shell,
+                    "location": location.as_ref().map(|location| location.to_string()),
+                    "added": added,
+                    "removed": removed,
+                    "exit": exit.filter(|code| *code != 0),
+                    "word": word.map(|(word, tone, _)| serde_json::json!({ "text": word, "tone": tone })),
+                    "expandable": expandable,
+                    "open": open,
+                    "border": border,
+                    "answers": answers(),
+                    "asks": asks,
+                })
+            };
+            let mut slots: Vec<(&'static str, AnyElement)> = Vec::new();
+            if glyph.is_none() {
+                let mark = state_glyph(call.status, asking.is_some(), lit, theme);
+                slots.push(("glyph", mark));
+            }
+            if let Some(took) = took {
+                slots.push(("took", took_shown(took).into_any_element()));
+            }
+            let (body, live) = self.tool_parts(
+                index, call, pieces, open, level, expandable, running, theme, cx,
+            );
+            slots.extend(body.map(|body| ("body", body)));
+            slots.extend(live.map(|live| ("live", live)));
+            if behind {
+                slots.push(("counting", self.counting(cx).into_any_element()));
+            }
+            if light {
+                slots.push((
+                    "spot",
+                    mark_spot(&self.spots, (index, 0)).into_any_element(),
+                ));
+            }
+            let memo = crate::face::digest((
+                (index, glyph, &verb, input.lines().next(), shell),
+                (
+                    location.as_deref(),
+                    added,
+                    removed,
+                    exit.filter(|code| *code != 0),
+                ),
+                (
+                    word.map(|(word, tone, _)| (word, tone)),
+                    expandable,
+                    open,
+                    border,
+                ),
+                asking.map(|pending| {
+                    let options: Vec<(&str, &str)> = pending
+                        .options
+                        .iter()
+                        .map(|option| (option.id.as_str(), option.label.as_str()))
+                        .collect();
+                    let default = default_option(&pending.options);
+                    (pending.request, options, default, allow_key())
+                }),
+                &asks,
+            ));
+            if let Some(card) = self.entry_face("chat-tool", &call.id, Some(memo), data, slots, cx)
+            {
+                return card;
+            }
+        }
+        let (body, live) = self.tool_parts(
+            index, call, pieces, open, level, expandable, running, theme, cx,
+        );
 
         let mut place = meta(theme)
             .min_w_0()
@@ -866,11 +963,10 @@ impl ThreadView {
             .id("call")
             .debug_selector(|| format!("tool-{index}"))
             .h(px(HEAD))
-            .pl(px(10.))
-            .pr(px(6.))
+            .px(px(6.))
             .flex()
             .items_center()
-            .gap(px(10.))
+            .gap(px(6.))
             .border_1()
             .border_color(gpui::transparent_black())
             .rounded(px(metric::RADIUS_MEDIUM - 1.))
@@ -881,39 +977,34 @@ impl ThreadView {
             } else {
                 state_glyph(call.status, asking.is_some(), lit, theme)
             })
-            .child(label(verb, theme.fg_dim, theme))
             .child(
-                // `.tinput.cmd::before`: a command after a quiet `$`.
                 div()
-                    .min_w_0()
-                    .flex_shrink(1.)
-                    .flex()
-                    .items_center()
-                    .when(shell, |input_box| {
-                        input_box.child(
-                            div()
-                                .flex_none()
-                                .text_color(theme.fg_faint)
-                                .child(scale::text("$\u{a0}")),
-                        )
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.fg)
-                            .child(scale::text(input.lines().next().unwrap_or("").to_owned())),
-                    ),
+                    .flex_none()
+                    .font_family(theme.ui_font.clone())
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(theme.fg_dim)
+                    .child(scale::text(verb)),
             )
+            .when(!input.is_empty(), |head| {
+                head.child(
+                    div()
+                        .min_w_0()
+                        .flex_shrink(1.)
+                        .truncate()
+                        .text_color(theme.fg)
+                        .child(scale::text(input.lines().next().unwrap_or("").to_owned())),
+                )
+            })
             .children(location.map(|location| place.child(scale::text(location))))
-            .child(div().flex_1())
             .child(
                 // `.tmeta`: what changed, how long it took, how it ended.
                 meta(theme)
-                    .flex_none()
+                    .flex_grow(1.)
+                    .flex_shrink(0.)
+                    .justify_end()
                     .flex()
                     .items_center()
-                    .gap(px(8.))
+                    .gap(px(6.))
                     .when(added + removed > 0, |stats| {
                         stats.child(
                             div()
@@ -935,32 +1026,19 @@ impl ThreadView {
                                 }),
                         )
                     })
-                    .children(took.map(|took| {
-                        div()
-                            .text_color(if running || behind {
-                                theme.accent
-                            } else {
-                                theme.fg_muted
-                            })
-                            .child(scale::text(if behind {
-                                // To the second it would be drawn again
-                                // each second for as long as it runs.
-                                crate::nested::ran_for(took)
-                            } else {
-                                motion::duration(took)
-                            }))
-                    }))
+                    .children(took.map(took_shown))
                     .children(exit.filter(|code| *code != 0).map(|code| {
                         div()
                             .text_color(theme.blocked)
                             .child(scale::text(format!("Exit {code}")))
                     }))
-                    .children(word.map(|(word, color)| {
+                    .children(word.map(|(word, _, color)| {
                         div()
-                            .font_weight(FontWeight::BOLD)
-                            .text_size(px(10.))
+                            .font_family(theme.ui_font.clone())
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(12.))
                             .text_color(color)
-                            .child(scale::text(word.to_uppercase()))
+                            .child(scale::text(word))
                     })),
             )
             .when(expandable, |head| {
@@ -975,6 +1053,66 @@ impl ThreadView {
                     .child(chevron(open, theme))
             });
 
+        let answer = match &asks {
+            Some(asks) => Some(self.question_block(asks, theme, cx)),
+            None => asking.map(|pending| self.answer_bar(pending, theme, cx)),
+        };
+
+        // `.tool`: a card; its border says how the call goes.
+        let border = if asking.is_some() {
+            lights_mix(theme.blocked, theme.line, 0.45)
+        } else {
+            match call.status {
+                ToolStatus::Running => lights_mix(theme.working, theme.line, 0.5),
+                ToolStatus::Failed => lights_mix(theme.error, theme.line, 0.45),
+                _ if behind => lights_mix(theme.working, theme.line, 0.5),
+                _ => theme.line,
+            }
+        };
+        let quiet = call.status == ToolStatus::Done
+            && !behind
+            && asking.is_none()
+            && !open
+            && body.is_none();
+        div()
+            .relative()
+            .w_full()
+            .rounded(px(metric::RADIUS_MEDIUM))
+            .border_1()
+            .border_color(if quiet {
+                gpui::transparent_black()
+            } else {
+                border
+            })
+            .when(!quiet, |card| card.bg(theme.raised))
+            .overflow_hidden()
+            .child(head)
+            .children(body)
+            .children(live)
+            .children(answer)
+            // Its time counts while it is on screen, turn or no turn.
+            .children(behind.then(|| self.counting(cx)))
+            // Its light, drawn over the transcript, goes round where it is.
+            .children(light.then(|| mark_spot(&self.spots, (index, 0))))
+            .into_any_element()
+    }
+
+    /// What a tool call's card holds under its head: what it gave, shown
+    /// down to `level` of its height while the card opens or closes; and,
+    /// closed, the last lines a call that runs printed.
+    #[allow(clippy::too_many_arguments)]
+    fn tool_parts(
+        &self,
+        index: usize,
+        call: &ToolCall,
+        pieces: &Rc<[Piece]>,
+        open: bool,
+        level: f32,
+        expandable: bool,
+        running: bool,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> (Option<AnyElement>, Option<AnyElement>) {
         let body = ((open || level > 0.) && expandable).then(|| {
             let shown = self.tool_shown(index, call, pieces, running, false, theme, cx);
             // `.tool-body`: under a rule, on the colour behind code.
@@ -993,7 +1131,7 @@ impl ThreadView {
                             .into_any_element()
                     }),
                 ));
-            revealed((index, 0), level, 0., &self.unfold_heights, content)
+            revealed((index, 0), level, 0., &self.unfold_heights, content).into_any_element()
         });
         // Closed, a call that runs shows the last lines its command printed
         // (`.tool-live`).
@@ -1015,10 +1153,9 @@ impl ThreadView {
             .map(|text| {
                 div()
                     .w_full()
-                    .pl(px(34.))
+                    .pl(px(12.))
                     .pr(px(12.))
-                    .pt(px(6.))
-                    .pb(px(8.))
+                    .py(px(4.))
                     .border_t_1()
                     .border_dashed()
                     .border_color(theme.line)
@@ -1032,35 +1169,207 @@ impl ThreadView {
                     .child(scale::text(text))
             });
 
-        let answer = asking.map(|pending| self.answer_bar(pending, theme, cx));
+        (body, live.map(IntoElement::into_any_element))
+    }
 
-        // `.tool`: a card; its border says how the call goes.
-        let border = if asking.is_some() {
-            lights_mix(theme.blocked, theme.line, 0.45)
-        } else {
-            match call.status {
-                ToolStatus::Running => lights_mix(theme.working, theme.line, 0.5),
-                ToolStatus::Failed => lights_mix(theme.error, theme.line, 0.45),
-                _ if behind => lights_mix(theme.working, theme.line, 0.5),
-                _ => theme.line,
-            }
+    /// The card of a call the app draws itself ([`crate::ToolView`]): the
+    /// view's frame and head (its title, what stands beside it, how it
+    /// stands, and a chevron that folds it), with the app's own body.
+    /// `None` when the app has no face for this call.
+    fn app_card(
+        &self,
+        index: usize,
+        call: &ToolCall,
+        level: f32,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Option<Div> {
+        let view = self.tool_view.as_ref()?;
+        // (Asked of the calls that name a surface only: every other call
+        // is the view's own to draw, and is not looked at twice.)
+        call.surface()?;
+        let newest = self.newest_surfaces().contains(&index);
+        let look = Look::new(theme, Tone::output(theme), self.field_focus())
+            .with_links(&self.header.cwd, self.link_opener(cx))
+            .small();
+        let markdown =
+            |text: &str| prose::document(&markdown::parse(text), &look).into_any_element();
+        let bare = Look::new(theme, Tone::output(theme), self.field_focus())
+            .with_links(&self.header.cwd, self.link_opener(cx))
+            .bare()
+            .small();
+        let code = |text: &str, lang: Option<&str>| {
+            prose::document(
+                &[Markdown::Code {
+                    lang: lang.map(str::to_owned),
+                    text: SharedString::from(markdown::expand_tabs(text)),
+                }],
+                &bare,
+            )
+            .into_any_element()
         };
+        let face = view(
+            call,
+            &crate::ToolAids {
+                markdown: &markdown,
+                code: &code,
+                newest,
+            },
+            cx,
+        )?;
+        // The newest version of a surface shows; an earlier one is a row
+        // that opens to what it was (see `tool_open`).
+        let open = self.tool_open(index, call);
+        let body = |body: AnyElement| {
+            (open || level > 0.).then(|| {
+                let content = div()
+                    .w_full()
+                    .border_t_1()
+                    .border_color(theme.line)
+                    .child(body);
+                revealed((index, 0), level, 0., &self.unfold_heights, content)
+            })
+        };
+        // The app draws the card's frame and head when it can
+        // (`chat-app-card`); what the surface shows, and its opening, stay
+        // the view's (`body`).
+        if self.chat_face.is_some() {
+            let what = AppCard {
+                index,
+                title: &face.title,
+                tag: &face.tag,
+                status: &face.status,
+                live: face.live,
+                open,
+            };
+            let memo = crate::face::digest(&what);
+            let data = || serde_json::to_value(&what).unwrap_or_default();
+            let slots: Vec<(&'static str, AnyElement)> = body(face.body)
+                .map(|body| ("body", body.into_any_element()))
+                .into_iter()
+                .collect();
+            if let Some(card) =
+                self.entry_face("chat-app-card", &call.id, Some(memo), data, slots, cx)
+            {
+                return Some(div().w_full().child(card));
+            }
+            // The app did not draw it: the surface is asked for its body
+            // again, the first having gone to the app.
+            let face = view(
+                call,
+                &crate::ToolAids {
+                    markdown: &markdown,
+                    code: &code,
+                    newest,
+                },
+                cx,
+            )?;
+            return Some(self.app_card_native(
+                index,
+                open,
+                face.title,
+                face.tag,
+                face.status,
+                face.live,
+                body(face.body).map(IntoElement::into_any_element),
+                theme,
+                cx,
+            ));
+        }
+        Some(self.app_card_native(
+            index,
+            open,
+            face.title,
+            face.tag,
+            face.status,
+            face.live,
+            body(face.body).map(IntoElement::into_any_element),
+            theme,
+            cx,
+        ))
+    }
+
+    /// The card of a surface as the view draws it: its frame and head, and
+    /// `body` under them.
+    #[allow(clippy::too_many_arguments)]
+    fn app_card_native(
+        &self,
+        index: usize,
+        open: bool,
+        title: SharedString,
+        tag_text: SharedString,
+        status: SharedString,
+        live: bool,
+        body: Option<AnyElement>,
+        theme: &Theme,
+        cx: &Context<Self>,
+    ) -> Div {
+        let (hover, ring) = (theme.hover, theme.accent);
+        let head = div()
+            .id("call")
+            .debug_selector(|| format!("tool-{index}"))
+            .h(px(HEAD))
+            .pl(px(10.))
+            .pr(px(6.))
+            .flex()
+            .items_center()
+            .gap(px(10.))
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .rounded(px(metric::RADIUS_MEDIUM - 1.))
+            .cursor_pointer()
+            .tab_index(0)
+            .hover(move |style| style.bg(hover))
+            .focus_visible(move |style| style.border_color(ring))
+            .on_click(cx.listener(move |this, click, window, cx| {
+                this.toggle(index, !open, cx);
+                this.rest_focus(click, window, cx);
+            }))
+            .child(
+                div().flex_none().w(px(14.)).flex().justify_center().child(
+                    icon(
+                        Icon::Canvas,
+                        if live { theme.accent } else { theme.fg_muted },
+                    )
+                    .size(px(13.)),
+                ),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .flex_shrink(1.)
+                    .truncate()
+                    .text_size(px(13.))
+                    .text_color(theme.fg)
+                    .child(scale::text(title)),
+            )
+            .child({
+                let mut tag = meta(theme).min_w_0().truncate();
+                tag.style().flex_shrink = Some(1000.);
+                tag.child(scale::text(tag_text))
+            })
+            .child(div().flex_1())
+            .child(
+                div()
+                    .debug_selector(|| format!("surface-status-{index}"))
+                    .flex_none()
+                    .font_family(theme.mono_font.clone())
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(10.))
+                    .text_color(if live { theme.ok } else { theme.fg_muted })
+                    .child(scale::text(status.to_uppercase())),
+            )
+            .child(chevron(open, theme));
         div()
             .relative()
             .w_full()
             .rounded(px(metric::RADIUS_MEDIUM))
             .border_1()
-            .border_color(border)
+            .border_color(theme.line)
             .bg(theme.raised)
             .overflow_hidden()
             .child(head)
             .children(body)
-            .children(live)
-            .children(answer)
-            // Its time counts while it is on screen, turn or no turn.
-            .children(behind.then(|| self.counting(cx)))
-            // Its light, drawn over the transcript, goes round where it is.
-            .children(light.then(|| mark_spot(&self.spots, (index, 0))))
     }
 
     /// The answers to a call that waits for the user's (`.tool-ask`): a
@@ -1081,13 +1390,18 @@ impl ThreadView {
             .gap(px(6.))
             .children(pending.options.iter().enumerate().map(|(at, option)| {
                 let id = option.id.clone();
-                answer_button(at, option.label.clone(), Some(at) == default, theme)
-                    .debug_selector(|| format!("answer-{}", option.id))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.permit(request, id.clone(), cx);
-                        // The buttons are gone with the answer.
-                        this.focus_field(window, cx);
-                    }))
+                answer_button(
+                    ("answer", at),
+                    option.label.clone(),
+                    Some(at) == default,
+                    theme,
+                )
+                .debug_selector(|| format!("answer-{}", option.id))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.permit(request, id.clone(), cx);
+                    // The buttons are gone with the answer.
+                    this.focus_field(window, cx);
+                }))
             }))
             .children(default.map(|at| {
                 div()
@@ -1123,7 +1437,7 @@ impl ThreadView {
         level: f32,
         theme: &Theme,
         cx: &Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let asking = self.asking(index);
         let open = self.tool_open(index, call);
         let state = self.subagent_state(index, call);
@@ -1161,8 +1475,96 @@ impl ThreadView {
         if let Some(tokens) = call.work.tokens {
             about.push(format!("{} tokens", crate::nested::tokens(tokens)));
         }
-        let (hover, ring) = (theme.hover, theme.accent);
         let code = self.header.code.to_string();
+        // How long it has been at it, in the head: it counts while it works.
+        let took_shown = |took: std::time::Duration| {
+            div()
+                .text_color(if state.live() {
+                    theme.accent
+                } else {
+                    theme.fg_muted
+                })
+                .child(scale::text(motion::duration(took)))
+        };
+        // Closed, its latest on one line, under its title.
+        let latest = (!open && level <= 0.)
+            .then(|| self.subagent_detail(call, state))
+            .filter(|latest| !latest.is_empty());
+        let body = || {
+            (open || level > 0.).then(|| {
+                let shown = self.agent_shown(index, call, pieces, lit, theme, cx);
+                let content = div()
+                    .w_full()
+                    .border_t_1()
+                    .border_color(theme.line)
+                    .bg(theme.code)
+                    .child(exact::column(
+                        div().w_full().flex().flex_col(),
+                        shown.into_iter().enumerate().map(|(at, piece)| {
+                            div()
+                                .w_full()
+                                .when(at > 0, |piece| piece.border_t_1().border_color(theme.line))
+                                .child(piece)
+                                .into_any_element()
+                        }),
+                    ));
+                revealed((index, 0), level, 0., &self.unfold_heights, content)
+            })
+        };
+        // The app draws the card when it can (`chat-agent`): its frame, its
+        // head, the frame of its latest line and the answers it waits for.
+        // What moves or streams (its time, its latest words, the card
+        // opening, what it did, its light) stays the view's.
+        if self.chat_face.is_some() {
+            let tone = match state {
+                NestedState::Running => "working",
+                NestedState::Asking => "blocked",
+                NestedState::Finished | NestedState::Gone => "fgMuted",
+                NestedState::Failed => "error",
+            };
+            let border = match state {
+                NestedState::Asking => "blocked",
+                NestedState::Running => "working",
+                NestedState::Failed => "error",
+                NestedState::Finished | NestedState::Gone => "line",
+            };
+            let what = AgentCard {
+                index,
+                code: &code,
+                title: agent_title(call),
+                kind: (!kind.is_empty()).then_some(kind),
+                about: (!about.is_empty()).then(|| about.join(" · ")),
+                word,
+                tone,
+                open,
+                border,
+                answers: asking.map(Answers::of),
+                asks: asking.and_then(|pending| self.asks_of(pending)),
+            };
+            let mut slots: Vec<(&'static str, AnyElement)> = Vec::new();
+            if let Some(took) = took {
+                slots.push(("took", took_shown(took).into_any_element()));
+            }
+            if let Some(latest) = &latest {
+                slots.push(("latest", scale::text(latest.clone()).into_any_element()));
+            }
+            if let Some(body) = body() {
+                slots.push(("body", body.into_any_element()));
+            }
+            if light {
+                slots.push((
+                    "spot",
+                    mark_spot(&self.spots, (index, 0)).into_any_element(),
+                ));
+            }
+            let memo = crate::face::digest(&what);
+            let data = || serde_json::to_value(&what).unwrap_or_default();
+            if let Some(card) = self.entry_face("chat-agent", &call.id, Some(memo), data, slots, cx)
+            {
+                return card;
+            }
+        }
+        let (hover, ring) = (theme.hover, theme.accent);
         let head = div()
             .id("call")
             .debug_selector(|| format!("tool-{index}"))
@@ -1218,15 +1620,7 @@ impl ThreadView {
                     .flex()
                     .items_center()
                     .gap(px(8.))
-                    .children(took.map(|took| {
-                        div()
-                            .text_color(if state.live() {
-                                theme.accent
-                            } else {
-                                theme.fg_muted
-                            })
-                            .child(scale::text(motion::duration(took)))
-                    }))
+                    .children(took.map(took_shown))
                     .child(
                         div()
                             .debug_selector(|| format!("agent-state-{index}"))
@@ -1238,43 +1632,23 @@ impl ThreadView {
             )
             .child(chevron(open, theme));
 
-        let body = (open || level > 0.).then(|| {
-            let shown = self.agent_shown(index, call, pieces, lit, theme);
-            let content = div()
-                .w_full()
-                .border_t_1()
-                .border_color(theme.line)
-                .bg(theme.code)
-                .child(exact::column(
-                    div().w_full().flex().flex_col(),
-                    shown.into_iter().enumerate().map(|(at, piece)| {
-                        div()
-                            .w_full()
-                            .when(at > 0, |piece| piece.border_t_1().border_color(theme.line))
-                            .child(piece)
-                            .into_any_element()
-                    }),
-                ));
-            revealed((index, 0), level, 0., &self.unfold_heights, content)
+        let body = body();
+        let latest = latest.map(|latest| {
+            div()
+                .debug_selector(|| format!("agent-latest-{index}"))
+                .pl(px(36.))
+                .pr(px(12.))
+                .pb(px(6.))
+                .truncate()
+                .font_family(theme.mono_font.clone())
+                .text_size(px(11.5))
+                .text_color(theme.fg_muted)
+                .child(scale::text(latest))
         });
-        // Closed, its latest on one line, under its title.
-        let latest = (!open && level <= 0.)
-            .then(|| self.subagent_detail(call, state))
-            .filter(|latest| !latest.is_empty())
-            .map(|latest| {
-                div()
-                    .debug_selector(|| format!("agent-latest-{index}"))
-                    .pl(px(36.))
-                    .pr(px(12.))
-                    .pb(px(9.))
-                    .mt(px(-4.))
-                    .truncate()
-                    .font_family(theme.mono_font.clone())
-                    .text_size(px(11.5))
-                    .text_color(theme.fg_muted)
-                    .child(scale::text(latest))
-            });
-        let answer = asking.map(|pending| self.answer_bar(pending, theme, cx));
+        let answer = asking.map(|pending| match self.asks_of(pending) {
+            Some(asks) => self.question_block(&asks, theme, cx),
+            None => self.answer_bar(pending, theme, cx),
+        });
         let border = match state {
             NestedState::Asking => lights_mix(theme.blocked, theme.line, 0.45),
             NestedState::Running => lights_mix(theme.working, theme.line, 0.5),
@@ -1295,6 +1669,7 @@ impl ThreadView {
             .children(answer)
             // Its light, drawn over the transcript, goes round where it is.
             .children(light.then(|| mark_spot(&self.spots, (index, 0))))
+            .into_any_element()
     }
 
     /// What an open tool call shows of its content, piece by piece: its
@@ -1312,7 +1687,9 @@ impl ThreadView {
         cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         // In the call's card already: code is its lines, without a frame.
-        let look = Look::new(theme, Tone::output(theme), self.field_focus()).bare();
+        let look = Look::new(theme, Tone::output(theme), self.field_focus())
+            .with_links(&self.header.cwd, self.link_opener(cx))
+            .bare();
         let look = if studio { look.studio() } else { look }.small();
         let mut shown: Vec<AnyElement> = Vec::new();
         for (at, piece) in pieces.iter().enumerate() {
@@ -1325,12 +1702,25 @@ impl ThreadView {
                         .into_any_element(),
                 ),
                 Piece::Diff { path, diff } => {
-                    shown.push(diff_block(at, path, diff, theme).into_any_element())
+                    let left_out = diff.rows.len() - diff.rows.len().min(DIFF_MAX);
+                    let what = PieceFace::Diff {
+                        path,
+                        added: diff.added,
+                        removed: diff.removed,
+                        empty: diff.rows.is_empty(),
+                        left_out,
+                    };
+                    let lines = diff_lines(at, diff, theme).map(IntoElement::into_any_element);
+                    shown.push(
+                        self.piece_face(call, at, what, lines, cx)
+                            .unwrap_or_else(|| {
+                                diff_block(at, path, diff, theme).into_any_element()
+                            }),
+                    )
                 }
-                Piece::Terminal { lines, exit } => shown.push(
-                    self.terminal_block(index, at, lines, *exit, call.status, theme, cx)
-                        .into_any_element(),
-                ),
+                Piece::Terminal { lines, exit } => {
+                    shown.push(self.terminal_block(index, at, lines, *exit, call.status, theme, cx))
+                }
                 Piece::Picture => {
                     shown.push(self.tool_picture(index, at, call, theme, cx));
                 }
@@ -1344,7 +1734,14 @@ impl ThreadView {
                 .enumerate()
             {
                 if let Some(value) = value {
-                    shown.push(raw_block(at, label, value, theme).into_any_element());
+                    let what = PieceFace::Raw { label };
+                    let lines = raw_lines(at, label, value, theme).into_any_element();
+                    shown.push(
+                        self.piece_face(call, at, what, Some(lines), cx)
+                            .unwrap_or_else(|| {
+                                raw_block(at, label, value, theme).into_any_element()
+                            }),
+                    );
                 }
             }
         }
@@ -1393,22 +1790,27 @@ impl ThreadView {
             .count()
     }
 
-    /// Whether the turn entry `index` is of still runs: no prompt came after
-    /// it, and the agent is at work.
+    /// Whether the turn entry `index` is of still runs: the agent is at
+    /// work, and the entry is of the turn that runs (a message of the user's
+    /// that this turn took in after it ends nothing), or no prompt came
+    /// after it.
     fn turn_runs_at(&self, index: usize) -> bool {
         let entries = self.thread.entries();
-        matches!(
-            self.thread.state(),
-            ThreadState::Working | ThreadState::Blocked
-        ) && !entries[(index + 1).min(entries.len())..]
-            .iter()
-            .any(|entry| matches!(entry, Entry::User(_)))
+        let Some(from) = self.thread.turn_from() else {
+            return false;
+        };
+        index >= from
+            || !entries[(index + 1).min(entries.len())..]
+                .iter()
+                .any(|entry| matches!(entry, Entry::User(_)))
     }
 
     /// How the subagent started by the call at `index` is doing. One started
     /// in the background runs on after its call is over: the agent's turn is
     /// held open until such agents are done, so it counts as running for as
-    /// long as that turn runs.
+    /// long as that turn runs, unless its backend has taken it to have
+    /// ended (`work.ended`): with two of them the turn stays open for the
+    /// second long after the first is done.
     pub(crate) fn subagent_state(&self, index: usize, call: &ToolCall) -> NestedState {
         let entries = self.thread.entries();
         let asks = self.asking(index).is_some()
@@ -1423,7 +1825,9 @@ impl ThreadView {
             ToolStatus::Pending | ToolStatus::Running => NestedState::Running,
             ToolStatus::Failed => NestedState::Failed,
             ToolStatus::Cancelled => NestedState::Gone,
-            ToolStatus::Done if call.work.background && self.turn_runs_at(index) => {
+            ToolStatus::Done
+                if call.work.background && !call.work.ended && self.turn_runs_at(index) =>
+            {
                 NestedState::Running
             }
             ToolStatus::Done => NestedState::Finished,
@@ -1597,6 +2001,7 @@ impl ThreadView {
         pieces: &Rc<[Piece]>,
         lit: f32,
         theme: &Theme,
+        cx: &Context<Self>,
     ) -> Vec<AnyElement> {
         let _ = index;
         let mut shown: Vec<AnyElement> = Vec::new();
@@ -1671,6 +2076,7 @@ impl ThreadView {
                 );
             }
             let look = Look::new(theme, Tone::output(theme), self.field_focus())
+                .with_links(&self.header.cwd, self.link_opener(cx))
                 .bare()
                 .small();
             let said = |after: usize| {
@@ -1732,6 +2138,7 @@ impl ThreadView {
         // of one left to run in the background, that it was started.
         if (done || asked.is_none()) && !call.work.background {
             let look = Look::new(theme, Tone::output(theme), self.field_focus())
+                .with_links(&self.header.cwd, self.link_opener(cx))
                 .bare()
                 .small();
             for piece in pieces.iter() {
@@ -1865,7 +2272,7 @@ impl ThreadView {
         status: ToolStatus,
         theme: &Theme,
         cx: &Context<Self>,
-    ) -> Div {
+    ) -> AnyElement {
         let unfolded = self.unfolded.contains(&(index, piece));
         let limit = if unfolded {
             TERMINAL_MAX
@@ -1919,14 +2326,47 @@ impl ThreadView {
             }
         }
 
-        let (hover, ring) = (theme.hover, theme.accent);
         // How it ended is the head's to say; while it runs, the stream says so.
-        let status_word = match (exit, status) {
-            (None, ToolStatus::Running | ToolStatus::Pending) => {
-                Some(("running".to_owned(), theme.working))
-            }
-            _ => None,
+        let running = matches!(
+            (exit, status),
+            (None, ToolStatus::Running | ToolStatus::Pending)
+        );
+        let lines = || {
+            div()
+                .id(("output", piece))
+                .w_full()
+                .flex()
+                .overflow_x_scroll()
+                .restrict_scroll_to_axis()
+                .child(
+                    div()
+                        .flex_none()
+                        .px(px(12.))
+                        .pb(px(12.))
+                        .min_h(px(MONO_LINE + 12.))
+                        .text_size(px(12.))
+                        .line_height(px(19.))
+                        .whitespace_nowrap()
+                        .child(scale::styled_text(text.clone(), runs.clone())),
+                )
         };
+        // The app draws its frame when it can: its head, and the line that
+        // shows the lines left out.
+        if let Some(Entry::Tool(call)) = self.thread.entries().get(index) {
+            let what = PieceFace::Terminal {
+                index,
+                piece,
+                running,
+                hidden,
+                unfolded,
+            };
+            let shown = Some(lines().into_any_element());
+            if let Some(block) = self.piece_face(call, piece, what, shown, cx) {
+                return block;
+            }
+        }
+        let (hover, ring) = (theme.hover, theme.accent);
+        let status_word = running.then(|| ("running".to_owned(), theme.working));
         div()
             .w_full()
             .child(
@@ -1966,49 +2406,59 @@ impl ThreadView {
                         .child(scale::text(label)),
                 )
             })
-            .child(
-                div()
-                    .id(("output", piece))
-                    .w_full()
-                    .flex()
-                    .overflow_x_scroll()
-                    .restrict_scroll_to_axis()
-                    .child(
-                        div()
-                            .flex_none()
-                            .px(px(12.))
-                            .pb(px(12.))
-                            .min_h(px(MONO_LINE + 12.))
-                            .text_size(px(12.))
-                            .line_height(px(19.))
-                            .whitespace_nowrap()
-                            .child(scale::styled_text(text, runs)),
-                    ),
-            )
+            .child(lines())
+            .into_any_element()
+    }
+
+    /// A piece of what a call gave, framed by the app (`chat-tool-piece`):
+    /// `what` it is, its lines drawn by the view (`lines`). `None` when the
+    /// app does not draw it.
+    fn piece_face(
+        &self,
+        call: &ToolCall,
+        at: usize,
+        what: PieceFace,
+        lines: Option<AnyElement>,
+        cx: &Context<Self>,
+    ) -> Option<AnyElement> {
+        self.chat_face.as_ref()?;
+        let key = format!("{}:{}{at}", call.id, what.kind());
+        let memo = crate::face::digest(&what);
+        let data = || serde_json::to_value(&what).unwrap_or_default();
+        let slots = lines.map(|lines| ("lines", lines)).into_iter().collect();
+        self.entry_face("chat-tool-piece", key, Some(memo), data, slots, cx)
     }
 
     /// The last row: what the thread is doing, when that is not the prompt
     /// area's to say, and what the user can do about it.
     fn tail(&self, theme: &Theme, cx: &Context<Self>) -> Div {
         let agent = &self.header.agent;
+        // The app can draw the session status
+        // (`chat-tail`): a line, `{ text }`, or what ended the session,
+        // `{ agent, reason }`.
+        let drawn = |made_from: u64, data: &dyn Fn() -> serde_json::Value| {
+            self.entry_face("chat-tail", "tail", Some(made_from), data, Vec::new(), cx)
+        };
         let line = |text: String| {
-            row(
-                node(Node::Hollow(theme.fg_faint), 1., theme),
-                META,
+            let data = || serde_json::json!({ "text": text });
+            let content = drawn(crate::face::digest(&text), &data).unwrap_or_else(|| {
                 div()
                     .min_h(px(META))
                     .flex()
                     .items_center()
                     .text_color(theme.fg_muted)
-                    .child(scale::text(text)),
-            )
+                    .child(scale::text(text.clone()))
+                    .into_any_element()
+            });
+            row(content)
         };
         let content = match self.thread.state() {
             ThreadState::Starting => Some(line(format!(
                 "Starting {agent} in {}. Your first message can be sent once it is ready.",
                 display_path(&self.header.cwd, None)
             ))),
-            ThreadState::Idle if self.thread.entries().is_empty() => Some(self.ready_card(theme)),
+            // (A new session says nothing of itself: the field is there to
+            // be typed in.)
             ThreadState::Idle => match &self.thread.last_stop {
                 Some(Stop::Cancelled) => Some(line("Stopped. Send a message to go on.".to_owned())),
                 Some(Stop::Limit) => Some(line(format!(
@@ -2032,24 +2482,32 @@ impl ThreadView {
                     format!("{agent} is waiting for your answer to {waiting} requests above.")
                 }))
             }
-            ThreadState::Closed(Some(reason)) => Some(row(
-                node(Node::Filled(theme.error), 1., theme),
-                META,
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(meta_line().child(label(format!("{agent} stopped"), theme.error, theme)))
-                    .child(error_box(reason, theme.error, theme))
-                    .child(
-                        div()
-                            .mt(px(8.))
-                            .text_color(theme.fg_muted)
-                            .child(scale::text(
-                                "Close this pane and open it again to start a new session. \
-                                 The conversation above stays readable until then.",
-                            )),
-                    ),
-            )),
+            ThreadState::Closed(Some(reason)) => {
+                let data = || serde_json::json!({ "agent": agent, "reason": reason });
+                let made_from = crate::face::digest((agent, reason));
+                let content = drawn(made_from, &data).unwrap_or_else(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(meta_line().child(label(
+                            format!("{agent} stopped"),
+                            theme.error,
+                            theme,
+                        )))
+                        .child(error_box(reason, theme.error, theme))
+                        .child(
+                            div()
+                                .mt(px(8.))
+                                .text_color(theme.fg_muted)
+                                .child(scale::text(
+                                    "Close this pane and open it again to start a new session. \
+                                     The conversation above stays readable until then.",
+                                )),
+                        )
+                        .into_any_element()
+                });
+                Some(row(content))
+            }
             ThreadState::Closed(None) => Some(line(
                 "This session has ended. Open the pane again to start a new one.".to_owned(),
             )),
@@ -2081,74 +2539,6 @@ impl ThreadView {
                     })
                     .children(content),
             )
-    }
-
-    /// A new session, before anything was said (`.empty-card`): ready, and
-    /// what the agent does. Still: nothing here moves while nothing happens.
-    fn ready_card(&self, theme: &Theme) -> Div {
-        let agent = &self.header.agent;
-        div().w_full().px(px(EDGE)).child(
-            div()
-                .w_full()
-                .px(px(24.))
-                .pt(px(22.))
-                .pb(px(20.))
-                .rounded(px(metric::RADIUS_LARGE))
-                .border_1()
-                .border_color(theme.line)
-                .bg(theme.raised)
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(16.))
-                        .child(label("Session · new", theme.fg_muted, theme))
-                        .child(
-                            meta(theme)
-                                .min_w_0()
-                                .overflow_hidden()
-                                .whitespace_nowrap()
-                                .text_ellipsis_start()
-                                .child(scale::text(display_path(&self.header.cwd, None))),
-                        ),
-                )
-                .child(
-                    div()
-                        .mt(px(26.))
-                        .mb(px(10.))
-                        .flex()
-                        .items_end()
-                        .font_family(theme.mono_font.clone())
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(px(38.))
-                        .line_height(px(38.))
-                        .text_color(theme.fg)
-                        .child(scale::text("READY"))
-                        // `.caret`: the block after it. It does not blink: the
-                        // view draws nothing while nothing happens.
-                        .child(
-                            div()
-                                .ml(px(3.))
-                                .mb(px(4.))
-                                .w(px(19.))
-                                .h(px(28.))
-                                .bg(theme.accent),
-                        ),
-                )
-                .child(
-                    div()
-                        .max_w(px(520.))
-                        .text_size(px(14.))
-                        .line_height(px(22.))
-                        .text_color(theme.fg_dim)
-                        .child(scale::text(format!(
-                            "{agent} works in this folder with a shell. Describe the outcome \
-                             you want: it plans, runs commands and reports back as it goes."
-                        ))),
-                ),
-        )
     }
 }
 
@@ -2219,10 +2609,15 @@ fn state_glyph(status: ToolStatus, asking: bool, lit: f32, theme: &Theme) -> Any
 
 /// One of the answers to a permission request: the default one filled with
 /// the accent (`.primary`), the others framed (`.act`).
-fn answer_button(at: usize, text: String, primary: bool, theme: &Theme) -> gpui::Stateful<Div> {
+pub(crate) fn answer_button(
+    id: impl Into<gpui::ElementId>,
+    text: String,
+    primary: bool,
+    theme: &Theme,
+) -> gpui::Stateful<Div> {
     let ring = theme.accent;
     let base = div()
-        .id(("answer", at))
+        .id(id)
         .flex_none()
         .h(px(28.))
         .px(px(12.))
@@ -2278,7 +2673,7 @@ impl ThreadView {
         index: usize,
         message: &UserMessage,
         shots: &[Shot],
-        now: Instant,
+        _now: Instant,
         theme: &Theme,
         window: &Window,
         cx: &Context<Self>,
@@ -2290,30 +2685,19 @@ impl ThreadView {
             let head = meta_line()
                 .child(label("You", theme.accent, theme))
                 .child(Self::editing_flag(theme));
-            let ring = theme.accent.opacity(0.22);
-            return row(
-                node(Node::Filled(theme.accent), 1., theme).shadow(vec![gpui::BoxShadow {
-                    color: ring,
-                    offset: gpui::point(gpui::px(0.), gpui::px(0.)),
-                    blur_radius: gpui::px(0.),
-                    spread_radius: px(3.),
-                    inset: false,
-                }]),
-                META,
-                div()
-                    .id(("prompt", index))
-                    .w_full()
-                    // `.edit { margin-top: 6px }`, as the column's gap: a
-                    // child of a planned column keeps no margin of its own
-                    // at a zoom (see `kou_ui::scale::exact`).
-                    .child(exact::column(
-                        div().w_full().flex().flex_col().gap(px(6.)),
-                        [
-                            head.into_any_element(),
-                            self.editor_element(editor, window, theme, cx),
-                        ],
-                    )),
-            );
+            return row(div()
+                .id(("prompt", index))
+                .w_full()
+                // `.edit { margin-top: 6px }`, as the column's gap: a
+                // child of a planned column keeps no margin of its own
+                // at a zoom (see `kou_ui::scale::exact`).
+                .child(exact::column(
+                    div().w_full().flex().flex_col().gap(px(6.)),
+                    [
+                        head.into_any_element(),
+                        self.editor_element(editor, window, theme, cx),
+                    ],
+                )));
         }
         let mut runs = Vec::new();
         let mut at = 0;
@@ -2352,92 +2736,99 @@ impl ThreadView {
             .copied
             .as_ref()
             .is_some_and(|key| key == &format!("prompt-{index}"));
-        let text = message.text.to_string();
-        let actions = div()
-            .flex_none()
-            .flex()
-            .gap(px(2.))
-            .child(
-                row_action(
-                    ("copy-prompt", index),
-                    if copied { "Copied" } else { "Copy" },
-                    group.clone(),
-                    theme,
-                )
-                .when(copied, |control| control.opacity(1.).text_color(theme.ok))
-                .on_click(cx.listener(move |this, click, window, cx| {
-                    this.copy(format!("prompt-{index}").into(), text.clone(), cx);
-                    this.rest_focus(click, window, cx);
-                })),
-            )
-            .children(self.prompt_action(index, group.clone(), theme, cx));
-        let pictures = (!message.pictures.is_empty()).then(|| {
-            div().flex().flex_wrap().gap(px(8.)).pt(px(6.)).children(
-                message
-                    .pictures
-                    .iter()
-                    .zip(shots)
-                    .map(|((label, block), shot)| {
-                        let block = *block;
-                        let (ring, line) = (theme.accent, theme.line_strong);
-                        let frame = div()
-                            .id(("message-picture", index * 64 + block.min(63)))
-                            .debug_selector(move || format!("message-picture-{index}-{block}"))
-                            .relative()
-                            .w(px(136.))
-                            .h(px(90.))
-                            .rounded(px(metric::RADIUS_MEDIUM))
-                            .overflow_hidden()
-                            .border_1()
-                            .border_color(line)
-                            .bg(theme.code)
-                            .cursor_pointer()
-                            .tab_index(0)
-                            .hover(move |style| style.border_color(ring))
-                            .focus_visible(move |style| style.border_color(ring))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.view_picture(index, block, cx)
-                            }));
-                        let content: AnyElement = match shot {
-                            // Zoomed in, the thumbnail would be drawn larger than it is.
-                            Shot::Ready { thumb, large, .. } => img(ImageSource::Render(
-                                if scale::factor() > 1. { large } else { thumb }.clone(),
-                            ))
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Cover)
-                            .into_any_element(),
-                            Shot::Loading => div().into_any_element(),
-                            Shot::Failed => div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(metric::TEXT_SMALL))
-                                .text_color(theme.fg_muted)
-                                .child(scale::text("not readable"))
-                                .into_any_element(),
-                        };
-                        frame.child(content).child(
-                            div()
-                                .absolute()
-                                .left_0()
-                                .bottom_0()
-                                .px(px(6.))
-                                .rounded_tr(px(metric::RADIUS))
-                                .bg(theme.raised.opacity(0.88))
-                                .font_family(theme.mono_font.clone())
-                                .font_weight(FontWeight::BOLD)
-                                .text_size(px(10.))
-                                .text_color(theme.fg_dim)
-                                .child(scale::text(label.clone())),
-                        )
-                    }),
-            )
-        });
-        // The model the prompt went to, when the view knows it (`.model-tag`).
-        let model = self.prompt_models.get(&index).map(|id| {
-            let provider = crate::models::provider_of(id, &self.thread.providers);
+        // (The view's own line over the prompt is made only when the app
+        // does not draw it.)
+        let actions = || {
+            let text = message.text.to_string();
             div()
+                .flex_none()
+                .flex()
+                .gap(px(2.))
+                .child(
+                    row_action(
+                        ("copy-prompt", index),
+                        if copied { "Copied" } else { "Copy" },
+                        group.clone(),
+                        theme,
+                    )
+                    .when(copied, |control| control.opacity(1.).text_color(theme.ok))
+                    .on_click(cx.listener(move |this, click, window, cx| {
+                        this.copy(format!("prompt-{index}").into(), text.clone(), cx);
+                        this.rest_focus(click, window, cx);
+                    })),
+                )
+                .children(self.prompt_action(index, group.clone(), theme, cx))
+        };
+        let pictures_shown = || {
+            (!message.pictures.is_empty()).then(|| {
+                div().flex().flex_wrap().gap(px(8.)).pt(px(6.)).children(
+                    message
+                        .pictures
+                        .iter()
+                        .zip(shots)
+                        .map(|((label, block), shot)| {
+                            let block = *block;
+                            let (ring, line) = (theme.accent, theme.line_strong);
+                            let frame = div()
+                                .id(("message-picture", index * 64 + block.min(63)))
+                                .debug_selector(move || format!("message-picture-{index}-{block}"))
+                                .relative()
+                                .w(px(136.))
+                                .h(px(90.))
+                                .rounded(px(metric::RADIUS_MEDIUM))
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(line)
+                                .bg(theme.code)
+                                .cursor_pointer()
+                                .tab_index(0)
+                                .hover(move |style| style.border_color(ring))
+                                .focus_visible(move |style| style.border_color(ring))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.view_picture(index, block, cx)
+                                }));
+                            let content: AnyElement = match shot {
+                                // Zoomed in, the thumbnail would be drawn larger than it is.
+                                Shot::Ready { thumb, large, .. } => img(ImageSource::Render(
+                                    if scale::factor() > 1. { large } else { thumb }.clone(),
+                                ))
+                                .size_full()
+                                .object_fit(gpui::ObjectFit::Cover)
+                                .into_any_element(),
+                                Shot::Loading => div().into_any_element(),
+                                Shot::Failed => div()
+                                    .size_full()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .text_size(px(metric::TEXT_SMALL))
+                                    .text_color(theme.fg_muted)
+                                    .child(scale::text("not readable"))
+                                    .into_any_element(),
+                            };
+                            frame.child(content).child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .bottom_0()
+                                    .px(px(6.))
+                                    .rounded_tr(px(metric::RADIUS))
+                                    .bg(theme.raised.opacity(0.88))
+                                    .font_family(theme.mono_font.clone())
+                                    .font_weight(FontWeight::BOLD)
+                                    .text_size(px(10.))
+                                    .text_color(theme.fg_dim)
+                                    .child(scale::text(label.clone())),
+                            )
+                        }),
+                )
+            })
+        };
+        // The model the prompt went to, when the view knows it (`.model-tag`).
+        let model = || {
+            let id = self.prompt_models.get(&index)?;
+            let provider = crate::models::provider_of(id, &self.thread.providers);
+            let tag = div()
                 .flex_none()
                 .max_w(px(260.))
                 .h(px(18.))
@@ -2458,67 +2849,109 @@ impl ThreadView {
                         .rounded(px(metric::RADIUS_MARK))
                         .bg(theme.provider(provider.as_deref().unwrap_or_default())),
                 )
-                .child(div().min_w_0().truncate().child(scale::text(id.clone())))
-        });
-        // With less motion, a message simply arrives.
-        let flash = if cx.reduce_motion() {
-            None
-        } else {
-            self.motion.flash(index, now)
+                .child(div().min_w_0().truncate().child(scale::text(id.clone())));
+            Some(tag)
         };
-        let head = meta_line()
-            .child(label("You", theme.accent, theme))
-            .children(model)
-            .child(div().flex_1())
-            .child(actions);
-        let card = div()
-            .id(("user", index))
-            .w_full()
-            .px(px(15.))
-            .pt(px(10.))
-            .pb(px(11.))
-            .rounded(px(metric::RADIUS_LARGE))
-            .border_1()
-            .border_color(theme.line)
-            .bg(match flash {
-                Some(t) => lights_mix(theme.raised, theme.accent, 0.12 * t),
-                None => theme.raised,
+        // The line over the prompt is the app's to draw when it can
+        // (`chat-user-head`).
+        let shown_model = self.prompt_models.get(&index).map(|id| {
+            let provider = crate::models::provider_of(id, &self.thread.providers);
+            (id, theme.provider(provider.as_deref().unwrap_or_default()))
+        });
+        let action = if matches!(self.thread.state(), ThreadState::Closed(_)) {
+            None
+        } else if !self.edits() {
+            Some("reuse")
+        } else if self.edit_blocked().is_none() {
+            Some("edit")
+        } else {
+            None
+        };
+        let data = || {
+            serde_json::json!({
+                "index": index,
+                "copied": copied,
+                "model": shown_model.map(|(id, dot)| {
+                    serde_json::json!({ "id": id, "dot": crate::face::hex(dot) })
+                }),
+                "action": action,
             })
-            .text_size(px(PROSE))
-            .line_height(px(LINE))
-            .flex()
-            .flex_col()
-            .gap(px(2.))
-            .children(
-                (!message.text.is_empty()).then(|| scale::styled_text(message.text.clone(), runs)),
-            )
-            .children(pictures)
-            .children(message.files.iter().map(|path| {
-                meta(theme)
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .child(icon(Icon::File, theme.fg_muted).size(px(12.)))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_color(theme.fg_dim)
-                            .child(scale::text(path.clone())),
-                    )
-            }));
-        row(
-            node(Node::Filled(theme.accent), 1., theme),
-            META,
+        };
+        let went_to = shown_model.map(|(id, dot)| (id, crate::face::bits(dot)));
+        let memo = crate::face::digest((index, copied, went_to, action));
+        let head = match self.entry_face("chat-user-head", index, Some(memo), data, Vec::new(), cx)
+        {
+            Some(head) => head,
+            None => meta_line()
+                .child(label("You", theme.accent, theme))
+                .children(model())
+                .child(div().flex_1())
+                .child(actions())
+                .into_any_element(),
+        };
+        // Text and pictures stay native when the plugin draws the card.
+        let drawn_card = if self.chat_face.is_some() {
+            let mut slots: Vec<(&'static str, AnyElement)> = Vec::new();
+            if !message.text.is_empty() {
+                let text = scale::styled_text(message.text.clone(), runs.clone());
+                slots.push(("text", text.into_any_element()));
+            }
+            if let Some(pictures) = pictures_shown() {
+                slots.push(("pictures", pictures.into_any_element()));
+            }
+            let memo = crate::face::digest(&message.files);
+            let data = || serde_json::json!({ "files": message.files });
+            self.entry_face("chat-user-card", index, Some(memo), data, slots, cx)
+        } else {
+            None
+        };
+        let card = || {
             div()
-                .id(("prompt", index))
-                .group(group)
+                .id(("user", index))
                 .w_full()
-                .child(exact::column(
-                    div().w_full().flex().flex_col().gap(px(6.)),
-                    [head.into_any_element(), card.into_any_element()],
-                )),
-        )
+                .px(px(15.))
+                .pt(px(10.))
+                .pb(px(11.))
+                .rounded(px(metric::RADIUS_LARGE))
+                .border_1()
+                .border_color(theme.line)
+                .bg(theme.raised)
+                .text_size(px(PROSE))
+                .line_height(px(LINE))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .children(
+                    (!message.text.is_empty())
+                        .then(|| scale::styled_text(message.text.clone(), runs.clone())),
+                )
+                .children(pictures_shown())
+                .children(message.files.iter().map(|path| {
+                    meta(theme)
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(icon(Icon::File, theme.fg_muted).size(px(12.)))
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(theme.fg_dim)
+                                .child(scale::text(path.clone())),
+                        )
+                }))
+        };
+        row(div()
+            .id(("prompt", index))
+            .group(group)
+            .w_full()
+            .child(exact::column(
+                div().w_full().flex().flex_col().gap(px(6.)),
+                [
+                    head,
+                    drawn_card.unwrap_or_else(|| card().into_any_element()),
+                ],
+            )))
     }
 
     /// What a prompt's control does with it: Edit, for a backend that rewinds,
@@ -2565,91 +2998,107 @@ impl ThreadView {
         text: &str,
         blocks: &Rc<[Markdown]>,
         look: &Look,
-        node: Node,
-        lit: f32,
         cx: &Context<Self>,
     ) -> Div {
         let theme = look.theme;
         let group = SharedString::from(format!("answer-{index}"));
         let key = format!("answer-{index}");
         let copied = self.copied.as_ref().is_some_and(|copied| copied == &key);
-        let text = text.to_owned();
         let writing = self.writing(index);
-        // An answer still being written has no actions: it is not all said yet.
-        let copy = (!writing).then(|| {
-            row_action(
-                ("copy-answer", index),
-                if copied { "Copied" } else { "Copy" },
-                group.clone(),
-                theme,
-            )
-            .when(copied, |control| control.opacity(1.).text_color(theme.ok))
-            .on_click(cx.listener(move |this, click, window, cx| {
-                this.copy(key.clone().into(), text.clone(), cx);
-                this.rest_focus(click, window, cx);
-            }))
-        });
-        let lit = if writing { lit } else { 1. };
-        row(
-            self::node(node, lit, theme),
-            META,
-            div()
-                .id(("answer", index))
-                .debug_selector(move || format!("reply-{index}"))
-                .group(group)
-                .w_full()
-                // At a zoom, the line of capitals and the prose each where
-                // they stand at 1 (see `kou_ui::scale::exact`).
-                .child(exact::column(
-                    div().w_full().flex().flex_col().gap(px(4.)),
-                    [
-                        meta_line()
-                            .child(label("Agent", theme.fg, theme))
-                            .child(div().flex_1())
-                            .children(copy)
-                            .into_any_element(),
-                        prose::document(blocks, look).into_any_element(),
-                    ],
-                )),
-        )
+        // An answer still being written has no actions: it is not all said
+        // yet. (Made only when the app does not draw the line it is on.)
+        let copy = || {
+            let text = text.to_owned();
+            (!writing).then(|| {
+                row_action(
+                    ("copy-answer", index),
+                    if copied { "Copied" } else { "Copy" },
+                    group.clone(),
+                    theme,
+                )
+                .when(copied, |control| control.opacity(1.).text_color(theme.ok))
+                .on_click(cx.listener(move |this, click, window, cx| {
+                    this.copy(key.clone().into(), text.clone(), cx);
+                    this.rest_focus(click, window, cx);
+                }))
+            })
+        };
+        // The line over it is the app's to draw when it can
+        // (`chat-answer-head`); what was said is the view's.
+        let data = || serde_json::json!({ "index": index, "copied": copied, "writing": writing });
+        let memo = crate::face::digest((index, copied, writing));
+        let head =
+            match self.entry_face("chat-answer-head", index, Some(memo), data, Vec::new(), cx) {
+                Some(head) => head,
+                None => meta_line()
+                    .child(label("Agent", theme.fg, theme))
+                    .child(div().flex_1())
+                    .children(copy())
+                    .into_any_element(),
+            };
+        row(div()
+            .id(("answer", index))
+            .debug_selector(move || format!("reply-{index}"))
+            .group(group)
+            .w_full()
+            // At a zoom, the line of capitals and the prose each where
+            // they stand at 1 (see `kou_ui::scale::exact`).
+            .child(exact::column(
+                div().w_full().flex().flex_col().gap(px(4.)),
+                [head, prose::document(blocks, look).into_any_element()],
+            )))
     }
 
     /// What `/clear` left: how much is out of sight, and a way back to it.
     fn cleared_row(&self, theme: &Theme, cx: &Context<Self>) -> Div {
         let hidden = self.cleared;
-        let notice = div()
-            .min_h(px(META))
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .font_family(theme.mono_font.clone())
-            .font_weight(FontWeight::BOLD)
-            .text_size(px(LABEL))
-            .text_color(theme.fg_muted)
-            .child(scale::text(format!(
-                "{hidden} EARLIER {} OUT OF SIGHT",
-                if hidden == 1 {
-                    "ENTRY IS"
-                } else {
-                    "ENTRIES ARE"
-                }
-            )))
-            .child(
-                act("unclear", "Show them", theme)
-                    .debug_selector(|| "unclear".into())
-                    .border_color(theme.line_strong)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.unclear(cx);
-                        this.focus_field(window, cx);
-                    })),
-            )
-            .child(div().flex_1().h(px(1.)).bg(theme.line));
+        // The app can draw the summary
+        // (`chat-cleared`: `{ hidden }`).
+        let data = || serde_json::json!({ "hidden": hidden });
+        let drawn = self.entry_face(
+            "chat-cleared",
+            "cleared",
+            Some(crate::face::digest(hidden)),
+            data,
+            Vec::new(),
+            cx,
+        );
+        let notice = || {
+            div()
+                .min_h(px(META))
+                .flex()
+                .items_center()
+                .gap(px(12.))
+                .font_family(theme.mono_font.clone())
+                .font_weight(FontWeight::BOLD)
+                .text_size(px(LABEL))
+                .text_color(theme.fg_muted)
+                .child(scale::text(format!(
+                    "{hidden} EARLIER {} OUT OF SIGHT",
+                    if hidden == 1 {
+                        "ENTRY IS"
+                    } else {
+                        "ENTRIES ARE"
+                    }
+                )))
+                .child(
+                    act("unclear", "Show them", theme)
+                        .debug_selector(|| "unclear".into())
+                        .border_color(theme.line_strong)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.unclear(cx);
+                            this.focus_field(window, cx);
+                        })),
+                )
+                .child(div().flex_1().h(px(1.)).bg(theme.line))
+                .into_any_element()
+        };
         div().w_full().flex().justify_center().child(
-            div().w_full().max_w(px(MEASURE)).pt(px(14.)).child(row(
-                node(Node::Rule, 1., theme),
-                META,
-                notice,
-            )),
+            div()
+                .w_full()
+                .max_w(px(MEASURE))
+                .pt(px(14.))
+                .child(row(drawn.unwrap_or_else(notice))),
         )
     }
 }
@@ -2678,12 +3127,125 @@ pub(crate) fn latest_gist(text: &str) -> String {
 }
 
 /// The agent's plan: its steps, each with a mark of its own shape.
-fn plan(steps: &[PlanStep], lit: f32, theme: &Theme) -> Div {
+/// A plan's card; `drawn` is the app's drawing of what stands beside its
+/// node, when it has one.
+/// The card of a surface as the app draws it (`chat-app-card`): its title,
+/// what stands beside it, how it stands (`live` while it follows its
+/// sources), and whether it is open.
+#[derive(Hash, serde::Serialize)]
+struct AppCard<'a> {
+    index: usize,
+    title: &'a str,
+    tag: &'a str,
+    status: &'a str,
+    live: bool,
+    open: bool,
+}
+
+/// A piece of what a call gave as the app frames it (`chat-tool-piece`), by
+/// its `kind`: a change to a file (its path, lines added and removed,
+/// whether it changes nothing, how many of its lines are left out); what a
+/// command printed (the call's entry, the piece, whether it runs, how many
+/// earlier lines are hidden, whether more are kept); or what went in or
+/// came back as the backend wrote it (its `label`).
+#[derive(Hash, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum PieceFace<'a> {
+    #[serde(rename_all = "camelCase")]
+    Diff {
+        path: &'a str,
+        added: usize,
+        removed: usize,
+        empty: bool,
+        left_out: usize,
+    },
+    Terminal {
+        index: usize,
+        piece: usize,
+        running: bool,
+        hidden: usize,
+        unfolded: bool,
+    },
+    Raw {
+        label: &'static str,
+    },
+}
+
+impl PieceFace<'_> {
+    /// Its kind, as its key says it.
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::Diff { .. } => "diff",
+            Self::Terminal { .. } => "terminal",
+            Self::Raw { .. } => "raw",
+        }
+    }
+}
+
+/// The card of a call that starts a subagent as the app draws it
+/// (`chat-agent`): the tile's `code`, what the agent was started for, its
+/// kind, its counts (`about`), how it goes in a word with that word's colour
+/// (`tone`), whether it is open, its border's colour by name, and the answers
+/// it waits for, or the questions it asks.
+#[derive(Hash, serde::Serialize)]
+struct AgentCard<'a> {
+    index: usize,
+    code: &'a str,
+    title: String,
+    kind: Option<&'a str>,
+    about: Option<String>,
+    word: &'static str,
+    tone: &'static str,
+    open: bool,
+    border: &'static str,
+    answers: Option<Answers<'a>>,
+    asks: Option<crate::questions::Asks<'a>>,
+}
+
+/// The answers to a call that waits for the user's, as the app draws them:
+/// the request they answer, each answer (`primary`: the usual one), the
+/// usual one's words as the hint says them, and the key that gives it.
+#[derive(Hash, serde::Serialize)]
+struct Answers<'a> {
+    request: u64,
+    options: Vec<AnswerOption<'a>>,
+    hint: Option<String>,
+    key: &'static str,
+}
+
+#[derive(Hash, serde::Serialize)]
+struct AnswerOption<'a> {
+    id: &'a str,
+    label: &'a str,
+    primary: bool,
+}
+
+impl<'a> Answers<'a> {
+    fn of(pending: &'a PendingPermission) -> Self {
+        let default = default_option(&pending.options);
+        Self {
+            request: pending.request,
+            options: pending
+                .options
+                .iter()
+                .enumerate()
+                .map(|(at, option)| AnswerOption {
+                    id: &option.id,
+                    label: &option.label,
+                    primary: Some(at) == default,
+                })
+                .collect(),
+            hint: default.map(|at| pending.options[at].label.to_lowercase()),
+            key: allow_key(),
+        }
+    }
+}
+
+fn plan(steps: &[PlanStep], lit: f32, theme: &Theme, drawn: Option<AnyElement>) -> Div {
     let done = steps
         .iter()
         .filter(|step| step.status == PlanStatus::Done)
         .count();
-    let running = steps.iter().any(|step| step.status == PlanStatus::Running);
     let steps_list = div()
         .mt(px(4.))
         .flex()
@@ -2737,17 +3299,7 @@ fn plan(steps: &[PlanStep], lit: f32, theme: &Theme) -> Div {
                         .child(scale::text(step.text.clone())),
                 )
         }));
-    row(
-        node(
-            if running {
-                Node::Filled(theme.working)
-            } else {
-                Node::Hollow(theme.fg_faint)
-            },
-            if running { lit } else { 1. },
-            theme,
-        ),
-        META,
+    row(drawn.unwrap_or_else(|| {
         div()
             .w_full()
             .child(
@@ -2755,8 +3307,9 @@ fn plan(steps: &[PlanStep], lit: f32, theme: &Theme) -> Div {
                     meta(theme).child(scale::text(format!("{done} of {} done", steps.len()))),
                 ),
             )
-            .child(steps_list),
-    )
+            .child(steps_list)
+            .into_any_element()
+    }))
 }
 
 /// A box of mono text tinted by `tone` (`.errbox`, `.resume`).
@@ -2777,56 +3330,49 @@ fn error_box(text: &str, tone: Hsla, theme: &Theme) -> Div {
         .child(scale::text(text.to_owned()))
 }
 
-/// A message from the backend. `turn` marks the error a turn ended with.
-fn notice(level: Level, text: &str, turn: bool, theme: &Theme) -> Div {
+/// A message from the backend. `turn` marks the error a turn ended with;
+/// `drawn` is the app's rendering of the notice.
+fn notice(level: Level, text: &str, turn: bool, theme: &Theme, drawn: Option<AnyElement>) -> Div {
+    if let Some(drawn) = drawn {
+        return row(drawn);
+    }
     match level {
         // `.notice`: a line in capitals, a rule after it.
-        Level::Info => row(
-            node(Node::Rule, 1., theme),
-            META,
-            div()
-                .min_h(px(META))
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
-                    div()
-                        .min_w_0()
-                        .font_family(theme.mono_font.clone())
-                        .font_weight(FontWeight::BOLD)
-                        .text_size(px(LABEL))
-                        .line_height(px(16.))
-                        .text_color(theme.fg_muted)
-                        .child(scale::text(text.to_uppercase())),
-                )
-                .child(div().flex_1().min_w(px(16.)).h(px(1.)).bg(theme.line)),
-        ),
-        Level::Warning => row(
-            node(Node::Filled(theme.blocked), 1., theme),
-            META,
-            div()
-                .w_full()
-                .child(meta_line().child(label("Warning", theme.blocked, theme)))
-                .child(error_box(text, theme.blocked, theme)),
-        ),
-        Level::Error => row(
-            node(Node::Filled(theme.error), 1., theme),
-            META,
-            div()
-                .w_full()
-                .child(meta_line().child(label(
-                    if turn { "Turn failed" } else { "Error" },
-                    theme.error,
-                    theme,
-                )))
-                .child(error_box(text, theme.error, theme)),
-        ),
+        Level::Info => row(div()
+            .min_h(px(META))
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .min_w_0()
+                    .font_family(theme.mono_font.clone())
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(LABEL))
+                    .line_height(px(16.))
+                    .text_color(theme.fg_muted)
+                    .child(scale::text(text.to_uppercase())),
+            )
+            .child(div().flex_1().min_w(px(16.)).h(px(1.)).bg(theme.line))),
+        Level::Warning => row(div()
+            .w_full()
+            .child(meta_line().child(label("Warning", theme.blocked, theme)))
+            .child(error_box(text, theme.blocked, theme))),
+        Level::Error => row(div()
+            .w_full()
+            .child(meta_line().child(label(
+                if turn { "Turn failed" } else { "Error" },
+                theme.error,
+                theme,
+            )))
+            .child(error_box(text, theme.error, theme))),
     }
 }
 
-/// A change to a file (`.fc-rows`): numbered lines, additions and removals on
-/// the theme's diff colours, under a header with the path and the counts.
-fn diff_block(piece: usize, path: &SharedString, diff: &Diff, theme: &Theme) -> Div {
+/// The lines of a change to a file (`.fc-rows`): numbered, additions and
+/// removals on the theme's diff colours, as many as are shown; none for a
+/// change of nothing.
+fn diff_lines(piece: usize, diff: &Diff, theme: &Theme) -> Option<gpui::Stateful<Div>> {
     let digits = diff
         .rows
         .iter()
@@ -2891,7 +3437,34 @@ fn diff_block(piece: usize, path: &SharedString, diff: &Diff, theme: &Theme) -> 
             }
         }
     });
-    let left_out = diff.rows.len() - shown;
+    (!diff.rows.is_empty()).then(|| {
+        div()
+            .id(("diff", piece))
+            .w_full()
+            .flex()
+            .overflow_x_scroll()
+            .restrict_scroll_to_axis()
+            .child(exact::column(
+                div()
+                    .flex_none()
+                    .min_w_full()
+                    .pb(px(8.))
+                    .flex()
+                    .flex_col()
+                    .font_family(theme.mono_font.clone())
+                    .text_size(px(12.))
+                    .line_height(px(19.))
+                    .whitespace_nowrap(),
+                rows.map(IntoElement::into_any_element),
+            ))
+    })
+}
+
+/// A change to a file, as the view draws it: under a header with the path
+/// and the counts, its lines (see [`diff_lines`]), and how many were left
+/// out.
+fn diff_block(piece: usize, path: &SharedString, diff: &Diff, theme: &Theme) -> Div {
+    let left_out = diff.rows.len() - diff.rows.len().min(DIFF_MAX);
     div()
         .w_full()
         .child(
@@ -2912,36 +3485,18 @@ fn diff_block(piece: usize, path: &SharedString, diff: &Diff, theme: &Theme) -> 
                             .text_color(theme.fg_dim)
                             .child(scale::text(path.clone())),
                     )
-                    .child(div().flex_none().child(if diff.rows.is_empty() {
-                        "no changes".to_owned()
-                    } else {
-                        format!("+{} -{}", diff.added, diff.removed)
-                    })),
-            ),
-        )
-        .when(!diff.rows.is_empty(), |block| {
-            block.child(
-                div()
-                    .id(("diff", piece))
-                    .w_full()
-                    .flex()
-                    .overflow_x_scroll()
-                    .restrict_scroll_to_axis()
-                    .child(exact::column(
+                    .child(
                         div()
                             .flex_none()
-                            .min_w_full()
-                            .pb(px(8.))
-                            .flex()
-                            .flex_col()
-                            .font_family(theme.mono_font.clone())
-                            .text_size(px(12.))
-                            .line_height(px(19.))
-                            .whitespace_nowrap(),
-                        rows.map(IntoElement::into_any_element),
-                    )),
-            )
-        })
+                            .child(scale::text(if diff.rows.is_empty() {
+                                "no changes".to_owned()
+                            } else {
+                                format!("+{} -{}", diff.added, diff.removed)
+                            })),
+                    ),
+            ),
+        )
+        .children(diff_lines(piece, diff, theme))
         .when(left_out > 0, |block| {
             block.child(
                 meta(theme)
@@ -2964,32 +3519,44 @@ fn raw_block(
     value: &impl std::fmt::Display,
     theme: &Theme,
 ) -> Div {
+    div()
+        .w_full()
+        .child(stream_header(label, theme))
+        .child(raw_lines(piece, label, value, theme))
+}
+
+/// What [`raw_block`] shows under its header: what the backend wrote, as
+/// it wrote it, in so many lines at most.
+fn raw_lines(
+    piece: usize,
+    label: &'static str,
+    value: &impl std::fmt::Display,
+    theme: &Theme,
+) -> gpui::Stateful<Div> {
     let pretty = format!("{value:#}");
     let total = pretty.lines().count();
     let mut text: String = pretty.lines().take(RAW_MAX).collect::<Vec<_>>().join("\n");
     if total > RAW_MAX {
         text.push_str(&format!("\n({} more lines)", total - RAW_MAX));
     }
-    div().w_full().child(stream_header(label, theme)).child(
-        div()
-            .id((label, piece))
-            .w_full()
-            .flex()
-            .overflow_x_scroll()
-            .restrict_scroll_to_axis()
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(12.))
-                    .pb(px(12.))
-                    .font_family(theme.mono_font.clone())
-                    .text_size(px(12.))
-                    .line_height(px(19.))
-                    .text_color(theme.fg_dim)
-                    .whitespace_nowrap()
-                    .child(scale::text(markdown::expand_tabs(&text))),
-            ),
-    )
+    div()
+        .id((label, piece))
+        .w_full()
+        .flex()
+        .overflow_x_scroll()
+        .restrict_scroll_to_axis()
+        .child(
+            div()
+                .flex_none()
+                .px(px(12.))
+                .pb(px(12.))
+                .font_family(theme.mono_font.clone())
+                .text_size(px(12.))
+                .line_height(px(19.))
+                .text_color(theme.fg_dim)
+                .whitespace_nowrap()
+                .child(scale::text(markdown::expand_tabs(&text))),
+        )
 }
 
 /// A subagent's step in two words' worth: what it does, and on what, on one
@@ -3203,14 +3770,18 @@ mod tests {
             split_title(&call("Verify: make check", ToolKind::Execute)),
             ("Verify".into(), "make check".into())
         );
+        assert_eq!(
+            split_title(&call("read", ToolKind::Read)),
+            ("Read".into(), String::new())
+        );
         // A title without a verb of its own is named by its kind.
         assert_eq!(
             split_title(&call("`git status`", ToolKind::Execute)),
-            ("run".into(), "`git status`".into())
+            ("Run".into(), "`git status`".into())
         );
         assert_eq!(
             split_title(&call("src/main.rs", ToolKind::Read)),
-            ("read".into(), "src/main.rs".into())
+            ("Read".into(), "src/main.rs".into())
         );
     }
 

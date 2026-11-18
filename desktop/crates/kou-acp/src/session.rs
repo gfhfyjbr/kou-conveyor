@@ -77,6 +77,27 @@ const ORPHAN_POLL: Duration = Duration::from_millis(250);
 /// of its running, before it is taken to be over: an agent that never says
 /// that such a turn ended would otherwise leave it open for good.
 const OWN_QUIET: Duration = Duration::from_secs(120);
+/// How long the agent is not yet told of a stop of a turn it began by itself.
+/// A prompt that follows the stop at once was forced in by the user (the
+/// interface stops the turn, then sends it): the agent takes a prompt while
+/// its own work goes on, so nothing is stopped for it. Told to stop first,
+/// Claude Code stops the prompt that came right after instead, and ends
+/// everything it left running in the background.
+/// How long an agent started in the background may say and do nothing, with
+/// no call of its running, before it is taken to be done. An agent's own
+/// program says when it starts one and never that one has ended (see
+/// [`Session::behind`]); one that is only slow is heard of again and counts
+/// as running again from then.
+const AGENT_QUIET: Duration = Duration::from_secs(150);
+
+const MAKE_WAY: Duration = Duration::from_millis(750);
+/// The request that hands a message to the turn that runs, instead of a
+/// `session/prompt` that waits behind it: the steering extension, which an
+/// agent says it takes in its answer to `initialize`
+/// (`_meta.steering.supported`). Claude's adapter does. Nothing is stopped
+/// for it: the agent reads the message at its next step, and what it left
+/// running goes on.
+const STEER_METHOD: &str = "_session/steering";
 
 /// The kinds of session update version 1 of the protocol defines.
 const KNOWN_UPDATES: [&str; 14] = [
@@ -113,7 +134,8 @@ enum Pending {
     NewSession,
     /// `session/load` or `session/resume` of the session in `Session::session`.
     Reopen,
-    Prompt,
+    /// `session/prompt` of the turn of this number (see [`Turn::serial`]).
+    Prompt(u64),
     SetMode(String),
     SetOption {
         target: Target,
@@ -126,6 +148,15 @@ enum Pending {
     },
     /// `session/close` of a session an edit moved away from.
     Close,
+    /// [`STEER_METHOD`], with the message handed over.
+    Steer(Vec<Block>),
+    /// [`STEER_METHOD`] for a prompt sent into a turn the agent holds open
+    /// (see `Session::prompt_into_turn`): the prompt, and the name it was
+    /// given.
+    Into {
+        blocks: Vec<Block>,
+        id: Option<String>,
+    },
 }
 
 /// What came before a prompt, as far as this client saw: what the session
@@ -168,6 +199,18 @@ struct Turn {
     /// What an agent that repeats the prompt back would send, until it sends
     /// anything else.
     echo: Option<Echo>,
+    /// Which of the session's prompts it answers, counted from one: the
+    /// answer to another prompt is of a turn that was handed off.
+    serial: u64,
+    /// The agent has given its answer (a cycle of the model's ended) and
+    /// began no other: the turn is open only because the agent waits for
+    /// what it left running. Only for an agent that holds turns
+    /// ([`crate::Options::holds_turns`]).
+    answered: bool,
+    /// A message was handed to the turn, and no cycle has ended since: the
+    /// next to end may be the one that message cut short, which is no
+    /// answer to the turn.
+    steered: bool,
 }
 
 #[derive(Debug)]
@@ -214,6 +257,9 @@ pub(crate) struct Session {
     mcp: acp::McpCapabilities,
     /// Whether the agent takes `systemPrompt` when a session opens.
     takes_instructions: bool,
+    /// The app's note ([`Options::preface`]) goes with the next prompt: a
+    /// new session of an agent that takes no added instructions.
+    preface_due: bool,
     /// Whether the agent takes `session/close`.
     can_close: bool,
     /// Prompts can be edited: the agent forks sessions, and the launch says
@@ -270,6 +316,32 @@ pub(crate) struct Session {
     /// user's: it works on something that came to it (a command it left
     /// running ended, say). Since when it last said anything.
     own: Option<Instant>,
+    /// A turn of the agent's own was stopped, and the agent is told when
+    /// this comes, unless a prompt comes first (see [`MAKE_WAY`]).
+    held_stop: Option<Instant>,
+    /// The agents the agent started in the background that are not known
+    /// to have ended, by the call that started each, with when each was
+    /// last heard of (it said something, made a call, a call of its was
+    /// reported on). The agent's program reports no end for these: the turn
+    /// they were started in is held open until the last is done, and till
+    /// then one that ended an hour ago looks like one at work. Two things
+    /// are taken for an end: the agent running a cycle of its own because
+    /// something in the background ended ([`convert::cycle_origin`]), and
+    /// a long silence ([`AGENT_QUIET`]).
+    behind: Vec<(String, Instant)>,
+    /// Those taken to have ended: heard of again, one is at work again.
+    done_behind: Vec<String>,
+    /// When the agent itself began to speak in the cycle that runs.
+    cycle_from: Option<Instant>,
+    /// How many commands left in the background ended since the last cycle
+    /// was over: the agent is told of each as of an agent that ended.
+    commands_ended: usize,
+    /// The agent takes a message into the turn that runs ([`STEER_METHOD`]).
+    steers: bool,
+    /// Prompts sent to the session so far.
+    turns: u64,
+    /// What the interface was last told of [`Session::listens`].
+    listening: bool,
 
     stdout_closed: bool,
     stderr_closed: bool,
@@ -312,6 +384,7 @@ impl Session {
             can_resume: false,
             mcp: acp::McpCapabilities::new(),
             takes_instructions: false,
+            preface_due: false,
             can_close: false,
             rewinds: false,
             left_out_servers: false,
@@ -338,6 +411,14 @@ impl Session {
             mirror_due: HashMap::new(),
             shown: HashMap::new(),
             own: None,
+            held_stop: None,
+            behind: Vec::new(),
+            done_behind: Vec::new(),
+            cycle_from: None,
+            commands_ended: 0,
+            steers: false,
+            turns: 0,
+            listening: false,
             stdout_closed: false,
             stderr_closed: false,
             exit: None,
@@ -404,6 +485,8 @@ impl Session {
         let mut deadlines: Vec<Instant> = self.mirror_due.values().copied().collect();
         deadlines.extend(self.ending.map(|since| since + DRAIN));
         deadlines.extend(self.own.map(|since| since + OWN_QUIET));
+        deadlines.extend(self.held_stop);
+        deadlines.extend(self.behind.iter().map(|(_, heard)| *heard + AGENT_QUIET));
         if self.commands_closed {
             deadlines.push(Instant::now() + ORPHAN_POLL);
         }
@@ -424,6 +507,37 @@ impl Session {
             .collect();
         for id in due {
             self.mirror(&id);
+        }
+        // Whether a prompt is taken with a turn open, when that changed.
+        let listening = self.listens();
+        if listening != self.listening {
+            self.listening = listening;
+            self.send(Update::Offers(self.offers()));
+        }
+        // An agent in the background that has been silent for long, with
+        // no call of its running, is done.
+        let quiet: Vec<String> = self
+            .behind
+            .iter()
+            .filter(|(id, heard)| *heard + AGENT_QUIET <= now && !self.runs_a_call(id))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in quiet {
+            self.agent_behind_ended(&id);
+        }
+        // (One with a call still running is looked at again later.)
+        for (_, heard) in &mut self.behind {
+            if *heard + AGENT_QUIET <= now {
+                *heard = now;
+            }
+        }
+        // A stop of the agent's own turn that no prompt followed is a stop.
+        if self.held_stop.is_some_and(|at| at <= now) {
+            self.held_stop = None;
+            self.stop_agent();
+            let (terminals, shown) = (&self.terminals, &self.shown);
+            self.tools
+                .retain(|call| shows_live_terminal(call, terminals, shown));
         }
         // A turn of the agent's own that has said nothing for long, with
         // nothing of its running, is over; with a call still running it is
@@ -554,6 +668,15 @@ impl Session {
         self.can_close = capabilities.session_capabilities.close.is_some();
         self.rewinds =
             capabilities.session_capabilities.fork.is_some() && self.options.fork_meta.is_some();
+        // The steering extension is said beside the capabilities, in the
+        // answer's own `_meta`.
+        self.steers = response
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get("steering"))
+            .and_then(|steering| steering.get("supported"))
+            .and_then(Value::as_bool)
+            == Some(true);
         self.auth_methods = response.auth_methods;
         self.stage = Stage::Opening;
 
@@ -694,6 +817,9 @@ impl Session {
             Ok(value) => match parse::<acp::NewSessionResponse>(value) {
                 Ok(response) => {
                     self.session = Some(response.session_id.0.to_string());
+                    // A session that begins here: an agent that could not
+                    // be given instructions is told with its first prompt.
+                    self.preface_due = !self.takes_instructions && self.options.preface.is_some();
                     return self.ready(response.modes, response.config_options);
                 }
                 Err(error) => error,
@@ -730,11 +856,8 @@ impl Session {
         options: Option<Vec<acp::SessionConfigOption>>,
     ) {
         self.announce(modes, options);
-        if self.rewinds {
-            self.send(Update::Offers(Offers {
-                rewind: true,
-                ..Offers::default()
-            }));
+        if self.rewinds || self.steers {
+            self.send(Update::Offers(self.offers()));
         }
         // A model chosen before the session existed, once.
         if let Some(wanted) = self.options.model.take()
@@ -870,6 +993,13 @@ impl Session {
         }
         match command {
             Command::Prompt(blocks) => {
+                // One right after a stop of the agent's own turn was forced
+                // in: the agent takes it, and is not told to stop.
+                self.held_stop = None;
+                if self.steers && self.holds() {
+                    return self.prompt_into_turn(blocks);
+                }
+                self.hand_off();
                 self.queue.push_back(Queued { blocks, id: None });
                 self.next_prompt();
             }
@@ -877,6 +1007,9 @@ impl Session {
             Command::Permit { request, option } => self.permit(request, &option),
             Command::SetMode(mode) => self.select(Target::Mode, mode),
             Command::SetModel(model) => self.select(Target::Model, model),
+            // Neither is offered here: an agent's questions come as plain
+            // requests for leave, and it names no levels of effort.
+            Command::Answer { .. } | Command::SetEffort(_) | Command::SetAccess(_) => {}
             Command::Close => self.close(None),
         }
     }
@@ -914,29 +1047,243 @@ impl Session {
             }
             // A message of the user's is no point a fork can end at.
             self.before = Before::Unknown;
-            let request = acp::PromptRequest::new(session, prompt.content);
+            let mut content = prompt.content;
+            if std::mem::take(&mut self.preface_due)
+                && let Some(preface) = &self.options.preface
+            {
+                content.insert(0, acp::ContentBlock::from(convert::preface(preface)));
+            }
+            self.turns += 1;
+            let request = acp::PromptRequest::new(session, content);
             self.request(
                 acp::AGENT_METHOD_NAMES.session_prompt,
                 &request,
-                Pending::Prompt,
+                Pending::Prompt(self.turns),
             );
             // A turn the agent began by itself gives way to the user's.
             if self.own.take().is_some() {
                 self.send(Update::TurnEnded(Stop::Finished));
             }
+            // (What was started in the background of the turn before is not
+            // this turn's to watch.)
+            self.behind.clear();
+            self.done_behind.clear();
             self.turn = Some(Turn {
                 cancelled: false,
                 echo: Some(Echo {
                     text: prompt.text,
                     attachments: prompt.attachments,
                 }),
+                serial: self.turns,
+                answered: false,
+                steered: false,
             });
             self.last_chunk = None;
             self.send(Update::TurnStarted);
+            // What the agent asked in the turn that gave way to this one
+            // it still asks: the end of that turn took the question off
+            // the screen, and it would be refused at the end of this one
+            // without the user having seen it. Shown again, to be answered.
+            let asked: Vec<PermissionRequest> = self
+                .permissions
+                .iter()
+                .map(|open| open.request.clone())
+                .collect();
+            for request in asked {
+                self.send(Update::Permission(request));
+            }
         }
     }
 
-    fn on_prompt_answered(&mut self, result: Result<Value, RpcError>) {
+    /// Whether a prompt sent now is taken though a turn is open: the turn
+    /// is the agent's own, or one it has answered and holds open.
+    fn listens(&self) -> bool {
+        self.own.is_some() || self.holds()
+    }
+
+    /// Whether a prompt's turn is open that the agent has answered: it holds
+    /// the turn open only for what it left running.
+    fn holds(&self) -> bool {
+        self.turn
+            .as_ref()
+            .is_some_and(|turn| turn.answered && !turn.cancelled)
+    }
+
+    /// Sends a prompt into the turn the agent holds open, where the agent
+    /// takes a message there: the turn takes it up, answers it, and stays
+    /// open afterwards for what the agent left running, so that work goes on
+    /// showing as work of a turn that runs. (Ended and begun anew, the turn
+    /// would be over for the interface while what it started still ran, and
+    /// nothing would say so.)
+    fn prompt_into_turn(&mut self, blocks: Vec<Block>) {
+        let Some(session) = self.session.clone() else {
+            return;
+        };
+        let prompt = convert::prompt(&blocks, &self.accepts);
+        if !prompt.left_out.is_empty() {
+            self.send(Update::Notice(
+                Level::Warning,
+                format!(
+                    "{} does not accept {}, so the prompt went without",
+                    self.agent,
+                    prompt.left_out.join(" or ")
+                ),
+            ));
+        }
+        if prompt.content.is_empty() {
+            if self.rewinds {
+                self.send(Update::PromptTaken(None));
+            }
+            return;
+        }
+        let id = self.rewinds.then(|| self.name());
+        if let Some(id) = &id {
+            self.send(Update::PromptTaken(Some(id.clone())));
+        }
+        // A message of the user's is no point a fork can end at.
+        self.before = Before::Unknown;
+        self.last_chunk = None;
+        let request = json!({
+            "sessionId": session,
+            "prompt": prompt.content,
+            "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+        });
+        self.request(STEER_METHOD, &request, Pending::Into { blocks, id });
+        self.at_work();
+    }
+
+    /// The agent answered a prompt sent into the turn it held open.
+    fn on_into(&mut self, blocks: Vec<Block>, id: Option<String>, result: Result<Value, RpcError>) {
+        match &result {
+            Ok(value) if value.get("outcome").and_then(Value::as_str) != Some("promptRequired") => {
+                return;
+            }
+            // The turn was over there by then.
+            Ok(_) => {}
+            Err(error) => log::warn!(
+                "{} did not take a prompt into the turn it holds: {}",
+                self.agent,
+                error.describe()
+            ),
+        }
+        // It goes as a prompt of its own: the held turn, if it is still
+        // open, is over for the interface, as it is for the agent once the
+        // prompt reaches it.
+        if let Some(turn) = &mut self.turn {
+            turn.answered = true;
+        }
+        self.hand_off();
+        self.queue.push_front(Queued { blocks, id });
+        self.next_prompt();
+    }
+
+    /// Ends, for the interface, a turn the agent has answered and holds open
+    /// only for what it left running: the user is moving on. The agent does
+    /// the same when the next prompt reaches it, and answers this turn's
+    /// prompt then, which is no end of the turn after it.
+    fn hand_off(&mut self) {
+        if self.holds() {
+            self.turn = None;
+            self.last_chunk = None;
+            self.send(Update::TurnEnded(Stop::Finished));
+        }
+    }
+
+    /// The agent itself (no agent it started) says or does something: a
+    /// turn it had answered is at work again.
+    fn at_work(&mut self) {
+        if let Some(turn) = &mut self.turn {
+            turn.answered = false;
+        }
+        self.cycle_from.get_or_insert_with(Instant::now);
+    }
+
+    /// Whether a call made by the agent that call `launch` started is
+    /// still open: that agent is at work, however long it says nothing.
+    fn runs_a_call(&self, launch: &str) -> bool {
+        self.tools.iter().any(|call| {
+            call.parent.as_deref() == Some(launch)
+                && matches!(call.status, ToolStatus::Pending | ToolStatus::Running)
+        })
+    }
+
+    /// Something of the agent that call `launch` started arrived: it is at
+    /// work. One that was taken to have ended is at work again.
+    fn heard_of(&mut self, launch: &str) {
+        let now = Instant::now();
+        if let Some((_, heard)) = self.behind.iter_mut().find(|(id, _)| id == launch) {
+            *heard = now;
+        } else if let Some(at) = self.done_behind.iter().position(|id| id == launch) {
+            self.done_behind.remove(at);
+            self.behind.push((launch.to_owned(), now));
+            self.send(Update::ToolPatch(ToolPatch {
+                id: launch.to_owned(),
+                ended: Some(false),
+                ..ToolPatch::default()
+            }));
+        }
+    }
+
+    /// A call that started an agent in the background is over, and the
+    /// agent runs on: from here it is watched for its end.
+    fn watch_behind(&mut self, call: &ToolCall) {
+        let started = call.agent.is_some()
+            && call.work.background
+            && !call.work.ended
+            && call.status == ToolStatus::Done;
+        let known = |id: &String| *id == call.id;
+        if started
+            && !self.behind.iter().any(|(id, _)| known(id))
+            && !self.done_behind.iter().any(known)
+        {
+            self.behind.push((call.id.clone(), Instant::now()));
+        }
+    }
+
+    /// The agent that call `launch` started in the background is taken to
+    /// have ended.
+    fn agent_behind_ended(&mut self, launch: &str) {
+        self.behind.retain(|(id, _)| id != launch);
+        self.done_behind.push(launch.to_owned());
+        let patch = ToolPatch {
+            id: launch.to_owned(),
+            ended: Some(true),
+            ..ToolPatch::default()
+        };
+        if self.tools.iter().any(|call| call.id == launch) {
+            self.merge_tool(&patch);
+        }
+        self.send(Update::ToolPatch(patch));
+    }
+
+    /// A cycle of the agent's own is over that it ran because something in
+    /// the background had ended. A command's end is known by its terminal;
+    /// otherwise it was one of the agents: the one last heard of before the
+    /// cycle began (its report is the last thing an agent says) that has no
+    /// call running.
+    fn something_behind_ended(&mut self) {
+        if self.commands_ended > 0 {
+            self.commands_ended -= 1;
+            return;
+        }
+        let before = self.cycle_from.unwrap_or_else(Instant::now);
+        let ended = self
+            .behind
+            .iter()
+            .filter(|(id, heard)| *heard <= before && !self.runs_a_call(id))
+            .max_by_key(|(_, heard)| *heard)
+            .map(|(id, _)| id.clone());
+        if let Some(id) = ended {
+            self.agent_behind_ended(&id);
+        }
+    }
+
+    fn on_prompt_answered(&mut self, serial: u64, result: Result<Value, RpcError>) {
+        // The answer to the prompt of a turn handed off: that turn was over
+        // when the prompt after it was sent.
+        if self.turn.as_ref().is_none_or(|turn| turn.serial != serial) {
+            return;
+        }
         let Some(turn) = self.turn.take() else {
             return;
         };
@@ -985,7 +1332,13 @@ impl Session {
     /// of it and goes on. The thread shows it at work, and it can be
     /// stopped, as in any turn.
     fn own_turn_starts(&mut self) {
-        if self.stage != Stage::Ready || self.turn.is_some() || self.moving.is_some() {
+        // (Nor while a stop of the last one is held back: what the agent
+        // still says of that work opens no new turn.)
+        if self.stage != Stage::Ready
+            || self.turn.is_some()
+            || self.moving.is_some()
+            || self.held_stop.is_some()
+        {
             return;
         }
         if self.own.replace(Instant::now()).is_none() {
@@ -1010,15 +1363,31 @@ impl Session {
     }
 
     fn cancel(&mut self) {
+        if self.session.is_none() {
+            return;
+        }
+        match &mut self.turn {
+            Some(turn) if !turn.cancelled => turn.cancelled = true,
+            // A turn of the agent's own is over for the interface at once:
+            // no prompt's answer will end it. The agent is told a moment
+            // later, unless a prompt follows (see `MAKE_WAY`).
+            None if self.own.take().is_some() => {
+                self.held_stop = Some(Instant::now() + MAKE_WAY);
+                self.send(Update::TurnEnded(Stop::Cancelled));
+                self.last_chunk = None;
+                return;
+            }
+            _ => return,
+        }
+        self.stop_agent();
+    }
+
+    /// Tells the agent to stop what it does, answers what it asked, and says
+    /// of the calls it was making that they will not finish.
+    fn stop_agent(&mut self) {
         let Some(session) = self.session.clone() else {
             return;
         };
-        match &mut self.turn {
-            Some(turn) if !turn.cancelled => turn.cancelled = true,
-            // A turn of the agent's own is stopped the same way.
-            None if self.own.is_some() => {}
-            _ => return,
-        }
         let notification = acp::CancelNotification::new(session);
         self.write(rpc::notification(
             acp::AGENT_METHOD_NAMES.session_cancel,
@@ -1039,10 +1408,6 @@ impl Session {
         }
         for patch in patches {
             self.send(Update::ToolPatch(patch));
-        }
-        // No prompt's answer will end a turn of the agent's own.
-        if self.turn.is_none() {
-            self.own_turn_ends(Stop::Cancelled);
         }
     }
 
@@ -1174,10 +1539,81 @@ impl Session {
                     self.send(Update::Rewound(Err(reason)));
                 }
             }
-            Request::Steer(_) => {
-                log::debug!("a message to steer by, which this client never offers")
-            }
+            Request::Steer(blocks) => self.steer(blocks),
         }
+    }
+
+    /// What this backend answers beyond the commands, as it stands now.
+    fn offers(&self) -> Offers {
+        Offers {
+            steer: self.steers,
+            rewind: self.rewinds,
+            listening: self.listening,
+            ..Offers::default()
+        }
+    }
+
+    /// Hands a message to the turn that runs, for an agent that takes one
+    /// there. One the turn ended before is not sent: the interface, which
+    /// still holds it, sends it as a prompt.
+    fn steer(&mut self, blocks: Vec<Block>) {
+        if !self.steers {
+            log::debug!("a message to steer by, which {} does not take", self.agent);
+            return;
+        }
+        let session = match (self.stage, self.session.clone()) {
+            (Stage::Ready, Some(session)) if self.turn.is_some() => session,
+            _ => return,
+        };
+        let prompt = convert::prompt(&blocks, &self.accepts);
+        if prompt.content.is_empty() {
+            return;
+        }
+        let request = json!({
+            "sessionId": session,
+            "prompt": prompt.content,
+            // With no turn running the agent is to leave the message alone,
+            // not start a turn that no prompt of this client's stands for.
+            "_meta": {"steering": {"idleBehavior": "promptRequired"}},
+        });
+        self.request(STEER_METHOD, &request, Pending::Steer(blocks));
+        if let Some(turn) = &mut self.turn {
+            turn.steered = true;
+        }
+    }
+
+    /// The agent answered a message handed to its turn.
+    fn on_steered(&mut self, blocks: Vec<Block>, result: Result<Value, RpcError>) {
+        let outcome = match &result {
+            Ok(value) => value.get("outcome").and_then(Value::as_str),
+            Err(error) => {
+                // It stays with the interface, which sends it when the turn ends.
+                self.send(Update::Notice(
+                    Level::Warning,
+                    format!(
+                        "{} did not take the message into its turn: {}. It goes when the turn ends.",
+                        self.agent,
+                        error.describe()
+                    ),
+                ));
+                return;
+            }
+        };
+        // No turn ran there any more: the interface sends it as a prompt.
+        if outcome == Some("promptRequired") {
+            return;
+        }
+        // The agent has it, and says nothing of it again: it is shown where
+        // it came into the conversation, and can be edited like a prompt.
+        self.last_chunk = None;
+        if self.rewinds && self.showing.is_none() {
+            self.showing = Some(self.name());
+            self.before = Before::Unknown;
+        }
+        for block in blocks {
+            self.send(Update::UserChunk(block));
+        }
+        self.at_work();
     }
 
     /// The ID of a prompt or message of the user's the thread is shown,
@@ -1306,6 +1742,11 @@ impl Session {
             [Target::Mode, Target::Model].map(|target| (target, self.selectors.current(target)));
         self.announce(modes, options);
         self.take_early();
+        // A session that starts over has heard nothing yet, the app's note
+        // included; a fork holds what was said before it.
+        if !fork {
+            self.preface_due = !self.takes_instructions && self.options.preface.is_some();
+        }
         // The session moved away from stays the agent's, as it was; this
         // connection lets go of it.
         if self.can_close
@@ -1352,13 +1793,15 @@ impl Session {
             Pending::Initialize => self.on_initialized(result),
             Pending::NewSession => self.on_session_opened(false, result),
             Pending::Reopen => self.on_session_opened(true, result),
-            Pending::Prompt => self.on_prompt_answered(result),
+            Pending::Prompt(serial) => self.on_prompt_answered(serial, result),
             Pending::SetMode(mode) => match result {
                 Ok(_) => self.note_selected(Target::Mode, &mode),
                 Err(error) => self.on_selected(Target::Mode, &mode, Err(error)),
             },
             Pending::SetOption { target, value } => self.on_selected(target, &value, result),
             Pending::Move { fork } => self.on_moved(fork, result),
+            Pending::Steer(blocks) => self.on_steered(blocks, result),
+            Pending::Into { blocks, id } => self.on_into(blocks, id, result),
             Pending::Close => {
                 if let Err(error) = result {
                     log::debug!(
@@ -1426,7 +1869,12 @@ impl Session {
                 if convert::said_by_subagent(&chunk.meta).is_some() {
                     return;
                 }
-                if self.is_echo(&chunk.content) {
+                // The app's own note before a first prompt is not the
+                // user's, where an agent shows the prompt back or replays it.
+                let Some(content) = convert::without_preface(chunk.content) else {
+                    return;
+                };
+                if self.is_echo(&content) {
                     return;
                 }
                 self.last_chunk = None;
@@ -1436,7 +1884,7 @@ impl Session {
                     self.showing = Some(self.name());
                     self.before = Before::Unknown;
                 }
-                self.send(Update::UserChunk(convert::user_block(chunk.content)));
+                self.send(Update::UserChunk(convert::user_block(content)));
             }
             acp::SessionUpdate::AgentMessageChunk(chunk) => {
                 self.own_turn_starts();
@@ -1444,6 +1892,7 @@ impl Session {
                 // are no part of the agent's answer.
                 if let Some(call) = convert::said_by_subagent(&chunk.meta) {
                     self.agent_spoke();
+                    self.heard_of(&call);
                     let mut text = convert::markdown(&chunk.content);
                     let id = chunk.message_id.as_ref().map(|id| id.0.to_string());
                     // Another message of the same subagent is another paragraph.
@@ -1460,6 +1909,7 @@ impl Session {
                     }
                     return;
                 }
+                self.at_work();
                 let text = self.chunk_text(Chunk::Message, &chunk);
                 if !text.is_empty() {
                     self.send(Update::AssistantChunk(text));
@@ -1468,10 +1918,12 @@ impl Session {
             acp::SessionUpdate::AgentThoughtChunk(chunk) => {
                 self.own_turn_starts();
                 // A subagent's reasoning is not the agent's own, and is not shown.
-                if convert::said_by_subagent(&chunk.meta).is_some() {
+                if let Some(call) = convert::said_by_subagent(&chunk.meta) {
                     self.agent_spoke();
+                    self.heard_of(&call);
                     return;
                 }
+                self.at_work();
                 let text = self.chunk_text(Chunk::Thought, &chunk);
                 if !text.is_empty() {
                     self.send(Update::ThoughtChunk(text));
@@ -1481,6 +1933,9 @@ impl Session {
                 self.own_turn_starts();
                 self.agent_spoke();
                 self.last_chunk = None;
+                if convert::said_by_subagent(&call.meta).is_none() {
+                    self.at_work();
+                }
                 let told = convert::delegation(&call.meta, call.raw_input.as_ref());
                 self.note_display(&convert::display(&call.meta));
                 let call = ToolCall {
@@ -1504,6 +1959,10 @@ impl Session {
                     Some(known) => *known = call.clone(),
                     None => self.tools.push(call.clone()),
                 }
+                if let Some(launch) = &call.parent {
+                    self.heard_of(launch);
+                }
+                self.watch_behind(&call);
                 self.send(Update::Tool(call));
                 self.forget_settled_tools();
             }
@@ -1536,7 +1995,13 @@ impl Session {
                 if call.work.background && !call.work.ended && display.exit.is_some() && !open {
                     patch.ended = Some(true);
                     self.merge_tool(&patch);
+                    // (The agent is told of it, as of an agent that ended.)
+                    self.commands_ended += 1;
                 }
+                if let Some(launch) = &call.parent {
+                    self.heard_of(launch);
+                }
+                self.watch_behind(&call);
                 self.send(Update::ToolPatch(patch));
                 self.forget_settled_tools();
                 // What has exited and is shown is kept by its call from here.
@@ -1576,6 +2041,24 @@ impl Session {
                 // is said in the middle of one says no cost.)
                 let ended = update.cost.is_some();
                 self.send(Update::Usage(self.usage));
+                // A cycle the agent ran because something in the background
+                // ended: the only word there is of an agent there being done.
+                if ended {
+                    if convert::cycle_origin(&update.meta).as_deref() == Some("task-notification") {
+                        self.something_behind_ended();
+                    }
+                    self.cycle_from = None;
+                    self.commands_ended = 0;
+                }
+                // In a prompt's turn it is where the agent has given its
+                // answer: one that holds the turn open from here on does so
+                // only for what it left running.
+                if ended
+                    && self.options.holds_turns
+                    && let Some(turn) = &mut self.turn
+                {
+                    turn.answered = !std::mem::take(&mut turn.steered);
+                }
                 if ended {
                     self.own_turn_ends(Stop::Finished);
                 } else if let Some(since) = &mut self.own {
@@ -1867,10 +2350,23 @@ impl Session {
             // The user already said stop; there is nothing left to ask.
             return self.respond(&id, cancelled_outcome());
         }
+        if self.turn.is_none() {
+            // The agent's own turn was stopped a moment ago and the stop
+            // has not gone out yet: this was on its way already.
+            if self.held_stop.is_some() {
+                return self.respond(&id, cancelled_outcome());
+            }
+            // Asked with no turn open: it opens one of the agent's own, so
+            // that there is a turn the answer goes on in and that can end.
+            // (Without one the conversation would wait on the question and
+            // then "work" with nothing to end that.)
+            self.own_turn_starts();
+        }
         self.agent_spoke();
         self.last_chunk = None;
         let patch = self.tool_patch(request.tool_call);
         let request = PermissionRequest {
+            questions: Vec::new(),
             id: self.next_permission,
             tool: self.merge_tool(&patch),
             options: convert::permission_options(request.options),
@@ -2077,6 +2573,7 @@ impl Session {
         }
         self.pending.clear();
         self.moving = None;
+        self.held_stop = None;
         // Open questions are answered rather than dropped, as for a cancelled turn.
         self.cancel_permissions();
         self.exit_waiters.clear();

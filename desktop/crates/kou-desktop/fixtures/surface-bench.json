@@ -1,0 +1,490 @@
+{
+ "kou": "genui/v0",
+ "surface": "bench",
+ "version": 1,
+ "session": "s-1",
+ "call": "",
+ "at": "2026-11-14T01:54:58Z",
+ "title": "sessionstore: benchmarks",
+ "glance": "p99 {#p99}",
+ "sources": {
+  "runs": {
+   "file": "bench/runs.jsonl",
+   "format": "jsonl"
+  }
+ },
+ "components": [
+  {
+   "id": "root",
+   "component": "Column",
+   "children": [
+    "hero",
+    "kpis",
+    "trend",
+    "split",
+    "table",
+    "form"
+   ]
+  },
+  {
+   "id": "hero",
+   "component": "Div",
+   "direction": "row",
+   "align": "center",
+   "gap": 12,
+   "padding": 14,
+   "background": "bg",
+   "border": true,
+   "radius": 10,
+   "children": [
+    "hero-text",
+    "hero-space",
+    "hero-badge"
+   ]
+  },
+  {
+   "id": "hero-text",
+   "component": "Div",
+   "gap": 2,
+   "children": [
+    "hero-title",
+    "hero-sub"
+   ]
+  },
+  {
+   "id": "hero-title",
+   "component": "P",
+   "text": "p99 is down to {/sources/runs/last/p99_ms} ms",
+   "size": "title",
+   "weight": "semibold"
+  },
+  {
+   "id": "hero-sub",
+   "component": "P",
+   "text": "{/sources/runs/count} runs · last on commit {/sources/runs/last/commit}",
+   "size": "small",
+   "color": "fg-3"
+  },
+  {
+   "id": "hero-space",
+   "component": "Spacer"
+  },
+  {
+   "id": "hero-badge",
+   "component": "Badge",
+   "text": "within budget",
+   "tone": "ok"
+  },
+  {
+   "id": "kpis",
+   "component": "Row",
+   "children": [
+    "p50",
+    "p99",
+    "allocs"
+   ]
+  },
+  {
+   "id": "p50",
+   "component": "Metric",
+   "label": "p50",
+   "unit": "ms",
+   "better": "lower",
+   "digits": 1,
+   "value": {
+    "path": "/sources/runs/last/p50_ms"
+   }
+  },
+  {
+   "id": "p99",
+   "component": "Metric",
+   "label": "p99",
+   "unit": "ms",
+   "better": "lower",
+   "digits": 1,
+   "value": {
+    "path": "/sources/runs/last/p99_ms"
+   }
+  },
+  {
+   "id": "allocs",
+   "component": "Metric",
+   "label": "allocs/op",
+   "better": "lower",
+   "value": {
+    "path": "/sources/runs/last/allocs"
+   }
+  },
+  {
+   "id": "trend",
+   "component": "Chart",
+   "kind": "line",
+   "data": {
+    "path": "/sources/runs/rows"
+   },
+   "x": "commit",
+   "y": [
+    "p50_ms",
+    "p99_ms"
+   ],
+   "unit": "ms",
+   "alt": "p50 and p99 by commit"
+  },
+  {
+   "id": "split",
+   "component": "Grid",
+   "columns": 2,
+   "children": [
+    "allocs-chart",
+    "note"
+   ]
+  },
+  {
+   "id": "allocs-chart",
+   "component": "Chart",
+   "kind": "bar",
+   "data": {
+    "path": "/sources/runs/rows"
+   },
+   "x": "commit",
+   "y": "allocs",
+   "limit": 8,
+   "height": 120,
+   "alt": "allocations per op, last 8 runs"
+  },
+  {
+   "id": "note",
+   "component": "Container",
+   "title": "What changed",
+   "tone": "info",
+   "children": [
+    "note-1",
+    "note-rule",
+    "note-2",
+    "progress"
+   ]
+  },
+  {
+   "id": "note-1",
+   "component": "P",
+   "text": "The index is rebuilt in batches now, so fsync happens once per batch.",
+   "color": "fg-2"
+  },
+  {
+   "id": "note-rule",
+   "component": "Divider",
+   "label": "budget"
+  },
+  {
+   "id": "note-2",
+   "component": "P",
+   "text": "Target: p99 under {/budget} ms",
+   "size": "small",
+   "color": "fg-3"
+  },
+  {
+   "id": "progress",
+   "component": "Progress",
+   "label": "runs under budget",
+   "value": 9,
+   "max": 12
+  },
+  {
+   "id": "table",
+   "component": "Table",
+   "rows": {
+    "path": "/sources/runs/rows"
+   },
+   "reverse": true,
+   "limit": 4,
+   "columns": [
+    "commit",
+    "p50_ms",
+    "p99_ms",
+    "allocs"
+   ]
+  },
+  {
+   "id": "form",
+   "component": "Div",
+   "direction": "row",
+   "gap": 12,
+   "align": "end",
+   "wrap": true,
+   "children": [
+    "comment",
+    "mode",
+    "apply",
+    "cancel"
+   ]
+  },
+  {
+   "id": "comment",
+   "component": "TextField",
+   "label": "Comment",
+   "placeholder": "when to ship it",
+   "value": {
+    "path": "/comment"
+   }
+  },
+  {
+   "id": "mode",
+   "component": "Select",
+   "label": "fsync",
+   "value": {
+    "path": "/mode"
+   },
+   "options": [
+    "always",
+    "batch",
+    "off"
+   ]
+  },
+  {
+   "id": "apply",
+   "component": "Button",
+   "label": "Ship it",
+   "style": "primary",
+   "once": true,
+   "action": {
+    "event": {
+     "name": "ship",
+     "data": {
+      "comment": {
+       "path": "/comment"
+      },
+      "mode": {
+       "path": "/mode"
+      }
+     }
+    }
+   }
+  },
+  {
+   "id": "cancel",
+   "component": "Button",
+   "label": "Not yet",
+   "action": {
+    "event": {
+     "name": "hold"
+    }
+   }
+  }
+ ],
+ "data": {
+  "mode": "batch",
+  "budget": 50
+ },
+ "previous": null,
+ "changed": {
+  "added": [
+   {
+    "id": "root",
+    "component": "Column"
+   },
+   {
+    "id": "hero",
+    "component": "Div"
+   },
+   {
+    "id": "hero-text",
+    "component": "Div"
+   },
+   {
+    "id": "hero-title",
+    "component": "P"
+   },
+   {
+    "id": "hero-sub",
+    "component": "P"
+   },
+   {
+    "id": "hero-space",
+    "component": "Spacer"
+   },
+   {
+    "id": "hero-badge",
+    "component": "Badge"
+   },
+   {
+    "id": "kpis",
+    "component": "Row"
+   },
+   {
+    "id": "p50",
+    "component": "Metric"
+   },
+   {
+    "id": "p99",
+    "component": "Metric"
+   },
+   {
+    "id": "allocs",
+    "component": "Metric"
+   },
+   {
+    "id": "trend",
+    "component": "Chart"
+   },
+   {
+    "id": "split",
+    "component": "Grid"
+   },
+   {
+    "id": "allocs-chart",
+    "component": "Chart"
+   },
+   {
+    "id": "note",
+    "component": "Container"
+   },
+   {
+    "id": "note-1",
+    "component": "P"
+   },
+   {
+    "id": "note-rule",
+    "component": "Divider"
+   },
+   {
+    "id": "note-2",
+    "component": "P"
+   },
+   {
+    "id": "progress",
+    "component": "Progress"
+   },
+   {
+    "id": "table",
+    "component": "Table"
+   },
+   {
+    "id": "form",
+    "component": "Div"
+   },
+   {
+    "id": "comment",
+    "component": "TextField"
+   },
+   {
+    "id": "mode",
+    "component": "Select"
+   },
+   {
+    "id": "apply",
+    "component": "Button"
+   },
+   {
+    "id": "cancel",
+    "component": "Button"
+   }
+  ],
+  "updated": [],
+  "removed": [],
+  "data": [
+   "/mode",
+   "/budget"
+  ],
+  "sources": [
+   "runs"
+  ],
+  "title": true
+ },
+ "snapshot": {
+  "sources": {
+   "runs": {
+    "rows": [
+     {
+      "commit": "a41c9e",
+      "p50_ms": 12.1,
+      "p99_ms": 60.1,
+      "allocs": 1754
+     },
+     {
+      "commit": "b7d210",
+      "p50_ms": 12.0,
+      "p99_ms": 58.0,
+      "allocs": 1697
+     },
+     {
+      "commit": "c03fa1",
+      "p50_ms": 11.8,
+      "p99_ms": 56.0,
+      "allocs": 1673
+     },
+     {
+      "commit": "d9e77b",
+      "p50_ms": 11.5,
+      "p99_ms": 55.4,
+      "allocs": 1643
+     },
+     {
+      "commit": "e12a50",
+      "p50_ms": 11.1,
+      "p99_ms": 52.3,
+      "allocs": 1610
+     },
+     {
+      "commit": "f6b3c8",
+      "p50_ms": 10.9,
+      "p99_ms": 49.9,
+      "allocs": 1495
+     },
+     {
+      "commit": "07ad4e",
+      "p50_ms": 10.4,
+      "p99_ms": 52.4,
+      "allocs": 1377
+     },
+     {
+      "commit": "18c2f9",
+      "p50_ms": 10.3,
+      "p99_ms": 49.3,
+      "allocs": 1328
+     },
+     {
+      "commit": "29e6b1",
+      "p50_ms": 10.1,
+      "p99_ms": 48.5,
+      "allocs": 1277
+     },
+     {
+      "commit": "3af07d",
+      "p50_ms": 9.5,
+      "p99_ms": 47.5,
+      "allocs": 1198
+     },
+     {
+      "commit": "4b91c2",
+      "p50_ms": 9.0,
+      "p99_ms": 45.9,
+      "allocs": 1123
+     },
+     {
+      "commit": "5cd3e6",
+      "p50_ms": 8.9,
+      "p99_ms": 45.3,
+      "allocs": 1082
+     }
+    ],
+    "last": {
+     "commit": "5cd3e6",
+     "p50_ms": 8.9,
+     "p99_ms": 45.3,
+     "allocs": 1082
+    },
+    "count": 12
+   }
+  },
+  "sourceInfo": {
+   "runs": {
+    "path": "bench/runs.jsonl",
+    "format": "jsonl",
+    "size": 825,
+    "mtime": "2026-11-14T01:54:47Z"
+   }
+  },
+  "diffs": {}
+ },
+ "text": "◇ sessionstore: benchmarks                                              bench v1\n  p99 is down to 45.3 ms\n  12 runs · last on commit 5cd3e6\n  [within budget]\n  P50 8.9 ms ▼1%   P99 45.3 ms ▼1%   ALLOCS/OP 1 082 ▼4%\n  P50 AND P99 BY COMMIT\n  p50_ms ███▇▆▅▄▄▃▂▁▁  last 8.9\n  p99_ms █▇▆▆▄▃▄▃▂▂▁▁  last 45.3\n  (12 points)\n  ALLOCATIONS PER OP, LAST 8 RUNS\n  allocs ███▇▇▅▄▃▃▂▁▁  last 1 082\n  (12 points)\n  ┌ WHAT CHANGED\n  │ The index is rebuilt in batches now, so fsync happens once per batch.\n  │ ── budget ──────────────────────────────────────────────────────────────────\n  │ Target: p99 under 50 ms\n  │ runs under budget ███████████████░░░░░ 75%\n  COMMIT  P50_MS  P99_MS  ALLOCS\n  5cd3e6  8.9     45.3    1 082\n  4b91c2  9       45.9    1 123\n  3af07d  9.5     47.5    1 198\n  29e6b1  10.1    48.5    1 277\n  … 8 more rows\n  Comment: [ when to ship it ]\n  fsync: (batch) ▾\n  [ Ship it ] (once)\n  [ Not yet ]"
+}

@@ -1,0 +1,5 @@
+{
+  "name": "composer",
+  "description": "The prompt field's frame: how the field a prompt is typed in looks and how its parts are arranged, in a chat and on the empty page.",
+  "desktop": {"script": "desktop/composer.js"}
+}

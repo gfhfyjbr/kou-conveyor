@@ -111,7 +111,7 @@ mod tests {
         assert_eq!(Brand::of_harness("CC"), Some(Brand::Claude));
         assert_eq!(Brand::of_harness("amp"), None);
         // No mark is borrowed for a product that has none: Amp is not AMP.
-        for code in ["A", "D", "pi", "ai", "GO", "KI", "GK", "ko", "sh", ""] {
+        for code in ["A", "D", "pi", "ai", "GO", "KI", "GK", "DV", "ko", "sh", ""] {
             assert_eq!(Brand::of(code), None, "{code}");
         }
     }

@@ -14,7 +14,7 @@ agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around 
 - **Panes.** Each agent has a pane. An agent opens as a chat in the app's own
   conversation view wherever it can be driven that way: kou's own agent
   through its runner, the others through the Agent Client Protocol (OpenCode,
-  Gemini and more speak it themselves; Claude Code and Codex through an
+  Gemini, Devin and more speak it themselves; Claude Code and Codex through an
   adapter by default). Settings → General also offers a direct connection
   to either CLI. The harness's own terminal interface is one click away in the pane's header
   (Cmd+Shift+I), with the conversation carried over where the harness keeps
@@ -86,7 +86,7 @@ agent itself stays in Go (`cmd/kou-conveyor-runner`); this is everything around 
   with its first prompt, which the chat does not show as yours. Not reached
   yet: kou's own agent, whose runner has no way to be given instructions for
   one run, and the terminal interfaces of Gemini CLI, Qwen Code, Amp, Droid,
-  Goose and Kiro, which take none at launch either.
+  Goose, Kiro and Devin, which take none at launch either.
 - **An agent's own agents.** An agent that a harness starts by itself (Claude
   Code's Agent tool) is shown in its chat as an agent, not as a tool call: a
   card with what it was started for, its kind, how many calls it has made, how

@@ -674,6 +674,7 @@ pub(crate) mod tests {
             ("codex-cli 0.160.0", "0.160.0"),
             ("opencode v2.2.5", "2.2.5"),
             ("grok 1.0.70 (f50904eaee6c) [stable]", "1.0.70"),
+            ("devin 3000.14.30821 (a09cd7f323ee)", "3000.14.30821"),
             ("aider 0.85.2", "0.85.2"),
             ("0.89.0", "0.89.0"),
             ("0.61.1\n", "0.61.1"),
@@ -791,6 +792,21 @@ esac"#,
 esac"#,
         );
         assert_eq!(fakes.detect("codex").readiness, Readiness::NeedsLogin);
+
+        // Devin says it on stdout and still exits 0.
+        fakes.script(
+            "devin",
+            r#"case "$*" in
+  --version) echo "devin 3000.14.30821 (a09cd7f323ee)" ;;
+  "auth status") printf 'Not logged in.\n  Credentials path: /x/devin/credentials.toml\nRun `devin auth login` to authenticate.\n' ;;
+esac"#,
+        );
+        let detected = fakes.detect("devin");
+        assert_eq!(detected.readiness, Readiness::NeedsLogin);
+        assert_eq!(
+            detected.message.as_deref(),
+            Some("Devin is not signed in. Run `devin auth login`.")
+        );
     }
 
     #[cfg(unix)]
@@ -946,6 +962,23 @@ esac"#,
         // Aider has no ACP at all.
         fakes.script("aider", r#"echo "aider 0.85.2""#);
         assert!(!fakes.detect("aider").native);
+
+        // A signed-in Devin offers its own `devin acp`.
+        let path = fakes.script(
+            "devin",
+            r#"case "$*" in
+  --version) echo "devin 3000.14.30821 (a09cd7f323ee)" ;;
+  --help) echo "  acp        Run as an ACP (Agent Client Protocol) server over stdio" ;;
+  "auth status") echo "Logged in (via Devin)." ;;
+esac"#,
+        );
+        let devin = fakes.detect("devin");
+        assert_eq!(devin.readiness, Readiness::Ready);
+        assert!(devin.native);
+        let acp = devin.acp.unwrap();
+        assert_eq!(acp.args, ["acp"]);
+        assert_eq!(acp.program, path);
+        assert!(!devin.hooks);
     }
 
     /// An adapter installed the way the app installs one: npm's layout.

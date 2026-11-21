@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn a_conversation_crosses_where_the_ids_are_shared() {
-        for id in ["claude", "codex", "gemini", "opencode", "grok"] {
+        for id in ["claude", "codex", "gemini", "opencode", "grok", "devin"] {
             let spec = spec(id).unwrap();
             assert_eq!(
                 terminal_resume(spec, "abc-1").as_deref(),

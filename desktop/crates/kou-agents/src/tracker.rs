@@ -1097,4 +1097,48 @@ mod tests {
         assert_eq!(tracker.activity(at(12_100)), Blocked);
         assert_eq!(tracker.deadline(at(12_100)), None);
     }
+
+    #[test]
+    fn devin_is_read_from_its_status_line() {
+        // As Devin 3000.14.30821 drew them: the status line over the input
+        // while a turn runs, the foot of a permission question, the trust
+        // question a first launch in a folder asks, and the prompt at rest.
+        let working = "\u{284e}\u{28b1} Thinking \u{b7} 1s (esc twice to interrupt)\n\n\u{276d} Guide Devin while it works";
+        let permission = " \u{23fa} Running command\n \u{2514} $ sleep 4\n\n\u{276d} Allow       \u{2190} \u{25fc}\u{25fc}\u{25fc}\u{25fc} \u{2192} Once     Exec(sleep)\n  Bypass mode\n  Deny\n\n\u{2191}\u{2193} select \u{b7} \u{2190}\u{2192} 1-4 scope \u{b7} e edit \u{b7} \u{21b5} confirm \u{b7} esc cancel";
+        let trust = " \u{2731} Do you trust the authors of this directory?\n   For security, devin should not be run in directories with untrusted content.\n\n \u{276d} 1 Yes, trust\n   2 No, exit";
+        let idle = " done\n\n \u{23fa} /work/api\n\n\u{276d} Ask Devin to build features, fix bugs, or work on your code";
+        play(
+            "devin",
+            &[
+                (0, Expect(Idle)),
+                // A first launch in this folder asks its trust question.
+                (100, Screen(trust)),
+                (100, Expect(Blocked)),
+                // "1 Yes, trust" typed; the pane rests at its prompt.
+                (1_000, Input),
+                (1_050, Screen(idle)),
+                (1_050, Expect(Idle)),
+                // Output alone is not work: typing and redraws make output too.
+                (2_000, OutputUntil(5_000)),
+                (5_000, Expect(Idle)),
+                // A turn: the status line stands over the input.
+                (5_100, Screen(working)),
+                (5_100, Expect(Working)),
+                (8_000, Expect(Working)),
+                // A permission question waits for the user.
+                (8_100, Screen(permission)),
+                (8_100, Expect(Blocked)),
+                (60_000, Expect(Blocked)),
+                // Allowed: the line is back, and the turn runs on.
+                (60_100, Input),
+                (60_200, Screen(working)),
+                (60_200, Expect(Working)),
+                // The turn ends; the quiet period after its last sign runs out.
+                (63_100, Screen(idle)),
+                (63_100, Expect(Working)),
+                (63_200, Expect(Idle)),
+                (70_000, Expect(Idle)),
+            ],
+        );
+    }
 }

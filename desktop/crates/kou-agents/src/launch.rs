@@ -1862,6 +1862,31 @@ mod tests {
             ["-model", "m", "-workspace", "/work/api", "-p", "plan it"]
         );
 
+        let devin = launch(
+            "devin",
+            &options(Some("-v means verbose?"), Some("opus"), Some("rare-margin")),
+        );
+        assert_eq!(
+            devin.args,
+            [
+                "--resume",
+                "rare-margin",
+                "--model",
+                "opus",
+                "--",
+                "-v means verbose?"
+            ]
+        );
+        assert!(!state.path().join("devin").exists());
+        // The prompt goes after `--` on the command line, never typed in.
+        assert_eq!(
+            typed_prompt(
+                &installed("devin", Some("3000.14.30821")),
+                &options(Some("-v means verbose?"), None, None)
+            ),
+            None
+        );
+
         assert_eq!(
             env_of(&launch("amp", &TuiOptions::default()), "AMP_FORCE_BEL"),
             Some("1")
@@ -2031,6 +2056,7 @@ mod tests {
             ("droid", "/x/droid"),
             ("codex", "/x/codex-acp"),
             ("grok", "/x/grok"),
+            ("devin", "/x/devin"),
         ] {
             let other = Detected {
                 native: true,
@@ -2701,6 +2727,19 @@ mod tests {
         let copilot = with_acp("copilot", "/x/copilot", &["--acp"], &[]);
         let launch = acp_launch_with(&copilot, &context, &Theirs::default()).unwrap();
         assert!(env_of(&launch, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS").is_some());
+
+        // Devin takes nothing at launch: the server goes in `session/new`,
+        // and the guidance with the first prompt.
+        let devin = with_acp("devin", "/x/devin", &["acp"], &[]);
+        let launch = acp_launch_with(&devin, &context, &Theirs::default()).unwrap();
+        assert_eq!(launch.program, Path::new("/x/devin"));
+        assert_eq!(launch.args, ["acp"]);
+        assert_eq!(launch.env, pane_env(&context));
+        let setup = acp_setup(&devin, &context);
+        assert_eq!(setup.mcp_servers, std::slice::from_ref(&server));
+        assert_eq!(setup.login_hint.as_deref(), Some("Run `devin auth login`."));
+        assert_eq!((setup.fork_meta, setup.meta), (None, None));
+        assert!(!setup.display_terminals && !setup.holds_turns);
 
         // Droid's mode runs with the variables its registry entry sets.
         let droid = with_acp(

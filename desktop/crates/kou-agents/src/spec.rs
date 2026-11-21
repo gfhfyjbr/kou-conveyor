@@ -1258,6 +1258,67 @@ static SPECS: &[Spec] = &[
         sources: "Flags from `agent --help`, `agent agent --help`, `grok help`, `grok help agent` and `grok plugin validate` 1.0.70 (run here; this is what `agent` is on this machine). ACP: `initialize` and `session/new` with an MCP server and `--plugin-dir` against `grok agent stdio` (run here): loadSession, resume, http and sse MCP, no systemPrompt.",
     },
     Spec {
+        id: "devin",
+        name: "Devin",
+        code: "DV",
+        binaries: &[bin("devin")],
+        version: &["--version"],
+        minimum: None,
+        login: Login::Status {
+            // "Not logged in." signed out, "Logged in (via Devin)." signed in.
+            args: &["auth", "status"],
+            signed_out: &["notloggedin"],
+            hint: "Run `devin auth login`.",
+            sign_in: &["auth", "login"],
+        },
+        tui: Tui {
+            args: &[],
+            // A bare word is a folder to open in Devin Desktop; a prompt goes
+            // after `--` and leaves the session interactive.
+            prompt: Arg::Words(&["--"]),
+            model: Arg::Words(&["--model"]),
+            resume: Arg::Words(&["--resume"]),
+            cwd: Arg::No,
+            env: &[],
+        },
+        acp: &[Acp::Builtin {
+            args: &["acp"],
+            evidence: Evidence::Help {
+                args: &["--help"],
+                needle: "agent client protocol",
+            },
+            env: &[],
+        }],
+        hooks: no_hooks(
+            "Devin reads hooks only from config files: the user's, and the project's .devin and .claude. `--config <file>` replaces the user's config instead of adding to it, and Devin writes its own state back into that file, so nothing is wired.",
+        ),
+        sessions: Sessions {
+            crossing: Crossing::SameId,
+            note: "Verified here on 3000.14.30821: a session made by `devin acp` (`session/new` and one prompt) is listed by `devin list` under the same id, `session/load` of it worked from a new process, and `devin -r <id>` opened it in the terminal with its history. A session with no prompt yet is not saved.",
+        },
+        orchestration: Orchestrate {
+            attach: Attach::None,
+            terminal: Guidance::Nothing,
+            chat: Guidance::Nothing,
+            note: "The terminal interface takes MCP servers and instructions only from config files (mcp_config.json, AGENTS.md and rules under .devin and the user's folder); `--config` would hide the user's own config, as for hooks. Over ACP the server sent in `session/new` started here with the pane's variables in its environment; `devin acp` does not advertise `sessionCapabilities.systemPrompt`, so the guidance goes no further than the note with the first prompt.",
+        },
+        screen: Screen {
+            // The status line over the input while a turn runs, seen on
+            // 3000.14.30821: `⡎⢱ Thinking · 1s (esc twice to interrupt)`.
+            working: &["esc twice to interrupt"],
+            // The foot of a permission question (`↑↓ select · ←→ 1-4 scope ·
+            // e edit · ↵ confirm · esc cancel`) and the trust question a first
+            // launch in a folder asks, both seen on 3000.14.30821.
+            blocked: &["1-4 scope", "do you trust the authors of this directory"],
+            title_working: &[],
+            title_blocked: &[],
+            output: false,
+            notification: Notice::Attention,
+            working_line: None,
+        },
+        sources: "Flags from `devin --help`, `devin acp --help`, `devin auth status --help` and `devin list --help` 3000.14.30821 (all run here), and the CLI's bundled docs (extensibility/hooks, reference/configuration). Login from `devin auth status`, signed in and with an empty XDG_DATA_HOME (run here). Hooks: a `--config` file with a hooks block fired SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd with Claude Code's names and payloads, and Devin wrote `devin.org_id`, `shell.setup_complete` and `theme_mode` into that file (run here). Screen text and the window title (`devin: <session title>`) from a live terminal session; it also reports its state as OSC 7501 (`state=working|blocked|done:app=devin`), which kou does not read. ACP: the ACP registry (devin 3000.14.30821, `devin acp`); `initialize` (loadSession, http and sse MCP, session list, no systemPrompt, an auth method `devin-browser`), `session/new` with a stdio MCP server, `session/prompt` and `session/load` against `devin acp` 3000.14.30821 (run here).",
+    },
+    Spec {
         id: "shell",
         name: "Shell",
         code: "sh",
@@ -1319,7 +1380,7 @@ mod tests {
         let ids: Vec<_> = specs().iter().map(|spec| spec.id).collect();
         for id in [
             "claude", "codex", "gemini", "opencode", "cursor", "amp", "droid", "pi", "aider",
-            "goose", "qwen", "copilot", "kiro", "kou", "shell",
+            "goose", "qwen", "copilot", "kiro", "devin", "kou", "shell",
         ] {
             assert!(spec(id).is_some(), "{id} is missing");
         }

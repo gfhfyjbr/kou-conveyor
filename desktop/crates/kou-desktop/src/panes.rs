@@ -199,7 +199,40 @@ pub(crate) struct Running {
     launched: Instant,
     // Bumped by each output event; a settle timer acts only if it is still current.
     generation: u64,
+    // The one follow-up refresh the pane has pending.
+    wake: Wake,
     _subscription: Subscription,
+}
+
+/// The one follow-up refresh a pane has pending. Every output event
+/// refreshes its pane, and a refresh that finds a deadline comes back to it
+/// when that is due. Were each of them to start a timer of its own, every
+/// event would start a chain that lasts as long as there are deadlines (all
+/// the while a shell runs a program), and a program that draws all the time
+/// would pile up thousands of them, each asking about the pane again.
+#[derive(Debug, Default)]
+struct Wake(Option<Instant>);
+
+impl Wake {
+    /// Whether a timer has to be started for a refresh due at `at`: none is
+    /// pending, or the pending one is due later.
+    fn schedule(&mut self, at: Instant) -> bool {
+        if self.0.is_some_and(|pending| pending <= at) {
+            return false;
+        }
+        self.0 = Some(at);
+        true
+    }
+
+    /// Whether the timer started for `at` is still the pending one: one due
+    /// earlier may have taken its place since.
+    fn fire(&mut self, at: Instant) -> bool {
+        if self.0 != Some(at) {
+            return false;
+        }
+        self.0 = None;
+        true
+    }
 }
 
 // Bytes as text, for data that is kept as JSON.
@@ -1009,6 +1042,7 @@ impl Shell {
                     now
                 },
                 generation: 0,
+                wake: Wake::default(),
                 _subscription: subscription,
             },
         );
@@ -3091,14 +3125,27 @@ impl Shell {
         };
         self.set_mark(pane, mark_of(activity), window, cx);
         self.answer_waits(cx);
-        if let Some(deadline) = deadline {
-            let (id, pause) = (pane.to_owned(), deadline.saturating_duration_since(now));
+        if let Some(at) = deadline
+            && self
+                .running
+                .get_mut(pane)
+                .is_some_and(|running| running.wake.schedule(at))
+        {
+            let (id, pause) = (pane.to_owned(), at.saturating_duration_since(now));
             cx.spawn_in(window, async move |this, cx| {
                 cx.background_executor()
                     .timer(pause + Duration::from_millis(20))
                     .await;
-                this.update_in(cx, |this, window, cx| this.refresh(&id, window, cx))
-                    .ok();
+                this.update_in(cx, |this, window, cx| {
+                    let due = this
+                        .running
+                        .get_mut(&id)
+                        .is_some_and(|running| running.wake.fire(at));
+                    if due {
+                        this.refresh(&id, window, cx);
+                    }
+                })
+                .ok();
             })
             .detach();
         }
@@ -3818,6 +3865,30 @@ mod tests {
             running: false,
             prompts: Some(1),
         }
+    }
+
+    #[test]
+    fn a_pane_has_one_follow_up_refresh_pending_however_often_it_is_refreshed() {
+        use super::Wake;
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let at = |ms: u64| now + Duration::from_millis(ms);
+        let mut wake = Wake::default();
+        // A program that draws all the time: an event every 50 ms, each
+        // refresh finding the shell's next poll 400 ms on. One timer, not one each.
+        assert!(wake.schedule(at(400)));
+        let started = (1..1_000)
+            .filter(|tick| wake.schedule(at(tick * 50 + 400)))
+            .count();
+        assert_eq!(started, 0);
+        // A deadline sooner than the pending one takes its place.
+        assert!(wake.schedule(at(100)));
+        // The timer it replaced finds itself stale and does nothing.
+        assert!(!wake.fire(at(400)));
+        // The current one refreshes, and the next refresh may start one again.
+        assert!(wake.fire(at(100)));
+        assert!(!wake.fire(at(100)));
+        assert!(wake.schedule(at(500)));
     }
 
     #[test]
